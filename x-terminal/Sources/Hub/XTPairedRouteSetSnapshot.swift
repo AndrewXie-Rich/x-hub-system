@@ -214,7 +214,7 @@ enum XTPairedRouteSetSnapshotBuilder {
 
     private static func resolveStableRemoteRoute(input: XTPairedRouteSetBuildInput) -> XTPairedRouteTargetSnapshot? {
         if let host = normalizedNonEmpty(input.cachedProfile.internetHost),
-           HubRemoteHostPolicy.isStableNamedRemoteHost(host) {
+           HubRemoteHostPolicy.isFormalRemoteHost(host) {
             return makeTarget(
                 routeKind: .internet,
                 host: host,
@@ -225,7 +225,7 @@ enum XTPairedRouteSetSnapshotBuilder {
         }
 
         if let host = normalizedNonEmpty(input.configuredInternetHost),
-           HubRemoteHostPolicy.isStableNamedRemoteHost(host) {
+           HubRemoteHostPolicy.isFormalRemoteHost(host) {
             return makeTarget(
                 routeKind: .internet,
                 host: host,

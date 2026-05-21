@@ -21,16 +21,26 @@ enum HubRemoteHostPolicy {
     }
 
     static func isIPv4Host(_ host: String) -> Bool {
-        let parts = host.split(separator: ".")
+        guard let normalized = normalizedHostToken(host) else { return false }
+        let parts = normalized.split(separator: ".")
         guard parts.count == 4 else { return false }
         let octets = parts.compactMap { Int($0) }
         guard octets.count == 4 else { return false }
         return octets.allSatisfy { (0...255).contains($0) }
     }
 
+    private static func ipv4Octets(_ host: String) -> [Int]? {
+        guard let normalized = normalizedHostToken(host) else { return nil }
+        let parts = normalized.split(separator: ".")
+        guard parts.count == 4 else { return nil }
+        let octets = parts.compactMap { Int($0) }
+        guard octets.count == 4 else { return nil }
+        guard octets.allSatisfy({ (0...255).contains($0) }) else { return nil }
+        return octets
+    }
+
     static func isPrivateIPv4Host(_ host: String) -> Bool {
-        guard isIPv4Host(host) else { return false }
-        let octets = host.split(separator: ".").compactMap { Int($0) }
+        guard let octets = ipv4Octets(host) else { return false }
         let a = octets[0]
         let b = octets[1]
         if a == 10 { return true }
@@ -41,8 +51,13 @@ enum HubRemoteHostPolicy {
         return false
     }
 
+    static func isTailscaleIPv4Host(_ host: String) -> Bool {
+        guard let octets = ipv4Octets(host) else { return false }
+        return octets[0] == 100 && octets[1] >= 64 && octets[1] <= 127
+    }
+
     static func isPublicIPv4Host(_ host: String) -> Bool {
-        isIPv4Host(host) && !isPrivateIPv4Host(host)
+        isIPv4Host(host) && !isPrivateIPv4Host(host) && !isTailscaleIPv4Host(host)
     }
 
     static func isStableNamedRemoteHost(_ host: String) -> Bool {
@@ -53,6 +68,14 @@ enum HubRemoteHostPolicy {
         return true
     }
 
+    static func isFormalRemoteHost(_ host: String) -> Bool {
+        isStableNamedRemoteHost(host) || isTailscaleIPv4Host(host)
+    }
+
+    static func isDirectInternetRemoteHost(_ host: String) -> Bool {
+        isFormalRemoteHost(host) || isPublicIPv4Host(host)
+    }
+
     static func isDirectLocalFallbackHost(_ host: String) -> Bool {
         guard let normalized = normalizedHostToken(host) else { return false }
         if isLoopbackHost(normalized) { return true }
@@ -61,7 +84,7 @@ enum HubRemoteHostPolicy {
     }
 
     static func isReusableConnectCandidate(_ host: String) -> Bool {
-        isStableNamedRemoteHost(host) || isDirectLocalFallbackHost(host)
+        isFormalRemoteHost(host) || isDirectLocalFallbackHost(host)
     }
 
     static func inferredReusableInternetHost(
@@ -70,7 +93,7 @@ enum HubRemoteHostPolicy {
         lanDiscoveryName _: String? = nil
     ) -> String? {
         guard let host = normalizedNonEmpty(host) else { return nil }
-        guard isStableNamedRemoteHost(host) else { return nil }
+        guard isFormalRemoteHost(host) else { return nil }
         return host
     }
 
@@ -80,7 +103,7 @@ enum HubRemoteHostPolicy {
         pairingInternetHost: String?
     ) -> Bool {
         if let pairingInternetHost = normalizedNonEmpty(pairingInternetHost),
-           isStableNamedRemoteHost(pairingInternetHost) {
+           isFormalRemoteHost(pairingInternetHost) {
             return true
         }
         guard let pairing = normalizedHostToken(pairingHost) else { return true }

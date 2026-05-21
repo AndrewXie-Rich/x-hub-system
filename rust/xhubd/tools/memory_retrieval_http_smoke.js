@@ -4,10 +4,15 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
+const ROLE_TRANSCRIPT_PROJECT_ID = 'role_smoke_project';
+const ROLE_TRANSCRIPT_THREAD_KEY = `xterminal_project_${ROLE_TRANSCRIPT_PROJECT_ID}`;
+const ROLE_TRANSCRIPT_DISPATCH_ID = 'dispatch_role_smoke_001';
+const OBJECT_RETRIEVAL_PROJECT_ID = 'hybrid_smoke_project';
 
 function parseIntInRange(value, fallback, min, max) {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -90,6 +95,153 @@ function writeFixture(memoryDir) {
     }, null, 2)}\n`,
     'utf8'
   );
+}
+
+function writeRoleTranscriptFixture(dbPath) {
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  const now = Date.now();
+  const threadId = 'thread_role_smoke';
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS threads (
+        thread_id TEXT PRIMARY KEY,
+        thread_key TEXT NOT NULL,
+        device_id TEXT NOT NULL DEFAULT '',
+        user_id TEXT NOT NULL DEFAULT '',
+        app_id TEXT NOT NULL DEFAULT '',
+        project_id TEXT NOT NULL DEFAULT '',
+        created_at_ms INTEGER NOT NULL DEFAULT 0,
+        updated_at_ms INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS turns (
+        turn_id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        request_id TEXT,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        is_private INTEGER NOT NULL DEFAULT 0,
+        created_at_ms INTEGER NOT NULL DEFAULT 0,
+        role_metadata_json TEXT,
+        client_message_id TEXT,
+        source_role TEXT,
+        target_role TEXT,
+        dispatch_id TEXT,
+        dispatch_kind TEXT,
+        run_id TEXT,
+        launch_run_id TEXT,
+        reviewer_note_id TEXT,
+        status TEXT
+      );
+    `);
+    db.prepare(
+      `INSERT INTO threads (
+        thread_id, thread_key, device_id, user_id, app_id, project_id, created_at_ms, updated_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      threadId,
+      ROLE_TRANSCRIPT_THREAD_KEY,
+      'xt_smoke_device',
+      'local_user',
+      'x-terminal',
+      ROLE_TRANSCRIPT_PROJECT_ID,
+      now - 3000,
+      now
+    );
+    const insertTurn = db.prepare(
+      `INSERT INTO turns (
+        turn_id, thread_id, request_id, role, content, is_private, created_at_ms,
+        role_metadata_json, client_message_id, source_role, target_role, dispatch_id,
+        dispatch_kind, run_id, launch_run_id, reviewer_note_id, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    const rows = [
+      {
+        turnId: 'turn_role_smoke_dispatch',
+        role: 'user',
+        content: 'Supervisor assigned the coder a role-aware smoke task.',
+        createdAtMs: now - 2000,
+        metadata: {
+          schema_version: 'xhub.role_turn_metadata.v1',
+          client_message_id: 'cmid_role_smoke_dispatch',
+          source_role: 'supervisor',
+          target_role: 'coder',
+          sender_role: 'supervisor',
+          project_id: ROLE_TRANSCRIPT_PROJECT_ID,
+          thread_key: ROLE_TRANSCRIPT_THREAD_KEY,
+          dispatch_id: ROLE_TRANSCRIPT_DISPATCH_ID,
+          dispatch_kind: 'supervisor_to_coder',
+          run_id: 'run_role_smoke',
+          status: 'dispatched',
+          observed_at_ms: now - 2000,
+        },
+      },
+      {
+        turnId: 'turn_role_smoke_reply',
+        role: 'assistant',
+        content: 'Coder completed the smoke task on the same dispatch.',
+        createdAtMs: now - 1000,
+        metadata: {
+          schema_version: 'xhub.role_turn_metadata.v1',
+          client_message_id: 'cmid_role_smoke_reply',
+          source_role: 'coder',
+          target_role: 'supervisor',
+          sender_role: 'coder',
+          project_id: ROLE_TRANSCRIPT_PROJECT_ID,
+          thread_key: ROLE_TRANSCRIPT_THREAD_KEY,
+          dispatch_id: ROLE_TRANSCRIPT_DISPATCH_ID,
+          dispatch_kind: 'coder_reply',
+          run_id: 'run_role_smoke',
+          status: 'completed',
+          observed_at_ms: now - 1000,
+        },
+      },
+      {
+        turnId: 'turn_role_smoke_review',
+        role: 'user',
+        content: 'xhubenc:v1:sealed-reviewer-note-secret',
+        createdAtMs: now,
+        metadata: {
+          schema_version: 'xhub.role_turn_metadata.v1',
+          client_message_id: 'cmid_role_smoke_review',
+          source_role: 'reviewer',
+          target_role: 'coder',
+          sender_role: 'reviewer',
+          project_id: ROLE_TRANSCRIPT_PROJECT_ID,
+          thread_key: ROLE_TRANSCRIPT_THREAD_KEY,
+          dispatch_id: ROLE_TRANSCRIPT_DISPATCH_ID,
+          dispatch_kind: 'reviewer_note',
+          run_id: 'run_role_smoke',
+          reviewer_note_id: 'review_role_smoke',
+          status: 'observed',
+          observed_at_ms: now,
+        },
+      },
+    ];
+    for (const row of rows) {
+      insertTurn.run(
+        row.turnId,
+        threadId,
+        `request_${row.turnId}`,
+        row.role,
+        row.content,
+        0,
+        row.createdAtMs,
+        JSON.stringify(row.metadata),
+        row.metadata.client_message_id,
+        row.metadata.source_role,
+        row.metadata.target_role,
+        row.metadata.dispatch_id,
+        row.metadata.dispatch_kind,
+        row.metadata.run_id,
+        '',
+        row.metadata.reviewer_note_id || '',
+        row.metadata.status
+      );
+    }
+  } finally {
+    db.close();
+  }
 }
 
 function startXhubd({ port, dbPath, runtimeDir, memoryDir, skillsDir }) {
@@ -194,6 +346,7 @@ function assertNoLeaks(value, label) {
   const raw = JSON.stringify(value);
   assertOk(!raw.includes('Personal preference'), `${label} leaked personal capsule`);
   assertOk(!raw.includes('sk-memory-http-secret-that-must-not-leak'), `${label} leaked secret`);
+  assertOk(!raw.includes('sealed-reviewer-note-secret'), `${label} leaked encrypted reviewer note`);
   assertOk(!/"api_key"\s*:/.test(raw), `${label} leaked api_key field`);
 }
 
@@ -214,6 +367,7 @@ async function main() {
 
   try {
     writeFixture(memoryDir);
+    writeRoleTranscriptFixture(dbPath);
     const started = startXhubd({
       port: args.port,
       dbPath,
@@ -226,13 +380,54 @@ async function main() {
 
     const ready = await httpJson('GET', `${baseUrl}/ready`, undefined, 1500);
     assertOk(ready?.capabilities?.memory_retrieval_http === true, 'daemon readiness did not expose memory_retrieval_http', ready);
+    assertOk(ready?.capabilities?.memory_role_transcript_projection_http === true, 'daemon readiness did not expose memory_role_transcript_projection_http', ready);
     assertOk(ready?.memory?.retrieval_shadow_http === true, 'daemon memory readiness did not expose retrieval_shadow_http', ready?.memory || {});
+    assertOk(ready?.memory?.role_transcript_projection_http === true, 'daemon memory readiness did not expose role_transcript_projection_http', ready?.memory || {});
+    assertOk(ready?.memory?.role_transcript_projection_authority === 'shadow_read_only', 'daemon role transcript projection authority was not shadow_read_only', ready?.memory || {});
     assertOk(ready?.memory?.canonical_writer_in_rust === false, 'daemon reported Rust writer authority unexpectedly', ready?.memory || {});
 
     const memoryReadiness = await httpJson('GET', `${baseUrl}/memory/readiness`, undefined, 1500);
     assertOk(memoryReadiness?.readiness?.ready === true, 'memory readiness was not ready', memoryReadiness);
     assertOk(Number(memoryReadiness?.readiness?.indexed_document_count || 0) >= 3, 'memory readiness did not index fixture docs', memoryReadiness);
     assertOk(memoryReadiness?.readiness?.writer_authority_in_rust === false, 'memory readiness reported writer authority in Rust', memoryReadiness);
+
+    const createdObject = await httpJson('POST', `${baseUrl}/memory/objects`, {
+      memory_id: 'mem_hybrid_smoke_decision',
+      requester_role: 'chat',
+      use_mode: 'project_chat',
+      scope: 'project',
+      owner_id: OBJECT_RETRIEVAL_PROJECT_ID,
+      project_id: OBJECT_RETRIEVAL_PROJECT_ID,
+      source_kind: 'decision_track',
+      layer: 'l1_canonical',
+      title: 'Hybrid retrieval decision',
+      text: 'Decision: use Rust memory object retrieval before provider route selection.',
+      tags: ['memory', 'decision'],
+      audit_ref: 'memory-http-smoke',
+    }, 1500);
+    assertOk(createdObject?.ok === true, 'memory object create failed before hybrid retrieval smoke', createdObject);
+
+    const objectRetrieve = await httpJson('POST', `${baseUrl}/memory/retrieve`, {
+      scope: 'project',
+      project_id: OBJECT_RETRIEVAL_PROJECT_ID,
+      query: 'why decision memory retrieval provider route',
+      max_results: 3,
+      explain: true,
+    }, 1500);
+    assertOk(objectRetrieve?.source === 'rust_memory_objects_hybrid_v1', 'hybrid object retrieval source mismatch', objectRetrieve);
+    assertOk(objectRetrieve?.retrieval_engine?.schema_version === 'xhub.memory.hybrid_retrieval.v1', 'hybrid object retrieval engine schema mismatch', objectRetrieve);
+    assertOk(objectRetrieve?.retrieval_engine?.index_source === 'rust_hub_memory_object_index', 'hybrid object retrieval did not use derived memory index', objectRetrieve);
+    assertOk(objectRetrieve?.retrieval_engine?.index_ready === true, 'hybrid object retrieval index was not ready', objectRetrieve);
+    assertOk(Number(objectRetrieve?.retrieval_engine?.index_row_count || 0) >= 1, 'hybrid object retrieval index row count was empty', objectRetrieve);
+    assertOk(objectRetrieve?.retrieval_engine?.stale_index_count === 0, 'hybrid object retrieval index was stale', objectRetrieve);
+    assertOk(objectRetrieve?.retrieval_engine?.index_rebuilt === true, 'hybrid object retrieval did not rebuild missing derived index', objectRetrieve);
+    assertOk(objectRetrieve?.retrieval_engine?.semantic_used === false, 'hybrid object retrieval unexpectedly used semantic search', objectRetrieve);
+    assertOk(objectRetrieve?.production_authority_change === false, 'hybrid object retrieval changed production authority', objectRetrieve);
+    assertOk(Array.isArray(objectRetrieve.results) && objectRetrieve.results[0]?.memory_id === 'mem_hybrid_smoke_decision', 'hybrid object retrieval missed fixture object', objectRetrieve);
+    assertOk(objectRetrieve.results[0]?.explain?.policy_filter === 'project_active_non_secret', 'hybrid object retrieval explain missing policy filter', objectRetrieve.results[0] || {});
+    assertOk(objectRetrieve?.retrieval_trace?.schema_version === 'xhub.memory.retrieval_trace.v1', 'hybrid object retrieval trace schema missing', objectRetrieve);
+    assertOk(objectRetrieve?.retrieval_trace?.selected?.[0]?.memory_id === 'mem_hybrid_smoke_decision', 'hybrid object retrieval selected trace missed fixture object', objectRetrieve?.retrieval_trace || {});
+    assertNoLeaks(objectRetrieve, 'hybrid object retrieval');
 
     const searchParams = new URLSearchParams({
       query: 'governed retrieval project assembly',
@@ -262,6 +457,25 @@ async function main() {
     assertOk(denied.status === 'denied', 'secret query was not denied', denied);
     assertOk(denied.deny_code === 'query_secret_pattern_denied', 'secret query deny_code mismatch', denied);
 
+    const roleTranscriptParams = new URLSearchParams({
+      project_id: ROLE_TRANSCRIPT_PROJECT_ID,
+      thread_key: ROLE_TRANSCRIPT_THREAD_KEY,
+      limit: '10',
+      include_content: 'true',
+    });
+    const roleTranscript = await httpJson('GET', `${baseUrl}/memory/project-role-transcript?${roleTranscriptParams.toString()}`, undefined, 1500);
+    assertOk(roleTranscript?.ok === true, 'role transcript projection was not ok', roleTranscript);
+    assertOk(roleTranscript.schema_version === 'xhub.project_role_transcript_projection.v1', 'role transcript schema mismatch', roleTranscript);
+    assertOk(roleTranscript.authority === 'shadow_read_only', 'role transcript authority mismatch', roleTranscript);
+    assertOk(roleTranscript.production_authority_change === false, 'role transcript changed production authority', roleTranscript);
+    assertOk(roleTranscript.project_id === ROLE_TRANSCRIPT_PROJECT_ID, 'role transcript project_id mismatch', roleTranscript);
+    assertOk(Array.isArray(roleTranscript.recent_lines) && roleTranscript.recent_lines.length === 3, 'role transcript returned wrong line count', roleTranscript);
+    assertOk(roleTranscript.latest_supervisor_dispatch?.turn_metadata?.source_role === 'supervisor', 'role transcript missed supervisor dispatch metadata', roleTranscript.latest_supervisor_dispatch || {});
+    assertOk(roleTranscript.latest_coder_reply?.turn_metadata?.dispatch_id === ROLE_TRANSCRIPT_DISPATCH_ID, 'role transcript missed coder reply dispatch_id', roleTranscript.latest_coder_reply || {});
+    assertOk(roleTranscript.latest_reviewer_note?.turn_metadata?.source_role === 'reviewer', 'role transcript missed reviewer note metadata', roleTranscript.latest_reviewer_note || {});
+    assertOk(roleTranscript.latest_reviewer_note?.content_redacted === true, 'role transcript did not redact encrypted reviewer content', roleTranscript.latest_reviewer_note || {});
+    assertNoLeaks(roleTranscript, 'role transcript projection');
+
     const result = {
       ok: true,
       schema_version: 'xhub.rust_hub.memory_retrieval_http_smoke.v1',
@@ -276,6 +490,13 @@ async function main() {
       project_code_personal_leak: false,
       secret_leak: false,
       secret_query_denied: true,
+      role_transcript_projection_ok: true,
+      role_transcript_line_count: roleTranscript.recent_lines.length,
+      object_hybrid_retrieval_ok: true,
+      object_hybrid_source: objectRetrieve.source,
+      object_hybrid_index_source: objectRetrieve.retrieval_engine.index_source,
+      object_hybrid_index_rebuilt: objectRetrieve.retrieval_engine.index_rebuilt,
+      object_hybrid_trace_ok: true,
     };
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } finally {

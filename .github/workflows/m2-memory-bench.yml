@@ -31,7 +31,12 @@ on:
       - "protocol/hub_protocol_v1.md"
       - "x-terminal/work-orders/xterminal-parallel-work-orders-v1.md"
       - "x-terminal/work-orders/xt-supervisor-autosplit-multilane-work-orders-v1.md"
+      - "x-hub/grpc-server/hub_grpc_server/package.json"
+      - "x-hub/grpc-server/hub_grpc_server/package-lock.json"
+      - "x-hub/grpc-server/hub_grpc_server/src/db.js"
       - "x-hub/grpc-server/hub_grpc_server/src/memory_*.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/role_turn_metadata*.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/server.js"
       - "x-hub/grpc-server/hub_grpc_server/src/services.js"
       - ".github/workflows/m2-memory-bench.yml"
   push:
@@ -54,7 +59,12 @@ on:
       - "protocol/hub_protocol_v1.md"
       - "x-terminal/work-orders/xterminal-parallel-work-orders-v1.md"
       - "x-terminal/work-orders/xt-supervisor-autosplit-multilane-work-orders-v1.md"
+      - "x-hub/grpc-server/hub_grpc_server/package.json"
+      - "x-hub/grpc-server/hub_grpc_server/package-lock.json"
+      - "x-hub/grpc-server/hub_grpc_server/src/db.js"
       - "x-hub/grpc-server/hub_grpc_server/src/memory_*.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/role_turn_metadata*.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/server.js"
       - "x-hub/grpc-server/hub_grpc_server/src/services.js"
       - ".github/workflows/m2-memory-bench.yml"
 
@@ -70,6 +80,9 @@ jobs:
         with:
           # Required by benchmark/export scripts that import Node's built-in node:sqlite.
           node-version: "22"
+
+      - name: Install Hub gRPC server dependencies
+        run: npm ci --prefix ./x-hub/grpc-server/hub_grpc_server
 
       - name: Generate current benchmark report
         env:
@@ -169,6 +182,11 @@ jobs:
       - name: Run M3-W1-03 project lineage + dispatch fail-closed regression
         run: |
           node ./x-hub/grpc-server/hub_grpc_server/src/memory_project_lineage.test.js
+
+      - name: Run role-aware turn metadata protocol smoke
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/role_turn_metadata.test.js
+          npm --prefix ./x-hub/grpc-server/hub_grpc_server run smoke:role-turn-metadata
 
       - name: Resolve XT-Ready audit export input (real preferred, sample fallback)
         id: resolve_xt_ready_audit_export

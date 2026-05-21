@@ -74,6 +74,19 @@ function safeString(v) {
   return String(v ?? '').trim();
 }
 
+function serviceBindHostFromEnv(rawHost, env = process.env) {
+  const host = safeString(rawHost) || '0.0.0.0';
+  const dualStack = safeString(env.HUB_IPV6_DUALSTACK || '1') !== '0';
+  if (dualStack && host === '0.0.0.0') return '::';
+  return host;
+}
+
+function hostForUrlBase(host) {
+  const h = safeString(host) || '127.0.0.1';
+  if (h.includes(':') && !h.startsWith('[')) return `[${h}]`;
+  return h;
+}
+
 function safeTimingEqual(left, right) {
   const lhs = Buffer.from(String(left || ''), 'utf8');
   const rhs = Buffer.from(String(right || ''), 'utf8');
@@ -534,117 +547,6 @@ function fetchRustHubJSONPath(routePath, { timeoutMs = 1500 } = {}) {
 
 function sha256Hex(text) {
   return crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex');
-}
-
-function readTextFileTrimmed(filePath) {
-  const p = safeString(filePath);
-  if (!p) return '';
-  try {
-    return fs.readFileSync(p, 'utf8').trim();
-  } catch {
-    return '';
-  }
-}
-
-function rustHubHTTPBaseURL() {
-  const raw = safeString(
-    process.env.XHUB_RUST_HUB_HTTP_BASE_URL
-      || process.env.XHUB_RUST_HTTP_BASE_URL
-      || process.env.XHUBD_HTTP_BASE_URL
-      || 'http://127.0.0.1:50151'
-  );
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== 'http:') return 'http://127.0.0.1:50151';
-    return url.toString().replace(/\/+$/, '');
-  } catch {
-    return 'http://127.0.0.1:50151';
-  }
-}
-
-function rustHubHTTPAccessKey() {
-  const direct = safeString(process.env.XHUB_RUST_HTTP_ACCESS_KEY || process.env.XHUB_RUST_HUB_ACCESS_KEY);
-  if (direct) return direct;
-
-  for (const key of ['XHUB_RUST_HTTP_ACCESS_KEY_FILE', 'XHUB_RUST_HUB_ACCESS_KEY_FILE']) {
-    const value = readTextFileTrimmed(process.env[key]);
-    if (value) return value;
-  }
-
-  const root = safeString(process.env.XHUB_RUST_HUB_ROOT);
-  if (root) {
-    for (const rel of [
-      'secrets/xhubd_http_access_key',
-      'secrets/xhubd_domain_access_key',
-      'secrets/xhubd_lan_access_key',
-    ]) {
-      const value = readTextFileTrimmed(path.join(root, rel));
-      if (value) return value;
-    }
-  }
-  return '';
-}
-
-function fetchRustHubJSONPath(routePath, { timeoutMs = 1500 } = {}) {
-  return new Promise((resolve) => {
-    const base = rustHubHTTPBaseURL();
-    let target;
-    try {
-      target = new URL(routePath, `${base}/`);
-    } catch {
-      resolve({
-        ok: false,
-        status: 500,
-        text: '',
-        error: 'rust_kernel_base_url_invalid',
-      });
-      return;
-    }
-
-    const accessKey = rustHubHTTPAccessKey();
-    const headers = {
-      accept: 'application/json',
-    };
-    if (accessKey) {
-      headers.authorization = `Bearer ${accessKey}`;
-      headers['x-xhub-access-key'] = accessKey;
-    }
-
-    const request = http.request({
-      method: 'GET',
-      hostname: target.hostname,
-      port: Number(target.port || 80),
-      path: `${target.pathname}${target.search}`,
-      headers,
-      timeout: Math.max(250, Math.min(10_000, Number(timeoutMs || 0))),
-    }, (response) => {
-      const chunks = [];
-      response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
-      response.on('end', () => {
-        resolve({
-          ok: true,
-          status: Number(response.statusCode || 0),
-          text: Buffer.concat(chunks).toString('utf8'),
-          contentType: safeString(response.headers?.['content-type']) || 'application/json; charset=utf-8',
-          sourceBaseURL: base,
-        });
-      });
-    });
-
-    request.on('error', (err) => {
-      resolve({
-        ok: false,
-        status: 503,
-        text: '',
-        error: safeString(err?.message) || 'rust_kernel_contract_unavailable',
-        sourceBaseURL: base,
-      });
-    });
-    request.on('timeout', () => {
-      request.destroy(new Error('rust_kernel_contract_timeout'));
-    });
-    request.end();
-  });
 }
 
 function sha256FileHex(filePath) {
@@ -4020,7 +3922,9 @@ export function startPairingHTTPServer({
     return () => {};
   }
 
-  const host = safeString(process.env.HUB_PAIRING_HOST) || safeString(process.env.HUB_HOST) || '0.0.0.0';
+  const host = serviceBindHostFromEnv(
+    safeString(process.env.HUB_PAIRING_HOST) || safeString(process.env.HUB_HOST) || '0.0.0.0'
+  );
   const grpcPort = Number(process.env.HUB_PORT || 50051);
   const port = Number(process.env.HUB_PAIRING_PORT || (Number.isFinite(grpcPort) ? grpcPort + 1 : 50052));
   const schemeFallback = safeString(process.env.HUB_PAIRING_PUBLIC_SCHEME || '') || 'http';
@@ -4644,7 +4548,7 @@ export function startPairingHTTPServer({
     let urlObj;
     try {
       // Dummy base: required for URL parsing.
-      urlObj = new URL(rawUrl, `http://${host}:${port}`);
+      urlObj = new URL(rawUrl, `http://${hostForUrlBase(host)}:${port}`);
     } catch {
       jsonResponse(res, 400, { ok: false, error: { code: 'bad_url', message: 'bad_url', retryable: false } });
       return;
@@ -4653,9 +4557,16 @@ export function startPairingHTTPServer({
     const pathname = safeString(urlObj.pathname) || '/';
     const q = parseQuery(urlObj);
     const peerIp = peerIpFromReq(req);
+    const publicMetadataRead = method === 'GET' && (
+      pathname === '/health'
+      || pathname === '/pairing/discovery'
+      || pathname === '/xt/hub-contract'
+      || pathname === '/xt/contract'
+      || pathname === '/contract/xt'
+    );
 
     // Global allowlist for pairing port (defense-in-depth).
-    if (allowedCidrs.length && !peerAllowedByRules(peerIp, allowedCidrs)) {
+    if (!publicMetadataRead && allowedCidrs.length && !peerAllowedByRules(peerIp, allowedCidrs)) {
       jsonResponse(res, 403, {
         ok: false,
         error: {

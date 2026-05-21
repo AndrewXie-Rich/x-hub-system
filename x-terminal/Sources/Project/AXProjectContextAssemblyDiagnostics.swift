@@ -40,7 +40,7 @@ private func xtProjectMemoryDecodeJSONString<T: Decodable>(
 }
 
 struct AXProjectContextAssemblyDiagnosticEvent: Codable, Equatable, Identifiable, Sendable {
-    static let currentSchemaVersion = "xt.project_context_assembly_diagnostic_event.v6"
+    static let currentSchemaVersion = "xt.project_context_assembly_diagnostic_event.v7"
 
     var schemaVersion: String
     var createdAt: Double
@@ -59,6 +59,15 @@ struct AXProjectContextAssemblyDiagnosticEvent: Codable, Equatable, Identifiable
     var remoteSnapshotTTLRemainingMs: Int? = nil
     var remoteSnapshotCachePosture: String = ""
     var remoteSnapshotInvalidationReason: String = ""
+    var memoryGatewaySource: String? = nil
+    var memoryGatewayPrimaryEnabled: Bool? = nil
+    var memoryGatewayRequired: Bool? = nil
+    var memoryGatewayMode: String? = nil
+    var memoryGatewaySafetyMode: String? = nil
+    var memoryGatewayProductionAuthorityChange: Bool? = nil
+    var memoryGatewayModelCall: Bool? = nil
+    var memoryGatewayObjectCount: Int? = nil
+    var memoryGatewayEffectiveLayers: [String]? = nil
     var configuredRecentProjectDialogueProfile: String
     var recommendedRecentProjectDialogueProfile: String
     var effectiveRecentProjectDialogueProfile: String
@@ -178,6 +187,33 @@ struct AXProjectContextAssemblyDiagnosticEvent: Codable, Equatable, Identifiable
         }
         if !remoteSnapshotInvalidationReason.isEmpty {
             lines.append("memory_v1_remote_snapshot_invalidation_reason=\(remoteSnapshotInvalidationReason)")
+        }
+        if let memoryGatewaySource, !memoryGatewaySource.isEmpty {
+            lines.append("memory_gateway_source=\(memoryGatewaySource)")
+        }
+        if let memoryGatewayPrimaryEnabled {
+            lines.append("memory_gateway_primary_enabled=\(memoryGatewayPrimaryEnabled)")
+        }
+        if let memoryGatewayRequired {
+            lines.append("memory_gateway_required=\(memoryGatewayRequired)")
+        }
+        if let memoryGatewayMode, !memoryGatewayMode.isEmpty {
+            lines.append("memory_gateway_mode=\(memoryGatewayMode)")
+        }
+        if let memoryGatewaySafetyMode, !memoryGatewaySafetyMode.isEmpty {
+            lines.append("memory_gateway_safety_mode=\(memoryGatewaySafetyMode)")
+        }
+        if let memoryGatewayProductionAuthorityChange {
+            lines.append("memory_gateway_production_authority_change=\(memoryGatewayProductionAuthorityChange)")
+        }
+        if let memoryGatewayModelCall {
+            lines.append("memory_gateway_model_call=\(memoryGatewayModelCall)")
+        }
+        if let memoryGatewayObjectCount {
+            lines.append("memory_gateway_object_count=\(memoryGatewayObjectCount)")
+        }
+        if let memoryGatewayEffectiveLayers, !memoryGatewayEffectiveLayers.isEmpty {
+            lines.append("memory_gateway_effective_layers=\(memoryGatewayEffectiveLayers.joined(separator: ","))")
         }
         if !configuredRecentProjectDialogueProfile.isEmpty {
             lines.append("configured_recent_project_dialogue_profile=\(configuredRecentProjectDialogueProfile)")
@@ -804,6 +840,15 @@ enum AXProjectContextAssemblyDiagnosticsStore {
             remoteSnapshotTTLRemainingMs: optionalInt(obj["memory_v1_remote_snapshot_ttl_remaining_ms"]),
             remoteSnapshotCachePosture: text(obj["memory_v1_remote_snapshot_cache_posture"]),
             remoteSnapshotInvalidationReason: text(obj["memory_v1_remote_snapshot_invalidation_reason"]),
+            memoryGatewaySource: text(obj["memory_gateway_source"]),
+            memoryGatewayPrimaryEnabled: bool(obj["memory_gateway_primary_enabled"]),
+            memoryGatewayRequired: bool(obj["memory_gateway_required"]),
+            memoryGatewayMode: text(obj["memory_gateway_mode"]),
+            memoryGatewaySafetyMode: text(obj["memory_gateway_safety_mode"]),
+            memoryGatewayProductionAuthorityChange: bool(obj["memory_gateway_production_authority_change"]),
+            memoryGatewayModelCall: bool(obj["memory_gateway_model_call"]),
+            memoryGatewayObjectCount: optionalInt(obj["memory_gateway_object_count"]),
+            memoryGatewayEffectiveLayers: nonEmptyStringArray(obj["memory_gateway_effective_layers"]),
             configuredRecentProjectDialogueProfile: fallbackText(
                 obj["configured_recent_project_dialogue_profile"],
                 fallback: recentDialogueProfile
@@ -1010,5 +1055,10 @@ enum AXProjectContextAssemblyDiagnosticsStore {
                 .filter { !$0.isEmpty }
         }
         return []
+    }
+
+    private static func nonEmptyStringArray(_ raw: Any?) -> [String]? {
+        let values = stringArray(raw)
+        return values.isEmpty ? nil : values
     }
 }

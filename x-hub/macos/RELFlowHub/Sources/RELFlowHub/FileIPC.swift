@@ -39,6 +39,16 @@ final class FileIPC: @unchecked Sendable {
     private static let staleResponseTTL: TimeInterval = 24 * 60 * 60
     private static let staleResponsePruneInterval: TimeInterval = 60
     private static let staleTempResponseTTL: TimeInterval = 10 * 60
+    private static let heartbeatDiskSnapshotTTL: TimeInterval = 5
+    private static let internalHeartbeatStatusMinWriteInterval: TimeInterval = 5
+    private static let internalDrainStatusMinWriteInterval: TimeInterval = 5
+
+    private struct HeartbeatDiskSnapshot: Sendable {
+        var checkedAt: TimeInterval
+        var runtimeAlive: Bool
+        var loadedModelCount: Int
+        var modelsUpdatedAt: Double
+    }
 
     private let store: HubStore
     private let baseDir: URL
@@ -47,6 +57,9 @@ final class FileIPC: @unchecked Sendable {
     private let statusFile: URL
     private let internalStatusFile: URL
     private let rustLiveBridge: RustLiveFileIPCBridge
+    private let appVersion: String
+    private let appBuild: String
+    private let appPath: String
 
     // Use GCD timers on a global queue; a private serial queue can still be starved
     // under certain AppKit event-tracking / app-nap scenarios.
@@ -56,6 +69,13 @@ final class FileIPC: @unchecked Sendable {
     private var heartbeatTimer: DispatchSourceTimer?
     private let startedAt = Date().timeIntervalSince1970
     private var lastResponsePruneAt: TimeInterval = 0
+    private let heartbeatSnapshotLock = NSLock()
+    private var heartbeatDiskSnapshot: HeartbeatDiskSnapshot?
+    private let internalStatusLock = NSLock()
+    private var internalStatusSnapshot: FileIPCInternalStatus?
+    private var lastInternalHeartbeatStatusWriteAt: TimeInterval = 0
+    private var lastInternalDrainStatusWriteAt: TimeInterval = 0
+    private var lastInternalDrainFilesSeen: Int = -1
 
     init(store: HubStore) {
         self.store = store
@@ -78,8 +98,9 @@ final class FileIPC: @unchecked Sendable {
             appResponsesDir: responsesDir,
             appStatusFile: statusFile
         )
-
-        writeInternalStatus(lastHeartbeatAt: 0, lastDrainAt: 0, lastDrainFilesSeen: 0)
+        self.appVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? ""
+        self.appBuild = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? ""
+        self.appPath = Bundle.main.bundleURL.path
     }
 
     private func secureDirectory(_ dir: URL) throws {
@@ -171,8 +192,9 @@ final class FileIPC: @unchecked Sendable {
         hb.resume()
         heartbeatTimer = hb
 
-        writeHeartbeat()
-        writeInternalStatus(lastHeartbeatAt: Date().timeIntervalSince1970, lastDrainAt: 0, lastDrainFilesSeen: 0)
+        heartbeatQueue.async { [weak self] in
+            self?.writeHeartbeat()
+        }
     }
 
     func stop() {
@@ -187,22 +209,26 @@ final class FileIPC: @unchecked Sendable {
     }
 
     private func writeHeartbeat() {
-        // Read from disk so this works even if main-actor stores/timers are stalled.
-        let ms = ModelStateStorage.load()
-        let loaded = ms.models.filter { $0.state == .loaded }.count
+        let now = Date().timeIntervalSince1970
+        let lightweightStatus = hubStatus(now: now, snapshot: cachedHeartbeatSnapshot())
+        if rustLiveBridge.publishAliasHeartbeat(fallbackStatus: lightweightStatus) {
+            writeInternalStatus(lastHeartbeatAt: now, lastDrainAt: 0, lastDrainFilesSeen: -1)
+            return
+        }
 
-        // Mark AI ready only when a real runtime is alive; avoids "loaded" UI lying.
-        let rt = AIRuntimeStatusStorage.load()
-        let runtimeAlive = (rt?.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) ?? false) && (rt?.hasReadyProvider(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) ?? false)
+        let st = hubStatus(now: now, snapshot: heartbeatSnapshot(now: now))
+        if let data = try? JSONEncoder().encode(st) {
+            writeProtectedData(data, to: statusFile)
+        }
 
-        let appVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? ""
-        let appBuild = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? ""
-        let appPath = Bundle.main.bundleURL.path
+        writeInternalStatus(lastHeartbeatAt: now, lastDrainAt: 0, lastDrainFilesSeen: -1)
+    }
 
-        let st = HubStatus(
+    private func hubStatus(now: TimeInterval, snapshot: HeartbeatDiskSnapshot?) -> HubStatus {
+        HubStatus(
             pid: getpid(),
             startedAt: startedAt,
-            updatedAt: Date().timeIntervalSince1970,
+            updatedAt: now,
             ipcMode: "file",
             ipcPath: eventsDir.path,
             baseDir: baseDir.path,
@@ -213,20 +239,48 @@ final class FileIPC: @unchecked Sendable {
             // `aiReady` is a coarse "can the Hub serve AI requests now" signal.
             // Keep loaded-model detail separate in `loadedModelCount` so on-demand runtimes
             // do not look unavailable just because nothing is preloaded yet.
-            aiReady: runtimeAlive,
+            aiReady: snapshot?.runtimeAlive ?? false,
+            loadedModelCount: snapshot?.loadedModelCount ?? 0,
+            modelsUpdatedAt: snapshot?.modelsUpdatedAt ?? 0
+        )
+    }
+
+    private func cachedHeartbeatSnapshot() -> HeartbeatDiskSnapshot? {
+        heartbeatSnapshotLock.lock()
+        let snapshot = heartbeatDiskSnapshot
+        heartbeatSnapshotLock.unlock()
+        return snapshot
+    }
+
+    private func heartbeatSnapshot(now: TimeInterval) -> HeartbeatDiskSnapshot {
+        heartbeatSnapshotLock.lock()
+        if let snapshot = heartbeatDiskSnapshot,
+           (now - snapshot.checkedAt) >= 0,
+           (now - snapshot.checkedAt) <= Self.heartbeatDiskSnapshotTTL {
+            heartbeatSnapshotLock.unlock()
+            return snapshot
+        }
+        heartbeatSnapshotLock.unlock()
+
+        // Read from disk so this works even if main-actor stores/timers are stalled.
+        let ms = ModelStateStorage.load()
+        let loaded = ms.models.filter { $0.state == .loaded }.count
+
+        // Mark AI ready only when a real runtime is alive; avoids "loaded" UI lying.
+        let rt = AIRuntimeStatusStorage.load()
+        let runtimeAlive = (rt?.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) ?? false)
+            && (rt?.hasReadyProvider(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) ?? false)
+
+        let snapshot = HeartbeatDiskSnapshot(
+            checkedAt: now,
+            runtimeAlive: runtimeAlive,
             loadedModelCount: loaded,
             modelsUpdatedAt: ms.updatedAt
         )
-        if rustLiveBridge.publishAliasHeartbeat(fallbackStatus: st) {
-            writeInternalStatus(lastHeartbeatAt: Date().timeIntervalSince1970, lastDrainAt: 0, lastDrainFilesSeen: -1)
-            return
-        }
-
-        if let data = try? JSONEncoder().encode(st) {
-            writeProtectedData(data, to: statusFile)
-        }
-
-        writeInternalStatus(lastHeartbeatAt: Date().timeIntervalSince1970, lastDrainAt: 0, lastDrainFilesSeen: -1)
+        heartbeatSnapshotLock.lock()
+        heartbeatDiskSnapshot = snapshot
+        heartbeatSnapshotLock.unlock()
+        return snapshot
     }
 
     private func drainOnce() {
@@ -537,14 +591,30 @@ final class FileIPC: @unchecked Sendable {
     }
 
     private func writeInternalStatus(lastHeartbeatAt: Double, lastDrainAt: Double, lastDrainFilesSeen: Int) {
-        // Merge with previous state so we don't wipe fields when updating only one side.
-        var cur: FileIPCInternalStatus? = nil
-        if let data = try? Data(contentsOf: internalStatusFile),
-           let obj = try? JSONDecoder().decode(FileIPCInternalStatus.self, from: data) {
-            cur = obj
-        }
         let now = Date().timeIntervalSince1970
-        var st = cur ?? FileIPCInternalStatus(
+        let heartbeatOnly = lastHeartbeatAt > 0 && lastDrainAt <= 0 && lastDrainFilesSeen < 0
+        let drainOnly = lastDrainAt > 0 && lastHeartbeatAt <= 0
+
+        internalStatusLock.lock()
+        if heartbeatOnly,
+           internalStatusSnapshot != nil,
+           lastInternalHeartbeatStatusWriteAt > 0,
+           (now - lastInternalHeartbeatStatusWriteAt) >= 0,
+           (now - lastInternalHeartbeatStatusWriteAt) < Self.internalHeartbeatStatusMinWriteInterval {
+            internalStatusLock.unlock()
+            return
+        }
+        if drainOnly,
+           internalStatusSnapshot != nil,
+           lastInternalDrainStatusWriteAt > 0,
+           lastDrainFilesSeen == lastInternalDrainFilesSeen,
+           (now - lastInternalDrainStatusWriteAt) >= 0,
+           (now - lastInternalDrainStatusWriteAt) < Self.internalDrainStatusMinWriteInterval {
+            internalStatusLock.unlock()
+            return
+        }
+
+        var st = internalStatusSnapshot ?? FileIPCInternalStatus(
             pid: getpid(),
             startedAt: startedAt,
             updatedAt: now,
@@ -558,6 +628,15 @@ final class FileIPC: @unchecked Sendable {
         if lastHeartbeatAt > 0 { st.lastHeartbeatAt = lastHeartbeatAt }
         if lastDrainAt > 0 { st.lastDrainAt = lastDrainAt }
         if lastDrainFilesSeen >= 0 { st.lastDrainFilesSeen = lastDrainFilesSeen }
+        internalStatusSnapshot = st
+        if heartbeatOnly {
+            lastInternalHeartbeatStatusWriteAt = now
+        }
+        if drainOnly {
+            lastInternalDrainStatusWriteAt = now
+            lastInternalDrainFilesSeen = lastDrainFilesSeen
+        }
+        internalStatusLock.unlock()
 
         if let data = try? JSONEncoder().encode(st) {
             writeProtectedData(data, to: internalStatusFile)

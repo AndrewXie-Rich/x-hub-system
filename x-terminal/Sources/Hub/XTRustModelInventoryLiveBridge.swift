@@ -118,6 +118,7 @@ enum XTRustModelInventoryLiveBridge {
         request.httpMethod = "GET"
         request.timeoutInterval = 2.0
         request.setValue("application/json", forHTTPHeaderField: "accept")
+        RustHubHTTPAccess.applyAccessKey(to: &request)
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)

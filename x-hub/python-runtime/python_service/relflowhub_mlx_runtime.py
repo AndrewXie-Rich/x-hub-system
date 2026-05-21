@@ -38,11 +38,15 @@ _MLX_IMPORT_PROBE_CACHE = {
     "attempted": False,
     "ok": False,
     "error": "",
+    "transient": False,
+    "retry_at": 0.0,
 }
 DEFAULT_AI_RESPONSE_RETENTION_SEC = 24 * 60 * 60
 DEFAULT_AI_RESPONSE_PRUNE_INTERVAL_SEC = 60
 DEFAULT_MLX_IDLE_TIMEOUT_SEC = 20 * 60
 DEFAULT_MLX_IDLE_SWEEP_INTERVAL_SEC = 30
+DEFAULT_MLX_IMPORT_PROBE_TIMEOUT_SEC = 45
+DEFAULT_MLX_IMPORT_PROBE_RETRY_SEC = 15
 
 
 def _now() -> float:
@@ -58,6 +62,54 @@ def _env_int(name: str, default: int, *, min_value: int = 0, max_value: int = 2_
     except Exception:
         return int(default)
     return max(int(min_value), min(int(max_value), value))
+
+
+def _env_int_any(names: tuple[str, ...], default: int, *, min_value: int = 0, max_value: int = 2_147_483_647) -> int:
+    for name in names:
+        raw = str(os.environ.get(name) or "").strip()
+        if raw:
+            return _env_int(name, default, min_value=min_value, max_value=max_value)
+    return int(default)
+
+
+def _mlx_import_probe_timeout_sec() -> int:
+    return _env_int_any(
+        ("XHUB_MLX_IMPORT_PROBE_TIMEOUT_SEC", "RELFLOWHUB_MLX_IMPORT_PROBE_TIMEOUT_SEC"),
+        DEFAULT_MLX_IMPORT_PROBE_TIMEOUT_SEC,
+        min_value=3,
+        max_value=300,
+    )
+
+
+def _mlx_import_probe_retry_sec() -> int:
+    return _env_int_any(
+        ("XHUB_MLX_IMPORT_PROBE_RETRY_SEC", "RELFLOWHUB_MLX_IMPORT_PROBE_RETRY_SEC"),
+        DEFAULT_MLX_IMPORT_PROBE_RETRY_SEC,
+        min_value=1,
+        max_value=300,
+    )
+
+
+def _is_transient_mlx_probe_error(error: str) -> bool:
+    text = str(error or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "timeoutexpired" in text
+        or "timed out" in text
+        or "timeout" in text
+    )
+
+
+def _store_mlx_import_probe_result(ok: bool, error: str = "") -> tuple[bool, str]:
+    normalized_error = str(error or "").strip()
+    transient = (not ok) and _is_transient_mlx_probe_error(normalized_error)
+    _MLX_IMPORT_PROBE_CACHE["attempted"] = True
+    _MLX_IMPORT_PROBE_CACHE["ok"] = bool(ok)
+    _MLX_IMPORT_PROBE_CACHE["error"] = normalized_error
+    _MLX_IMPORT_PROBE_CACHE["transient"] = bool(transient)
+    _MLX_IMPORT_PROBE_CACHE["retry_at"] = (_now() + _mlx_import_probe_retry_sec()) if transient else 0.0
+    return bool(ok), normalized_error
 
 
 def _normalize_executable_path(value: str) -> str:
@@ -88,15 +140,27 @@ def _looks_like_unsafe_macos_python(value: str) -> bool:
 
 def probe_mlx_runtime_support(*, force: bool = False) -> tuple[bool, str]:
     if not force and _MLX_IMPORT_PROBE_CACHE["attempted"]:
-        return bool(_MLX_IMPORT_PROBE_CACHE["ok"]), str(_MLX_IMPORT_PROBE_CACHE["error"] or "")
+        cached_ok = bool(_MLX_IMPORT_PROBE_CACHE["ok"])
+        cached_error = str(_MLX_IMPORT_PROBE_CACHE["error"] or "")
+        if cached_ok:
+            return True, ""
+        if not bool(_MLX_IMPORT_PROBE_CACHE.get("transient")):
+            return False, cached_error
+        try:
+            retry_at = float(_MLX_IMPORT_PROBE_CACHE.get("retry_at") or 0.0)
+        except Exception:
+            retry_at = 0.0
+        if _now() < retry_at:
+            return False, cached_error
 
     _MLX_IMPORT_PROBE_CACHE["attempted"] = True
     _MLX_IMPORT_PROBE_CACHE["ok"] = False
     _MLX_IMPORT_PROBE_CACHE["error"] = ""
+    _MLX_IMPORT_PROBE_CACHE["transient"] = False
+    _MLX_IMPORT_PROBE_CACHE["retry_at"] = 0.0
     python_bin = _normalize_executable_path(str(sys.executable or "python3").strip() or "python3")
     if _looks_like_unsafe_macos_python(python_bin):
-        _MLX_IMPORT_PROBE_CACHE["error"] = f"mlx_probe_skipped:unsafe_python_executable:{python_bin}"
-        return False, str(_MLX_IMPORT_PROBE_CACHE["error"])
+        return _store_mlx_import_probe_result(False, f"mlx_probe_skipped:unsafe_python_executable:{python_bin}")
     probe_code = """
 import json
 import os
@@ -117,18 +181,18 @@ else:
     print(json.dumps({"ok": True}))
 """
     env = dict(os.environ)
+    timeout_sec = _mlx_import_probe_timeout_sec()
     try:
         completed = subprocess.run(
             [python_bin, "-c", probe_code],
             capture_output=True,
             text=True,
-            timeout=12.0,
+            timeout=float(timeout_sec),
             env=env,
             check=False,
         )
     except Exception as exc:
-        _MLX_IMPORT_PROBE_CACHE["error"] = f"mlx_probe_failed:{type(exc).__name__}:{exc}"
-        return False, str(_MLX_IMPORT_PROBE_CACHE["error"])
+        return _store_mlx_import_probe_result(False, f"mlx_probe_failed:{type(exc).__name__}:{exc}")
 
     stdout = str(completed.stdout or "").strip()
     stderr = str(completed.stderr or "").strip()
@@ -139,12 +203,9 @@ else:
         except Exception:
             payload = {}
         if payload.get("ok") is True:
-            _MLX_IMPORT_PROBE_CACHE["ok"] = True
-            _MLX_IMPORT_PROBE_CACHE["error"] = ""
-            return True, ""
+            return _store_mlx_import_probe_result(True, "")
         error_text = str(payload.get("error") or "").strip() or "mlx_probe_failed:unknown_error"
-        _MLX_IMPORT_PROBE_CACHE["error"] = error_text
-        return False, error_text
+        return _store_mlx_import_probe_result(False, error_text)
 
     suffix_parts = [
         token
@@ -155,8 +216,7 @@ else:
         )
         if str(token or "").strip()
     ]
-    _MLX_IMPORT_PROBE_CACHE["error"] = "mlx_probe_failed:" + ":".join(suffix_parts or ["unknown"])
-    return False, str(_MLX_IMPORT_PROBE_CACHE["error"])
+    return _store_mlx_import_probe_result(False, "mlx_probe_failed:" + ":".join(suffix_parts or ["unknown"]))
 
 
 def _group_base_dir() -> str:
@@ -668,7 +728,7 @@ def _write_runtime_status(
         'ok': bool(mlx_ok),
         'reasonCode': 'ready' if mlx_ok else ('import_error' if str(import_error or '').strip() else 'unavailable'),
         'runtimeVersion': str(RUNTIME_VERSION),
-        'availableTaskKinds': ['text_generate'] if mlx_ok else [],
+        'availableTaskKinds': ['text_generate', 'embedding'] if mlx_ok else [],
         'loadedModels': [str(x) for x in (loaded_model_ids or []) if str(x or '').strip()],
         'deviceBackend': 'mps',
         'updatedAt': updated_at,
@@ -2530,6 +2590,25 @@ def _model_roles(m: dict[str, Any]) -> set[str]:
     return roles
 
 
+def _normalize_task_kinds(value: Any, *, fallback: list[str] | None = None) -> list[str]:
+    out: list[str] = []
+    raw_values = value if isinstance(value, list) else [value] if str(value or '').strip() else []
+    for raw in raw_values:
+        token = str(raw or '').strip().lower()
+        if token and token not in out:
+            out.append(token)
+    if out:
+        return out
+    return list(fallback or [])
+
+
+def _model_supports_text_generation(m: dict[str, Any]) -> bool:
+    task_kinds = _normalize_task_kinds(m.get('taskKinds') or m.get('task_kinds'))
+    if task_kinds:
+        return 'text_generate' in task_kinds
+    return True
+
+
 def _route_model_id(
     state: dict[str, Any],
     *,
@@ -2591,7 +2670,12 @@ def _route_model_id(
     if not isinstance(ms, list):
         return '', 'no_models_registered'
 
-    models: list[dict[str, Any]] = [m for m in ms if isinstance(m, dict) and str(m.get('id') or '').strip()]
+    models: list[dict[str, Any]] = [
+        m for m in ms
+        if isinstance(m, dict)
+        and str(m.get('id') or '').strip()
+        and _model_supports_text_generation(m)
+    ]
     if not models:
         return '', 'no_models_registered'
 
@@ -2708,6 +2792,7 @@ class MLXRuntime:
         self._tokenizer_wrapper = None
         self._import_error = ""
         self._probe_attempted = False
+        self._probe_retry_at = 0.0
         self._idle_timeout_sec = _env_int(
             'RELFLOWHUB_MLX_IDLE_TIMEOUT_SEC',
             DEFAULT_MLX_IDLE_TIMEOUT_SEC,
@@ -2724,10 +2809,28 @@ class MLXRuntime:
 
     def _probe_runtime_support(self) -> tuple[bool, str]:
         if self._probe_attempted:
-            return self._mlx_ok, str(self._import_error or "")
+            if self._mlx_ok:
+                return True, ""
+            if _is_transient_mlx_probe_error(self._import_error):
+                try:
+                    retry_at = float(self._probe_retry_at or 0.0)
+                except Exception:
+                    retry_at = 0.0
+                if _now() >= retry_at:
+                    self._probe_attempted = False
+                else:
+                    return self._mlx_ok, str(self._import_error or "")
+            else:
+                return self._mlx_ok, str(self._import_error or "")
 
         self._probe_attempted = True
         self._mlx_ok, self._import_error = probe_mlx_runtime_support()
+        if self._mlx_ok:
+            self._probe_retry_at = 0.0
+        elif _is_transient_mlx_probe_error(self._import_error):
+            self._probe_retry_at = _now() + _mlx_import_probe_retry_sec()
+        else:
+            self._probe_retry_at = 0.0
         return self._mlx_ok, self._import_error
 
     def _ensure_runtime_imported(self) -> bool:
@@ -2785,6 +2888,13 @@ class MLXRuntime:
             if suffix:
                 return suffix
         return 'legacy_runtime' if str(model_id or '').strip() else ''
+
+    @staticmethod
+    def _residency_scope_for_load_profile(load_profile_hash: str) -> str:
+        token = str(load_profile_hash or '').strip()
+        if not token or token == 'legacy_runtime':
+            return 'legacy_runtime'
+        return 'load_profile_instance'
 
     def _public_instance_key(
         self,
@@ -2852,9 +2962,11 @@ class MLXRuntime:
         if artifact is None:
             return None
         loaded_at = float(artifact.get('loaded_at') or _now())
+        task_kinds = _normalize_task_kinds(artifact.get('task_kinds') or artifact.get('taskKinds'), fallback=['text_generate'])
         row = {
             'instance_key': public_instance_key,
             'model_id': token,
+            'task_kinds': task_kinds,
             'load_profile_hash': self._normalize_load_profile_hash(token),
             'effective_context_length': 0,
             'effective_load_profile': {},
@@ -2964,6 +3076,7 @@ class MLXRuntime:
         load_profile_hash: str = "",
         effective_context_length: int = 0,
         effective_load_profile: dict[str, Any] | None = None,
+        task_kinds: list[str] | None = None,
     ) -> dict[str, Any]:
         token = str(model_id or '').strip()
         public_instance_key = self._public_instance_key(
@@ -2976,6 +3089,15 @@ class MLXRuntime:
             instance_key=public_instance_key,
             load_profile_hash=load_profile_hash,
         )
+        residency_scope = self._residency_scope_for_load_profile(normalized_hash)
+        legacy_instance_key = self._public_instance_key(token)
+        if public_instance_key != legacy_instance_key:
+            legacy_row = self._loaded_instances.get(legacy_instance_key)
+            if isinstance(legacy_row, dict) and str(legacy_row.get('load_profile_hash') or '') == 'legacy_runtime':
+                try:
+                    self._loaded_instances.pop(legacy_instance_key, None)
+                except Exception:
+                    pass
         now_ts = _now()
         row = self._loaded_instances.get(public_instance_key)
         if not isinstance(row, dict):
@@ -2984,12 +3106,13 @@ class MLXRuntime:
                 'model_id': token,
                 'loaded_at': now_ts,
                 'residency': 'resident',
-                'residency_scope': 'legacy_runtime',
+                'residency_scope': residency_scope,
                 'device_backend': 'mps',
             }
             self._loaded_instances[public_instance_key] = row
         row['instance_key'] = public_instance_key
         row['model_id'] = token
+        row['task_kinds'] = _normalize_task_kinds(task_kinds, fallback=_normalize_task_kinds(row.get('task_kinds'), fallback=['text_generate']))
         row['load_profile_hash'] = normalized_hash
         row['effective_context_length'] = self._effective_context_length(
             effective_context_length=effective_context_length,
@@ -3000,7 +3123,7 @@ class MLXRuntime:
         row['last_used_at'] = now_ts
         row.setdefault('loaded_at', now_ts)
         row['residency'] = 'resident'
-        row['residency_scope'] = 'legacy_runtime'
+        row['residency_scope'] = residency_scope
         row['device_backend'] = 'mps'
         return row
 
@@ -3214,7 +3337,13 @@ class MLXRuntime:
         rows: list[dict[str, Any]] = []
         seen: set[str] = set()
         for model_id in self.loaded_model_ids():
-            for row in self._instance_rows_for_model(model_id):
+            model_rows = self._instance_rows_for_model(model_id)
+            if any(str(row.get('load_profile_hash') or '').strip() != 'legacy_runtime' for row in model_rows):
+                model_rows = [
+                    row for row in model_rows
+                    if str(row.get('load_profile_hash') or '').strip() != 'legacy_runtime'
+                ]
+            for row in model_rows:
                 if not isinstance(row, dict):
                     continue
                 public_instance_key = str(row.get('instance_key') or '').strip()
@@ -3224,13 +3353,14 @@ class MLXRuntime:
                 entry = {
                     'instanceKey': public_instance_key,
                     'modelId': str(row.get('model_id') or '').strip(),
-                    'taskKinds': ['text_generate'],
+                    'taskKinds': _normalize_task_kinds(row.get('task_kinds') or row.get('taskKinds'), fallback=['text_generate']),
                     'loadProfileHash': str(row.get('load_profile_hash') or '').strip(),
                     'effectiveContextLength': max(0, int(row.get('effective_context_length') or 0)),
                     'loadedAt': float(row.get('loaded_at') or 0.0),
                     'lastUsedAt': float(row.get('last_used_at') or 0.0),
                     'residency': 'resident',
-                    'residencyScope': 'legacy_runtime',
+                    'residencyScope': str(row.get('residency_scope') or '').strip()
+                    or self._residency_scope_for_load_profile(str(row.get('load_profile_hash') or '')),
                     'deviceBackend': 'mps',
                 }
                 rows.append(entry)
@@ -3327,6 +3457,7 @@ class MLXRuntime:
         load_profile_hash: str = "",
         effective_context_length: int = 0,
         effective_load_profile: dict[str, Any] | None = None,
+        task_kinds: list[str] | None = None,
     ) -> tuple[bool, str, int]:
         if not self._ensure_runtime_imported():
             return False, f'mlx_lm_unavailable:{getattr(self, "_import_error", "")}', 0
@@ -3349,10 +3480,12 @@ class MLXRuntime:
                 load_profile_hash=load_profile_hash,
                 effective_context_length=effective_context_length,
                 effective_load_profile=effective_load_profile,
+                task_kinds=task_kinds,
             )
             return True, 'already_loaded', 0
 
         delta = 0
+        normalized_task_kinds = _normalize_task_kinds(task_kinds, fallback=['text_generate'])
         artifact = self._normalize_loaded_artifact(model_id)
         if artifact is None:
             before = _ps_rss_bytes()
@@ -3367,17 +3500,20 @@ class MLXRuntime:
                 'model': model,
                 'tokenizer': tokenizer,
                 'model_path': model_path,
+                'task_kinds': normalized_task_kinds,
                 'loaded_at': _now(),
             }
             self._loaded[model_id] = artifact
         else:
             artifact['model_path'] = model_path
+            artifact['task_kinds'] = normalized_task_kinds
         self._register_loaded_instance(
             model_id,
             instance_key=public_instance_key,
             load_profile_hash=load_profile_hash,
             effective_context_length=effective_context_length,
             effective_load_profile=effective_load_profile,
+            task_kinds=normalized_task_kinds,
         )
         return True, 'ok', delta
 
@@ -3616,6 +3752,115 @@ class MLXRuntime:
             'instanceKey': str(row.get('instance_key') or ''),
             'loadProfileHash': str(row.get('load_profile_hash') or ''),
             'effectiveContextLength': max_kv_size,
+        }
+
+    def _embedding_token_ids(self, tokenizer: Any, text: str, *, max_length: int) -> list[int]:
+        ids: list[int] = []
+        try:
+            encoded = tokenizer.encode(str(text or ''), add_special_tokens=True)  # type: ignore
+        except TypeError:
+            encoded = tokenizer.encode(str(text or ''))  # type: ignore
+        except Exception:
+            encoded = []
+        if isinstance(encoded, list):
+            ids = [int(token) for token in encoded if token is not None]
+        elif hasattr(encoded, 'tolist'):
+            try:
+                ids = [int(token) for token in encoded.tolist()]
+            except Exception:
+                ids = []
+        if not ids:
+            for attr in ('eos_token_id', 'bos_token_id', 'pad_token_id'):
+                try:
+                    token_id = int(getattr(tokenizer, attr))
+                    if token_id >= 0:
+                        ids = [token_id]
+                        break
+                except Exception:
+                    continue
+        if not ids:
+            ids = [0]
+        limit = max(1, int(max_length or 512))
+        return ids[:limit]
+
+    def run_embedding(
+        self,
+        model_id: str,
+        texts: list[str],
+        *,
+        instance_key: str = "",
+        load_profile_hash: str = "",
+        max_length: int = 512,
+    ) -> tuple[list[list[float]], int, dict[str, Any]]:
+        if not self._ensure_runtime_imported():
+            raise RuntimeError(f'mlx_lm_unavailable:{getattr(self, "_import_error", "")}')
+        row = self._resolve_loaded_instance(
+            model_id,
+            instance_key=instance_key,
+            load_profile_hash=load_profile_hash,
+        )
+        if not isinstance(row, dict):
+            raise RuntimeError('model_not_loaded')
+        artifact = self._normalize_loaded_artifact(str(row.get('model_id') or model_id))
+        if artifact is None:
+            raise RuntimeError('model_not_loaded')
+        model = artifact.get('model')
+        tokenizer = artifact.get('tokenizer')
+        encoder = getattr(model, 'model', None)
+        if encoder is None or not callable(encoder):
+            raise RuntimeError('embedding_encoder_unavailable')
+        mx = self._mx
+        if mx is None:
+            raise RuntimeError('mlx_core_unavailable')
+
+        self._touch_loaded_instance(row)
+        normalized_texts = [str(text or '') for text in (texts or [])]
+        if not normalized_texts:
+            raise RuntimeError('missing_texts')
+        token_rows = [
+            self._embedding_token_ids(tokenizer, text, max_length=max_length)
+            for text in normalized_texts
+        ]
+        max_tokens = max(1, max(len(row_ids) for row_ids in token_rows))
+        pad_token_id = 0
+        for attr in ('pad_token_id', 'eos_token_id', 'bos_token_id'):
+            try:
+                candidate = int(getattr(tokenizer, attr))
+                if candidate >= 0:
+                    pad_token_id = candidate
+                    break
+            except Exception:
+                continue
+
+        padded: list[list[int]] = []
+        mask_rows: list[list[float]] = []
+        for row_ids in token_rows:
+            length = len(row_ids)
+            padded.append(row_ids + ([pad_token_id] * max(0, max_tokens - length)))
+            mask_rows.append(([1.0] * length) + ([0.0] * max(0, max_tokens - length)))
+
+        input_ids = mx.array(padded)
+        mask = mx.array(mask_rows)
+        hidden = encoder(input_ids)
+        pooled = (hidden * mask[..., None]).sum(axis=1) / mx.maximum(mask.sum(axis=1, keepdims=True), 1e-12)
+        norms = mx.sqrt(mx.sum(pooled * pooled, axis=-1, keepdims=True))
+        pooled = pooled / mx.maximum(norms, 1e-12)
+        try:
+            mx.eval(pooled)
+        except Exception:
+            pass
+
+        vectors = [
+            [float(value) for value in row_values]
+            for row_values in pooled.tolist()
+        ]
+        dims = len(vectors[0]) if vectors else 0
+        prompt_tokens = sum(len(row_ids) for row_ids in token_rows)
+        return vectors, dims, {
+            'promptTokens': int(prompt_tokens),
+            'totalTokens': int(prompt_tokens),
+            'instanceKey': str(row.get('instance_key') or ''),
+            'loadProfileHash': str(row.get('load_profile_hash') or ''),
         }
 
     def bench(
@@ -4017,6 +4262,8 @@ def main() -> int:
             last_ai_response_prune = current_ts
 
         # Runtime heartbeat for clients (FA Tracker, etc).
+        if not getattr(rt, '_mlx_ok', False) and _is_transient_mlx_probe_error(str(getattr(rt, '_import_error', '') or '')):
+            rt._probe_runtime_support()
         am, pm = rt.memory_bytes()
         provider_statuses = _provider_status_payloads(base, runtime=rt)
         state, provider_state_changed = _sync_state_from_provider_statuses(state, provider_statuses)
@@ -4094,6 +4341,7 @@ def main() -> int:
                             instance_key=instance_key,
                             load_profile_hash=load_profile_hash,
                             effective_context_length=effective_context_length,
+                            task_kinds=_normalize_task_kinds(m.get('taskKinds') or m.get('task_kinds'), fallback=['text_generate']),
                         )
                         if ok:
                             m['state'] = 'loaded'
@@ -4140,6 +4388,7 @@ def main() -> int:
                                 instance_key=instance_key,
                                 load_profile_hash=load_profile_hash,
                                 effective_context_length=effective_context_length,
+                                task_kinds=_normalize_task_kinds(m.get('taskKinds') or m.get('task_kinds'), fallback=['text_generate']),
                             )
                             if ok_load:
                                 m['state'] = 'loaded'
@@ -4498,6 +4747,7 @@ def main() -> int:
                             if isinstance(identity.get('effective_load_profile'), dict)
                             else {}
                         ),
+                        task_kinds=_normalize_task_kinds((m or {}).get('taskKinds') or (m or {}).get('task_kinds'), fallback=['text_generate']),
                     )
                     _audit(
                         base,

@@ -638,6 +638,36 @@ See `service HubMemory` in `protocol/hub_protocol_v1.proto`:
 - `GetOrCreateThread` (device/app/project scoped thread)
 - `AppendTurns` (sync turns; supports dropping/redacting `<private>...</private>`)
 - `GetWorkingSet` (fetch last N turns)
+- `GetProjectRoleTranscriptProjection` (Hub-built role-aware project transcript
+  projection from durable `turns`; XT may consume this before local projection
+  fallbacks)
+- `ChatMessage.turn_metadata` is an optional role-aware contract for project
+  conversation turns. It carries `schema_version=xhub.role_turn_metadata.v1`,
+  `source_role`, `target_role`, `project_id`, `thread_key`, `dispatch_id`,
+  `dispatch_kind`, `run_id`, `launch_run_id`, `tool_call_id`,
+  `reviewer_note_id`, `status`, evidence/audit refs, tags, and
+  `observed_at_ms`.
+  - Hub MUST continue accepting legacy `role/content` messages with no metadata.
+  - Hub MUST fail closed when metadata declares a `project_id` that does not
+    match the authenticated project scope (`role_metadata_project_mismatch`).
+  - `dispatch_id`, `run_id`, and `launch_run_id` are correlation IDs only; they
+    MUST NOT grant permissions or bypass grants/policy.
+  - `dispatch_kind` is an open string contract; current role-aware project
+    events include `supervisor_to_coder`, `coder_reply`, `reviewer_note`,
+    `user_request`, `tool_approval`, `tool_approval_decision`, `tool_result`,
+    and `heartbeat`.
+  - Private content redaction applies to `content` only. Clients MUST NOT place
+    private content in metadata fields.
+  - `GetWorkingSet` SHOULD return `turn_metadata` for turns that were stored
+    with metadata so XT can consume Hub truth/projection before falling back to
+    local sender inference.
+  - `GetProjectRoleTranscriptProjection` returns
+    `schema_version=xhub.project_role_transcript_projection.v1`,
+    `source=hub_memory_turns`, latest supervisor dispatch / coder reply /
+    reviewer note, and chronological `recent_lines`. It is read-only and MUST
+    not grant authority from `dispatch_id`, `run_id`, or `launch_run_id`.
+    `include_content=false` returns the same metadata projection without turn
+    content for low-disclosure callers.
 - `UpsertCanonicalMemory` / `ListCanonicalMemory` (small, pinned memory)
   - `UpsertCanonicalMemory` request now accepts optional `request_id` / `audit_ref`
   - `UpsertCanonicalMemory` response returns `audit_ref`, plus stable `evidence_ref` / `writeback_ref` for the durable canonical row

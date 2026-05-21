@@ -53,6 +53,10 @@ cp "$ROOT_DIR/tools/memory_retrieval_shadow_smoke.js" "$DIST_DIR/tools/memory_re
 cp "$ROOT_DIR/tools/memory_retrieval_shadow_smoke.command" "$DIST_DIR/tools/memory_retrieval_shadow_smoke.command"
 cp "$ROOT_DIR/tools/memory_retrieval_http_smoke.js" "$DIST_DIR/tools/memory_retrieval_http_smoke.js"
 cp "$ROOT_DIR/tools/memory_retrieval_http_smoke.command" "$DIST_DIR/tools/memory_retrieval_http_smoke.command"
+cp "$ROOT_DIR/tools/memory_gateway_cutover_smoke.js" "$DIST_DIR/tools/memory_gateway_cutover_smoke.js"
+cp "$ROOT_DIR/tools/memory_gateway_cutover_smoke.command" "$DIST_DIR/tools/memory_gateway_cutover_smoke.command"
+cp "$ROOT_DIR/tools/memory_gateway_cutover_session.js" "$DIST_DIR/tools/memory_gateway_cutover_session.js"
+cp "$ROOT_DIR/tools/memory_gateway_cutover_session.command" "$DIST_DIR/tools/memory_gateway_cutover_session.command"
 cp "$ROOT_DIR/tools/memory_skills_production_smoke.js" "$DIST_DIR/tools/memory_skills_production_smoke.js"
 cp "$ROOT_DIR/tools/memory_skills_production_smoke.command" "$DIST_DIR/tools/memory_skills_production_smoke.command"
 cp "$ROOT_DIR/tools/memory_skills_live_smoke.js" "$DIST_DIR/tools/memory_skills_live_smoke.js"
@@ -206,6 +210,10 @@ chmod +x "$DIST_DIR/tools/run_rust_hub.command" \
   "$DIST_DIR/tools/memory_retrieval_shadow_smoke.command" \
   "$DIST_DIR/tools/memory_retrieval_http_smoke.js" \
   "$DIST_DIR/tools/memory_retrieval_http_smoke.command" \
+  "$DIST_DIR/tools/memory_gateway_cutover_smoke.js" \
+  "$DIST_DIR/tools/memory_gateway_cutover_smoke.command" \
+  "$DIST_DIR/tools/memory_gateway_cutover_session.js" \
+  "$DIST_DIR/tools/memory_gateway_cutover_session.command" \
   "$DIST_DIR/tools/memory_skills_production_smoke.js" \
   "$DIST_DIR/tools/memory_skills_production_smoke.command" \
   "$DIST_DIR/tools/memory_skills_live_smoke.js" \

@@ -1207,8 +1207,7 @@ final class AppModel: ObservableObject {
         guard !inviteToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
 
         let hostClassification = XTHubRemoteAccessHostClassification.classify(internetHost)
-        guard case .stableNamed = hostClassification.kind else { return false }
-        return true
+        return hostClassification.isFormalRemoteEntry
     }
 
     nonisolated static func shouldDeferAutomaticRemoteRouteHandoff(
@@ -5706,6 +5705,7 @@ final class AppModel: ObservableObject {
                 reason: "project_load"
             )
             projectConfig = preauthorization.config
+            retryPendingProjectCanonicalRustSyncAfterLoad(ctx: ctx)
         } catch {
             memory = nil
             usageSummary = .empty()
@@ -5716,6 +5716,12 @@ final class AppModel: ObservableObject {
         refreshSkillsCompatibilitySnapshot(force: true)
         if traceOutcome == "started" {
             traceOutcome = "loaded root=\(root.path)"
+        }
+    }
+
+    private func retryPendingProjectCanonicalRustSyncAfterLoad(ctx: AXProjectContext) {
+        Task {
+            _ = await HubIPCClient.retryPendingProjectCanonicalRustSync(ctx: ctx)
         }
     }
 
@@ -7163,7 +7169,7 @@ final class AppModel: ObservableObject {
             switch hostClassification.kind {
             case .lanOnly, .rawIP(scope: .privateLAN), .rawIP(scope: .loopback), .rawIP(scope: .linkLocal):
                 detail = "Hub 已经明确拒绝这次首次配对，因为它没有把 XT 识别成“同一局域网来源”。即使你看到的是同一个 Wi-Fi 名称，也可能因为 client isolation、访客网络或 VLAN 分段而被判成不同 LAN。当前目标 \(host) 这类入口只适合同一局域网 / 同一 VPN 使用；请先让 XT 和 Hub 真正回到同一 LAN 后再重试。reason=\(trimmedReason)"
-            case .rawIP(scope: .carrierGradeNat), .rawIP(scope: .publicInternet), .stableNamed:
+            case .rawIP(scope: .tailscale), .rawIP(scope: .carrierGradeNat), .rawIP(scope: .publicInternet), .stableNamed:
                 detail = "首次 Hub 配对默认不会直接在公网或正式远端入口 \(host) 上放行；必须先在同一局域网内完成一次本地批准，后续才能稳定走异网重连。即使你看到的是同一个 Wi-Fi 名称，也可能因为 client isolation、访客网络或 VLAN 分段而不是同一 LAN。请先把 XT 和 Hub 放回同一 LAN 完成首配。reason=\(trimmedReason)"
             case .missing:
                 detail = "首次 Hub 配对默认只允许在同一 Wi-Fi 或同一局域网内完成。请让 XT 和 Hub 回到同网环境后重试。reason=\(trimmedReason)"
@@ -7278,18 +7284,23 @@ final class AppModel: ObservableObject {
                 case .carrierGradeNat:
                     return (
                         "先替换运营商 NAT 地址入口",
-                        "XT 当前记录的是运营商 NAT 地址 \(host)。这类地址通常不适合被另一台设备直接回连；请改成稳定命名入口、relay 或 VPN 地址后再试。reason=\(trimmedReason)"
+                        "XT 当前记录的是运营商 NAT 地址 \(host)。这类地址通常不适合被另一台设备直接回连；请改成 Tailscale IP、稳定域名、relay、Cloudflare Spectrum 或 VPS TCP 转发后再试。reason=\(trimmedReason)"
+                    )
+                case .tailscale:
+                    return (
+                        "Tailscale 入口已配置，先检查 tailnet 和 Hub 服务",
+                        "XT 当前记录的是 Tailscale IP \(host)。这属于正式异网入口，通常可在家、公司、路上稳定连接；若这次不可达，请确认 XT 已登录同一个 tailnet，Hub 主机在线，且 pairing / gRPC 端口仍在监听。reason=\(trimmedReason)"
                     )
                 case .publicInternet, .unknown:
                     return (
                         "先替换临时 raw IP 入口",
-                        "XT 当前记录的是\(scope.doctorLabel) \(host)。这类 raw IP 在换网、休眠、NAT 或公网 IP 变化后很容易失效；请先确认它仍指向当前 Hub，或改成稳定命名入口后再重试。reason=\(trimmedReason)"
+                        "XT 当前记录的是\(scope.doctorLabel) \(host)，仍属于临时 raw IP。公网 IP 可用于临时直连或固定公网环境，但在换网、休眠、NAT 或公网 IP 变化后容易失效；请先确认它仍指向当前 Hub，或改成 Tailscale IP、稳定域名、relay、Cloudflare Spectrum 或 VPS TCP 转发后再重试。reason=\(trimmedReason)"
                     )
                 }
             case .stableNamed:
                 return (
                     "Hub 远端入口已配置，先检查服务是否在线",
-                    "XT 当前已有稳定命名入口 \(host)，但这次仍无法连通。请回 Hub 主机确认 app 没休眠、pairing / gRPC 端口正在监听，并检查防火墙、NAT 或 relay 转发。reason=\(trimmedReason)"
+                    "XT 当前已有稳定命名入口 \(host)，但这次仍无法连通。请回 Hub 主机确认 app 没休眠、pairing / gRPC 端口正在监听，并检查防火墙、NAT、relay、Cloudflare Spectrum 或 VPS TCP 转发。reason=\(trimmedReason)"
                 )
             }
         default:

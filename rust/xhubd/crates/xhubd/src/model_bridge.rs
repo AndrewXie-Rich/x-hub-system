@@ -1,8 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::UNIX_EPOCH;
+use std::thread;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use xhub_core::{now_ms, HubConfig};
@@ -16,10 +19,21 @@ use xhub_runtime::local_model_inventory_rows;
 const MODEL_INVENTORY_SCHEMA_VERSION: &str = "xhub.model_inventory.v1";
 const MODEL_ROUTE_SCHEMA_VERSION: &str = "xhub.model_route_decision.v1";
 const MODEL_ROUTE_DIAGNOSTICS_SCHEMA_VERSION: &str = "xhub.model_route_diagnostics.v1";
+const MODEL_LOCAL_CAPABILITY_SUMMARY_SCHEMA_VERSION: &str =
+    "xhub.model_local_capability_summary.v1";
+const MODEL_LOCAL_RUNTIME_REPAIR_PLAN_SCHEMA_VERSION: &str =
+    "xhub.model_local_runtime_repair_plan.v1";
+const MODEL_LOCAL_RUNTIME_REPAIR_APPLY_SCHEMA_VERSION: &str =
+    "xhub.model_local_runtime_repair_apply.v1";
+const MODEL_LOCAL_RUNTIME_REPAIR_JOB_SCHEMA_VERSION: &str =
+    "xhub.model_local_runtime_repair_job.v1";
+const MODEL_LOCAL_RUNTIME_REPAIR_JOBS_SCHEMA_VERSION: &str =
+    "xhub.model_local_runtime_repair_jobs.v1";
 const MODEL_BRIDGE_SCHEMA_VERSION: &str = "xhub.model_bridge.v1";
 const MODEL_INVENTORY_COMPONENT: &str = "model_inventory";
 const MODEL_ROUTE_COMPONENT: &str = "model_route";
 static MODEL_INVENTORY_COMPARE_REPORT_COUNTER: AtomicU64 = AtomicU64::new(1);
+static MODEL_REPAIR_JOB_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub fn run(config: &HubConfig, args: &[String]) -> Result<(), String> {
     let body = dispatch(config, args)?;
@@ -35,6 +49,24 @@ fn dispatch(config: &HubConfig, args: &[String]) -> Result<String, String> {
 
     match command {
         "inventory" => inventory_json(config, FlagArgs::parse(&args[1..])?),
+        "capabilities" | "local-capabilities" | "local_capabilities" => {
+            local_capabilities_json(config, FlagArgs::parse(&args[1..])?)
+        }
+        "repair-plan" | "repair_plan" | "local-repair-plan" | "local_repair_plan" => {
+            local_repair_plan_json(config, FlagArgs::parse(&args[1..])?)
+        }
+        "repair-apply" | "repair_apply" | "local-repair-apply" | "local_repair_apply" => {
+            local_repair_apply_json(config, FlagArgs::parse(&args[1..])?)
+        }
+        "repair-jobs" | "repair_jobs" | "local-repair-jobs" | "local_repair_jobs" => {
+            local_repair_jobs_json(config, FlagArgs::parse(&args[1..])?)
+        }
+        "repair-executor"
+        | "repair_executor"
+        | "local-repair-executor"
+        | "local_repair_executor" => {
+            local_repair_executor_json(config, FlagArgs::parse(&args[1..])?)
+        }
         "route" => route_json(config, FlagArgs::parse(&args[1..])?),
         "compare" => compare_json(config, FlagArgs::parse(&args[1..])?),
         "reports" => reports_json(config, FlagArgs::parse(&args[1..])?),
@@ -74,6 +106,8 @@ fn inventory_value_from_parts(
     let remote_models = remote_model_inventory_from_runtime_base_dir(&runtime_base_dir, now)
         .map_err(|err| format!("model inventory remote provider read failed: {err}"))?;
     let local_models = local_model_inventory_rows(&runtime_base_dir);
+    let local_capability_summary =
+        local_capability_summary_value(&runtime_base_dir, &local_models, now);
     Ok(json!({
         "schema_version": MODEL_INVENTORY_SCHEMA_VERSION,
         "ok": true,
@@ -82,7 +116,204 @@ fn inventory_value_from_parts(
         "updated_at_ms": now,
         "remote_models": remote_models,
         "local_models": local_models,
+        "local_capability_summary": local_capability_summary,
     }))
+}
+
+fn local_capabilities_json(config: &HubConfig, flags: FlagArgs) -> Result<String, String> {
+    let runtime_base_dir = flags
+        .optional("runtime-base-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config.runtime_base_dir.clone());
+    let now = flags.optional_u128("now-ms")?.unwrap_or_else(now_ms);
+    local_capabilities_json_from_parts(config, Some(runtime_base_dir), Some(now))
+}
+
+pub fn local_capabilities_json_from_parts(
+    config: &HubConfig,
+    runtime_base_dir: Option<PathBuf>,
+    now_ms_value: Option<u128>,
+) -> Result<String, String> {
+    let runtime_base_dir = runtime_base_dir.unwrap_or_else(|| config.runtime_base_dir.clone());
+    let now = now_ms_value.unwrap_or_else(now_ms);
+    let local_models = local_model_inventory_rows(&runtime_base_dir);
+    Ok(local_capability_summary_value(&runtime_base_dir, &local_models, now).to_string())
+}
+
+fn local_repair_plan_json(config: &HubConfig, flags: FlagArgs) -> Result<String, String> {
+    let runtime_base_dir = flags
+        .optional("runtime-base-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config.runtime_base_dir.clone());
+    let now = flags.optional_u128("now-ms")?.unwrap_or_else(now_ms);
+    let request = ModelLocalRepairPlanRequest {
+        action: flags.optional("action").unwrap_or_default(),
+        task_kind: flags
+            .optional("task-kind")
+            .or_else(|| flags.optional("task"))
+            .unwrap_or_default(),
+        provider_id: flags
+            .optional("provider-id")
+            .or_else(|| flags.optional("provider"))
+            .unwrap_or_default(),
+    };
+    local_repair_plan_json_from_parts(config, Some(runtime_base_dir), request, Some(now))
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ModelLocalRepairPlanRequest {
+    pub action: String,
+    pub task_kind: String,
+    pub provider_id: String,
+}
+
+pub fn local_repair_plan_json_from_parts(
+    config: &HubConfig,
+    runtime_base_dir: Option<PathBuf>,
+    request: ModelLocalRepairPlanRequest,
+    now_ms_value: Option<u128>,
+) -> Result<String, String> {
+    let runtime_base_dir = runtime_base_dir.unwrap_or_else(|| config.runtime_base_dir.clone());
+    let now = now_ms_value.unwrap_or_else(now_ms);
+    let local_models = local_model_inventory_rows(&runtime_base_dir);
+    let provider_summaries = runtime_provider_summaries(&runtime_base_dir);
+    Ok(local_repair_plan_value(
+        &runtime_base_dir,
+        &request,
+        &local_models,
+        &provider_summaries,
+        now,
+    )
+    .to_string())
+}
+
+fn local_repair_apply_json(config: &HubConfig, flags: FlagArgs) -> Result<String, String> {
+    let runtime_base_dir = flags
+        .optional("runtime-base-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config.runtime_base_dir.clone());
+    let now = flags.optional_u128("now-ms")?.unwrap_or_else(now_ms);
+    let request = ModelLocalRepairApplyRequest {
+        action: flags.optional("action").unwrap_or_default(),
+        task_kind: flags
+            .optional("task-kind")
+            .or_else(|| flags.optional("task"))
+            .unwrap_or_default(),
+        provider_id: flags
+            .optional("provider-id")
+            .or_else(|| flags.optional("provider"))
+            .unwrap_or_default(),
+        confirm: flags.optional_bool("confirm")?.unwrap_or(false),
+        dry_run: flags.optional_bool("dry-run")?.unwrap_or(false),
+        confirmation_token: flags.optional("confirmation-token").unwrap_or_default(),
+        requested_by: flags
+            .optional("requested-by")
+            .unwrap_or_else(|| "cli".to_string()),
+    };
+    local_repair_apply_json_from_parts(config, Some(runtime_base_dir), request, Some(now))
+}
+
+fn local_repair_jobs_json(config: &HubConfig, flags: FlagArgs) -> Result<String, String> {
+    let runtime_base_dir = flags
+        .optional("runtime-base-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config.runtime_base_dir.clone());
+    let limit = flags.optional_usize("limit")?.unwrap_or(20);
+    let now = flags.optional_u128("now-ms")?.unwrap_or_else(now_ms);
+    local_repair_jobs_json_from_parts(config, Some(runtime_base_dir), limit, Some(now))
+}
+
+fn local_repair_executor_json(config: &HubConfig, flags: FlagArgs) -> Result<String, String> {
+    let runtime_base_dir = flags
+        .optional("runtime-base-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config.runtime_base_dir.clone());
+    let now = flags.optional_u128("now-ms")?.unwrap_or_else(now_ms);
+    let request = ModelLocalRepairExecutorRequest {
+        allow_network: flags.optional_bool("allow-network")?.unwrap_or(false),
+        dry_run: flags.optional_bool("dry-run")?.unwrap_or(false),
+        python: flags.optional("python").unwrap_or_default(),
+        timeout_ms: flags.optional_u64("timeout-ms")?.unwrap_or(600_000),
+        requested_by: flags
+            .optional("requested-by")
+            .unwrap_or_else(|| "cli".to_string()),
+    };
+    local_repair_executor_json_from_parts(config, Some(runtime_base_dir), request, Some(now))
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ModelLocalRepairApplyRequest {
+    pub action: String,
+    pub task_kind: String,
+    pub provider_id: String,
+    pub confirm: bool,
+    pub dry_run: bool,
+    pub confirmation_token: String,
+    pub requested_by: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ModelLocalRepairExecutorRequest {
+    pub allow_network: bool,
+    pub dry_run: bool,
+    pub python: String,
+    pub timeout_ms: u64,
+    pub requested_by: String,
+}
+
+pub fn local_repair_apply_json_from_parts(
+    config: &HubConfig,
+    runtime_base_dir: Option<PathBuf>,
+    request: ModelLocalRepairApplyRequest,
+    now_ms_value: Option<u128>,
+) -> Result<String, String> {
+    let runtime_base_dir = runtime_base_dir.unwrap_or_else(|| config.runtime_base_dir.clone());
+    let now = now_ms_value.unwrap_or_else(now_ms);
+    let local_models = local_model_inventory_rows(&runtime_base_dir);
+    let provider_summaries = runtime_provider_summaries(&runtime_base_dir);
+    let plan_request = ModelLocalRepairPlanRequest {
+        action: request.action.clone(),
+        task_kind: request.task_kind.clone(),
+        provider_id: request.provider_id.clone(),
+    };
+    let plan = local_repair_plan_value(
+        &runtime_base_dir,
+        &plan_request,
+        &local_models,
+        &provider_summaries,
+        now,
+    );
+    Ok(local_repair_apply_value(&runtime_base_dir, &request, plan, now)?.to_string())
+}
+
+pub fn local_repair_jobs_json_from_parts(
+    config: &HubConfig,
+    runtime_base_dir: Option<PathBuf>,
+    limit: usize,
+    now_ms_value: Option<u128>,
+) -> Result<String, String> {
+    let runtime_base_dir = runtime_base_dir.unwrap_or_else(|| config.runtime_base_dir.clone());
+    Ok(local_repair_jobs_value(
+        &runtime_base_dir,
+        limit,
+        now_ms_value.unwrap_or_else(now_ms),
+    )
+    .to_string())
+}
+
+pub fn local_repair_executor_json_from_parts(
+    config: &HubConfig,
+    runtime_base_dir: Option<PathBuf>,
+    request: ModelLocalRepairExecutorRequest,
+    now_ms_value: Option<u128>,
+) -> Result<String, String> {
+    let runtime_base_dir = runtime_base_dir.unwrap_or_else(|| config.runtime_base_dir.clone());
+    Ok(local_repair_executor_value(
+        &runtime_base_dir,
+        request,
+        now_ms_value.unwrap_or_else(now_ms),
+    )
+    .to_string())
 }
 
 fn route_json(config: &HubConfig, flags: FlagArgs) -> Result<String, String> {
@@ -142,6 +373,1967 @@ pub fn route_json_from_parts(
         local_models,
         now,
     ))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LocalCapabilityTaskSpec {
+    task_kind: &'static str,
+    capability: &'static str,
+    label: &'static str,
+}
+
+const LOCAL_CAPABILITY_TASK_SPECS: &[LocalCapabilityTaskSpec] = &[
+    LocalCapabilityTaskSpec {
+        task_kind: "text_generate",
+        capability: "text.generate",
+        label: "Text generation",
+    },
+    LocalCapabilityTaskSpec {
+        task_kind: "embedding",
+        capability: "embedding.generate",
+        label: "Embeddings",
+    },
+    LocalCapabilityTaskSpec {
+        task_kind: "vision_understand",
+        capability: "vision.describe",
+        label: "Vision understanding",
+    },
+    LocalCapabilityTaskSpec {
+        task_kind: "ocr",
+        capability: "vision.ocr",
+        label: "OCR",
+    },
+    LocalCapabilityTaskSpec {
+        task_kind: "speech_to_text",
+        capability: "audio.transcribe",
+        label: "Speech to text",
+    },
+    LocalCapabilityTaskSpec {
+        task_kind: "text_to_speech",
+        capability: "audio.tts",
+        label: "Text to speech",
+    },
+];
+
+#[derive(Debug, Clone)]
+struct RuntimeProviderSummary {
+    provider_id: String,
+    ok: bool,
+    reason_code: String,
+    import_error: String,
+    runtime_source: String,
+    runtime_source_path: String,
+    available_capabilities: Vec<String>,
+    available_task_kinds: Vec<String>,
+    runtime_missing_requirements: Vec<String>,
+    updated_at_ms: u64,
+    repair_action: String,
+}
+
+fn local_capability_summary_value(
+    runtime_base_dir: &Path,
+    local_models: &[xhub_runtime::LocalModelInventoryRow],
+    updated_at_ms: u128,
+) -> Value {
+    let provider_summaries = runtime_provider_summaries(runtime_base_dir);
+    let ready_task_count = LOCAL_CAPABILITY_TASK_SPECS
+        .iter()
+        .filter(|spec| {
+            local_models.iter().any(|row| {
+                local_model_has_capability(row, spec.capability) && local_model_row_is_ready(row)
+            })
+        })
+        .count();
+    let all_tasks_ready = ready_task_count == LOCAL_CAPABILITY_TASK_SPECS.len();
+    let coverage_state = if all_tasks_ready {
+        "complete"
+    } else if ready_task_count > 0 {
+        "partial"
+    } else {
+        "blocked"
+    };
+    let mut by_task = serde_json::Map::new();
+    for spec in LOCAL_CAPABILITY_TASK_SPECS {
+        by_task.insert(
+            spec.task_kind.to_string(),
+            local_capability_task_value(spec, local_models, &provider_summaries),
+        );
+    }
+
+    json!({
+        "schema_version": MODEL_LOCAL_CAPABILITY_SUMMARY_SCHEMA_VERSION,
+        "ok": true,
+        "updated_at_ms": updated_at_ms.min(i64::MAX as u128) as i64,
+        "runtime_base_dir": runtime_base_dir.display().to_string(),
+        "ready": ready_task_count > 0,
+        "all_tasks_ready": all_tasks_ready,
+        "coverage_state": coverage_state,
+        "ready_task_count": ready_task_count,
+        "task_count": LOCAL_CAPABILITY_TASK_SPECS.len(),
+        "by_task": by_task,
+        "providers": provider_summaries
+            .iter()
+            .map(runtime_provider_summary_json)
+            .collect::<Vec<Value>>(),
+        "secret_fields_included": false,
+        "xt_guidance": {
+            "source_of_truth": "hub",
+            "consume_for": "local_model_task_coverage_and_repair_hints",
+            "route_policy": "XT should route through Hub /model/route and use this summary for UI readiness only.",
+            "must_not_include_secret_material": true
+        }
+    })
+}
+
+fn local_capability_task_value(
+    spec: &LocalCapabilityTaskSpec,
+    local_models: &[xhub_runtime::LocalModelInventoryRow],
+    provider_summaries: &[RuntimeProviderSummary],
+) -> Value {
+    let candidates = local_models
+        .iter()
+        .filter(|row| local_model_has_capability(row, spec.capability))
+        .collect::<Vec<&xhub_runtime::LocalModelInventoryRow>>();
+    let ready_models = candidates
+        .iter()
+        .copied()
+        .filter(|row| local_model_row_is_ready(row))
+        .collect::<Vec<&xhub_runtime::LocalModelInventoryRow>>();
+    let blocked_models = candidates
+        .iter()
+        .copied()
+        .filter(|row| !local_model_row_is_ready(row))
+        .collect::<Vec<&xhub_runtime::LocalModelInventoryRow>>();
+    let primary_blocking_reason_code = blocked_models
+        .iter()
+        .find_map(|row| {
+            let reason = local_model_primary_blocker(row);
+            if reason.is_empty() {
+                None
+            } else {
+                Some(reason)
+            }
+        })
+        .or_else(|| primary_provider_blocker(provider_summaries, spec.capability))
+        .unwrap_or_default();
+    let state = local_capability_task_state(
+        ready_models.len(),
+        candidates.len(),
+        primary_blocking_reason_code.as_str(),
+    );
+    let mut candidate_providers = BTreeSet::new();
+    for row in &candidates {
+        if !row.runtime_provider.trim().is_empty() {
+            candidate_providers.insert(row.runtime_provider.clone());
+        }
+    }
+    for provider in provider_summaries {
+        if provider
+            .available_capabilities
+            .iter()
+            .any(|capability| capability == spec.capability)
+        {
+            candidate_providers.insert(provider.provider_id.clone());
+        }
+    }
+
+    json!({
+        "task_kind": spec.task_kind,
+        "capability": spec.capability,
+        "label": spec.label,
+        "ready": !ready_models.is_empty(),
+        "state": state,
+        "ready_model_count": ready_models.len(),
+        "candidate_model_count": candidates.len(),
+        "blocked_model_count": blocked_models.len(),
+        "candidate_provider_ids": candidate_providers.into_iter().collect::<Vec<String>>(),
+        "ready_model_ids": ready_models
+            .iter()
+            .map(|row| row.model_id.clone())
+            .collect::<Vec<String>>(),
+        "blocked_model_refs": blocked_models
+            .iter()
+            .take(8)
+            .map(|row| local_model_ref_value(row))
+            .collect::<Vec<Value>>(),
+        "primary_blocking_reason_code": primary_blocking_reason_code,
+        "repair_action": local_capability_repair_action(
+            state,
+            spec.task_kind,
+            primary_blocking_reason_code.as_str(),
+            &blocked_models,
+            provider_summaries,
+        ),
+    })
+}
+
+fn local_capability_task_state(
+    ready_model_count: usize,
+    candidate_model_count: usize,
+    primary_blocking_reason_code: &str,
+) -> &'static str {
+    if ready_model_count > 0 {
+        return "ready";
+    }
+    if candidate_model_count == 0 {
+        return "no_model";
+    }
+    let reason = normalized_token(primary_blocking_reason_code);
+    if reason.contains("missing")
+        || reason.contains("not_found")
+        || reason.contains("unavailable")
+        || reason.contains("helper_binary")
+    {
+        return "missing_runtime";
+    }
+    if reason.contains("capability_mismatch") {
+        return "capability_blocked";
+    }
+    "blocked"
+}
+
+fn local_capability_repair_action(
+    state: &str,
+    task_kind: &str,
+    primary_blocking_reason_code: &str,
+    blocked_models: &[&xhub_runtime::LocalModelInventoryRow],
+    provider_summaries: &[RuntimeProviderSummary],
+) -> String {
+    if state == "ready" {
+        return "none".to_string();
+    }
+    if state == "no_model" {
+        return format!("add_local_model:{task_kind}");
+    }
+    if let Some(provider) = blocked_models
+        .iter()
+        .filter_map(|row| {
+            provider_summaries
+                .iter()
+                .find(|provider| provider.provider_id == row.runtime_provider)
+        })
+        .find(|provider| !provider.ok || !provider.runtime_missing_requirements.is_empty())
+    {
+        return provider.repair_action.clone();
+    }
+    let reason = normalized_token(primary_blocking_reason_code);
+    if reason.contains("capability_mismatch") {
+        return format!("enable_provider_capability:{task_kind}");
+    }
+    "inspect_model_runtime_preflight".to_string()
+}
+
+fn local_model_has_capability(
+    row: &xhub_runtime::LocalModelInventoryRow,
+    required_capability: &str,
+) -> bool {
+    row.capabilities
+        .iter()
+        .any(|capability| normalized_capability(capability) == required_capability)
+}
+
+fn local_model_row_is_ready(row: &xhub_runtime::LocalModelInventoryRow) -> bool {
+    row.availability_state == "ready"
+        && row.blocking_reason_code.trim().is_empty()
+        && row.runtime_preflight.availability_state == "ready"
+        && row.runtime_preflight.blocking_reason_code.trim().is_empty()
+}
+
+fn local_model_primary_blocker(row: &xhub_runtime::LocalModelInventoryRow) -> String {
+    if !row.blocking_reason_code.trim().is_empty() {
+        return row.blocking_reason_code.clone();
+    }
+    if !row.runtime_preflight.blocking_reason_code.trim().is_empty() {
+        return row.runtime_preflight.blocking_reason_code.clone();
+    }
+    if !row
+        .runtime_preflight
+        .runtime_missing_requirements
+        .is_empty()
+    {
+        return format!(
+            "missing_requirements:{}",
+            row.runtime_preflight.runtime_missing_requirements.join(",")
+        );
+    }
+    if row.availability_state != "ready" {
+        return row.availability_state.clone();
+    }
+    String::new()
+}
+
+fn local_model_ref_value(row: &xhub_runtime::LocalModelInventoryRow) -> Value {
+    json!({
+        "model_id": row.model_id,
+        "display_name": row.display_name,
+        "runtime_provider": row.runtime_provider,
+        "availability_state": row.availability_state,
+        "blocking_reason_code": row.blocking_reason_code,
+        "runtime_preflight": {
+            "availability_state": row.runtime_preflight.availability_state,
+            "blocking_reason_code": row.runtime_preflight.blocking_reason_code,
+            "runtime_missing_requirements": row.runtime_preflight.runtime_missing_requirements,
+        }
+    })
+}
+
+fn primary_provider_blocker(
+    provider_summaries: &[RuntimeProviderSummary],
+    capability: &str,
+) -> Option<String> {
+    provider_summaries
+        .iter()
+        .find(|provider| {
+            !provider.ok
+                && provider
+                    .available_capabilities
+                    .iter()
+                    .any(|available| available == capability)
+        })
+        .map(|provider| first_non_empty(&provider.reason_code, "runtime_provider_unavailable"))
+}
+
+fn runtime_provider_summaries(runtime_base_dir: &Path) -> Vec<RuntimeProviderSummary> {
+    let path = runtime_base_dir.join("ai_runtime_status.json");
+    let Ok(raw) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if let Some(providers) = value.get("providers").and_then(Value::as_object) {
+        for (provider_id, provider_value) in providers {
+            out.push(runtime_provider_summary_from_value(
+                provider_id,
+                provider_value,
+            ));
+        }
+    }
+    if out.is_empty() {
+        let provider = first_non_empty(
+            &first_value_string(&value, &["provider", "provider_id", "providerId"]),
+            "mlx",
+        );
+        if value.get("ok").is_some() || value.get("reasonCode").is_some() {
+            out.push(runtime_provider_summary_from_value(&provider, &value));
+        }
+    }
+    out.sort_by(|lhs, rhs| lhs.provider_id.cmp(&rhs.provider_id));
+    out
+}
+
+fn runtime_provider_summary_from_value(provider_id: &str, value: &Value) -> RuntimeProviderSummary {
+    let provider_id = normalized_provider_id(&first_non_empty(
+        &first_value_string(value, &["provider", "provider_id", "providerId"]),
+        provider_id,
+    ));
+    let available_capabilities = normalized_capability_values(
+        value,
+        &[
+            "available_task_kinds",
+            "availableTaskKinds",
+            "real_task_kinds",
+            "realTaskKinds",
+            "capabilities",
+        ],
+    );
+    let runtime_missing_requirements = sorted_string_values(
+        value,
+        &[
+            "runtime_missing_requirements",
+            "runtimeMissingRequirements",
+            "missing_requirements",
+            "missingRequirements",
+        ],
+    );
+    let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let reason_code = normalized_token(&first_value_string(
+        value,
+        &["reason_code", "reasonCode", "error"],
+    ));
+    let import_error = first_value_string(value, &["import_error", "importError"]);
+    let repair_action = provider_repair_action(
+        &provider_id,
+        ok,
+        &reason_code,
+        &runtime_missing_requirements,
+        &import_error,
+    );
+    RuntimeProviderSummary {
+        provider_id,
+        ok,
+        reason_code,
+        import_error,
+        runtime_source: first_value_string(value, &["runtime_source", "runtimeSource"]),
+        runtime_source_path: first_value_string(
+            value,
+            &["runtime_source_path", "runtimeSourcePath"],
+        ),
+        available_task_kinds: task_kinds_for_capabilities(&available_capabilities),
+        available_capabilities,
+        runtime_missing_requirements,
+        updated_at_ms: first_value_u64(value, &["updated_at_ms", "updatedAtMs", "updatedAt"])
+            .unwrap_or(0),
+        repair_action,
+    }
+}
+
+fn runtime_provider_summary_json(provider: &RuntimeProviderSummary) -> Value {
+    json!({
+        "provider_id": provider.provider_id,
+        "ok": provider.ok,
+        "reason_code": provider.reason_code,
+        "import_error": provider.import_error,
+        "runtime_source": provider.runtime_source,
+        "runtime_source_path": provider.runtime_source_path,
+        "available_task_kinds": provider.available_task_kinds,
+        "available_capabilities": provider.available_capabilities,
+        "runtime_missing_requirements": provider.runtime_missing_requirements,
+        "updated_at_ms": provider.updated_at_ms,
+        "repair_action": provider.repair_action,
+    })
+}
+
+fn normalized_provider_id(raw: &str) -> String {
+    match normalized_token(raw).replace('-', "_").as_str() {
+        "llamacpp" | "llama_cpp" => "llama.cpp".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn provider_repair_action(
+    provider_id: &str,
+    ok: bool,
+    reason_code: &str,
+    missing_requirements: &[String],
+    import_error: &str,
+) -> String {
+    if ok {
+        return "none".to_string();
+    }
+    let joined = format!(
+        "{} {} {} {}",
+        provider_id,
+        reason_code,
+        import_error,
+        missing_requirements.join(" ")
+    )
+    .to_ascii_lowercase();
+    if joined.contains("mlx_vlm") {
+        return "install_provider_pack:mlx_vlm".to_string();
+    }
+    if joined.contains("torch") || joined.contains("transformers") {
+        return "install_provider_pack:transformers".to_string();
+    }
+    if joined.contains("helper_binary") || joined.contains("llama.cpp") {
+        return "install_helper_binary:llama.cpp".to_string();
+    }
+    if reason_code == "no_registered_models" {
+        return format!("register_local_model:{provider_id}");
+    }
+    format!("repair_provider_runtime:{provider_id}")
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedLocalRepairAction {
+    action: String,
+    task_kind: String,
+    provider_id: String,
+    source: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProviderPackRepairSpec {
+    engine: &'static str,
+    execution_mode: &'static str,
+    supported_domains: &'static [&'static str],
+    expected_task_kinds: &'static [&'static str],
+    python_import_modules: &'static [&'static str],
+    python_packages: &'static [&'static str],
+    helper_binary: &'static str,
+    notes: &'static [&'static str],
+}
+
+fn local_repair_plan_value(
+    runtime_base_dir: &Path,
+    request: &ModelLocalRepairPlanRequest,
+    local_models: &[xhub_runtime::LocalModelInventoryRow],
+    provider_summaries: &[RuntimeProviderSummary],
+    updated_at_ms: u128,
+) -> Value {
+    let resolved = resolve_local_repair_action(request, local_models, provider_summaries);
+    let details = local_repair_plan_details(&resolved, provider_summaries);
+    let mut root = serde_json::Map::new();
+    root.insert(
+        "schema_version".to_string(),
+        json!(MODEL_LOCAL_RUNTIME_REPAIR_PLAN_SCHEMA_VERSION),
+    );
+    root.insert("ok".to_string(), json!(true));
+    root.insert(
+        "updated_at_ms".to_string(),
+        json!(updated_at_ms.min(i64::MAX as u128) as i64),
+    );
+    root.insert(
+        "runtime_base_dir".to_string(),
+        json!(runtime_base_dir.display().to_string()),
+    );
+    root.insert(
+        "request".to_string(),
+        json!({
+            "action": request.action.trim(),
+            "task_kind": request.task_kind.trim(),
+            "provider_id": request.provider_id.trim(),
+        }),
+    );
+    root.insert(
+        "resolved".to_string(),
+        json!({
+            "action": resolved.action,
+            "task_kind": resolved.task_kind,
+            "provider_id": resolved.provider_id,
+            "source": resolved.source,
+        }),
+    );
+    root.insert("secret_fields_included".to_string(), json!(false));
+    root.insert(
+        "xt_guidance".to_string(),
+        json!({
+            "source_of_truth": "hub",
+            "consume_for": "local_model_runtime_repair_ui",
+            "must_request_user_confirmation_before_install": true,
+            "must_not_auto_install_network_dependencies": true,
+            "rerun_after_repair": ["/model/capabilities", "/local-ml/readiness"],
+        }),
+    );
+    root.insert(
+        "confirmation".to_string(),
+        json!({
+            "required_for_apply": resolved.action != "none",
+            "token_hint": local_repair_confirmation_token(&resolved.action),
+            "apply_endpoint": "/model/repair-apply",
+            "heavy_work_policy": "never_run_installs_on_ui_or_http_request_thread"
+        }),
+    );
+    if let Value::Object(details) = details {
+        for (key, value) in details {
+            root.insert(key, value);
+        }
+    }
+    Value::Object(root)
+}
+
+fn local_repair_apply_value(
+    runtime_base_dir: &Path,
+    request: &ModelLocalRepairApplyRequest,
+    plan: Value,
+    updated_at_ms: u128,
+) -> Result<Value, String> {
+    let resolved = plan.get("resolved").cloned().unwrap_or(Value::Null);
+    let target = plan.get("target").cloned().unwrap_or(Value::Null);
+    let requirements = plan.get("requirements").cloned().unwrap_or(Value::Null);
+    let steps = plan.get("steps").cloned().unwrap_or_else(|| json!([]));
+    let resolved_action = value_string(&resolved, "action");
+    let requested_action = normalized_token(&request.action);
+    let action_matches = requested_action.is_empty() || requested_action == resolved_action;
+    let plan_state = value_string(&plan, "state");
+    let confirmation_token = local_repair_confirmation_token(&resolved_action);
+    let token_matches = request.confirmation_token.trim() == confirmation_token;
+    let confirmation_passed = request.confirm && token_matches;
+    let can_create_job =
+        plan_state == "repair_required" && resolved_action != "none" && action_matches;
+    let dry_run = request.dry_run || !confirmation_passed || !can_create_job;
+    let job_policy = json!({
+        "execution_mode": "queued_nonblocking",
+        "ui_thread_blocking_allowed": false,
+        "http_request_blocking_allowed": false,
+        "network_install_requires_user_approval": true,
+        "executor": "rust_model_repair_executor",
+        "executor_ready": true,
+        "executor_command": "model repair-executor --allow-network true",
+    });
+
+    if !can_create_job || dry_run {
+        let status = if plan_state != "repair_required" || resolved_action == "none" {
+            "not_required"
+        } else if !action_matches {
+            "stale_repair_action"
+        } else if request.confirm && !token_matches {
+            "confirmation_token_mismatch"
+        } else {
+            "confirmation_required"
+        };
+        return Ok(json!({
+            "schema_version": MODEL_LOCAL_RUNTIME_REPAIR_APPLY_SCHEMA_VERSION,
+            "ok": true,
+            "accepted": false,
+            "dry_run": true,
+            "status": status,
+            "updated_at_ms": updated_at_ms.min(i64::MAX as u128) as i64,
+            "runtime_base_dir": runtime_base_dir.display().to_string(),
+            "resolved": resolved,
+            "target": target,
+            "requirements": requirements,
+            "steps": steps,
+            "confirmation": {
+                "required": plan_state == "repair_required" && resolved_action != "none",
+                "confirm": request.confirm,
+                "token_matches": token_matches,
+                "token_hint": confirmation_token,
+            },
+            "job_policy": job_policy,
+            "plan": plan,
+            "secret_fields_included": false,
+        }));
+    }
+
+    let job_id = local_repair_job_id(&resolved_action, updated_at_ms);
+    let jobs_dir = local_repair_jobs_dir(runtime_base_dir);
+    fs::create_dir_all(&jobs_dir)
+        .map_err(|err| format!("model repair job dir create failed: {err}"))?;
+    let job_path = jobs_dir.join(format!("{job_id}.json"));
+    let job = json!({
+        "schema_version": MODEL_LOCAL_RUNTIME_REPAIR_JOB_SCHEMA_VERSION,
+        "job_id": job_id,
+        "status": "queued_waiting_executor",
+        "created_at_ms": updated_at_ms.min(i64::MAX as u128) as i64,
+        "updated_at_ms": updated_at_ms.min(i64::MAX as u128) as i64,
+        "runtime_base_dir": runtime_base_dir.display().to_string(),
+        "requested_by": first_non_empty(&request.requested_by, "unknown"),
+        "resolved": resolved,
+        "target": target,
+        "requirements": requirements,
+        "steps": steps,
+        "plan": plan,
+        "job_policy": job_policy,
+        "executor_state": {
+            "ready": true,
+            "reason_code": "rust_model_repair_executor_available",
+            "next_step": "Run Rust model repair executor in a background process after explicit network approval; never execute installs on UI or HTTP request threads."
+        },
+        "secret_fields_included": false,
+    });
+    let raw = serde_json::to_vec_pretty(&job)
+        .map_err(|err| format!("model repair job serialize failed: {err}"))?;
+    fs::write(&job_path, raw).map_err(|err| format!("model repair job write failed: {err}"))?;
+
+    Ok(json!({
+        "schema_version": MODEL_LOCAL_RUNTIME_REPAIR_APPLY_SCHEMA_VERSION,
+        "ok": true,
+        "accepted": true,
+        "dry_run": false,
+        "status": "queued_waiting_executor",
+        "updated_at_ms": updated_at_ms.min(i64::MAX as u128) as i64,
+        "runtime_base_dir": runtime_base_dir.display().to_string(),
+        "job_id": job_id,
+        "job_path": job_path.display().to_string(),
+        "resolved": job["resolved"].clone(),
+        "target": job["target"].clone(),
+        "requirements": job["requirements"].clone(),
+        "steps": job["steps"].clone(),
+        "job_policy": job_policy,
+        "post_checks": [
+            {"kind": "file", "path": job_path.display().to_string(), "expect": "job status is consumed by background executor"},
+            {"kind": "http", "endpoint": "/model/capabilities", "expect": "task readiness changes after executor completes"},
+            {"kind": "http", "endpoint": "/local-ml/readiness", "expect": "provider readiness changes after executor completes"}
+        ],
+        "secret_fields_included": false,
+    }))
+}
+
+fn local_repair_jobs_value(runtime_base_dir: &Path, limit: usize, updated_at_ms: u128) -> Value {
+    let jobs_dir = local_repair_jobs_dir(runtime_base_dir);
+    let jobs = local_repair_job_summaries(&jobs_dir, limit.clamp(1, 100));
+    json!({
+        "schema_version": MODEL_LOCAL_RUNTIME_REPAIR_JOBS_SCHEMA_VERSION,
+        "ok": true,
+        "runtime_base_dir": runtime_base_dir.display().to_string(),
+        "jobs_dir": jobs_dir.display().to_string(),
+        "count": jobs.len(),
+        "limit": limit.clamp(1, 100),
+        "jobs": jobs,
+        "updated_at_ms": updated_at_ms.min(i64::MAX as u128) as i64,
+        "secret_fields_included": false,
+    })
+}
+
+fn local_repair_job_summaries(jobs_dir: &Path, limit: usize) -> Vec<Value> {
+    let Ok(entries) = fs::read_dir(jobs_dir) else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if !file_name.ends_with(".json") {
+            continue;
+        }
+        let Ok(raw) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if raw_contains_potential_secret_material(&raw) {
+            continue;
+        }
+        let Ok(job) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        if value_string(&job, "schema_version") != MODEL_LOCAL_RUNTIME_REPAIR_JOB_SCHEMA_VERSION {
+            continue;
+        }
+        if job
+            .get("secret_fields_included")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let sort_ms = first_value_u64(&job, &["updated_at_ms"])
+            .unwrap_or(0)
+            .max(first_value_u64(&job, &["created_at_ms"]).unwrap_or(0))
+            .max(file_modified_at_ms(&path));
+        rows.push((
+            sort_ms,
+            file_name.clone(),
+            summarize_local_repair_job(&path, &file_name, &job),
+        ));
+    }
+    rows.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+    rows.into_iter()
+        .take(limit)
+        .map(|(_, _, summary)| summary)
+        .collect()
+}
+
+fn summarize_local_repair_job(path: &Path, file_name: &str, job: &Value) -> Value {
+    let resolved = job.get("resolved").cloned().unwrap_or(Value::Null);
+    let target = job.get("target").cloned().unwrap_or(Value::Null);
+    let job_policy = job.get("job_policy").cloned().unwrap_or(Value::Null);
+    let executor_state = job.get("executor_state").cloned().unwrap_or(Value::Null);
+    json!({
+        "job_id": value_string(job, "job_id"),
+        "status": value_string(job, "status"),
+        "created_at_ms": first_value_u64(job, &["created_at_ms"]).unwrap_or(0),
+        "updated_at_ms": first_value_u64(job, &["updated_at_ms"]).unwrap_or(0),
+        "requested_by": value_string(job, "requested_by"),
+        "file_name": file_name,
+        "job_path": path.display().to_string(),
+        "resolved": resolved,
+        "target": target,
+        "job_policy": job_policy,
+        "executor_state": executor_state,
+        "secret_fields_included": false,
+    })
+}
+
+fn local_repair_executor_value(
+    runtime_base_dir: &Path,
+    request: ModelLocalRepairExecutorRequest,
+    updated_at_ms: u128,
+) -> Value {
+    let jobs_dir = local_repair_jobs_dir(runtime_base_dir);
+    let selected = select_next_local_repair_job(&jobs_dir);
+    let Some((job_path, file_name, job)) = selected else {
+        return json!({
+            "schema_version": MODEL_LOCAL_RUNTIME_REPAIR_JOBS_SCHEMA_VERSION,
+            "ok": true,
+            "executed": false,
+            "status": "no_queued_jobs",
+            "runtime_base_dir": runtime_base_dir.display().to_string(),
+            "jobs_dir": jobs_dir.display().to_string(),
+            "updated_at_ms": updated_at_ms.min(i64::MAX as u128) as i64,
+            "secret_fields_included": false,
+        });
+    };
+
+    let planned = planned_local_repair_job_execution(runtime_base_dir, &job, &request);
+    if value_bool(&planned, "requires_network") && !request.allow_network {
+        return json!({
+            "schema_version": MODEL_LOCAL_RUNTIME_REPAIR_JOBS_SCHEMA_VERSION,
+            "ok": true,
+            "executed": false,
+            "status": "network_approval_required",
+            "selected_job": summarize_local_repair_job(&job_path, &file_name, &job),
+            "planned_execution": planned,
+            "runtime_base_dir": runtime_base_dir.display().to_string(),
+            "updated_at_ms": updated_at_ms.min(i64::MAX as u128) as i64,
+            "secret_fields_included": false,
+        });
+    }
+    if request.dry_run {
+        return json!({
+            "schema_version": MODEL_LOCAL_RUNTIME_REPAIR_JOBS_SCHEMA_VERSION,
+            "ok": true,
+            "executed": false,
+            "status": "dry_run_ready",
+            "selected_job": summarize_local_repair_job(&job_path, &file_name, &job),
+            "planned_execution": planned,
+            "runtime_base_dir": runtime_base_dir.display().to_string(),
+            "updated_at_ms": updated_at_ms.min(i64::MAX as u128) as i64,
+            "secret_fields_included": false,
+        });
+    }
+
+    let mut running_job = job.clone();
+    set_local_repair_job_running(&mut running_job, &request, updated_at_ms);
+    if let Err(err) = write_local_repair_job(&job_path, &running_job) {
+        return json!({
+            "schema_version": MODEL_LOCAL_RUNTIME_REPAIR_JOBS_SCHEMA_VERSION,
+            "ok": false,
+            "executed": false,
+            "status": "job_update_failed",
+            "error": err,
+            "selected_job": summarize_local_repair_job(&job_path, &file_name, &job),
+            "runtime_base_dir": runtime_base_dir.display().to_string(),
+            "updated_at_ms": updated_at_ms.min(i64::MAX as u128) as i64,
+            "secret_fields_included": false,
+        });
+    }
+
+    let outcome = execute_local_repair_job(runtime_base_dir, &running_job, &request);
+    let success = value_bool(&outcome, "ok");
+    let final_status = if success {
+        "applied_pending_runtime_restart"
+    } else {
+        "failed"
+    };
+    let mut final_job = running_job;
+    set_local_repair_job_finished(&mut final_job, final_status, &outcome, updated_at_ms);
+    let write_error = write_local_repair_job(&job_path, &final_job).err();
+
+    json!({
+        "schema_version": MODEL_LOCAL_RUNTIME_REPAIR_JOBS_SCHEMA_VERSION,
+        "ok": success && write_error.is_none(),
+        "executed": true,
+        "status": if write_error.is_some() { "job_update_failed" } else { final_status },
+        "selected_job": summarize_local_repair_job(&job_path, &file_name, &final_job),
+        "planned_execution": planned,
+        "outcome": outcome,
+        "write_error": write_error.unwrap_or_default(),
+        "runtime_base_dir": runtime_base_dir.display().to_string(),
+        "updated_at_ms": updated_at_ms.min(i64::MAX as u128) as i64,
+        "secret_fields_included": false,
+    })
+}
+
+fn select_next_local_repair_job(jobs_dir: &Path) -> Option<(PathBuf, String, Value)> {
+    let entries = fs::read_dir(jobs_dir).ok()?;
+    let mut rows = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if !file_name.ends_with(".json") {
+            continue;
+        }
+        let Ok(raw) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if raw_contains_potential_secret_material(&raw) {
+            continue;
+        }
+        let Ok(job) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        if value_string(&job, "schema_version") != MODEL_LOCAL_RUNTIME_REPAIR_JOB_SCHEMA_VERSION {
+            continue;
+        }
+        if value_string(&job, "status") != "queued_waiting_executor" {
+            continue;
+        }
+        let sort_ms = first_value_u64(&job, &["created_at_ms"])
+            .unwrap_or(0)
+            .max(file_modified_at_ms(&path));
+        rows.push((sort_ms, file_name, path, job));
+    }
+    rows.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    rows.into_iter()
+        .next()
+        .map(|(_, file_name, path, job)| (path, file_name, job))
+}
+
+fn planned_local_repair_job_execution(
+    runtime_base_dir: &Path,
+    job: &Value,
+    request: &ModelLocalRepairExecutorRequest,
+) -> Value {
+    let resolved = job.get("resolved").unwrap_or(&Value::Null);
+    let requirements = job.get("requirements").unwrap_or(&Value::Null);
+    let action = value_string(resolved, "action");
+    let packages = sorted_string_values(requirements, &["python_packages", "pythonPackages"]);
+    let python = selected_repair_python(runtime_base_dir, &request.python);
+    let py_deps_root = runtime_base_dir.join("py_deps");
+    let site_packages = py_deps_root.join("site-packages");
+    json!({
+        "executor": "rust_model_repair_executor",
+        "execution_mode": "background_cli_process",
+        "action": action,
+        "python": python,
+        "py_deps_root": py_deps_root.display().to_string(),
+        "site_packages": site_packages.display().to_string(),
+        "marker_path": py_deps_root.join("USE_PYTHONPATH").display().to_string(),
+        "python_packages": packages,
+        "requires_network": action.starts_with("install_provider_pack:") && !packages.is_empty(),
+        "timeout_ms": request.timeout_ms.max(1_000),
+        "ui_thread_blocking_allowed": false,
+        "http_request_blocking_allowed": false,
+    })
+}
+
+fn set_local_repair_job_running(
+    job: &mut Value,
+    request: &ModelLocalRepairExecutorRequest,
+    updated_at_ms: u128,
+) {
+    if let Value::Object(object) = job {
+        object.insert("status".to_string(), json!("running_install_provider_pack"));
+        object.insert(
+            "updated_at_ms".to_string(),
+            json!(updated_at_ms.min(i64::MAX as u128) as i64),
+        );
+        object.insert(
+            "executor_state".to_string(),
+            json!({
+                "ready": true,
+                "reason_code": "rust_model_repair_executor_running",
+                "requested_by": first_non_empty(&request.requested_by, "unknown"),
+                "ui_thread_blocking_allowed": false,
+                "http_request_blocking_allowed": false,
+            }),
+        );
+    }
+}
+
+fn set_local_repair_job_finished(
+    job: &mut Value,
+    status: &str,
+    outcome: &Value,
+    updated_at_ms: u128,
+) {
+    if let Value::Object(object) = job {
+        object.insert("status".to_string(), json!(status));
+        object.insert(
+            "updated_at_ms".to_string(),
+            json!(updated_at_ms.min(i64::MAX as u128) as i64),
+        );
+        object.insert("repair_result".to_string(), outcome.clone());
+        object.insert(
+            "executor_state".to_string(),
+            json!({
+                "ready": true,
+                "reason_code": if value_bool(outcome, "ok") {
+                    "rust_model_repair_executor_completed"
+                } else {
+                    "rust_model_repair_executor_failed"
+                },
+                "ui_thread_blocking_allowed": false,
+                "http_request_blocking_allowed": false,
+            }),
+        );
+    }
+}
+
+fn execute_local_repair_job(
+    runtime_base_dir: &Path,
+    job: &Value,
+    request: &ModelLocalRepairExecutorRequest,
+) -> Value {
+    let resolved = job.get("resolved").unwrap_or(&Value::Null);
+    let requirements = job.get("requirements").unwrap_or(&Value::Null);
+    let action = value_string(resolved, "action");
+    if !action.starts_with("install_provider_pack:") {
+        return json!({
+            "ok": false,
+            "error_code": "unsupported_repair_action",
+            "action": action,
+        });
+    }
+    let packages = sorted_string_values(requirements, &["python_packages", "pythonPackages"]);
+    if packages.is_empty() {
+        return json!({
+            "ok": false,
+            "error_code": "missing_python_packages",
+            "action": action,
+        });
+    }
+    let py_deps_root = runtime_base_dir.join("py_deps");
+    let site_packages = py_deps_root.join("site-packages");
+    if let Err(err) = fs::create_dir_all(&site_packages) {
+        return json!({
+            "ok": false,
+            "error_code": "py_deps_create_failed",
+            "message": err.to_string(),
+        });
+    }
+    let python = selected_repair_python(runtime_base_dir, &request.python);
+    let mut args = vec![
+        "-m".to_string(),
+        "pip".to_string(),
+        "install".to_string(),
+        "--upgrade".to_string(),
+        "--disable-pip-version-check".to_string(),
+        "--no-input".to_string(),
+        "--target".to_string(),
+        site_packages.display().to_string(),
+    ];
+    args.extend(packages.iter().cloned());
+    let output = run_command_capture(
+        &python,
+        &args,
+        runtime_base_dir,
+        request.timeout_ms.max(1_000),
+    );
+    if !output.ok {
+        return json!({
+            "ok": false,
+            "error_code": output.error_code,
+            "exit_code": output.exit_code,
+            "stdout": safe_output_excerpt(&output.stdout),
+            "stderr": safe_output_excerpt(&output.stderr),
+            "python": python,
+            "site_packages": site_packages.display().to_string(),
+            "packages": packages,
+        });
+    }
+    let marker = py_deps_root.join("USE_PYTHONPATH");
+    if let Err(err) = fs::write(&marker, b"1\n") {
+        return json!({
+            "ok": false,
+            "error_code": "py_deps_marker_write_failed",
+            "message": err.to_string(),
+            "python": python,
+            "site_packages": site_packages.display().to_string(),
+            "packages": packages,
+        });
+    }
+    json!({
+        "ok": true,
+        "status": "installed_provider_pack_dependencies",
+        "python": python,
+        "site_packages": site_packages.display().to_string(),
+        "marker_path": marker.display().to_string(),
+        "packages": packages,
+        "stdout": safe_output_excerpt(&output.stdout),
+        "stderr": safe_output_excerpt(&output.stderr),
+        "next_step": "Restart or refresh the Hub local AI runtime, then re-check /model/capabilities and /local-ml/readiness.",
+    })
+}
+
+struct RepairCommandOutput {
+    ok: bool,
+    exit_code: i32,
+    error_code: String,
+    stdout: String,
+    stderr: String,
+}
+
+fn run_command_capture(
+    executable: &str,
+    args: &[String],
+    runtime_base_dir: &Path,
+    timeout_ms: u64,
+) -> RepairCommandOutput {
+    let mut child = match Command::new(executable)
+        .args(args)
+        .env("REL_FLOW_HUB_BASE_DIR", runtime_base_dir)
+        .env("PYTHONUNBUFFERED", "1")
+        .env("PIP_DISABLE_PIP_VERSION_CHECK", "1")
+        .env("PIP_NO_INPUT", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(err) => {
+            return RepairCommandOutput {
+                ok: false,
+                exit_code: -1,
+                error_code: format!("spawn_failed:{err}"),
+                stdout: String::new(),
+                stderr: String::new(),
+            }
+        }
+    };
+
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let stdout_handle = thread::spawn(move || {
+        let mut out = String::new();
+        if let Some(ref mut handle) = stdout {
+            let _ = handle.read_to_string(&mut out);
+        }
+        out
+    });
+    let stderr_handle = thread::spawn(move || {
+        let mut out = String::new();
+        if let Some(ref mut handle) = stderr {
+            let _ = handle.read_to_string(&mut out);
+        }
+        out
+    });
+
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let stdout = stdout_handle.join().unwrap_or_default();
+                    let stderr = stderr_handle.join().unwrap_or_default();
+                    return RepairCommandOutput {
+                        ok: false,
+                        exit_code: -1,
+                        error_code: "timeout".to_string(),
+                        stdout,
+                        stderr,
+                    };
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(err) => {
+                let _ = child.kill();
+                let stdout = stdout_handle.join().unwrap_or_default();
+                let stderr = stderr_handle.join().unwrap_or_default();
+                return RepairCommandOutput {
+                    ok: false,
+                    exit_code: -1,
+                    error_code: format!("wait_failed:{err}"),
+                    stdout,
+                    stderr,
+                };
+            }
+        }
+    };
+    let stdout = stdout_handle.join().unwrap_or_default();
+    let stderr = stderr_handle.join().unwrap_or_default();
+    RepairCommandOutput {
+        ok: status.success(),
+        exit_code: status.code().unwrap_or(-1),
+        error_code: if status.success() {
+            String::new()
+        } else {
+            "process_exit_failed".to_string()
+        },
+        stdout,
+        stderr,
+    }
+}
+
+fn selected_repair_python(runtime_base_dir: &Path, requested: &str) -> String {
+    let trimmed = requested.trim();
+    if !trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+    python_from_runtime_status(runtime_base_dir).unwrap_or_else(|| "python3".to_string())
+}
+
+fn python_from_runtime_status(runtime_base_dir: &Path) -> Option<String> {
+    let raw = fs::read_to_string(runtime_base_dir.join("ai_runtime_status.json")).ok()?;
+    let value = serde_json::from_str::<Value>(&raw).ok()?;
+    let direct = first_value_string(
+        &value,
+        &[
+            "pythonExecutable",
+            "python_executable",
+            "pythonPath",
+            "python_path",
+            "resolvedPythonPath",
+            "resolved_python_path",
+        ],
+    );
+    if !direct.is_empty() {
+        return Some(direct);
+    }
+    None
+}
+
+fn write_local_repair_job(path: &Path, job: &Value) -> Result<(), String> {
+    if job
+        .get("secret_fields_included")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err("refusing_to_write_secret_bearing_repair_job".to_string());
+    }
+    let raw = serde_json::to_vec_pretty(job)
+        .map_err(|err| format!("model repair job serialize failed: {err}"))?;
+    fs::write(path, raw).map_err(|err| format!("model repair job write failed: {err}"))
+}
+
+fn safe_output_excerpt(raw: &str) -> String {
+    if raw_contains_potential_secret_material(raw) {
+        return "[redacted_potential_secret_material]".to_string();
+    }
+    raw.chars().take(800).collect::<String>()
+}
+
+fn resolve_local_repair_action(
+    request: &ModelLocalRepairPlanRequest,
+    local_models: &[xhub_runtime::LocalModelInventoryRow],
+    provider_summaries: &[RuntimeProviderSummary],
+) -> ResolvedLocalRepairAction {
+    let requested_action = normalized_token(&request.action);
+    let requested_task_kind = normalized_task_kind(&request.task_kind);
+    let requested_provider_id = normalized_provider_id(&request.provider_id);
+    if !requested_action.is_empty() && requested_action != "auto" {
+        return ResolvedLocalRepairAction {
+            provider_id: provider_id_for_repair_action(&requested_action)
+                .or_else(|| {
+                    if requested_provider_id.is_empty() {
+                        None
+                    } else {
+                        Some(requested_provider_id.clone())
+                    }
+                })
+                .or_else(|| default_provider_for_task(&requested_task_kind).map(str::to_string))
+                .unwrap_or_default(),
+            task_kind: task_kind_for_repair_action(&requested_action)
+                .or_else(|| {
+                    if requested_task_kind.is_empty() {
+                        None
+                    } else {
+                        Some(requested_task_kind.clone())
+                    }
+                })
+                .unwrap_or_default(),
+            action: requested_action,
+            source: "request_action".to_string(),
+        };
+    }
+    if !requested_task_kind.is_empty() {
+        if let Some(spec) = local_capability_task_spec(&requested_task_kind) {
+            let task_value = local_capability_task_value(spec, local_models, provider_summaries);
+            let action = value_string(&task_value, "repair_action");
+            return ResolvedLocalRepairAction {
+                provider_id: provider_id_for_repair_action(&action)
+                    .or_else(|| default_provider_for_task(&requested_task_kind).map(str::to_string))
+                    .unwrap_or_default(),
+                task_kind: requested_task_kind,
+                action,
+                source: "request_task_kind".to_string(),
+            };
+        }
+        return ResolvedLocalRepairAction {
+            action: format!("inspect_task:{requested_task_kind}"),
+            task_kind: requested_task_kind,
+            provider_id: String::new(),
+            source: "request_task_kind_unknown".to_string(),
+        };
+    }
+    if !requested_provider_id.is_empty() {
+        let action = provider_summaries
+            .iter()
+            .find(|provider| provider.provider_id == requested_provider_id)
+            .map(|provider| provider.repair_action.clone())
+            .unwrap_or_else(|| format!("repair_provider_runtime:{requested_provider_id}"));
+        return ResolvedLocalRepairAction {
+            action,
+            task_kind: String::new(),
+            provider_id: requested_provider_id,
+            source: "request_provider_id".to_string(),
+        };
+    }
+    for spec in LOCAL_CAPABILITY_TASK_SPECS {
+        let task_value = local_capability_task_value(spec, local_models, provider_summaries);
+        let action = value_string(&task_value, "repair_action");
+        if !action.is_empty() && action != "none" {
+            return ResolvedLocalRepairAction {
+                provider_id: provider_id_for_repair_action(&action)
+                    .or_else(|| default_provider_for_task(spec.task_kind).map(str::to_string))
+                    .unwrap_or_default(),
+                task_kind: spec.task_kind.to_string(),
+                action,
+                source: "first_blocking_task".to_string(),
+            };
+        }
+    }
+    ResolvedLocalRepairAction {
+        action: "none".to_string(),
+        task_kind: String::new(),
+        provider_id: String::new(),
+        source: "all_tasks_ready".to_string(),
+    }
+}
+
+fn local_repair_plan_details(
+    resolved: &ResolvedLocalRepairAction,
+    provider_summaries: &[RuntimeProviderSummary],
+) -> Value {
+    let (action_kind, action_target) = repair_action_parts(&resolved.action);
+    match action_kind.as_str() {
+        "none" => json!({
+            "state": "ready",
+            "safe_to_auto_apply": true,
+            "requires_user_approval": false,
+            "requires_network": false,
+            "requires_download": false,
+            "offline_bundle_supported": true,
+            "summary": "Local model runtime coverage is already ready for the selected scope.",
+            "target": {
+                "kind": "none",
+                "provider_id": resolved.provider_id,
+                "task_kind": resolved.task_kind,
+            },
+            "requirements": {},
+            "current_provider_status": Value::Null,
+            "missing_requirements": [],
+            "steps": [],
+            "post_checks": local_repair_post_checks(&resolved.task_kind),
+        }),
+        "install_provider_pack" => provider_pack_repair_plan(
+            &first_non_empty(&action_target, &resolved.provider_id),
+            &resolved.task_kind,
+            provider_summaries,
+        ),
+        "install_helper_binary" => helper_binary_repair_plan(
+            &first_non_empty(&action_target, &resolved.provider_id),
+            &resolved.task_kind,
+            provider_summaries,
+        ),
+        "add_local_model" => {
+            add_local_model_repair_plan(&first_non_empty(&action_target, &resolved.task_kind))
+        }
+        "register_local_model" => register_local_model_repair_plan(&first_non_empty(
+            &action_target,
+            &resolved.provider_id,
+        )),
+        "enable_provider_capability" => enable_provider_capability_repair_plan(
+            &first_non_empty(&action_target, &resolved.task_kind),
+            &resolved.provider_id,
+            provider_summaries,
+        ),
+        "repair_provider_runtime" => inspect_provider_runtime_repair_plan(
+            &first_non_empty(&action_target, &resolved.provider_id),
+            &resolved.task_kind,
+            provider_summaries,
+        ),
+        _ => inspect_generic_repair_plan(&resolved.action, &resolved.task_kind, provider_summaries),
+    }
+}
+
+fn provider_pack_repair_plan(
+    provider_id: &str,
+    task_kind: &str,
+    provider_summaries: &[RuntimeProviderSummary],
+) -> Value {
+    let provider_id = normalized_provider_id(provider_id);
+    let status = provider_status_json(provider_summaries, &provider_id);
+    let missing_requirements = provider_missing_requirements(provider_summaries, &provider_id)
+        .unwrap_or_else(|| {
+            provider_pack_repair_spec(&provider_id)
+                .map(|spec| {
+                    spec.python_import_modules
+                        .iter()
+                        .map(|module| format!("python_module:{module}"))
+                        .collect::<Vec<String>>()
+                })
+                .unwrap_or_default()
+        });
+    let spec = provider_pack_repair_spec(&provider_id);
+    let python_import_modules = spec
+        .map(|spec| static_string_values(spec.python_import_modules))
+        .unwrap_or_default();
+    let python_packages = spec
+        .map(|spec| static_string_values(spec.python_packages))
+        .unwrap_or_default();
+    let expected_task_kinds = spec
+        .map(|spec| static_string_values(spec.expected_task_kinds))
+        .unwrap_or_else(|| {
+            if task_kind.is_empty() {
+                Vec::new()
+            } else {
+                vec![task_kind.to_string()]
+            }
+        });
+    let supported_domains = spec
+        .map(|spec| static_string_values(spec.supported_domains))
+        .unwrap_or_default();
+    let execution_mode = spec
+        .map(|spec| spec.execution_mode.to_string())
+        .unwrap_or_else(|| "builtin_python".to_string());
+    let engine = spec
+        .map(|spec| spec.engine.to_string())
+        .unwrap_or_else(|| provider_id.clone());
+    let notes = spec
+        .map(|spec| static_string_values(spec.notes))
+        .unwrap_or_default();
+
+    json!({
+        "state": "repair_required",
+        "safe_to_auto_apply": false,
+        "requires_user_approval": true,
+        "requires_network": true,
+        "requires_download": true,
+        "offline_bundle_supported": true,
+        "summary": format!("Install or repair Hub local provider pack `{provider_id}` before XT uses local model tasks."),
+        "target": {
+            "kind": "provider_pack",
+            "provider_id": provider_id,
+            "task_kind": task_kind,
+        },
+        "requirements": {
+            "engine": engine,
+            "execution_mode": execution_mode,
+            "install_target": "hub_managed_python_runtime",
+            "python_import_modules": python_import_modules,
+            "python_packages": python_packages,
+            "supported_domains": supported_domains,
+            "expected_task_kinds": expected_task_kinds,
+            "notes": notes,
+        },
+        "current_provider_status": status,
+        "missing_requirements": missing_requirements,
+        "steps": [
+            {
+                "step_id": "confirm_provider_pack_repair",
+                "action_kind": "request_user_approval",
+                "title": "Confirm provider pack repair",
+                "description": "Hub or XT UI must ask the user before installing runtime dependencies.",
+                "requires_user_approval": true,
+                "requires_network": false
+            },
+            {
+                "step_id": "install_provider_pack_dependencies",
+                "action_kind": "install_provider_pack",
+                "title": "Install Hub-managed provider dependencies",
+                "description": "Install the required Python modules into Hub's managed runtime, or use a trusted offline bundle.",
+                "requires_user_approval": true,
+                "requires_network": true
+            },
+            {
+                "step_id": "restart_local_runtime",
+                "action_kind": "restart_local_runtime",
+                "title": "Restart local AI runtime",
+                "description": "Restart the Hub local runtime so the provider probe can reload the installed modules.",
+                "requires_user_approval": false,
+                "requires_network": false
+            }
+        ],
+        "post_checks": local_repair_post_checks(task_kind),
+    })
+}
+
+fn helper_binary_repair_plan(
+    provider_id: &str,
+    task_kind: &str,
+    provider_summaries: &[RuntimeProviderSummary],
+) -> Value {
+    let provider_id = normalized_provider_id(provider_id);
+    json!({
+        "state": "repair_required",
+        "safe_to_auto_apply": false,
+        "requires_user_approval": true,
+        "requires_network": true,
+        "requires_download": true,
+        "offline_bundle_supported": true,
+        "summary": format!("Install or configure the `{provider_id}` helper binary for Hub local models."),
+        "target": {
+            "kind": "helper_binary",
+            "provider_id": provider_id,
+            "task_kind": task_kind,
+        },
+        "requirements": {
+            "execution_mode": "helper_binary_bridge",
+            "install_target": "local_helper_binary",
+            "helper_binary": provider_pack_repair_spec(&provider_id)
+                .map(|spec| spec.helper_binary)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("helper binary"),
+            "expected_task_kinds": provider_pack_repair_spec(&provider_id)
+                .map(|spec| static_string_values(spec.expected_task_kinds))
+                .unwrap_or_default(),
+            "notes": provider_pack_repair_spec(&provider_id)
+                .map(|spec| static_string_values(spec.notes))
+                .unwrap_or_default(),
+        },
+        "current_provider_status": provider_status_json(provider_summaries, &provider_id),
+        "missing_requirements": provider_missing_requirements(provider_summaries, &provider_id)
+            .unwrap_or_else(|| vec![format!("helper_binary:{provider_id}")]),
+        "steps": [
+            {
+                "step_id": "confirm_helper_install",
+                "action_kind": "request_user_approval",
+                "title": "Confirm helper binary install",
+                "description": "Ask the user before downloading or selecting a helper binary.",
+                "requires_user_approval": true,
+                "requires_network": false
+            },
+            {
+                "step_id": "configure_helper_binary",
+                "action_kind": "configure_helper_binary",
+                "title": "Configure helper binary path",
+                "description": "Install or select the helper binary path in Hub settings, then keep execution local.",
+                "requires_user_approval": true,
+                "requires_network": true
+            },
+            {
+                "step_id": "restart_local_runtime",
+                "action_kind": "restart_local_runtime",
+                "title": "Restart local AI runtime",
+                "description": "Restart the Hub local runtime and rerun provider readiness.",
+                "requires_user_approval": false,
+                "requires_network": false
+            }
+        ],
+        "post_checks": local_repair_post_checks(task_kind),
+    })
+}
+
+fn add_local_model_repair_plan(task_kind: &str) -> Value {
+    let task_kind = normalized_task_kind(task_kind);
+    json!({
+        "state": "repair_required",
+        "safe_to_auto_apply": false,
+        "requires_user_approval": true,
+        "requires_network": false,
+        "requires_download": false,
+        "offline_bundle_supported": true,
+        "summary": format!("Register a local model for `{}` before XT routes that task locally.", first_non_empty(&task_kind, "requested_task")),
+        "target": {
+            "kind": "local_model",
+            "provider_id": default_provider_for_task(&task_kind).unwrap_or(""),
+            "task_kind": task_kind,
+        },
+        "requirements": {
+            "expected_capability": capability_for_task(&task_kind).unwrap_or(""),
+            "expected_task_kind": task_kind,
+            "may_require_model_download": true,
+            "install_target": "hub_local_model_registry",
+        },
+        "current_provider_status": Value::Null,
+        "missing_requirements": [],
+        "steps": [
+            {
+                "step_id": "select_or_download_model",
+                "action_kind": "select_local_model_artifact",
+                "title": "Select a local model artifact",
+                "description": "Import an existing local model file or use an approved model source.",
+                "requires_user_approval": true,
+                "requires_network": false
+            },
+            {
+                "step_id": "register_model_task",
+                "action_kind": "register_local_model",
+                "title": "Register model task kind",
+                "description": "Register the model in Hub with the expected task kind and provider.",
+                "requires_user_approval": false,
+                "requires_network": false
+            }
+        ],
+        "post_checks": local_repair_post_checks(&task_kind),
+    })
+}
+
+fn register_local_model_repair_plan(provider_id: &str) -> Value {
+    let provider_id = normalized_provider_id(provider_id);
+    json!({
+        "state": "repair_required",
+        "safe_to_auto_apply": false,
+        "requires_user_approval": true,
+        "requires_network": false,
+        "requires_download": false,
+        "offline_bundle_supported": true,
+        "summary": format!("Register at least one local model for provider `{provider_id}`."),
+        "target": {
+            "kind": "local_model_registry",
+            "provider_id": provider_id,
+            "task_kind": "",
+        },
+        "requirements": {
+            "install_target": "hub_local_model_registry",
+            "provider_id": provider_id,
+        },
+        "current_provider_status": Value::Null,
+        "missing_requirements": [],
+        "steps": [
+            {
+                "step_id": "open_model_import",
+                "action_kind": "open_hub_model_import",
+                "title": "Open Hub model import",
+                "description": "Import or register a model artifact that matches the provider.",
+                "requires_user_approval": true,
+                "requires_network": false
+            }
+        ],
+        "post_checks": local_repair_post_checks(""),
+    })
+}
+
+fn enable_provider_capability_repair_plan(
+    task_kind: &str,
+    provider_id: &str,
+    provider_summaries: &[RuntimeProviderSummary],
+) -> Value {
+    let task_kind = normalized_task_kind(task_kind);
+    let provider_id = first_non_empty(
+        &normalized_provider_id(provider_id),
+        default_provider_for_task(&task_kind).unwrap_or(""),
+    );
+    json!({
+        "state": "repair_required",
+        "safe_to_auto_apply": false,
+        "requires_user_approval": true,
+        "requires_network": false,
+        "requires_download": false,
+        "offline_bundle_supported": true,
+        "summary": format!("Enable or correct provider capability mapping for `{}`.", first_non_empty(&task_kind, "requested_task")),
+        "target": {
+            "kind": "provider_capability",
+            "provider_id": provider_id,
+            "task_kind": task_kind,
+        },
+        "requirements": {
+            "expected_capability": capability_for_task(&task_kind).unwrap_or(""),
+            "install_target": "hub_provider_capability_registry",
+        },
+        "current_provider_status": provider_status_json(provider_summaries, &provider_id),
+        "missing_requirements": [],
+        "steps": [
+            {
+                "step_id": "inspect_capability_mapping",
+                "action_kind": "inspect_provider_capability",
+                "title": "Inspect provider capability mapping",
+                "description": "Verify the model task kind, provider pack domains, and capability tags are aligned.",
+                "requires_user_approval": false,
+                "requires_network": false
+            },
+            {
+                "step_id": "save_capability_mapping",
+                "action_kind": "save_provider_capability",
+                "title": "Save corrected capability mapping",
+                "description": "Update Hub registry metadata so routing and readiness agree.",
+                "requires_user_approval": true,
+                "requires_network": false
+            }
+        ],
+        "post_checks": local_repair_post_checks(&task_kind),
+    })
+}
+
+fn inspect_provider_runtime_repair_plan(
+    provider_id: &str,
+    task_kind: &str,
+    provider_summaries: &[RuntimeProviderSummary],
+) -> Value {
+    let provider_id = normalized_provider_id(provider_id);
+    json!({
+        "state": "inspect_required",
+        "safe_to_auto_apply": false,
+        "requires_user_approval": false,
+        "requires_network": false,
+        "requires_download": false,
+        "offline_bundle_supported": true,
+        "summary": format!("Inspect provider `{provider_id}` runtime status before choosing a repair."),
+        "target": {
+            "kind": "provider_runtime",
+            "provider_id": provider_id,
+            "task_kind": task_kind,
+        },
+        "requirements": {},
+        "current_provider_status": provider_status_json(provider_summaries, &provider_id),
+        "missing_requirements": provider_missing_requirements(provider_summaries, &provider_id)
+            .unwrap_or_default(),
+        "steps": [
+            {
+                "step_id": "inspect_provider_status",
+                "action_kind": "inspect_provider_status",
+                "title": "Inspect provider status",
+                "description": "Read current provider reason code, import error, and missing requirements.",
+                "requires_user_approval": false,
+                "requires_network": false
+            }
+        ],
+        "post_checks": local_repair_post_checks(task_kind),
+    })
+}
+
+fn inspect_generic_repair_plan(
+    action: &str,
+    task_kind: &str,
+    provider_summaries: &[RuntimeProviderSummary],
+) -> Value {
+    json!({
+        "state": "inspect_required",
+        "safe_to_auto_apply": false,
+        "requires_user_approval": false,
+        "requires_network": false,
+        "requires_download": false,
+        "offline_bundle_supported": true,
+        "summary": format!("Inspect local model runtime repair action `{}`.", first_non_empty(action, "unknown")),
+        "target": {
+            "kind": "runtime_preflight",
+            "provider_id": provider_id_for_repair_action(action).unwrap_or_default(),
+            "task_kind": task_kind,
+        },
+        "requirements": {},
+        "current_provider_status": provider_id_for_repair_action(action)
+            .map(|provider_id| provider_status_json(provider_summaries, &provider_id))
+            .unwrap_or(Value::Null),
+        "missing_requirements": provider_id_for_repair_action(action)
+            .and_then(|provider_id| provider_missing_requirements(provider_summaries, &provider_id))
+            .unwrap_or_default(),
+        "steps": [
+            {
+                "step_id": "inspect_model_runtime_preflight",
+                "action_kind": "inspect_model_runtime_preflight",
+                "title": "Inspect model runtime preflight",
+                "description": "Use Hub diagnostics to identify the concrete provider or model registry blocker.",
+                "requires_user_approval": false,
+                "requires_network": false
+            }
+        ],
+        "post_checks": local_repair_post_checks(task_kind),
+    })
+}
+
+fn provider_pack_repair_spec(provider_id: &str) -> Option<ProviderPackRepairSpec> {
+    match normalized_provider_id(provider_id).as_str() {
+        "mlx" => Some(ProviderPackRepairSpec {
+            engine: "mlx-llm",
+            execution_mode: "builtin_python",
+            supported_domains: &["text"],
+            expected_task_kinds: &["text_generate"],
+            python_import_modules: &["mlx", "mlx_lm"],
+            python_packages: &["mlx", "mlx-lm"],
+            helper_binary: "",
+            notes: &["offline_execution", "legacy_runtime_compatible"],
+        }),
+        "mlx_vlm" => Some(ProviderPackRepairSpec {
+            engine: "mlx-vlm",
+            execution_mode: "builtin_python",
+            supported_domains: &["vision", "ocr"],
+            expected_task_kinds: &["vision_understand", "ocr"],
+            python_import_modules: &["mlx", "mlx_lm", "mlx_vlm", "transformers", "PIL"],
+            python_packages: &["mlx", "mlx-lm", "mlx-vlm", "transformers", "Pillow"],
+            helper_binary: "",
+            notes: &["offline_execution", "native_mlx_multimodal_runtime"],
+        }),
+        "transformers" => Some(ProviderPackRepairSpec {
+            engine: "hf-transformers",
+            execution_mode: "builtin_python",
+            supported_domains: &["embedding", "audio", "vision", "ocr"],
+            expected_task_kinds: &[
+                "embedding",
+                "speech_to_text",
+                "text_to_speech",
+                "vision_understand",
+                "ocr",
+            ],
+            python_import_modules: &["transformers", "torch", "tokenizers", "PIL"],
+            python_packages: &["transformers", "torch", "tokenizers", "Pillow"],
+            helper_binary: "",
+            notes: &["offline_execution", "processor_required_for_multimodal"],
+        }),
+        "llama.cpp" => Some(ProviderPackRepairSpec {
+            engine: "llama.cpp",
+            execution_mode: "helper_binary_bridge",
+            supported_domains: &["text", "embedding"],
+            expected_task_kinds: &["text_generate", "embedding"],
+            python_import_modules: &[],
+            python_packages: &[],
+            helper_binary: "llama-server",
+            notes: &["offline_execution", "external_local_engine_required"],
+        }),
+        _ => None,
+    }
+}
+
+fn local_capability_task_spec(task_kind: &str) -> Option<&'static LocalCapabilityTaskSpec> {
+    let task_kind = normalized_task_kind(task_kind);
+    LOCAL_CAPABILITY_TASK_SPECS
+        .iter()
+        .find(|spec| spec.task_kind == task_kind)
+}
+
+fn normalized_task_kind(value: &str) -> String {
+    match normalized_token(value)
+        .replace(['-', '.', ' '], "_")
+        .as_str()
+    {
+        "" => String::new(),
+        "text" | "text_generate" | "generate" | "chat" => "text_generate".to_string(),
+        "embedding" | "embeddings" | "embedding_generate" => "embedding".to_string(),
+        "vision" | "vision_understand" | "vision_describe" | "image_understand"
+        | "image_describe" => "vision_understand".to_string(),
+        "ocr" | "vision_ocr" => "ocr".to_string(),
+        "speech_to_text" | "audio_transcribe" | "transcribe" | "asr" => {
+            "speech_to_text".to_string()
+        }
+        "text_to_speech" | "audio_tts" | "tts" => "text_to_speech".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn repair_action_parts(action: &str) -> (String, String) {
+    let normalized = normalized_token(action);
+    let (kind, target) = normalized
+        .split_once(':')
+        .unwrap_or((normalized.as_str(), ""));
+    (kind.trim().to_string(), target.trim().to_string())
+}
+
+fn local_repair_confirmation_token(action: &str) -> String {
+    let action = normalized_token(action);
+    if action.is_empty() {
+        "confirm:none".to_string()
+    } else {
+        format!("confirm:{action}")
+    }
+}
+
+fn local_repair_jobs_dir(runtime_base_dir: &Path) -> PathBuf {
+    runtime_base_dir.join("model_repair_jobs")
+}
+
+fn local_repair_job_id(action: &str, now: u128) -> String {
+    let action = normalized_token(action);
+    let mut safe_action = String::new();
+    for ch in action.chars() {
+        if ch.is_ascii_alphanumeric() {
+            safe_action.push(ch);
+        } else if !safe_action.ends_with('_') {
+            safe_action.push('_');
+        }
+    }
+    let safe_action = safe_action.trim_matches('_');
+    let safe_action = if safe_action.is_empty() {
+        "repair".to_string()
+    } else {
+        safe_action.to_string()
+    };
+    format!(
+        "model_repair_{}_{}_{}_{}",
+        now.min(i64::MAX as u128) as i64,
+        std::process::id(),
+        MODEL_REPAIR_JOB_COUNTER.fetch_add(1, Ordering::Relaxed),
+        safe_action
+    )
+}
+
+fn provider_id_for_repair_action(action: &str) -> Option<String> {
+    let (kind, target) = repair_action_parts(action);
+    match kind.as_str() {
+        "install_provider_pack"
+        | "install_helper_binary"
+        | "repair_provider_runtime"
+        | "register_local_model" => {
+            let provider_id = normalized_provider_id(&target);
+            if provider_id.is_empty() {
+                None
+            } else {
+                Some(provider_id)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn task_kind_for_repair_action(action: &str) -> Option<String> {
+    let (kind, target) = repair_action_parts(action);
+    match kind.as_str() {
+        "add_local_model" | "enable_provider_capability" | "inspect_task" => {
+            let task_kind = normalized_task_kind(&target);
+            if task_kind.is_empty() {
+                None
+            } else {
+                Some(task_kind)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn default_provider_for_task(task_kind: &str) -> Option<&'static str> {
+    match normalized_task_kind(task_kind).as_str() {
+        "text_generate" => Some("mlx"),
+        "embedding" => Some("transformers"),
+        "vision_understand" | "ocr" => Some("mlx_vlm"),
+        "speech_to_text" | "text_to_speech" => Some("transformers"),
+        _ => None,
+    }
+}
+
+fn capability_for_task(task_kind: &str) -> Option<&'static str> {
+    local_capability_task_spec(task_kind).map(|spec| spec.capability)
+}
+
+fn provider_status_json(provider_summaries: &[RuntimeProviderSummary], provider_id: &str) -> Value {
+    let provider_id = normalized_provider_id(provider_id);
+    provider_summaries
+        .iter()
+        .find(|provider| provider.provider_id == provider_id)
+        .map(runtime_provider_summary_json)
+        .unwrap_or(Value::Null)
+}
+
+fn provider_missing_requirements(
+    provider_summaries: &[RuntimeProviderSummary],
+    provider_id: &str,
+) -> Option<Vec<String>> {
+    let provider_id = normalized_provider_id(provider_id);
+    provider_summaries
+        .iter()
+        .find(|provider| provider.provider_id == provider_id)
+        .map(|provider| provider.runtime_missing_requirements.clone())
+        .filter(|requirements| !requirements.is_empty())
+}
+
+fn local_repair_post_checks(task_kind: &str) -> Vec<Value> {
+    let task_kind = normalized_task_kind(task_kind);
+    let mut checks = vec![
+        json!({
+            "kind": "http",
+            "endpoint": "/model/capabilities",
+            "expect": "selected task reports ready or a more specific repair_action",
+        }),
+        json!({
+            "kind": "http",
+            "endpoint": "/local-ml/readiness",
+            "expect": "local runtime provider probe is ready for the repaired provider",
+        }),
+    ];
+    if !task_kind.is_empty() {
+        checks.push(json!({
+            "kind": "http",
+            "endpoint": format!("/model/repair-plan?task_kind={task_kind}"),
+            "expect": "repair plan resolves to none or next concrete blocker",
+        }));
+    }
+    checks
+}
+
+fn static_string_values(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| value.to_string()).collect()
+}
+
+fn task_kinds_for_capabilities(capabilities: &[String]) -> Vec<String> {
+    let mut values = capabilities
+        .iter()
+        .filter_map(|capability| task_kind_for_capability(capability))
+        .map(|value| value.to_string())
+        .collect::<Vec<String>>();
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn task_kind_for_capability(capability: &str) -> Option<&'static str> {
+    match normalized_capability(capability).as_str() {
+        "text.generate" | "text.summarize" | "code.assist" | "code.review" => Some("text_generate"),
+        "embedding.generate" => Some("embedding"),
+        "vision.describe" => Some("vision_understand"),
+        "vision.ocr" => Some("ocr"),
+        "audio.transcribe" => Some("speech_to_text"),
+        "audio.tts" => Some("text_to_speech"),
+        _ => None,
+    }
 }
 
 fn compare_json(config: &HubConfig, flags: FlagArgs) -> Result<String, String> {
@@ -544,8 +2736,13 @@ fn help_json() -> String {
     json!({
         "schema_version": MODEL_BRIDGE_SCHEMA_VERSION,
         "ok": true,
-        "commands": ["inventory", "route", "compare", "reports", "readiness", "diagnostics"],
+        "commands": ["inventory", "capabilities", "repair-plan", "repair-apply", "repair-jobs", "repair-executor", "route", "compare", "reports", "readiness", "diagnostics"],
         "inventory_flags": ["--runtime-base-dir", "--now-ms"],
+        "capabilities_flags": ["--runtime-base-dir", "--now-ms"],
+        "repair_plan_flags": ["--action", "--task-kind", "--provider-id", "--runtime-base-dir", "--now-ms"],
+        "repair_apply_flags": ["--action", "--task-kind", "--provider-id", "--confirm", "--confirmation-token", "--dry-run", "--requested-by", "--runtime-base-dir", "--now-ms"],
+        "repair_jobs_flags": ["--limit", "--runtime-base-dir", "--now-ms"],
+        "repair_executor_flags": ["--allow-network", "--dry-run", "--python", "--timeout-ms", "--requested-by", "--runtime-base-dir", "--now-ms"],
         "route_flags": ["--task-type", "--model-id", "--required-capability", "--privacy-mode", "--cost-preference", "--runtime-base-dir", "--now-ms"],
         "compare_flags": ["--node-inventory-json", "--runtime-base-dir", "--now-ms"],
         "reports_flags": ["--limit"],
@@ -707,6 +2904,14 @@ fn file_modified_at_ms(path: &Path) -> u64 {
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
         .unwrap_or(0)
+}
+
+fn raw_contains_potential_secret_material(raw: &str) -> bool {
+    let lower = raw.to_lowercase();
+    lower.contains("sk-")
+        || lower.contains("api_key")
+        || lower.contains("refresh_token")
+        || lower.contains("password")
 }
 
 fn normalize_model_inventory(inventory: &Value) -> Value {
@@ -1027,14 +3232,19 @@ fn default_capability_for_task(task_type: &str) -> String {
         .replace('-', ".")
         .as_str()
     {
+        "text.generate" | "generate.text" | "text" => "text.generate".to_string(),
         "summarize" | "summary" | "text.summarize" => "text.summarize".to_string(),
         "coder" | "code" | "code.assist" => "code.assist".to_string(),
         "reviewer" | "code.review" | "review" => "code.review".to_string(),
         "embedding" | "embedding.generate" => "embedding.generate".to_string(),
-        "vision" | "vision.describe" => "vision.describe".to_string(),
+        "vision" | "vision.understand" | "vision.describe" | "image.describe" => {
+            "vision.describe".to_string()
+        }
         "ocr" | "vision.ocr" => "vision.ocr".to_string(),
-        "audio.transcribe" | "transcribe" => "audio.transcribe".to_string(),
-        "audio.tts" | "tts" => "audio.tts".to_string(),
+        "speech.to.text" | "audio.transcribe" | "transcribe" | "asr" => {
+            "audio.transcribe".to_string()
+        }
+        "text.to.speech" | "audio.tts" | "tts" => "audio.tts".to_string(),
         "tool.calling" | "tool" => "tool.calling".to_string(),
         _ => "text.generate".to_string(),
     }
@@ -1046,15 +3256,19 @@ fn normalized_capability(value: &str) -> String {
         .replace('-', ".")
         .as_str()
     {
-        "text.generate" | "generate.text" => "text.generate".to_string(),
+        "text.generate" | "generate.text" | "text" => "text.generate".to_string(),
         "text.summarize" | "summarize" => "text.summarize".to_string(),
         "code.assist" | "code" => "code.assist".to_string(),
         "code.review" | "review" => "code.review".to_string(),
         "embedding.generate" | "embedding" | "embeddings" => "embedding.generate".to_string(),
-        "vision.describe" | "image.describe" => "vision.describe".to_string(),
+        "vision.understand" | "vision.describe" | "image.describe" | "image.understand" => {
+            "vision.describe".to_string()
+        }
         "vision.ocr" | "ocr" => "vision.ocr".to_string(),
-        "audio.transcribe" | "transcribe" => "audio.transcribe".to_string(),
-        "audio.tts" | "tts" => "audio.tts".to_string(),
+        "speech.to.text" | "audio.transcribe" | "transcribe" | "asr" => {
+            "audio.transcribe".to_string()
+        }
+        "text.to.speech" | "audio.tts" | "tts" => "audio.tts".to_string(),
         "tool.calling" | "tool.use" | "function.calling" => "tool.calling".to_string(),
         other => other.to_string(),
     }
@@ -1296,6 +3510,27 @@ impl FlagArgs {
             .map_err(|err| format!("invalid --{key}: {err}"))
     }
 
+    fn optional_u64(&self, key: &str) -> Result<Option<u64>, String> {
+        let Some(value) = self.optional(key) else {
+            return Ok(None);
+        };
+        value
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|err| format!("invalid --{key}: {err}"))
+    }
+
+    fn optional_bool(&self, key: &str) -> Result<Option<bool>, String> {
+        let Some(value) = self.optional(key) else {
+            return Ok(None);
+        };
+        match normalized_token(&value).as_str() {
+            "1" | "true" | "yes" | "y" | "on" => Ok(Some(true)),
+            "0" | "false" | "no" | "n" | "off" => Ok(Some(false)),
+            _ => Err(format!("invalid --{key}: {value}")),
+        }
+    }
+
     fn optional_i64(&self, key: &str) -> Result<Option<i64>, String> {
         let Some(value) = self.optional(key) else {
             return Ok(None);
@@ -1321,6 +3556,8 @@ impl FlagArgs {
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
     use xhub_core::HubConfig;
 
@@ -1399,6 +3636,452 @@ mod tests {
         assert_eq!(value["local_models"][0]["model_id"], "local.gguf");
         assert_eq!(value["local_models"][0]["format"], "gguf");
         assert!(!raw.contains("sk-secret-in-store"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inventory_local_capability_summary_explains_multimodal_runtime_gaps() {
+        let dir = unique_temp_dir("xhub-model-capability-summary");
+        fs::create_dir_all(&dir).expect("temp dir should be created");
+        let text_path = dir.join("local-text.mlx");
+        let vision_path = dir.join("local-vision.mlx");
+        let speech_path = dir.join("local-speech.hf");
+        let embedding_path = dir.join("local-embedding.hf");
+        for path in [&text_path, &vision_path, &speech_path, &embedding_path] {
+            fs::write(path, "fixture").expect("artifact should be written");
+        }
+        fs::write(
+            dir.join("models_state.json"),
+            format!(
+                r#"{{
+                  "models": [
+                    {{
+                      "id": "local.text",
+                      "backend": "mlx",
+                      "modelPath": "{}",
+                      "taskKinds": ["text_generate"]
+                    }},
+                    {{
+                      "id": "local.vision",
+                      "backend": "mlx_vlm",
+                      "modelPath": "{}",
+                      "taskKinds": ["vision_understand", "ocr"]
+                    }},
+                    {{
+                      "id": "local.speech",
+                      "backend": "transformers",
+                      "modelPath": "{}",
+                      "taskKinds": ["speech_to_text"]
+                    }},
+                    {{
+                      "id": "local.embedding",
+                      "backend": "transformers",
+                      "modelPath": "{}",
+                      "taskKinds": ["embedding"]
+                    }}
+                  ]
+                }}"#,
+                text_path.display(),
+                vision_path.display(),
+                speech_path.display(),
+                embedding_path.display()
+            ),
+        )
+        .expect("models_state should be written");
+        fs::write(
+            dir.join("ai_runtime_status.json"),
+            r#"{
+              "providers": {
+                "mlx": {
+                  "provider": "mlx",
+                  "ok": true,
+                  "availableTaskKinds": ["text_generate"],
+                  "runtimeSource": "fixture",
+                  "updatedAtMs": 1000
+                },
+                "mlx_vlm": {
+                  "provider": "mlx_vlm",
+                  "ok": false,
+                  "reasonCode": "missing_runtime",
+                  "runtimeMissingRequirements": ["python_module:mlx_vlm"],
+                  "importError": "missing_module:mlx_vlm",
+                  "updatedAtMs": 1000
+                },
+                "transformers": {
+                  "provider": "transformers",
+                  "ok": false,
+                  "reasonCode": "missing_runtime",
+                  "runtimeMissingRequirements": ["python_module:torch"],
+                  "importError": "missing_module:torch",
+                  "updatedAtMs": 1000
+                }
+              }
+            }"#,
+        )
+        .expect("runtime status should be written");
+        let config = config_for_runtime_dir(dir.clone());
+
+        let raw = inventory_json_from_parts(&config, Some(dir.clone()), Some(1000))
+            .expect("inventory should read fixtures");
+        let value: serde_json::Value =
+            serde_json::from_str(&raw).expect("inventory json should parse");
+        let summary = &value["local_capability_summary"];
+
+        assert_eq!(
+            summary["schema_version"],
+            MODEL_LOCAL_CAPABILITY_SUMMARY_SCHEMA_VERSION
+        );
+        assert_eq!(summary["coverage_state"], "partial");
+        assert_eq!(summary["all_tasks_ready"], false);
+        assert_eq!(summary["by_task"]["text_generate"]["state"], "ready");
+        assert_eq!(
+            summary["by_task"]["vision_understand"]["state"],
+            "missing_runtime"
+        );
+        assert_eq!(
+            summary["by_task"]["vision_understand"]["repair_action"],
+            "install_provider_pack:mlx_vlm"
+        );
+        assert_eq!(
+            summary["by_task"]["speech_to_text"]["state"],
+            "missing_runtime"
+        );
+        assert_eq!(
+            summary["by_task"]["speech_to_text"]["repair_action"],
+            "install_provider_pack:transformers"
+        );
+        assert_eq!(
+            summary["providers"][1]["runtime_missing_requirements"][0],
+            "python_module:mlx_vlm"
+        );
+        let vision_row = value["local_models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["model_id"] == "local.vision")
+            .expect("vision row should exist");
+        assert!(vision_row["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("vision.describe")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_repair_plan_turns_capability_gap_into_safe_provider_pack_steps() {
+        let dir = unique_temp_dir("xhub-model-repair-plan");
+        fs::create_dir_all(&dir).expect("temp dir should be created");
+        let vision_path = dir.join("local-vision.mlx");
+        fs::write(&vision_path, "fixture").expect("artifact should be written");
+        fs::write(
+            dir.join("models_state.json"),
+            format!(
+                r#"{{
+                  "models": [
+                    {{
+                      "id": "local.vision",
+                      "backend": "mlx_vlm",
+                      "modelPath": "{}",
+                      "taskKinds": ["vision_understand", "ocr"]
+                    }}
+                  ]
+                }}"#,
+                vision_path.display()
+            ),
+        )
+        .expect("models_state should be written");
+        fs::write(
+            dir.join("ai_runtime_status.json"),
+            r#"{
+              "providers": {
+                "mlx_vlm": {
+                  "provider": "mlx_vlm",
+                  "ok": false,
+                  "reasonCode": "missing_runtime",
+                  "runtimeMissingRequirements": ["python_module:mlx_vlm"],
+                  "importError": "missing_module:mlx_vlm",
+                  "updatedAtMs": 1000
+                }
+              }
+            }"#,
+        )
+        .expect("runtime status should be written");
+        let config = config_for_runtime_dir(dir.clone());
+
+        let raw = local_repair_plan_json_from_parts(
+            &config,
+            Some(dir.clone()),
+            ModelLocalRepairPlanRequest {
+                action: String::new(),
+                task_kind: "vision_understand".to_string(),
+                provider_id: String::new(),
+            },
+            Some(1000),
+        )
+        .expect("repair plan should build");
+        let value: serde_json::Value =
+            serde_json::from_str(&raw).expect("repair plan json should parse");
+
+        assert_eq!(
+            value["schema_version"],
+            MODEL_LOCAL_RUNTIME_REPAIR_PLAN_SCHEMA_VERSION
+        );
+        assert_eq!(value["resolved"]["action"], "install_provider_pack:mlx_vlm");
+        assert_eq!(value["target"]["provider_id"], "mlx_vlm");
+        assert_eq!(value["target"]["task_kind"], "vision_understand");
+        assert_eq!(value["safe_to_auto_apply"], false);
+        assert_eq!(value["requires_user_approval"], true);
+        assert_eq!(value["secret_fields_included"], false);
+        assert!(value["requirements"]["python_import_modules"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("mlx_vlm")));
+        assert_eq!(value["missing_requirements"][0], "python_module:mlx_vlm");
+        assert_eq!(value["steps"][1]["action_kind"], "install_provider_pack");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_repair_apply_requires_confirmation_then_queues_nonblocking_job() {
+        let dir = unique_temp_dir("xhub-model-repair-apply");
+        fs::create_dir_all(&dir).expect("temp dir should be created");
+        let vision_path = dir.join("local-vision.mlx");
+        fs::write(&vision_path, "fixture").expect("artifact should be written");
+        fs::write(
+            dir.join("models_state.json"),
+            format!(
+                r#"{{
+                  "models": [
+                    {{
+                      "id": "local.vision",
+                      "backend": "mlx_vlm",
+                      "modelPath": "{}",
+                      "taskKinds": ["vision_understand", "ocr"]
+                    }}
+                  ]
+                }}"#,
+                vision_path.display()
+            ),
+        )
+        .expect("models_state should be written");
+        fs::write(
+            dir.join("ai_runtime_status.json"),
+            r#"{
+              "providers": {
+                "mlx_vlm": {
+                  "provider": "mlx_vlm",
+                  "ok": false,
+                  "reasonCode": "missing_runtime",
+                  "runtimeMissingRequirements": ["python_module:mlx_vlm"],
+                  "importError": "missing_module:mlx_vlm"
+                }
+              }
+            }"#,
+        )
+        .expect("runtime status should be written");
+        let config = config_for_runtime_dir(dir.clone());
+
+        let dry_run_raw = local_repair_apply_json_from_parts(
+            &config,
+            Some(dir.clone()),
+            ModelLocalRepairApplyRequest {
+                task_kind: "vision_understand".to_string(),
+                requested_by: "test".to_string(),
+                ..Default::default()
+            },
+            Some(1000),
+        )
+        .expect("dry-run apply should build");
+        let dry_run: serde_json::Value =
+            serde_json::from_str(&dry_run_raw).expect("apply json should parse");
+        assert_eq!(
+            dry_run["schema_version"],
+            MODEL_LOCAL_RUNTIME_REPAIR_APPLY_SCHEMA_VERSION
+        );
+        assert_eq!(dry_run["accepted"], false);
+        assert_eq!(dry_run["status"], "confirmation_required");
+        assert_eq!(dry_run["dry_run"], true);
+        assert_eq!(
+            dry_run["confirmation"]["token_hint"],
+            "confirm:install_provider_pack:mlx_vlm"
+        );
+        assert!(!local_repair_jobs_dir(&dir).exists());
+
+        let accepted_raw = local_repair_apply_json_from_parts(
+            &config,
+            Some(dir.clone()),
+            ModelLocalRepairApplyRequest {
+                action: "install_provider_pack:mlx_vlm".to_string(),
+                task_kind: "vision_understand".to_string(),
+                confirm: true,
+                confirmation_token: "confirm:install_provider_pack:mlx_vlm".to_string(),
+                requested_by: "test".to_string(),
+                ..Default::default()
+            },
+            Some(1001),
+        )
+        .expect("confirmed apply should queue");
+        let accepted: serde_json::Value =
+            serde_json::from_str(&accepted_raw).expect("apply json should parse");
+        assert_eq!(accepted["accepted"], true);
+        assert_eq!(accepted["status"], "queued_waiting_executor");
+        assert_eq!(
+            accepted["job_policy"]["execution_mode"],
+            "queued_nonblocking"
+        );
+        assert_eq!(
+            accepted["job_policy"]["http_request_blocking_allowed"],
+            false
+        );
+        let job_path = PathBuf::from(accepted["job_path"].as_str().unwrap());
+        assert!(job_path.exists());
+        let job_raw = fs::read_to_string(job_path).expect("job should be readable");
+        let job: serde_json::Value = serde_json::from_str(&job_raw).expect("job json should parse");
+        assert_eq!(
+            job["schema_version"],
+            MODEL_LOCAL_RUNTIME_REPAIR_JOB_SCHEMA_VERSION
+        );
+        assert_eq!(job["status"], "queued_waiting_executor");
+        assert_eq!(
+            job["executor_state"]["reason_code"],
+            "rust_model_repair_executor_available"
+        );
+        assert_eq!(job["executor_state"]["ready"], true);
+        let jobs_raw =
+            local_repair_jobs_json_from_parts(&config, Some(dir.clone()), 10, Some(1002))
+                .expect("repair jobs should build");
+        let jobs: serde_json::Value =
+            serde_json::from_str(&jobs_raw).expect("repair jobs json should parse");
+        assert_eq!(
+            jobs["schema_version"],
+            MODEL_LOCAL_RUNTIME_REPAIR_JOBS_SCHEMA_VERSION
+        );
+        assert_eq!(jobs["count"], 1);
+        assert_eq!(jobs["jobs"][0]["job_id"], accepted["job_id"]);
+        assert_eq!(jobs["jobs"][0]["status"], "queued_waiting_executor");
+        assert_eq!(
+            jobs["jobs"][0]["job_policy"]["http_request_blocking_allowed"],
+            false
+        );
+        assert_eq!(jobs["secret_fields_included"], false);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_repair_executor_installs_provider_pack_into_py_deps_with_fake_python() {
+        let dir = unique_temp_dir("xhub-model-repair-executor");
+        fs::create_dir_all(&dir).expect("temp dir should be created");
+        let vision_path = dir.join("local-vision.mlx");
+        fs::write(&vision_path, "fixture").expect("artifact should be written");
+        fs::write(
+            dir.join("models_state.json"),
+            format!(
+                r#"{{
+                  "models": [
+                    {{
+                      "id": "local.vision",
+                      "backend": "mlx_vlm",
+                      "modelPath": "{}",
+                      "taskKinds": ["vision_understand"]
+                    }}
+                  ]
+                }}"#,
+                vision_path.display()
+            ),
+        )
+        .expect("models_state should be written");
+        fs::write(
+            dir.join("ai_runtime_status.json"),
+            r#"{
+              "pythonExecutable": "python3",
+              "providers": {
+                "mlx_vlm": {
+                  "provider": "mlx_vlm",
+                  "ok": false,
+                  "reasonCode": "missing_runtime",
+                  "runtimeMissingRequirements": ["python_module:mlx_vlm"],
+                  "importError": "missing_module:mlx_vlm"
+                }
+              }
+            }"#,
+        )
+        .expect("runtime status should be written");
+        let fake_python = dir.join("fake-python.sh");
+        fs::write(
+            &fake_python,
+            "#!/bin/sh\necho \"$@\" > \"$REL_FLOW_HUB_BASE_DIR/fake_python_args.txt\"\nexit 0\n",
+        )
+        .expect("fake python should be written");
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(&fake_python).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&fake_python, permissions).unwrap();
+        }
+        let config = config_for_runtime_dir(dir.clone());
+        let _accepted = local_repair_apply_json_from_parts(
+            &config,
+            Some(dir.clone()),
+            ModelLocalRepairApplyRequest {
+                action: "install_provider_pack:mlx_vlm".to_string(),
+                task_kind: "vision_understand".to_string(),
+                confirm: true,
+                confirmation_token: "confirm:install_provider_pack:mlx_vlm".to_string(),
+                requested_by: "test".to_string(),
+                ..Default::default()
+            },
+            Some(2000),
+        )
+        .expect("confirmed apply should queue");
+
+        let preflight_raw = local_repair_executor_json_from_parts(
+            &config,
+            Some(dir.clone()),
+            ModelLocalRepairExecutorRequest {
+                python: fake_python.display().to_string(),
+                requested_by: "test".to_string(),
+                ..Default::default()
+            },
+            Some(2001),
+        )
+        .expect("executor preflight should build");
+        let preflight: serde_json::Value =
+            serde_json::from_str(&preflight_raw).expect("preflight should parse");
+        assert_eq!(preflight["executed"], false);
+        assert_eq!(preflight["status"], "network_approval_required");
+
+        let run_raw = local_repair_executor_json_from_parts(
+            &config,
+            Some(dir.clone()),
+            ModelLocalRepairExecutorRequest {
+                allow_network: true,
+                python: fake_python.display().to_string(),
+                timeout_ms: 5_000,
+                requested_by: "test".to_string(),
+                ..Default::default()
+            },
+            Some(2002),
+        )
+        .expect("executor should run");
+        let run: serde_json::Value =
+            serde_json::from_str(&run_raw).expect("executor output should parse");
+        assert_eq!(run["executed"], true);
+        assert_eq!(run["ok"], true);
+        assert_eq!(run["status"], "applied_pending_runtime_restart");
+        assert!(dir.join("py_deps/USE_PYTHONPATH").exists());
+        let args = fs::read_to_string(dir.join("fake_python_args.txt")).unwrap();
+        assert!(args.contains("-m pip install"));
+
+        let jobs_raw =
+            local_repair_jobs_json_from_parts(&config, Some(dir.clone()), 10, Some(2003))
+                .expect("repair jobs should build");
+        let jobs: serde_json::Value =
+            serde_json::from_str(&jobs_raw).expect("repair jobs should parse");
+        assert_eq!(jobs["jobs"][0]["status"], "applied_pending_runtime_restart");
+        assert_eq!(
+            jobs["jobs"][0]["executor_state"]["reason_code"],
+            "rust_model_repair_executor_completed"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

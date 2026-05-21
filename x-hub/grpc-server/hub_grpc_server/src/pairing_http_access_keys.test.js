@@ -421,6 +421,22 @@ await run('Hub access key admin HTTP issues, lists, details, revokes, and fail-c
   }
 });
 
+await run('Pairing public metadata stays reachable while restricted endpoints honor the source allowlist', async () => {
+  await withPairingServer({
+    env: {
+      HUB_PAIRING_ALLOWED_CIDRS: '192.0.2.0/24',
+    },
+  }, async ({ baseUrl }) => {
+    const discovery = await requestJson({ url: `${baseUrl}/pairing/discovery` });
+    assert.equal(discovery.status, 200);
+    assert.equal(discovery.json?.ok, true);
+
+    const restricted = await requestJson({ url: `${baseUrl}/admin/pairing/requests` });
+    assert.equal(restricted.status, 403);
+    assert.equal(restricted.json?.error?.message, 'source_ip_not_allowed');
+  });
+});
+
 await run('Hub access key OpenAI-compatible gateway lists models and returns chat completions', async () => {
   const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub_access_keys_openai_runtime_'));
   try {

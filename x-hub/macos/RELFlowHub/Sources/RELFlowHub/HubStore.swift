@@ -4816,6 +4816,16 @@ INSERT OR IGNORE INTO audit_events(
         requestLocalModelHealthScan(limitingTo: normalized, mode: .preflightOnly, updatesTrialStatus: false)
     }
 
+    func quickCheckLocalModelHealth(for modelIds: [String]) {
+        let normalized = Set(
+            modelIds
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        guard !normalized.isEmpty else { return }
+        requestLocalModelHealthScan(limitingTo: normalized, mode: .preflightOnly, updatesTrialStatus: true)
+    }
+
     func scanAllLocalModelHealth() {
         requestLocalModelHealthScan(limitingTo: nil, mode: .full, updatesTrialStatus: true)
     }

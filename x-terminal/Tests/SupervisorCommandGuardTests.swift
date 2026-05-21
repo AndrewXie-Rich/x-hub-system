@@ -14177,14 +14177,26 @@ attention_steps:
             )
         )
 
-        #expect(rendered.contains("已把这条执行指令派发给《坦克大战》的 Coder"))
-        #expect(rendered.contains("Supervisor 已经把指令送进项目 Coder 执行轮"))
-        #expect(rendered.contains("launch_run"))
+        #expect(rendered == "已派发给《坦克大战》的 Coder。执行进度会在心跳和项目聊天里更新。")
+        #expect(!rendered.contains("launch_run"))
+        #expect(!rendered.contains("A-Tier"))
+
+        let dispatchHeartbeat = try #require(
+            manager.heartbeatHistory.first { $0.reason == "project_coder_dispatch" }
+        )
+        #expect(dispatchHeartbeat.changed)
+        #expect(dispatchHeartbeat.content.contains("已派发《坦克大战》给 Coder"))
+        #expect(dispatchHeartbeat.content.contains("当前 workflow 的下一条 `launch_run` 已同步为 Coder 执行中。"))
+        #expect(dispatchHeartbeat.content.contains("A-Tier 策略"))
+        #expect(dispatchHeartbeat.focusActionURL?.contains(project.projectId) == true)
 
         let plan = try #require(SupervisorProjectPlanStore.load(for: ctx).plans.first)
         let launchRun = try #require(plan.steps.first(where: { $0.stepId == "step-002" }))
-        #expect(launchRun.status == .running)
-        #expect(launchRun.detail.contains("project Coder chat"))
+        #expect([SupervisorPlanStepStatus.running, .completed].contains(launchRun.status))
+        #expect(
+            launchRun.detail.contains("project Coder chat")
+                || launchRun.detail.contains("Coder final observed")
+        )
 
         let session = try #require(appModel.sessionForProjectId(project.projectId))
         for _ in 0..<80 {
@@ -14201,14 +14213,71 @@ attention_steps:
         let dispatchMessage = try #require(dispatchMessages.first)
         #expect(dispatchMessage.sender == .supervisor)
         #expect(dispatchMessage.isSupervisorDispatch)
+        let dispatchLineage = try #require(dispatchMessage.lineage)
+        let dispatchId = dispatchLineage.dispatchId
+        let expectedDispatchId = AXChatMessageLineageMetadata.makeDispatchId(
+            projectId: project.projectId,
+            runId: job.jobId,
+            launchRunId: "step-002",
+            createdAtMs: dispatchLineage.createdAtMs
+        )
+        #expect(dispatchId == expectedDispatchId)
+        #expect(dispatchId.contains("step_002"))
+        #expect(!dispatchId.hasSuffix("_\(dispatchLineage.createdAtMs)"))
+        #expect(dispatchLineage.sourceRole == "supervisor")
+        #expect(dispatchLineage.targetRole == "coder")
+        #expect(dispatchLineage.dispatchKind == "supervisor_to_coder")
+        #expect(dispatchLineage.projectId == project.projectId)
+        #expect(dispatchLineage.runId == job.jobId)
+        #expect(dispatchLineage.launchRunId == "step-002")
+        #expect(dispatchLineage.status == "dispatched")
         #expect(session.messages.count >= 2)
+        let coderReply = try #require(
+            session.messages.first {
+                $0.role == .assistant && $0.content.contains("Coder 已接收 Supervisor 派发。")
+            }
+        )
+        #expect(coderReply.lineage?.dispatchId == dispatchId)
+        #expect(coderReply.lineage?.sourceRole == "coder")
+        #expect(coderReply.lineage?.targetRole == "supervisor")
+        #expect(coderReply.lineage?.dispatchKind == "coder_reply")
+        #expect(coderReply.lineage?.status == "completed")
+
+        for _ in 0..<80 {
+            if manager.heartbeatHistory.contains(where: { $0.reason == "project_coder_dispatch_completed" }) {
+                break
+            }
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+        let completionHeartbeat = try #require(
+            manager.heartbeatHistory.first { $0.reason == "project_coder_dispatch_completed" }
+        )
+        #expect(completionHeartbeat.content.contains("《坦克大战》Coder 已完成本轮执行。"))
+        #expect(completionHeartbeat.content.contains("Coder 摘要：Coder 已接收 Supervisor 派发。"))
+        #expect(completionHeartbeat.content.contains("完整执行细节留在项目 Coder 聊天"))
+        #expect(completionHeartbeat.focusActionURL?.contains(project.projectId) == true)
+        let completedPlan = try #require(SupervisorProjectPlanStore.load(for: ctx).plans.first)
+        let completedLaunchRun = try #require(completedPlan.steps.first(where: { $0.stepId == "step-002" }))
+        #expect(completedLaunchRun.status == .completed)
+        #expect(completedLaunchRun.detail.contains("Coder final observed from project chat"))
+        #expect(completedLaunchRun.detail.contains("coder_status=completed"))
+        #expect(manager.latestRuntimeActivity?.text.contains("project_coder_dispatch 完成") == true)
+
+        let transcriptObservation = manager.projectTranscriptObservationForTesting(project)
+        #expect(transcriptObservation.contains("source=xt_project_chat_runtime_projection"))
+        #expect(transcriptObservation.contains("latest_dispatch_id=\(dispatchId)"))
+        #expect(transcriptObservation.contains("latest_dispatch_status=completed"))
+        #expect(transcriptObservation.contains("latest_supervisor_dispatch=来自 Supervisor 的项目执行派发。"))
+        #expect(transcriptObservation.contains("latest_coder_reply=Coder 已接收 Supervisor 派发。"))
+        #expect(transcriptObservation.contains("truth_boundary=XT local project chat runtime projection only"))
 
         let messageCountAfterFirstDispatch = session.messages.count
         let duplicateRendered = manager.directSupervisorActionIfApplicableForTesting(
             "先建 index.html、style.css、main.js，做最小可运行骨架，不先扩功能。"
         )
-        #expect(duplicateRendered == "")
+        #expect(duplicateRendered == "这条我刚才已经派发给《坦克大战》的 Coder；我不会重复派发。当前进度看心跳和项目聊天。")
         #expect(session.messages.count == messageCountAfterFirstDispatch)
+        #expect(manager.heartbeatHistory.count == 2)
 
         let reloadedSession = ChatSessionModel()
         reloadedSession.loadFromRawLog(ctx: ctx, limit: 20)
@@ -14219,6 +14288,37 @@ attention_steps:
         )
         #expect(reloadedDispatch.sender == .supervisor)
         #expect(reloadedDispatch.isSupervisorDispatch)
+        #expect(reloadedDispatch.lineage?.dispatchId == dispatchId)
+        #expect(reloadedDispatch.lineage?.sourceRole == "supervisor")
+        let reloadedReply = try #require(
+            reloadedSession.messages.first {
+                $0.role == .assistant && $0.content.contains("Coder 已接收 Supervisor 派发。")
+            }
+        )
+        #expect(reloadedReply.lineage?.dispatchId == dispatchId)
+        #expect(reloadedReply.lineage?.sourceRole == "coder")
+        #expect(reloadedReply.lineage?.status == "completed")
+    }
+
+    @Test
+    func supervisorAssistantSelfObservationRewritesExactDuplicateReply() {
+        let manager = SupervisorManager.makeForTesting()
+        let reply = "已派发给《坦克大战》的 Coder。执行进度会在心跳和项目聊天里更新。"
+
+        manager.completeSupervisorAssistantTurnForTesting(
+            userMessage: "继续推进坦克大战项目",
+            responseText: reply,
+            triggerSource: "user_turn"
+        )
+        manager.completeSupervisorAssistantTurnForTesting(
+            userMessage: "继续推进坦克大战项目",
+            responseText: reply,
+            triggerSource: "user_turn"
+        )
+
+        #expect(manager.messages.count == 2)
+        #expect(manager.messages.first?.content == reply)
+        #expect(manager.messages.last?.content == "这点我刚才已经说过；当前没有新的状态变化。进展看心跳和项目聊天。")
     }
 
     @Test

@@ -218,10 +218,7 @@ fn public_remote_candidate(public_base_url: &str) -> Option<Value> {
 
 fn private_remote_candidate_from_host(host: &str, source: &str, explicit: bool) -> Value {
     let classification = classify_host(host);
-    let usable = matches!(
-        classification.scope,
-        "tailnet_dns" | "tailscale_headscale_ip" | "private_vpn_ip"
-    );
+    let usable = matches!(classification.scope, "tailnet_dns" | "tailscale_ip");
     json!({
         "route_kind": "no_domain_private_network",
         "source": source,
@@ -244,18 +241,11 @@ fn private_remote_candidates_from_interfaces(rows: &[InterfaceAddress]) -> Vec<V
             continue;
         }
         let classification = classify_host(row.address.as_str());
-        let tunnel_interface = interface_looks_private_tunnel(row.name.as_str());
-        let usable = classification.scope == "tailscale_headscale_ip"
-            || (classification.scope == "private_vpn_ip" && tunnel_interface);
+        let usable = classification.scope == "tailscale_ip";
         if !usable {
             continue;
         }
         seen.push(row.address.clone());
-        let priority = if classification.scope == "tailscale_headscale_ip" {
-            10
-        } else {
-            30
-        };
         candidates.push(json!({
             "route_kind": "no_domain_private_network",
             "source": "local_interface",
@@ -263,7 +253,7 @@ fn private_remote_candidates_from_interfaces(rows: &[InterfaceAddress]) -> Vec<V
             "host": row.address,
             "public_base_url": format!("https://{}", row.address),
             "usable": true,
-            "priority": priority,
+            "priority": 10,
             "requires_same_private_network": true,
             "requires_mtls": true,
             "classification": classification_json(&classification),
@@ -287,12 +277,12 @@ fn operator_guidance(recommended_setup: &str) -> Vec<&'static str> {
             "Keep /ready and operational APIs behind the access-key gate.",
         ],
         "use_no_domain_private_network" => vec![
-            "Use the detected private-network host for users without a domain.",
-            "Hub and every XT device must join the same private network.",
-            "Prefer MagicDNS/tailnet DNS over raw VPN IP when available.",
+            "Use the detected Tailscale host for users without a domain.",
+            "Hub and every XT device must join the same Tailscale tailnet.",
+            "Prefer MagicDNS/tailnet DNS over raw Tailscale IP when available.",
         ],
         _ => vec![
-            "Ask the user to configure a stable domain/tunnel or join a private network.",
+            "Ask the user to configure a stable domain, relay endpoint, Spectrum endpoint, or Tailscale route.",
             "Do not present LAN-only hostnames or raw public IPs as stable remote entries.",
         ],
     }
@@ -321,22 +311,22 @@ fn classify_host(host: &str) -> HostClassification {
         return classification("stable_named", "tailnet_dns", true, true, "");
     }
     if let Ok(ip) = normalized.parse::<Ipv4Addr>() {
-        if is_tailscale_headscale_ip(ip) {
+        if is_tailscale_ip(ip) {
             return classification(
                 "vpn_raw",
-                "tailscale_headscale_ip",
+                "tailscale_ip",
                 true,
                 true,
-                "vpn_raw_host_requires_explicit_allowance",
+                "tailscale_raw_host_requires_same_tailnet",
             );
         }
         if is_private_ipv4(ip) {
             return classification(
-                "vpn_raw",
-                "private_vpn_ip",
-                true,
-                true,
-                "private_vpn_host_requires_same_network",
+                "private_raw_ip",
+                "private_lan_ip",
+                false,
+                false,
+                "private_ip_requires_same_lan_or_verified_subnet_route",
             );
         }
         return classification(
@@ -376,7 +366,7 @@ fn classification_json(classification: &HostClassification) -> Value {
     })
 }
 
-fn is_tailscale_headscale_ip(ip: Ipv4Addr) -> bool {
+fn is_tailscale_ip(ip: Ipv4Addr) -> bool {
     let octets = ip.octets();
     octets[0] == 100 && (64..=127).contains(&octets[1])
 }
@@ -386,16 +376,6 @@ fn is_private_ipv4(ip: Ipv4Addr) -> bool {
     octets[0] == 10
         || (octets[0] == 172 && (16..=31).contains(&octets[1]))
         || (octets[0] == 192 && octets[1] == 168)
-}
-
-fn interface_looks_private_tunnel(name: &str) -> bool {
-    let normalized = name.trim().to_ascii_lowercase();
-    normalized.starts_with("tailscale")
-        || normalized.starts_with("wg")
-        || normalized.starts_with("utun")
-        || normalized.starts_with("zt")
-        || normalized.starts_with("zerotier")
-        || normalized.starts_with("tun")
 }
 
 fn public_base_url_host(public_base_url: &str) -> Option<String> {
@@ -600,17 +580,24 @@ mod tests {
         assert_eq!(report["preferred"]["host"], "100.96.10.8");
         assert_eq!(
             report["preferred"]["classification"]["scope"],
-            "tailscale_headscale_ip"
+            "tailscale_ip"
         );
     }
 
     #[test]
     fn normal_lan_address_is_not_no_domain_remote_candidate() {
-        let rows = vec![InterfaceAddress {
-            name: "en0".to_string(),
-            address: "192.168.1.22".to_string(),
-            family: "ipv4".to_string(),
-        }];
+        let rows = vec![
+            InterfaceAddress {
+                name: "en0".to_string(),
+                address: "192.168.1.22".to_string(),
+                family: "ipv4".to_string(),
+            },
+            InterfaceAddress {
+                name: "utun6".to_string(),
+                address: "10.7.0.12".to_string(),
+                family: "ipv4".to_string(),
+            },
+        ];
         let report = build_remote_entry_report(&test_config(), "", "", None, &rows);
         assert_eq!(
             report["recommended_setup"],

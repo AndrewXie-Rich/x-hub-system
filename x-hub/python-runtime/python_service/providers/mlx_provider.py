@@ -1,11 +1,113 @@
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
 from local_provider_scheduler import build_provider_resource_policy, read_provider_scheduler_telemetry
 from provider_runtime_resolver import resolve_provider_runtime
 from .base import LocalProvider, ProviderHealth
+
+TEXT_TASK_KIND = "text_generate"
+EMBED_TASK_KIND = "embedding"
+MAX_BATCH_TEXTS = 32
+MAX_TEXT_CHARS = 4096
+MAX_TOTAL_TEXT_CHARS = 32768
+SECRET_TEXT_PATTERNS = [
+    re.compile(r"\b(sk-|ghp_|xox[abprs]-|bearer\s+[a-z0-9\-_\.]+)", re.IGNORECASE),
+    re.compile(r"\b(api[_-]?key|secret|password|token)\s*[:=]\s*\S+", re.IGNORECASE),
+]
+
+
+def _safe_str(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _safe_int(value: Any, fallback: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(fallback)
+
+
+def _safe_bool(value: Any, fallback: bool = False) -> bool:
+    if value is None:
+        return bool(fallback)
+    if isinstance(value, bool):
+        return value
+    token = str(value).strip().lower()
+    if token in {"1", "true", "yes", "on"}:
+        return True
+    if token in {"0", "false", "no", "off"}:
+        return False
+    return bool(fallback)
+
+
+def _safe_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [
+            str(item).strip().lower()
+            for item in value
+            if str(item or "").strip()
+        ]
+    token = str(value or "").strip().lower()
+    return [token] if token else []
+
+
+def _contains_sensitive_text(text: Any) -> bool:
+    value = str(text or "")
+    return any(pattern.search(value) for pattern in SECRET_TEXT_PATTERNS)
+
+
+def _request_instance_key(request: dict[str, Any]) -> str:
+    return _safe_str(request.get("instance_key") or request.get("instanceKey"))
+
+
+def _request_load_profile_hash(request: dict[str, Any]) -> str:
+    return _safe_str(request.get("load_profile_hash") or request.get("loadProfileHash"))
+
+
+def _request_effective_context_length(request: dict[str, Any]) -> int:
+    return max(0, _safe_int(request.get("effective_context_length") or request.get("effectiveContextLength"), 0))
+
+
+def _request_effective_load_profile(request: dict[str, Any]) -> dict[str, Any]:
+    profile = request.get("effective_load_profile") or request.get("effectiveLoadProfile")
+    return dict(profile) if isinstance(profile, dict) else {}
+
+
+def _extract_texts(request: dict[str, Any]) -> list[str]:
+    input_obj = request.get("input") if isinstance(request.get("input"), dict) else {}
+    candidates = [
+        request.get("texts"),
+        request.get("input_texts"),
+        request.get("inputTexts"),
+        input_obj.get("texts"),
+        input_obj.get("input_texts"),
+        input_obj.get("inputTexts"),
+    ]
+    for raw in candidates:
+        if isinstance(raw, list):
+            return [str(item or "") for item in raw]
+    scalar = (
+        request.get("text")
+        or request.get("input_text")
+        or request.get("inputText")
+        or input_obj.get("text")
+        or input_obj.get("input_text")
+        or input_obj.get("inputText")
+    )
+    if scalar is not None:
+        return [str(scalar or "")]
+    raw_input = request.get("input")
+    if isinstance(raw_input, str):
+        return [raw_input]
+    return []
+
+
+def _model_task_kinds(model: dict[str, Any] | None) -> list[str]:
+    row = model if isinstance(model, dict) else {}
+    return _safe_string_list(row.get("taskKinds") or row.get("task_kinds"))
 
 
 def _legacy_runtime_version() -> str:
@@ -35,13 +137,13 @@ class MLXProvider(LocalProvider):
         return "mlx"
 
     def supported_task_kinds(self) -> list[str]:
-        return ["text_generate"]
+        return [TEXT_TASK_KIND, EMBED_TASK_KIND]
 
     def supported_input_modalities(self) -> list[str]:
         return ["text"]
 
     def supported_output_modalities(self) -> list[str]:
-        return ["text"]
+        return ["text", "embedding"]
 
     def lifecycle_mode(self) -> str:
         return "mlx_legacy"
@@ -98,12 +200,34 @@ class MLXProvider(LocalProvider):
                             (value.get("model_id") if isinstance(value, dict) else model_id) or ""
                         ).strip()
                     )
+            task_kinds_by_model: dict[str, list[str]] = {}
+            for model in catalog_models:
+                if not isinstance(model, dict):
+                    continue
+                model_id = _safe_str(model.get("id"))
+                if not model_id:
+                    continue
+                task_kinds = _model_task_kinds(model)
+                if task_kinds:
+                    task_kinds_by_model[model_id] = task_kinds
+
+            normalized_loaded_instances: list[dict[str, Any]] = []
+            for row in loaded_instances:
+                normalized = dict(row)
+                model_id = _safe_str(normalized.get("modelId") or normalized.get("model_id"))
+                task_kinds = _safe_string_list(normalized.get("taskKinds") or normalized.get("task_kinds"))
+                if not task_kinds:
+                    task_kinds = task_kinds_by_model.get(model_id) or [TEXT_TASK_KIND]
+                normalized["taskKinds"] = task_kinds
+                normalized_loaded_instances.append(normalized)
+            loaded_instances = normalized_loaded_instances
+
             if not loaded_instances and loaded_models:
                 loaded_instances = [
                     {
                         "instanceKey": f"mlx:{model_id}:legacy_runtime",
                         "modelId": model_id,
-                        "taskKinds": ["text_generate"],
+                        "taskKinds": task_kinds_by_model.get(model_id) or [TEXT_TASK_KIND],
                         "loadProfileHash": "legacy_runtime",
                         "effectiveContextLength": 0,
                         "loadedAt": 0.0,
@@ -213,12 +337,213 @@ class MLXProvider(LocalProvider):
                 "error": f"unsupported_task_kind:{task_kind}",
                 "request": dict(request or {}),
             }
+        if task_kind == EMBED_TASK_KIND:
+            return self._run_embedding_task(request)
         return {
             "ok": False,
             "provider": self.provider_id(),
-            "taskKind": task_kind or "text_generate",
+            "taskKind": task_kind or TEXT_TASK_KIND,
             "error": "delegate_to_runtime_loop:mlx",
             "request": dict(request or {}),
+        }
+
+    def _resolve_model_info(self, request: dict[str, Any]) -> dict[str, Any]:
+        model = request.get("_resolved_model") if isinstance(request.get("_resolved_model"), dict) else {}
+        model_id = _safe_str(
+            request.get("model_id")
+            or request.get("modelId")
+            or model.get("id")
+        )
+        model_path = _safe_str(
+            request.get("model_path")
+            or request.get("modelPath")
+            or model.get("modelPath")
+            or model.get("model_path")
+        )
+        task_kinds = _model_task_kinds(model)
+        if not task_kinds:
+            task_kinds = _safe_string_list(request.get("taskKinds") or request.get("task_kinds"))
+        return {
+            "model_id": model_id,
+            "model_path": model_path,
+            "task_kinds": task_kinds,
+        }
+
+    def _validate_embedding_request(self, request: dict[str, Any], *, model_info: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        model_id = _safe_str(model_info.get("model_id"))
+        if not model_id:
+            return "missing_model_id", {}
+        task_kinds = _safe_string_list(model_info.get("task_kinds"))
+        if task_kinds and EMBED_TASK_KIND not in task_kinds:
+            return "model_task_unsupported:embedding", {}
+
+        texts = _extract_texts(request)
+        if not texts:
+            return "missing_texts", {}
+        if len(texts) > MAX_BATCH_TEXTS:
+            return "embedding_batch_too_large", {}
+
+        total_chars = 0
+        max_text_chars = 0
+        input_sanitized = _safe_bool(request.get("input_sanitized") or request.get("inputSanitized"), False)
+        for text in texts:
+            text_chars = len(str(text or ""))
+            max_text_chars = max(max_text_chars, text_chars)
+            total_chars += text_chars
+            if text_chars > MAX_TEXT_CHARS:
+                return "embedding_text_too_large", {}
+            if not input_sanitized and _contains_sensitive_text(text):
+                return "policy_blocked_sensitive_text", {}
+        if total_chars > MAX_TOTAL_TEXT_CHARS:
+            return "embedding_total_input_too_large", {}
+
+        return "", {
+            "texts": [str(text or "") for text in texts],
+            "text_count": len(texts),
+            "total_chars": total_chars,
+            "max_text_chars": max_text_chars,
+            "input_sanitized": input_sanitized,
+        }
+
+    def _run_embedding_task(self, request: dict[str, Any]) -> dict[str, Any]:
+        started_at = time.time()
+        model_info = self._resolve_model_info(request)
+        model_id = _safe_str(model_info.get("model_id"))
+        model_path = _safe_str(model_info.get("model_path"))
+        error_code, validated = self._validate_embedding_request(request, model_info=model_info)
+        if error_code:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "taskKind": EMBED_TASK_KIND,
+                "modelId": model_id,
+                "modelPath": model_path,
+                "error": error_code,
+                "request": dict(request or {}),
+            }
+
+        runtime = self._runtime
+        if runtime is None or not hasattr(runtime, "run_embedding"):
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "taskKind": EMBED_TASK_KIND,
+                "modelId": model_id,
+                "modelPath": model_path,
+                "error": "legacy_runtime_loop_required",
+                "request": dict(request or {}),
+            }
+        if not bool(getattr(runtime, "_mlx_ok", False)):
+            import_error = _safe_str(getattr(runtime, "_import_error", ""))
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "taskKind": EMBED_TASK_KIND,
+                "modelId": model_id,
+                "modelPath": model_path,
+                "error": f"mlx_lm_unavailable:{import_error}" if import_error else "mlx_lm_unavailable",
+                "request": dict(request or {}),
+            }
+        if not model_path:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "taskKind": EMBED_TASK_KIND,
+                "modelId": model_id,
+                "error": "missing_model_path",
+                "request": dict(request or {}),
+            }
+
+        instance_key = _request_instance_key(request)
+        load_profile_hash = _request_load_profile_hash(request)
+        effective_context_length = _request_effective_context_length(request)
+        effective_load_profile = _request_effective_load_profile(request)
+
+        try:
+            is_loaded = bool(
+                runtime.is_loaded(
+                    model_id,
+                    instance_key=instance_key,
+                    load_profile_hash=load_profile_hash,
+                )
+            )
+        except Exception:
+            is_loaded = False
+        if not is_loaded:
+            try:
+                ok_load, msg_load, _ = runtime.load(
+                    model_id,
+                    model_path,
+                    instance_key=instance_key,
+                    load_profile_hash=load_profile_hash,
+                    effective_context_length=effective_context_length,
+                    effective_load_profile=effective_load_profile,
+                    task_kinds=[EMBED_TASK_KIND],
+                )
+            except TypeError:
+                ok_load, msg_load, _ = runtime.load(
+                    model_id,
+                    model_path,
+                    instance_key=instance_key,
+                    load_profile_hash=load_profile_hash,
+                    effective_context_length=effective_context_length,
+                    effective_load_profile=effective_load_profile,
+                )
+            if not ok_load:
+                return {
+                    "ok": False,
+                    "provider": self.provider_id(),
+                    "taskKind": EMBED_TASK_KIND,
+                    "modelId": model_id,
+                    "modelPath": model_path,
+                    "error": _safe_str(msg_load) or "load_failed",
+                    "request": dict(request or {}),
+                }
+
+        max_length = max(32, min(4096, _safe_int(request.get("max_length") or request.get("maxLength"), 512)))
+        try:
+            vectors, dims, meta = runtime.run_embedding(
+                model_id,
+                list(validated.get("texts") or []),
+                instance_key=instance_key,
+                load_profile_hash=load_profile_hash,
+                max_length=max_length,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "taskKind": EMBED_TASK_KIND,
+                "modelId": model_id,
+                "modelPath": model_path,
+                "error": "embedding_runtime_failed",
+                "errorDetail": f"{type(exc).__name__}: {exc}",
+                "request": dict(request or {}),
+            }
+
+        meta_obj = meta if isinstance(meta, dict) else {}
+        latency_ms = max(0, int(round((time.time() - started_at) * 1000.0)))
+        return {
+            "ok": True,
+            "provider": self.provider_id(),
+            "taskKind": EMBED_TASK_KIND,
+            "modelId": model_id,
+            "modelPath": model_path,
+            "vectorCount": len(vectors),
+            "dims": max(0, int(dims or 0)),
+            "vectors": vectors,
+            "normalized": True,
+            "latencyMs": latency_ms,
+            "deviceBackend": "mps",
+            "fallbackMode": "",
+            "usage": {
+                "textCount": int(validated.get("text_count") or len(vectors)),
+                "totalChars": int(validated.get("total_chars") or 0),
+                "maxTextChars": int(validated.get("max_text_chars") or 0),
+                "inputSanitized": bool(validated.get("input_sanitized")),
+                "promptTokens": max(0, _safe_int(meta_obj.get("promptTokens") or meta_obj.get("prompt_tokens"), 0)),
+                "totalTokens": max(0, _safe_int(meta_obj.get("totalTokens") or meta_obj.get("total_tokens"), 0)),
+            },
         }
 
     def run_bench(self, request: dict[str, Any]) -> dict[str, Any]:

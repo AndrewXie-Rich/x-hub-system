@@ -42,10 +42,10 @@ final class HubSecureRemoteSetupPackBuilderTests: XCTestCase {
 
         XCTAssertTrue(text.contains("xterminal://pair-hub?hub_host=100.96.10.8"))
         XCTAssertTrue(text.contains("\"$AXHUBCTL\" bootstrap --hub '100.96.10.8'"))
-        XCTAssertTrue(text.contains("Uses stable DNS/tailnet host or VPN encrypted IP: 100.96.10.8"))
+        XCTAssertTrue(text.contains("Uses stable DNS/Tailscale/relay host: 100.96.10.8"))
     }
 
-    func testBuildReturnsSecurePackForExplicitPrivateVPNIPHost() throws {
+    func testBuildReturnsSecurePackForExplicitPrivateRoutedIPHost() throws {
         let text = try XCTUnwrap(
             HubSecureRemoteSetupPackBuilder.build(
                 externalHost: "10.7.0.12",
@@ -60,7 +60,7 @@ final class HubSecureRemoteSetupPackBuilderTests: XCTestCase {
 
         XCTAssertTrue(text.contains("xterminal://pair-hub?hub_host=10.7.0.12"))
         XCTAssertTrue(text.contains("\"$AXHUBCTL\" bootstrap --hub '10.7.0.12'"))
-        XCTAssertTrue(text.contains("Uses stable DNS/tailnet host or VPN encrypted IP: 10.7.0.12"))
+        XCTAssertTrue(text.contains("Uses stable DNS/Tailscale/relay host: 10.7.0.12"))
     }
 
     func testBuildReturnsSecurePackForStableNamedHost() throws {

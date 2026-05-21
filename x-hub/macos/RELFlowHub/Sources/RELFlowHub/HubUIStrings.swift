@@ -2286,6 +2286,13 @@ enum HubUIStrings {
                 static let destinationLabel = "前往"
                 static let openSettingsAction = "打开设置"
                 static let copyRecoverySummaryAction = "复制恢复摘要"
+                static let queueRustRepairAction = "确认并后台修复"
+                static let queueRustRepairInFlightAction = "排队中"
+                static let queueRustRepairDialogTitle = "确认后台修复本地模型"
+                static let queueRustRepairDialogConfirm = "确认修复"
+                static let queueRustRepairDialogCancel = "取消"
+                static let rustRepairExecutorRunning = "Rust 后台修复执行中；设置窗口可继续使用。"
+                static let rustRepairExecutorFailed = "Rust 后台修复启动失败，请确认 Rust Hub active root 可用后重试。"
                 static let diagnosticsReference = "Hub 设置 -> Diagnostics"
                 static let doctorReference = "Hub 设置 -> Doctor"
                 static let exportDiagnosticsReference = "Hub 设置 -> Diagnostics -> 导出统一 doctor 报告"
@@ -2306,6 +2313,36 @@ enum HubUIStrings {
                 static func destination(_ value: String) -> String {
                     "\(destinationLabel)：\(value)"
                 }
+
+                static func queueRustRepairDialogMessage(action: String, taskKind: String, requiresNetwork: Bool) -> String {
+                    let network = requiresNetwork ? "这个修复可能需要网络或下载依赖。" : "这个修复不需要网络下载。"
+                    return "Hub 会先创建非阻塞 job，再由 Rust 后台执行器修复，不会在设置窗口或 HTTP 请求里直接安装。动作：\(action)。任务：\(taskKind.isEmpty ? unknown : taskKind)。\(network)"
+                }
+
+                static func rustRepairApplyQueued(jobID: String, executorReady: Bool) -> String {
+                    let job = jobID.isEmpty ? unknown : jobID
+                    return executorReady
+                        ? "修复 job 已排队：\(job)。后台执行器可用，稍后刷新能力状态。"
+                        : "修复 job 已排队：\(job)。后台执行器尚未接管，当前不会阻塞 UI。"
+                }
+
+                static func rustRepairApplyRejected(status: String) -> String {
+                    "修复未排队：\(status.isEmpty ? unknown : status)。请刷新后再试。"
+                }
+
+                static func rustRepairExecutorFinished(status: String, ok: Bool) -> String {
+                    ok
+                        ? "Rust 后台修复完成：\(status.isEmpty ? unknown : status)。请刷新本地模型能力。"
+                        : "Rust 后台修复未完成：\(status.isEmpty ? unknown : status)。"
+                }
+
+                static func rustRepairJobStatus(jobID: String, status: String) -> String {
+                    let job = jobID.isEmpty ? unknown : jobID
+                    let state = status.isEmpty ? unknown : status
+                    return "最近本地模型修复 job：\(job) · \(state)"
+                }
+
+                static let rustRepairApplyFailed = "修复排队失败，请确认 Rust Hub daemon 正在运行后重试。"
 
                 static func installHintBlock(_ value: String) -> String {
                     "install_hint:\n" + (value.isEmpty ? empty : value)
@@ -5640,21 +5677,21 @@ enum HubUIStrings {
                 static let noReachableHost = "未检测到可访问主机"
                 static let pairingPort = "配对端口"
                 static let grpcPort = "gRPC 端口"
-            static let setupHint = "把这些值填到 X-Terminal 的 Hub Setup 页面。外部地址应该是 Terminal 设备能通过局域网、VPN 或隧道访问到的地址。"
+            static let setupHint = "把这些值填到 X-Terminal 的 Hub Setup 页面。外部地址应该是 XT 能通过同网、Tailscale、DNS-only 域名、公网 IP 或 relay/Spectrum 访问到的地址。"
             static let copyConnectionVars = "复制连接变量"
             static let advancedSettings = "高级设置"
             static let externalHostOverride = "外部地址覆盖"
-            static let externalHostPlaceholder = "tailnet 或 DNS 主机名"
-            static let externalHostHint = "可选。正式远端接入建议填写 relay、VPN、tailnet 或公网 DNS 主机名，不建议直接填 raw IP。留空只用于当前局域网 / 同 Wi‑Fi 自动发现。"
-            static let noDomainAccessTitle = "没有域名？使用私有网络入口"
+            static let externalHostPlaceholder = "Tailscale IP、DNS 主机名或公网 IP"
+            static let externalHostHint = "可选。长期异网优先填 Tailscale IP/MagicDNS、DNS-only 域名、Cloudflare Spectrum 或 VPS relay。公网 IP 只用于临时直连；留空是同 Wi-Fi 自动发现。"
+            static let noDomainAccessTitle = "没有域名？使用 Tailscale 入口"
             static let useNoDomainPrivateHost = "使用检测到的私有入口"
             static let noDomainPrivateHostApplied = "已使用这个私有入口"
-            static let noDomainAccessMTLSHint = "会把 Hub 外部地址固定到这个私网地址，并切换到 mTLS。"
+            static let noDomainAccessMTLSHint = "会把 Hub 外部地址固定到这个 Tailscale 地址，并切换到 mTLS。"
             static let noDomainRustCoreSource = "来源：Rust 内核推荐"
             static let noDomainSwiftFallbackSource = "来源：Swift 本机兜底"
-            static let noDomainAccessMissing = "当前没有检测到 Tailscale / Headscale / WireGuard / ZeroTier 这类稳定私网地址。没有域名时，建议先让 Hub 和 XT 加入同一个私有网络；否则只能同网连接或临时使用公网 IP。"
+            static let noDomainAccessMissing = "当前没有检测到 Tailscale 100.x 入口。没有域名时，最简单的长期方案是 Hub 和 XT 加入同一个 Tailscale；不装 Tailscale 则选择 DNS-only 域名、公网 IP 临时直连、Cloudflare Spectrum 或 VPS relay。"
             static func noDomainAccessDetected(_ host: String) -> String {
-                "检测到可用于无域名远程连接的私网入口：\(host)。XT 加入同一个私有网络后，可通过邀请链接稳定连接 Hub。"
+                "检测到可用于无域名远程连接的 Tailscale 入口：\(host)。XT 加入同一个 Tailscale tailnet 后，可通过邀请链接稳定连接 Hub。"
             }
             static let externalInviteTitle = "外部访问邀请"
             static let externalHubAlias = "Hub Alias"
@@ -5668,17 +5705,17 @@ enum HubUIStrings {
             static let clearInviteToken = "停用邀请令牌"
             static let copyInviteLink = "复制邀请链接"
             static let copySecureRemoteSetupPack = "复制正式接入包"
-            static let secureRemoteSetupPackHint = "推荐异网 XT 直接使用这份正式接入包。它会固定使用稳定 DNS/tailnet 入口或 VPN 加密 IP，并附带 invite token，不再继续扩散公网 raw IP 配对方式。"
-            static let inviteLinkAutoGeneratesToken = "当前外部地址可生成邀请链接；点击“复制邀请链接”会自动生成 invite token。正式长期接入建议使用稳定 DNS/tailnet 入口或 VPN 加密 IP。"
+            static let secureRemoteSetupPackHint = "推荐异网 XT 直接使用这份正式接入包。它会固定使用稳定 Tailscale/DNS/relay/Spectrum 入口，并附带 invite token，不再继续扩散公网 raw IP 配对方式。"
+            static let inviteLinkAutoGeneratesToken = "当前外部地址可生成邀请链接；点击“复制邀请链接”会自动生成 invite token。正式长期接入建议使用稳定 Tailscale/DNS/relay/Spectrum 入口。"
             static let inviteQRCodeHint = "另一台已装 XT 的设备可直接扫码打开这条邀请链接。"
-            static let inviteLinkNeedsStableHost = "邀请链接需要当前可达的 Hub 地址。可填写同 Wi-Fi / 局域网地址，或 tailnet / relay / DNS 主机名。"
-            static let inviteLinkRejectsRawIP = "正式接入包要求稳定 DNS/tailnet 入口或 VPN 加密 IP；公网 raw IP 邀请只适用于临时验证。"
+            static let inviteLinkNeedsStableHost = "邀请链接需要当前可达的 Hub 地址。可填写同 Wi-Fi / 局域网地址，或 Tailscale / relay / DNS 主机名。"
+            static let inviteLinkRejectsRawIP = "正式接入包要求稳定 Tailscale/DNS/relay/Spectrum 入口；公网 raw IP 邀请只适用于临时验证。"
             static let transportSecurity = "传输安全"
             static let transportMode = "传输模式"
             static let insecure = "不加密"
             static let tls = "TLS"
             static let mtls = "mTLS"
-            static let transportHint = "建议在局域网或 VPN 下使用 mTLS。不加密只适合开发或兼容场景。启用 mTLS 后，请重新配对设备，让 Hub 下发客户端证书。"
+            static let transportHint = "建议在同网、Tailscale、relay 或 Spectrum 入口下使用 mTLS。不加密只适合开发或兼容场景。启用 mTLS 后，请重新配对设备，让 Hub 下发客户端证书。"
             static let port = "端口"
             static let openLog = "打开日志"
             static let rotateDeviceToken = "轮换设备令牌"
@@ -5689,9 +5726,10 @@ enum HubUIStrings {
             static let deleteDeviceTitleConfirm = "删除已配对设备？"
             static let delete = "删除"
             static let cancel = "取消"
-            static let remoteAccessDisclosure = "远程接入（VPN / Tunnel）"
-            static let remoteAccessHint = "建议不要把这个 gRPC 端口直接暴露到公网。最好使用 VPN（WireGuard / ZeroTier）或加密隧道（SSH），让 gRPC 保持在私有网络内。"
-            static let remoteHardeningHint = "加固建议：给每个配对设备把允许来源限定到 VPN 子网（例如 `10.7.0.0/24`），并在非必要时保持付费 AI / Web Fetch 关闭。"
+            static let remoteAccessDisclosure = "连接方式与安全等级"
+            static let remoteAccessMethodsIntro = "同 Wi-Fi 首配后，只有配置下面任一稳定异网入口，XT 换到公司、家里或路上网络时才会自动恢复连接。"
+            static let remoteAccessHint = "当前产品路线不做 WireGuard/ZeroTier/Headscale 这类其它 VPN IP，也不做 Cloudflare Tunnel arbitrary TCP。公网直连可以用来验证，但不建议作为长期默认。"
+            static let remoteHardeningHint = "加固建议：始终使用 mTLS + invite token；公网 IP、DNS-only、Spectrum 或 relay 路线要尽量限制来源 IP，并在非必要时保持付费 AI / Web Fetch 关闭。"
             static let remoteAdminHint = "管理接口默认只允许本地访问，更安全。如果确实要远程管理，请在启动服务时设置 `HUB_ADMIN_ALLOW_REMOTE=1`（或 `HUB_ADMIN_ALLOWED_CIDRS=...`）。"
             static let copyRemoteAccessGuide = "复制远程接入说明"
 
@@ -5753,17 +5791,17 @@ enum HubUIStrings {
                 static let offlineHeadline = "Hub 接入当前未在线"
                 static let offlineNextStep = "确认 Hub app 没有休眠或退出，再检查 gRPC 状态和 hub_grpc.log。"
                 static let hintOfflineMissing = "Hub 当前没有正式远端入口，离开同网后 XT 只能等待你回到局域网或重新补入口。"
-                static let hintOfflineLANOnly = "这类入口只适合同一 Wi-Fi / 同一 VPN；换网后 XT 不会自动恢复。"
+                static let hintOfflineLANOnly = "这类入口只适合同一 Wi-Fi / 局域网；换网后 XT 不会自动恢复。"
                 static let hintOfflineRawIP = "raw IP 只适合临时救火。网络切换、NAT 或公网 IP 变化后很容易失联。"
                 static let hintOfflineStableNamed = "正式远端入口名义上已配好，但服务侧现在不在线。优先检查 Hub 是否睡眠、退出或转发失效。"
 
                 static let lanOnlyHeadline = "当前只有局域网入口"
-                static let lanOnlyDetail = "Hub 没有稳定的外部主机名，当前更适合同 Wi-Fi / 同 VPN 自动发现。"
-                static let lanOnlyNextStep = "如果要异网接入，请填写 tailnet / relay / DNS 主机名。"
+                static let lanOnlyDetail = "Hub 没有稳定的外部主机名，当前更适合同 Wi-Fi / 局域网自动发现。"
+                static let lanOnlyNextStep = "如果要异网接入，请填写 Tailscale / relay / DNS 主机名。"
                 static let hintLANOnly = "首次配对完成后，这种配置依然只适合同网自动发现，不适合作为长期异网入口。"
 
                 static let rawIPHeadline = "当前外部入口仍是 raw IP"
-                static let rawIPNextStep = "把外部地址改成稳定 DNS/tailnet 入口或 VPN 加密 IP，避免公网 IP 变化后 XT 全部失联。"
+                static let rawIPNextStep = "把外部地址改成稳定 Tailscale/DNS/relay/Spectrum 入口，避免公网 IP 变化后 XT 全部失联。"
                 static let hintRawIP = "raw IP 可以临时用，但不要把它当正式入口。换网、休眠或公网 IP 变化后 XT 很容易全部掉线。"
 
                 static let tokenMissingHeadline = "正式异网入口还缺邀请令牌"
@@ -5854,7 +5892,7 @@ enum HubUIStrings {
                     case "loopback":
                         return "回环地址"
                     case "privateLAN":
-                        return "私网 / VPN 地址"
+                        return "私网地址"
                     case "carrierGradeNat":
                         return "CGNAT 地址"
                     case "linkLocal":
@@ -5878,28 +5916,62 @@ enum HubUIStrings {
             static let openDeviceListFile = "打开设备列表文件"
             static let enabledDeviceFileHint = "只有这个文件里已启用的设备，才能通过局域网 gRPC 接入。"
             static let remoteAccessGuideChecklist = """
-远程接入（VPN / Tunnel）检查清单
+连接方式与安全等级
 
-1) 传输层建议：优先使用用户自己的稳定域名 + mTLS，或 Tailscale / Headscale / WireGuard / ZeroTier 这类私有网络。
-   不要把未加固的 gRPC 端口直接裸露到公网。终端侧建议通过稳定域名、VPN 或加密隧道接入。
+1) 同 Wi-Fi / 局域网
+   怎么连：XT 与 Hub 在同一网络，打开邀请链接/扫码，或填局域网地址和 50059/50058。
+   当前状态：已支持。只适合首次配对或固定同网。
+   安全等级：高；便利：同网高，异网不可用。
 
-   连接方式：在 Terminal 设备上把 `HUB_HOST` 设为 Hub 自己的域名、MagicDNS 名称或 VPN IP。
-   如果没有 VPN，也可以用 SSH / raw TCP tunnel 等加密隧道把端口安全转发到 Hub。
+2) Tailscale IP / MagicDNS
+   怎么连：Hub 和每台 XT 安装 Tailscale 并加入同一个 tailnet；Hub 外部地址填 100.x 或 .ts.net；复制正式接入包。
+   当前状态：已支持，并会自动检测 100.x 入口。
+   安全等级：高；便利：中，需要每台移动 XT 装 Tailscale。
 
-2) 设备级加固：把允许来源限定到你的 VPN 子网，例如 `10.7.0.0/24`。
-   这样就算设备配对信息泄露，非受信网段也不能直接连进来。
+3) Tailscale 子网路由
+   怎么连：在固定网络部署 Tailscale subnet router，把 Hub 所在 LAN 暴露到 tailnet；Hub 外部地址填已验证可达的 Hub LAN IP 或域名。
+   当前状态：手工可用，必须先用 doctor 验证 50059/50058。
+   安全等级：高；便利：中，适合固定网络互通，不等同于路上设备免安装。
 
-3) 能力收敛：除非确实需要，否则不要开启 `ai.generate.paid` / `web.fetch`。
-   远程设备先从最小能力集开始，再按任务逐步放开。
+4) 公网 IP 直连
+   怎么连：路由器/NAT 把 TCP 50059 和 50058 转发到 Hub；XT 填公网 IP；仍使用 invite token + mTLS。
+   当前状态：已支持作为临时验证。
+   安全等级：中低；便利：高但 IP 易变，并且端口暴露在公网。
 
-4) 管理入口：默认只允许本机访问。
-   只有在确实需要远程管理时，才考虑放开这一路入口。
+5) DNS-only 域名直连
+   怎么连：A/AAAA 记录指向 Hub 公网 IP 或可达入口，Cloudflare 记录必须 DNS-only；路由器转发 50059/50058。
+   当前状态：已支持。
+   安全等级：中；便利：高，需要处理公网 IP 变化和防火墙。
 
-允许来源示例：
-- private, loopback
-- 100.64.0.0/10（Tailscale / Headscale）
-- 10.7.0.0/24
-- 192.168.1.0/24,10.7.0.0/24
+6) Cloudflare Spectrum raw TCP
+   怎么连：用 Spectrum 把域名的 TCP 50059/50058 转到 Hub 或 origin relay；XT 仍填这个域名和原端口。
+   当前状态：Hub/XT 侧兼容，需外部 Cloudflare Spectrum 配置。
+   安全等级：中高；便利：高，不要求 XT 安装 Tailscale。
+
+7) VPS raw TCP relay / reverse proxy
+   怎么连：VPS 公网地址或域名监听 50059/50058，并把 raw TCP 转发到 Hub 可达入口。
+   当前状态：Hub/XT 侧兼容，需自建 VPS 和守护进程。
+   安全等级：中高，取决于 VPS 加固；便利：高，不要求 XT 安装 Tailscale。
+
+8) Tailscale Funnel raw TCP
+   怎么连：用 Funnel 暴露 Hub 入口，再把外部端口映射到 50059/50058。
+   当前状态：待端口/协议适配，作为后续方案。
+   安全等级：中；便利：高，但入口会公开。
+
+9) HTTPS/WebSocket 443 网关
+   怎么连：未来把 pairing/gRPC 封装到 443，让 XT 只连一个 HTTPS 域名。
+   当前状态：未实现，开发量最大。
+   安全等级：高；便利：最高。
+
+当前不做：
+- WireGuard / ZeroTier / Headscale 等其它 VPN IP 自动路线
+- Cloudflare Tunnel arbitrary TCP
+
+统一加固：
+- 使用 mTLS + invite token
+- 公网/DNS/Spectrum/relay 尽量限制允许来源 IP
+- 非必要不开放 `ai.generate.paid` / `web.fetch`
+- 管理入口默认只允许本机访问
 """
 
             enum Runtime {
@@ -6073,8 +6145,8 @@ enum HubUIStrings {
                 static let remove = "移除"
                 static let addCIDROrIPPlaceholder = "添加 CIDR 或 IP（例如 10.7.0.0/24）"
                 static let add = "添加"
-                static let anySourceWarning = "警告：允许任意来源意味着任何源 IP 都能接入。做远程接入时，建议限定到你的 VPN 子网，并在非必要时保持付费 AI / 网页抓取关闭。"
-                static let invalidRestrictedSources = "当前配置无效：受限模式至少需要一条来源规则，否则就等于不设限制。请加入你的 VPN 子网（例如 10.7.0.0/24），或者改用仅局域网。"
+                static let anySourceWarning = "警告：允许任意来源意味着任何源 IP 都能接入。做远程接入时，建议限定到你的 Tailscale、固定办公网或 relay 来源，并在非必要时保持付费 AI / 网页抓取关闭。"
+                static let invalidRestrictedSources = "当前配置无效：受限模式至少需要一条来源规则，否则就等于不设限制。请加入你的 Tailscale、固定办公网或 relay 来源（例如 100.64.0.0/10），或者改用仅局域网。"
                 static let supportedSourcesHint = "支持：`private`、`loopback`、精确 IP，或者 IPv4 CIDR（例如 10.7.0.0/24）。"
                 static let localTaskRoutingTitle = "设备级本地任务路由"
                 static let localTaskRoutingHint = "Hub 的默认路由保存在 `routing_settings.json`。这里的覆盖只作用于当前设备，点保存后才会写入。"

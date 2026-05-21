@@ -46,7 +46,10 @@ enum SupervisorMemoryAssemblyDiagnostics {
 
     static func evaluate(
         snapshot: SupervisorMemoryAssemblySnapshot?,
-        canonicalSyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot? = nil
+        canonicalSyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot? = nil,
+        rustGatewayShadowCompare: HubIPCClient.RustMemoryGatewayShadowCompareResult? = nil,
+        rustGatewayCutoverReadiness: HubIPCClient.RustMemoryGatewayCutoverReadinessReport? = nil,
+        rustGatewayRequireEnabled: Bool = false
     ) -> SupervisorMemoryAssemblyReadiness {
         guard let snapshot else {
             let syncFailures = relevantCanonicalSyncFailures(
@@ -54,6 +57,19 @@ enum SupervisorMemoryAssemblyDiagnostics {
                 snapshot: canonicalSyncSnapshot
             )
             var issues: [SupervisorMemoryAssemblyIssue] = []
+            if let readinessIssue = rustGatewayCutoverReadinessIssue(
+                forFocusedProjectId: nil,
+                readiness: rustGatewayCutoverReadiness,
+                requireEnabled: rustGatewayRequireEnabled
+            ) {
+                issues.append(readinessIssue)
+            }
+            if let gatewayIssue = rustGatewayShadowCompareIssue(
+                forFocusedProjectId: nil,
+                shadowCompare: rustGatewayShadowCompare
+            ) {
+                issues.append(gatewayIssue)
+            }
             if let syncIssue = canonicalSyncIssue(
                 reviewLevel: .r1Pulse,
                 focusedStrategicReview: false,
@@ -93,6 +109,19 @@ enum SupervisorMemoryAssemblyDiagnostics {
             failures: syncFailures
         ) {
             issues.append(syncIssue)
+        }
+        if let gatewayIssue = rustGatewayShadowCompareIssue(
+            forFocusedProjectId: focusedProjectId.isEmpty ? nil : focusedProjectId,
+            shadowCompare: rustGatewayShadowCompare
+        ) {
+            issues.append(gatewayIssue)
+        }
+        if let readinessIssue = rustGatewayCutoverReadinessIssue(
+            forFocusedProjectId: focusedProjectId.isEmpty ? nil : focusedProjectId,
+            readiness: rustGatewayCutoverReadiness,
+            requireEnabled: rustGatewayRequireEnabled
+        ) {
+            issues.append(readinessIssue)
         }
 
         let scopedRecoveryMode = snapshot.scopedPromptRecoveryMode?
@@ -302,6 +331,90 @@ low_signal_samples=\(dropSamples)
             }
             return false
         }
+    }
+
+    private static func rustGatewayShadowCompareIssue(
+        forFocusedProjectId focusedProjectId: String?,
+        shadowCompare: HubIPCClient.RustMemoryGatewayShadowCompareResult?
+    ) -> SupervisorMemoryAssemblyIssue? {
+        guard let shadowCompare else { return nil }
+        let normalizedFocusedProjectId = focusedProjectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let comparedProjectId = shadowCompare.projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !normalizedFocusedProjectId.isEmpty,
+           !comparedProjectId.isEmpty,
+           normalizedFocusedProjectId != comparedProjectId {
+            return nil
+        }
+
+        let detail = """
+project_id=\(comparedProjectId.isEmpty ? "(none)" : comparedProjectId) role=\(shadowCompare.requesterRole) use_mode=\(shadowCompare.useMode) mode=\(shadowCompare.mode) ok=\(shadowCompare.ok) parity_ok=\(shadowCompare.parityOk) production_authority_change=\(shadowCompare.productionAuthorityChange) rust_objects=\(shadowCompare.rustObjectCount) matched_anchors=\(shadowCompare.matchedRustAnchors.count) missing_anchors=\(shadowCompare.missingRustAnchors.count) reason=\(shadowCompare.reasonCode ?? "(none)") rust_deny=\(shadowCompare.rustDenyCode ?? "(none)") product_hash=\(shadowCompare.productTextHash) rust_hash=\(shadowCompare.rustContextHash) recorded_at_ms=\(shadowCompare.recordedAtMs)
+missing_anchor_sample=\(shadowCompare.missingRustAnchors.prefix(2).joined(separator: " | "))
+"""
+
+        if shadowCompare.productionAuthorityChange {
+            return SupervisorMemoryAssemblyIssue(
+                code: "memory_gateway_shadow_authority_violation",
+                severity: .blocking,
+                summary: "Rust memory gateway shadow compare 出现 authority 安全异常",
+                detail: detail
+            )
+        }
+        guard !shadowCompare.ok || !shadowCompare.parityOk else { return nil }
+        return SupervisorMemoryAssemblyIssue(
+            code: "memory_gateway_shadow_compare_drift",
+            severity: .warning,
+            summary: "Rust memory gateway 与当前 Memory V1 输出存在 shadow drift",
+            detail: detail
+        )
+    }
+
+    private static func rustGatewayCutoverReadinessIssue(
+        forFocusedProjectId focusedProjectId: String?,
+        readiness: HubIPCClient.RustMemoryGatewayCutoverReadinessReport?,
+        requireEnabled: Bool
+    ) -> SupervisorMemoryAssemblyIssue? {
+        guard let readiness else {
+            guard requireEnabled else { return nil }
+            return SupervisorMemoryAssemblyIssue(
+                code: "memory_gateway_cutover_readiness_missing",
+                severity: .blocking,
+                summary: "Rust memory gateway require 已启用但缺少 cutover readiness 证据",
+                detail: "require_env_enabled=true report=(missing)"
+            )
+        }
+
+        let normalizedFocusedProjectId = focusedProjectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let readinessProjectId = readiness.projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !normalizedFocusedProjectId.isEmpty,
+           !readinessProjectId.isEmpty,
+           normalizedFocusedProjectId != readinessProjectId {
+            return nil
+        }
+
+        let issueCodes = readiness.issues.map(\.code).joined(separator: ",")
+        let issueDetails = readiness.issues.prefix(3).map { issue in
+            "\(issue.code):\(issue.detail)"
+        }.joined(separator: " | ")
+        let detail = """
+ready_for_require=\(readiness.readyForRequire) ok=\(readiness.ok) require_env=\(readiness.requireEnvKey) require_env_enabled=\(requireEnabled) project_id=\(readinessProjectId.isEmpty ? "(none)" : readinessProjectId) role=\(readiness.requesterRole ?? "(none)") use_mode=\(readiness.useMode ?? "(none)") required_samples=\(readiness.requiredSampleCount) matching_samples=\(readiness.matchingSampleCount) fresh_matching_samples=\(readiness.freshMatchingSampleCount) considered_samples=\(readiness.consideredSampleCount) passing_samples=\(readiness.passingSampleCount) stale_matching_samples=\(readiness.staleMatchingSampleCount) authority_violations=\(readiness.authorityViolationCount) parity_failures=\(readiness.parityFailureCount) rust_source_mismatches=\(readiness.rustSourceMismatchCount) latest_recorded_at_ms=\(readiness.latestRecordedAtMs?.description ?? "(none)") report_path=\(readiness.reportPath ?? "(none)") issue_codes=\(issueCodes.isEmpty ? "(none)" : issueCodes)
+issue_detail_sample=\(issueDetails.isEmpty ? "(none)" : issueDetails)
+"""
+
+        if readiness.authorityViolationCount > 0 || readiness.issues.contains(where: { $0.code == "memory_gateway_cutover_authority_violation" }) {
+            return SupervisorMemoryAssemblyIssue(
+                code: "memory_gateway_cutover_authority_violation",
+                severity: .blocking,
+                summary: "Rust memory gateway cutover readiness 出现 authority 安全异常",
+                detail: detail
+            )
+        }
+        guard !readiness.readyForRequire || !readiness.ok else { return nil }
+        return SupervisorMemoryAssemblyIssue(
+            code: "memory_gateway_cutover_readiness_not_ready",
+            severity: requireEnabled ? .blocking : .warning,
+            summary: "Rust memory gateway 还没有达到 require cutover 条件",
+            detail: detail
+        )
     }
 
     private static func canonicalSyncIssue(

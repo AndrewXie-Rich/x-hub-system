@@ -218,6 +218,191 @@ const SUPERVISOR_MEMORY_CANDIDATE_TARGET = 'hub_candidate_carrier_shadow_thread'
 const SUPERVISOR_MEMORY_CANDIDATE_LOCAL_STORE_ROLE = 'cache|fallback|edit_buffer';
 const SUPERVISOR_MEMORY_CANDIDATE_ALLOWED_SCOPES = new Set(['user_scope', 'project_scope', 'cross_link_scope']);
 const SUPERVISOR_MEMORY_CANDIDATE_ALLOWED_SESSION_PARTICIPATION = new Set(['ignore', 'read_only', 'scoped_write']);
+const ROLE_TURN_METADATA_SCHEMA_VERSION = 'xhub.role_turn_metadata.v1';
+const PROJECT_ROLE_TRANSCRIPT_PROJECTION_SCHEMA_VERSION = 'xhub.project_role_transcript_projection.v1';
+const ROLE_TURN_SOURCE_ROLES = new Set(['user', 'supervisor', 'coder', 'reviewer', 'tool', 'hub', 'system']);
+const ROLE_TURN_TARGET_ROLES = new Set(['user', 'supervisor', 'coder', 'reviewer', 'all', 'none']);
+const ROLE_TURN_DISPATCH_KINDS = new Set([
+  'supervisor_to_coder',
+  'coder_reply',
+  'reviewer_note',
+  'user_request',
+  'tool_approval',
+  'tool_approval_decision',
+  'tool_result',
+  'heartbeat',
+]);
+const ROLE_TURN_STATUSES = new Set([
+  'dispatched',
+  'running',
+  'awaiting_authorization',
+  'failed',
+  'completed',
+  'observed',
+]);
+
+function cappedMetadataString(value, maxChars = 256) {
+  const cleaned = safeString(value);
+  if (!cleaned) return '';
+  return cleaned.length > maxChars ? cleaned.slice(0, maxChars) : cleaned;
+}
+
+function normalizeRoleValue(value, allowedValues) {
+  const cleaned = cappedMetadataString(value, 64).toLowerCase();
+  return allowedValues.has(cleaned) ? cleaned : '';
+}
+
+function cappedMetadataStringArray(values, maxItems = 16, maxChars = 256) {
+  return safeStringArray(Array.isArray(values) ? values : [])
+    .map((item) => cappedMetadataString(item, maxChars))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function rawRoleTurnMetadataHasSignal(raw) {
+  if (!raw || typeof raw !== 'object') return false;
+  const stringKeys = [
+    'schema_version',
+    'client_message_id',
+    'source_role',
+    'target_role',
+    'sender_role',
+    'project_id',
+    'root_project_id',
+    'thread_key',
+    'dispatch_id',
+    'dispatch_kind',
+    'run_id',
+    'launch_run_id',
+    'tool_call_id',
+    'reviewer_note_id',
+    'status',
+  ];
+  if (stringKeys.some((key) => safeString(raw[key]))) return true;
+  if (Number(raw.observed_at_ms || 0) > 0) return true;
+  return ['evidence_refs', 'audit_refs', 'tags'].some((key) => Array.isArray(raw[key]) && raw[key].length > 0);
+}
+
+function normalizeRoleTurnMetadata(rawMetadata, ctx) {
+  const raw = rawMetadata && typeof rawMetadata === 'object' ? rawMetadata : null;
+  if (!rawRoleTurnMetadataHasSignal(raw)) return { ok: true, metadata: null };
+
+  const currentProjectId = cappedMetadataString(ctx?.project_id, 256);
+  const declaredProjectId = cappedMetadataString(raw.project_id, 256);
+  if (declaredProjectId && declaredProjectId !== currentProjectId) {
+    return { ok: false, deny_code: 'role_metadata_project_mismatch' };
+  }
+
+  const sourceRole = normalizeRoleValue(raw.source_role, ROLE_TURN_SOURCE_ROLES);
+  const targetRole = normalizeRoleValue(raw.target_role, ROLE_TURN_TARGET_ROLES);
+  const senderRoleRaw = normalizeRoleValue(raw.sender_role, ROLE_TURN_SOURCE_ROLES);
+  const senderRole = senderRoleRaw || sourceRole;
+  const dispatchKind = normalizeRoleValue(raw.dispatch_kind, ROLE_TURN_DISPATCH_KINDS);
+  const status = normalizeRoleValue(raw.status, ROLE_TURN_STATUSES);
+  const observedAt = Number(raw.observed_at_ms || ctx?.created_at_ms || nowMs());
+
+  return {
+    ok: true,
+    metadata: {
+      schema_version: ROLE_TURN_METADATA_SCHEMA_VERSION,
+      client_message_id: cappedMetadataString(raw.client_message_id, 256),
+      source_role: sourceRole,
+      target_role: targetRole,
+      sender_role: senderRole,
+      project_id: declaredProjectId || currentProjectId,
+      root_project_id: cappedMetadataString(raw.root_project_id, 256),
+      thread_key: cappedMetadataString(raw.thread_key || ctx?.thread_key, 256),
+      dispatch_id: cappedMetadataString(raw.dispatch_id, 256),
+      dispatch_kind: dispatchKind,
+      run_id: cappedMetadataString(raw.run_id, 256),
+      launch_run_id: cappedMetadataString(raw.launch_run_id, 256),
+      tool_call_id: cappedMetadataString(raw.tool_call_id, 256),
+      reviewer_note_id: cappedMetadataString(raw.reviewer_note_id, 256),
+      status,
+      evidence_refs: cappedMetadataStringArray(raw.evidence_refs, 16, 256),
+      audit_refs: cappedMetadataStringArray(raw.audit_refs, 16, 256),
+      tags: cappedMetadataStringArray(raw.tags, 16, 96),
+      observed_at_ms: Number.isFinite(observedAt) && observedAt > 0 ? Math.floor(observedAt) : nowMs(),
+    },
+  };
+}
+
+function roleTranscriptProjectedRole(row) {
+  const metadata = row?.role_metadata && typeof row.role_metadata === 'object' ? row.role_metadata : null;
+  const sourceRole = safeString(metadata?.source_role).toLowerCase();
+  if (ROLE_TURN_SOURCE_ROLES.has(sourceRole)) return sourceRole;
+  const wireRole = safeString(row?.role).toLowerCase();
+  if (wireRole === 'assistant') return 'coder';
+  if (['user', 'tool', 'system'].includes(wireRole)) return wireRole;
+  return wireRole || 'user';
+}
+
+function roleTranscriptLineFromTurnRow(row, includeContent = true) {
+  const metadata = row?.role_metadata && typeof row.role_metadata === 'object' ? row.role_metadata : null;
+  const line = {
+    turn_id: safeString(row?.turn_id),
+    role: roleTranscriptProjectedRole(row),
+    content: includeContent ? String(row?.content || '') : '',
+    created_at_ms: Number(row?.created_at_ms || 0),
+  };
+  if (metadata && rawRoleTurnMetadataHasSignal(metadata)) {
+    line.turn_metadata = metadata;
+  }
+  return line;
+}
+
+function roleTranscriptDispatchKind(line) {
+  return safeString(line?.turn_metadata?.dispatch_kind).toLowerCase();
+}
+
+function roleTranscriptStatus(line) {
+  return safeString(line?.turn_metadata?.status).toLowerCase();
+}
+
+function buildProjectRoleTranscriptProjection({ project_id, thread, rows, includeContent = true }) {
+  const newestRows = Array.isArray(rows) ? rows : [];
+  const recentLines = newestRows
+    .slice()
+    .reverse()
+    .map((row) => roleTranscriptLineFromTurnRow(row, includeContent));
+  const newestLines = recentLines.slice().reverse();
+  const latestSupervisorDispatch = newestLines.find((line) => (
+    roleTranscriptDispatchKind(line) === 'supervisor_to_coder'
+    || line.role === 'supervisor'
+  ));
+  const latestCoderReply = newestLines.find((line) => (
+    roleTranscriptDispatchKind(line) === 'coder_reply'
+    || line.role === 'coder'
+  ));
+  const latestReviewerNote = newestLines.find((line) => (
+    roleTranscriptDispatchKind(line) === 'reviewer_note'
+    || line.role === 'reviewer'
+  ));
+  const latestNonHeartbeatStatus = roleTranscriptStatus(newestLines.find((line) => (
+    roleTranscriptDispatchKind(line) !== 'heartbeat' && roleTranscriptStatus(line)
+  )));
+  let status = 'observed';
+  if (['awaiting_authorization', 'failed', 'running'].includes(latestNonHeartbeatStatus)) {
+    status = latestNonHeartbeatStatus;
+  } else if (latestCoderReply) {
+    status = 'latest_coder_reply_observed';
+  } else if (latestSupervisorDispatch) {
+    status = 'dispatch_observed';
+  }
+  return {
+    schema_version: PROJECT_ROLE_TRANSCRIPT_PROJECTION_SCHEMA_VERSION,
+    source: 'hub_memory_turns',
+    project_id: safeString(project_id || thread?.project_id),
+    thread_id: safeString(thread?.thread_id),
+    thread_key: safeString(thread?.thread_key),
+    status,
+    latest_supervisor_dispatch: latestSupervisorDispatch || null,
+    latest_coder_reply: latestCoderReply || null,
+    latest_reviewer_note: latestReviewerNote || null,
+    recent_lines: recentLines,
+    generated_at_ms: nowMs(),
+  };
+}
 
 function parseSupervisorCandidatePayloadSummary(payloadSummary) {
   const fields = {};
@@ -13930,19 +14115,64 @@ function effectiveClientIdentity(raw, auth) {
 
     const baseTs = Number(req.created_at_ms || nowMs());
     const turns = [];
+    let roleMetadataCount = 0;
+    const dispatchIds = [];
+    const sourceRoles = [];
     const msgs = Array.isArray(req.messages) ? req.messages : [];
     for (let i = 0; i < msgs.length; i += 1) {
       const m = msgs[i] || {};
       const role = String(m.role || '').trim();
       const raw = String(m.content ?? '');
       if (!role || !raw) continue;
+      const createdAt = baseTs + i;
+      const normalizedRoleMetadata = normalizeRoleTurnMetadata(
+        m.turn_metadata || m.turnMetadata,
+        {
+          project_id,
+          thread_key: safeString(thread.thread_key),
+          thread_id,
+          created_at_ms: createdAt,
+        }
+      );
+      if (!normalizedRoleMetadata.ok) {
+        const denyCode = safeString(normalizedRoleMetadata.deny_code || 'role_metadata_invalid');
+        db.appendAudit({
+          event_type: 'memory.turns.append_denied',
+          created_at_ms: nowMs(),
+          severity: 'warn',
+          device_id,
+          user_id: user_id || null,
+          app_id,
+          project_id: project_id || null,
+          session_id: client.session_id ? String(client.session_id) : null,
+          request_id: request_id || null,
+          capability: 'memory',
+          model_id: null,
+          ok: false,
+          error_code: denyCode,
+          error_message: denyCode,
+          ext_json: JSON.stringify({
+            thread_id,
+            thread_key: safeString(thread.thread_key),
+            schema_version: ROLE_TURN_METADATA_SCHEMA_VERSION,
+          }),
+        });
+        callback(new Error(denyCode));
+        return;
+      }
+      const roleMetadata = normalizedRoleMetadata.metadata;
       if (allow_private) {
-        turns.push({ role, content: raw, is_private: 0, created_at_ms: baseTs + i });
+        turns.push({ role, content: raw, is_private: 0, created_at_ms: createdAt, role_metadata: roleMetadata });
       } else {
         const red = redactPrivateContent(raw);
         const cleaned = String(red.text || '').trim();
         if (!cleaned) continue;
-        turns.push({ role, content: cleaned, is_private: red.had_private ? 1 : 0, created_at_ms: baseTs + i });
+        turns.push({ role, content: cleaned, is_private: red.had_private ? 1 : 0, created_at_ms: createdAt, role_metadata: roleMetadata });
+      }
+      if (roleMetadata) {
+        roleMetadataCount += 1;
+        if (roleMetadata.dispatch_id) dispatchIds.push(roleMetadata.dispatch_id);
+        if (roleMetadata.source_role) sourceRoles.push(roleMetadata.source_role);
       }
     }
 
@@ -14096,7 +14326,14 @@ function effectiveClientIdentity(raw, auth) {
       capability: 'unknown',
       model_id: null,
       ok: true,
-      ext_json: JSON.stringify({ thread_id, appended }),
+      ext_json: JSON.stringify({
+        thread_id,
+        appended,
+        schema_version: ROLE_TURN_METADATA_SCHEMA_VERSION,
+        role_metadata_count: roleMetadataCount,
+        dispatch_ids: uniqueOrderedValues(dispatchIds),
+        source_roles: uniqueOrderedValues(sourceRoles),
+      }),
     });
 
     callback(null, { thread_id, appended });
@@ -14146,11 +14383,93 @@ function effectiveClientIdentity(raw, auth) {
 
     const rows = db.listTurns({ thread_id, limit });
     const msgs = rows
-      .map((r) => ({ role: String(r.role || ''), content: String(r.content || ''), created_at_ms: Number(r.created_at_ms || 0) }))
+      .map((r) => ({
+        role: String(r.role || ''),
+        content: String(r.content || ''),
+        turn_metadata: r.role_metadata && typeof r.role_metadata === 'object' ? r.role_metadata : null,
+        created_at_ms: Number(r.created_at_ms || 0),
+      }))
       .reverse()
-      .map((m) => ({ role: m.role, content: m.content }));
+      .map((m) => {
+        const out = { role: m.role, content: m.content };
+        if (m.turn_metadata) out.turn_metadata = m.turn_metadata;
+        return out;
+      });
 
     callback(null, { thread_id, messages: msgs });
+  }
+
+  function GetProjectRoleTranscriptProjection(call, callback) {
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'memory')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+    const req = call.request || {};
+    const client = effectiveClientIdentity(req.client || {}, auth);
+    const device_id = String(client.device_id || '').trim();
+    const app_id = String(client.app_id || '').trim();
+    const requestedProjectId = safeString(req.project_id || req.projectId);
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = requestedProjectId || trustedAutomationScope.project_id;
+    const user_id = client.user_id ? String(client.user_id) : '';
+    const thread_key = safeString(req.thread_key || req.threadKey || `xterminal_project_${project_id}`);
+    const limit = Math.max(1, Math.min(500, Number(req.limit || 50)));
+    const includeContent = !!req.include_content;
+
+    if (!device_id || !app_id || !project_id || !thread_key) {
+      callback(new Error('invalid request: missing device_id/app_id/project_id/thread_key'));
+      return;
+    }
+    if (requestedProjectId && trustedAutomationScope.project_id && requestedProjectId !== trustedAutomationScope.project_id) {
+      callback(new Error('role_metadata_project_mismatch'));
+      return;
+    }
+    const scopedTrust = trustedAutomationScopeWithProject(trustedAutomationScope, project_id);
+    if (!trustedAutomationAllows(auth, scopedTrust)) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const thread = db.findThreadByKey({
+      device_id,
+      app_id,
+      project_id,
+      thread_key,
+    });
+    if (!thread) {
+      callback(null, {
+        schema_version: PROJECT_ROLE_TRANSCRIPT_PROJECTION_SCHEMA_VERSION,
+        source: 'hub_memory_turns',
+        project_id,
+        thread_id: '',
+        thread_key,
+        status: 'empty',
+        recent_lines: [],
+        generated_at_ms: nowMs(),
+      });
+      return;
+    }
+
+    if (String(thread.device_id || '') !== device_id
+        || String(thread.app_id || '') !== app_id
+        || String(thread.project_id || '') !== project_id) {
+      callback(new Error('permission_denied'));
+      return;
+    }
+
+    const rows = db.listTurns({ thread_id: String(thread.thread_id || ''), limit });
+    const projection = buildProjectRoleTranscriptProjection({
+      project_id,
+      thread,
+      rows,
+      includeContent,
+    });
+    callback(null, projection);
   }
 
 	  function UpsertCanonicalMemory(call, callback) {
@@ -22156,6 +22475,7 @@ function effectiveClientIdentity(raw, auth) {
       GetOrCreateThread,
       AppendTurns,
       GetWorkingSet,
+      GetProjectRoleTranscriptProjection,
       UpsertCanonicalMemory,
       ListCanonicalMemory,
       RetrieveMemory,

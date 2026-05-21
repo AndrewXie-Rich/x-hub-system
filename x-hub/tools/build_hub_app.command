@@ -16,6 +16,7 @@ USE_BUILD_SNAPSHOT="${XHUB_USE_BUILD_SNAPSHOT:-1}"
 BUILD_SNAPSHOT_RETENTION_COUNT="${XHUB_BUILD_SNAPSHOT_RETENTION_COUNT:-2}"
 RESET_BUILD_SNAPSHOT="${XHUB_RESET_BUILD_SNAPSHOT:-0}"
 BUILD_HEARTBEAT_SECONDS="${XHUB_BUILD_HEARTBEAT_SECONDS:-15}"
+RELEASE_DISABLE_WMO="${XHUB_RELEASE_DISABLE_WMO:-1}"
 
 run_with_heartbeat() {
   local label="${1:-[build]}"
@@ -62,8 +63,8 @@ create_build_snapshot() {
   echo "[prep] Creating frozen source snapshot at: $SNAPSHOT_DIR"
   if [ "$RESET_BUILD_SNAPSHOT" = "1" ] && [ -d "$SNAPSHOT_DIR" ]; then
     echo "[prep] Resetting cached build snapshot"
+    rm -rf "$SNAPSHOT_DIR"
   fi
-  rm -rf "$SNAPSHOT_DIR"
   mkdir -p "$SNAPSHOT_DIR"
   sync_snapshot_tree "$SOURCE_ROOT/x-hub/" "$SNAPSHOT_DIR/x-hub/"
   if [ -d "$SOURCE_ROOT/protocol" ]; then
@@ -80,6 +81,119 @@ configure_build_paths() {
   XHUB_DIR="$BUILD_ROOT/x-hub"
   PKG_DIR="$XHUB_DIR/macos/RELFlowHub"
   TPL_DIR="$XHUB_DIR/macos/app_template"
+}
+
+path_realpath_dir() {
+  local path="$1"
+  if [ -z "$path" ] || [ ! -d "$path" ]; then
+    return 1
+  fi
+  (cd "$path" && pwd -P)
+}
+
+rust_external_package_allowed() {
+  case "${XHUB_ALLOW_EXTERNAL_RUST_HUB_PACKAGE:-0}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+canonical_rust_source_root() {
+  path_realpath_dir "$SOURCE_ROOT/rust/xhubd"
+}
+
+assert_canonical_rust_source_root() {
+  local candidate="$1"
+  local candidate_real=""
+  local canonical_real=""
+  [ -n "$candidate" ] || return 0
+  candidate_real="$(path_realpath_dir "$candidate" 2>/dev/null || true)"
+  canonical_real="$(canonical_rust_source_root 2>/dev/null || true)"
+  if [ -n "$candidate_real" ] && [ -n "$canonical_real" ] && [ "$candidate_real" = "$canonical_real" ]; then
+    return 0
+  fi
+  if rust_external_package_allowed; then
+    echo "[RUST] Warning: using external Rust Hub source root by explicit opt-in: $candidate" >&2
+    return 0
+  fi
+  echo "[RUST] Refusing external Rust Hub source root: $candidate" >&2
+  echo "[RUST] Unified Hub builds must use: $SOURCE_ROOT/rust/xhubd" >&2
+  echo "[RUST] Set XHUB_ALLOW_EXTERNAL_RUST_HUB_PACKAGE=1 only for a deliberate one-off diagnostic build." >&2
+  exit 1
+}
+
+assert_canonical_rust_package_dir() {
+  local package_dir="$1"
+  local package_real=""
+  local canonical_real=""
+  [ -n "$package_dir" ] || return 0
+  package_real="$(path_realpath_dir "$package_dir" 2>/dev/null || true)"
+  canonical_real="$(canonical_rust_source_root 2>/dev/null || true)"
+  if [ -n "$package_real" ] && [ -n "$canonical_real" ]; then
+    case "$package_real/" in
+      "$canonical_real"/dist/rust-hub-*/) return 0 ;;
+    esac
+  fi
+  if rust_external_package_allowed; then
+    echo "[RUST] Warning: using external Rust Hub package by explicit opt-in: $package_dir" >&2
+    return 0
+  fi
+  echo "[RUST] Refusing external Rust Hub package: $package_dir" >&2
+  echo "[RUST] Unified Hub builds must embed a package from: $SOURCE_ROOT/rust/xhubd/dist" >&2
+  echo "[RUST] Run: $SOURCE_ROOT/rust/xhubd/tools/package_rust_hub.command" >&2
+  echo "[RUST] Set XHUB_ALLOW_EXTERNAL_RUST_HUB_PACKAGE=1 only for a deliberate one-off diagnostic build." >&2
+  exit 1
+}
+
+assert_rust_package_capability_floor() {
+  local package_dir="$1"
+  local help_text=""
+  if [ ! -x "$package_dir/bin/xhubd" ]; then
+    echo "[RUST] Invalid Rust Hub package, missing executable: $package_dir/bin/xhubd" >&2
+    exit 1
+  fi
+  help_text="$("$package_dir/bin/xhubd" --help 2>&1 || true)"
+  case "$help_text" in
+    *"model <inventory|capabilities"*) return 0 ;;
+  esac
+  echo "[RUST] Refusing stale Rust Hub package without model capabilities support: $package_dir" >&2
+  echo "[RUST] Repackage the unified Rust kernel with: $SOURCE_ROOT/rust/xhubd/tools/package_rust_hub.command" >&2
+  exit 1
+}
+
+preflight_rust_hub_source_selection() {
+  local mode="${XHUB_EMBED_RUST_HUB:-auto}"
+  local require_package=0
+  case "$mode" in
+    1|true|TRUE|yes|YES) require_package=1 ;;
+    auto|AUTO) require_package=0 ;;
+    *) return 0 ;;
+  esac
+
+  if [ -n "${XHUB_RUST_HUB_SOURCE_ROOT:-}" ]; then
+    assert_canonical_rust_source_root "$XHUB_RUST_HUB_SOURCE_ROOT"
+  fi
+  if [ -n "${XHUB_RUST_HUB_PACKAGE_DIR:-}" ]; then
+    assert_canonical_rust_package_dir "$XHUB_RUST_HUB_PACKAGE_DIR"
+    assert_rust_package_capability_floor "$XHUB_RUST_HUB_PACKAGE_DIR"
+    return 0
+  fi
+
+  local source_root="${XHUB_RUST_HUB_SOURCE_ROOT:-$SOURCE_ROOT/rust/xhubd}"
+  local dist_root="$source_root/dist"
+  local latest=""
+  if [ -d "$dist_root" ]; then
+    latest="$(find "$dist_root" -maxdepth 1 -type d -name 'rust-hub-*' 2>/dev/null | sort | tail -n 1)"
+  fi
+  if [ -n "$latest" ] && [ -d "$latest" ]; then
+    assert_canonical_rust_package_dir "$latest"
+    assert_rust_package_capability_floor "$latest"
+    return 0
+  fi
+  if [ "$require_package" = "1" ]; then
+    echo "[RUST] Missing Rust Hub package. Run: $SOURCE_ROOT/rust/xhubd/tools/package_rust_hub.command" >&2
+    exit 1
+  fi
 }
 
 prepare_swift_build_dirs() {
@@ -101,13 +215,18 @@ configure_swift_build_args() {
     --package-path "$PKG_DIR"
   )
 
+  if [ "$RELEASE_DISABLE_WMO" = "1" ]; then
+    echo "[1a/4] Release WMO disabled via XHUB_RELEASE_DISABLE_WMO=1"
+    COMMON_ARGS+=(-Xswiftc -no-whole-module-optimization)
+  fi
+
   MAIN_BUILD_ARGS=("${COMMON_ARGS[@]}" --product XHub)
 }
 
 is_retryable_swift_build_failure() {
   local attempt_log="$1"
   grep -Eiq \
-    "unknown argument: '-isysroot'|accessing build database \".*\.scratch/build\.db\": disk I/O error|disk I/O error" \
+    "unknown argument: '-isysroot'|accessing build database \".*\.scratch/build\.db\": disk I/O error|disk I/O error|Rename failed: .*\.o\.tmp|error closing '.*' for output|was modified during the build" \
     "$attempt_log"
 }
 
@@ -123,26 +242,19 @@ reset_swift_build_state() {
 
 run_swift_build_once() {
   local attempt_log="$1"
-  local attempt_pipe=""
-  local tee_pid=""
   local build_rc=0
   : > "$attempt_log"
 
-  attempt_pipe="$(mktemp -u -t xhub_swift_build_pipe)"
-  rm -f "$attempt_pipe"
-  mkfifo "$attempt_pipe"
-  tee "$attempt_log" < "$attempt_pipe" &
-  tee_pid=$!
-
   set +e
-  run_with_heartbeat "[1/4] swift build" \
-    env HOME="$PKG_DIR/.sandbox_home" TMPDIR="$PKG_DIR/.sandbox_tmp" \
-    swift build "${MAIN_BUILD_ARGS[@]}" > "$attempt_pipe" 2>&1
-  build_rc=$?
+  (
+    cd "$PKG_DIR"
+    run_with_heartbeat "[1/4] swift build" \
+      env HOME="$PKG_DIR/.sandbox_home" TMPDIR="$PKG_DIR/.sandbox_tmp" \
+      swift build "${MAIN_BUILD_ARGS[@]}"
+  ) 2>&1 | tee "$attempt_log"
+  build_rc=${PIPESTATUS[0]}
   set -e
 
-  wait "$tee_pid" 2>/dev/null || true
-  rm -f "$attempt_pipe"
   return "$build_rc"
 }
 
@@ -217,6 +329,7 @@ trap on_error ERR
 trap cleanup_logging EXIT
 
 echo "[LOG] Writing build log to: $LOG_FILE"
+preflight_rust_hub_source_selection
 
 stop_replaced_app_processes() {
   local targets=(
@@ -237,8 +350,9 @@ stop_replaced_app_processes() {
   local pids=()
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    local pid="${line%% *}"
-    local cmd="${line#* }"
+    local pid=""
+    local cmd=""
+    read -r pid cmd <<< "$line"
     [ -n "$pid" ] || continue
     for target in "${targets[@]}"; do
       if [[ "$cmd" == *"$target"* ]]; then
@@ -277,7 +391,8 @@ prepare_swift_build_dirs
 configure_swift_build_args
 build_swift_package
 
-BIN_DIR=$(env HOME="$PKG_DIR/.sandbox_home" TMPDIR="$PKG_DIR/.sandbox_tmp" swift build "${COMMON_ARGS[@]}" --show-bin-path)
+BIN_DIR_OUTPUT="$(cd "$PKG_DIR" && env HOME="$PKG_DIR/.sandbox_home" TMPDIR="$PKG_DIR/.sandbox_tmp" swift build "${COMMON_ARGS[@]}" --show-bin-path)"
+BIN_DIR="${BIN_DIR_OUTPUT##*$'\n'}"
 BIN_PATH="$BIN_DIR/XHub"
 if [ -z "$BIN_PATH" ] || [ ! -f "$BIN_PATH" ]; then
   echo "Build output not found at: $BIN_PATH" >&2
@@ -432,7 +547,7 @@ fi
 resolve_rust_hub_package_dir() {
   if [ -n "${XHUB_RUST_HUB_PACKAGE_DIR:-}" ]; then
     if [ -d "$XHUB_RUST_HUB_PACKAGE_DIR" ]; then
-      cd "$XHUB_RUST_HUB_PACKAGE_DIR" && pwd
+      (cd "$XHUB_RUST_HUB_PACKAGE_DIR" && pwd)
       return 0
     fi
     return 1
@@ -443,7 +558,6 @@ resolve_rust_hub_package_dir() {
     source_roots+=("$XHUB_RUST_HUB_SOURCE_ROOT")
   else
     source_roots+=("$SOURCE_ROOT/rust/xhubd")
-    source_roots+=("$SOURCE_ROOT/../rust/rust hub")
   fi
 
   local latest=""
@@ -463,7 +577,9 @@ resolve_rust_hub_package_dir() {
   done
 
   if [ -n "$latest" ] && [ -d "$latest" ]; then
-    cd "$latest" && pwd
+    assert_canonical_rust_package_dir "$latest"
+    assert_rust_package_capability_floor "$latest"
+    (cd "$latest" && pwd)
     return 0
   fi
 
@@ -492,6 +608,8 @@ embed_rust_hub_package() {
     echo "[RUST] Expected bin/xhubd and tools/run_rust_hub.command." >&2
     exit 1
   fi
+  assert_canonical_rust_package_dir "$package_dir"
+  assert_rust_package_capability_floor "$package_dir"
 
   local dest="$APP_DIR/Contents/Resources/rust-hub"
   echo "[RUST] Embedding Rust Hub package into app Resources…"

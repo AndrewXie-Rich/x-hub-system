@@ -169,6 +169,70 @@ struct SupervisorProjectHeartbeatCanonicalSyncTests {
         #expect(decoded.digestExplainability.reasonCodes.contains("project_memory_attention"))
     }
 
+    @Test
+    func roleTurnMessageProjectsHeartbeatGovernanceAsHubRoleMetadata() throws {
+        let snapshot = XTProjectHeartbeatGovernanceDoctorSnapshot(
+            projectId: "project-heartbeat-role",
+            projectName: "Heartbeat Role Project",
+            statusDigest: "verify blocked on route repair",
+            currentStateSummary: "Route health regressed during verify",
+            nextStepSummary: "Repair route and retry smoke suite",
+            blockerSummary: "route instability",
+            lastHeartbeatAtMs: 1_778_830_120_000,
+            latestQualityBand: .weak,
+            latestQualityScore: 39,
+            weakReasons: ["hollow_progress"],
+            openAnomalyTypes: [.routeFlaky, .queueStall],
+            projectPhase: .verify,
+            executionStatus: .blocked,
+            riskTier: .high,
+            cadence: makeCadence(),
+            digestExplainability: XTHeartbeatDigestExplainability(
+                visibility: .shown,
+                reasonCodes: ["open_anomalies_present"],
+                whatChangedText: "验证阶段再次停在 route 健康问题。",
+                whyImportantText: "继续空转会让验证结果失真。",
+                systemNextStepText: "系统会先修复 route / dispatch 健康。"
+            ),
+            recoveryDecision: HeartbeatRecoveryDecision(
+                action: .repairRoute,
+                urgency: .urgent,
+                reasonCode: "route_health_regressed",
+                summary: "Repair route before retry.",
+                sourceSignals: ["route_flaky"],
+                anomalyTypes: [.routeFlaky],
+                blockedLaneReasons: [.runtimeError],
+                blockedLaneCount: 1,
+                stalledLaneCount: 0,
+                failedLaneCount: 0,
+                recoveringLaneCount: 0,
+                requiresUserAction: false
+            ),
+            projectMemoryReadiness: nil
+        )
+        let record = SupervisorProjectHeartbeatCanonicalSync.record(
+            snapshot: snapshot,
+            generatedAtMs: 1_778_830_130_000
+        )
+
+        let message = try #require(SupervisorProjectHeartbeatCanonicalSync.roleTurnMessage(record: record))
+
+        #expect(message.role == "system")
+        #expect(message.content.contains("Heartbeat governance projection observed."))
+        #expect(message.content.contains("status_digest=verify blocked on route repair"))
+        #expect(message.content.contains("open_anomaly_types=route_flaky,queue_stall"))
+        #expect(message.content.contains("recovery_action=repair_route"))
+        #expect(message.turnMetadata?.sourceRole == "hub")
+        #expect(message.turnMetadata?.targetRole == "all")
+        #expect(message.turnMetadata?.dispatchKind == "heartbeat")
+        #expect(message.turnMetadata?.status == "observed")
+        #expect(message.turnMetadata?.projectId == "project-heartbeat-role")
+        #expect(message.turnMetadata?.threadKey == "xterminal_project_project-heartbeat-role")
+        #expect(message.turnMetadata?.auditRefs == [record.auditRef])
+        #expect(message.turnMetadata?.evidenceRefs.contains("heartbeat_projection:project-heartbeat-role:1778830130000") == true)
+        #expect(message.turnMetadata?.tags.contains("xt_heartbeat_governance") == true)
+    }
+
     private func makeCadence() -> SupervisorCadenceExplainability {
         SupervisorCadenceExplainability(
             progressHeartbeat: SupervisorCadenceDimensionExplainability(

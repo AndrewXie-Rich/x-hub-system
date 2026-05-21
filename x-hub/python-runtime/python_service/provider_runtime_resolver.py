@@ -115,7 +115,8 @@ def _path_within_roots(path: str, roots: list[str]) -> bool:
 
 def _candidate_hub_runtime_roots(base_dir: str) -> list[str]:
     normalized_base = _normalize_path(base_dir)
-    candidates: list[str] = []
+    py_deps_candidates: list[str] = []
+    ai_runtime_candidates: list[str] = []
     for root in [
         os.path.expanduser("~/RELFlowHub"),
         normalized_base,
@@ -126,11 +127,32 @@ def _candidate_hub_runtime_roots(base_dir: str) -> list[str]:
         py_deps_root = os.path.join(normalized_root, "py_deps")
         site_packages = os.path.join(py_deps_root, "site-packages")
         if os.path.isdir(site_packages) or os.path.exists(os.path.join(py_deps_root, "USE_PYTHONPATH")):
-            candidates.append(site_packages)
+            py_deps_candidates.append(site_packages)
         ai_runtime_root = os.path.join(normalized_root, "ai_runtime")
         if os.path.isdir(ai_runtime_root):
-            candidates.append(ai_runtime_root)
-    return _dedupe_paths(candidates)
+            ai_runtime_candidates.append(ai_runtime_root)
+    return _dedupe_paths(py_deps_candidates + ai_runtime_candidates)
+
+
+def _is_hub_py_deps_site_packages(path: str) -> bool:
+    normalized = _normalize_path(path)
+    if not normalized:
+        return False
+    return (
+        os.path.basename(normalized) == "site-packages"
+        and os.path.basename(os.path.dirname(normalized)) == "py_deps"
+    )
+
+
+def _activate_hub_py_deps_roots(runtime_roots: list[str]) -> None:
+    py_deps_roots = [
+        _normalize_path(root)
+        for root in runtime_roots
+        if _is_hub_py_deps_site_packages(root) and os.path.isdir(_normalize_path(root))
+    ]
+    for root in reversed(_dedupe_paths(py_deps_roots)):
+        if root not in sys.path:
+            sys.path.insert(0, root)
 
 
 def _guess_user_runtime_source(python_path: str) -> str:
@@ -262,6 +284,7 @@ def resolve_provider_runtime(
     native_dylib = _safe_str(runtime_requirements.get("nativeDylib") or runtime_requirements.get("native_dylib"))
     service_base_url = _safe_str(runtime_requirements.get("serviceBaseUrl") or runtime_requirements.get("service_base_url"))
     hub_runtime_roots = _candidate_hub_runtime_roots(base_dir)
+    _activate_hub_py_deps_roots(hub_runtime_roots)
     hub_runtime_root = hub_runtime_roots[0] if hub_runtime_roots else ""
     current_python = _normalize_path(sys.executable)
 

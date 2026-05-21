@@ -72,6 +72,51 @@ enum LocalRuntimeRepairSurfaceSummaryBuilder {
         return nil
     }
 
+    static func build(
+        rustRepairPlan plan: RustLocalModelRepairPlan?
+    ) -> LocalRuntimeRepairSurfaceSummary? {
+        guard let plan, plan.isActionableRepair else { return nil }
+        let severity: LocalRuntimeRepairSurfaceSummary.Severity =
+            plan.requiresDownload || plan.requiresNetwork ? .warning : .critical
+        let target = repairTargetText(plan)
+        let missing = plan.missingRequirements.isEmpty
+            ? ""
+            : " 缺口：\(plan.missingRequirements.joined(separator: ", "))。"
+        let approval = plan.requiresUserApproval
+            ? "需要用户确认后才能继续。"
+            : "可由 Hub 执行无网络的后续检查。"
+        let message = [plan.summary, missing, approval]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        let nextStep = repairPlanNextStep(plan)
+        let actions = plan.steps.map { step in
+            LocalRuntimeRepairSurfaceSummary.Action(
+                actionID: step.stepID.isEmpty ? step.actionKind : step.stepID,
+                title: step.title.isEmpty ? step.actionKind : step.title,
+                detail: repairPlanStepDetail(step)
+            )
+        }
+        return LocalRuntimeRepairSurfaceSummary(
+            reasonCode: plan.resolved.action,
+            severity: severity,
+            headline: "本地模型能力需要修复：\(target)",
+            message: message,
+            nextStep: nextStep,
+            repairDestinationRef: "hub://settings/models/runtime",
+            actions: actions,
+            clipboardText: clipboardText(
+                reasonCode: plan.resolved.action,
+                severity: severity,
+                headline: "本地模型能力需要修复：\(target)",
+                message: message,
+                nextStep: nextStep,
+                repairDestinationRef: "hub://settings/models/runtime",
+                actions: actions
+            )
+        )
+    }
+
     static func destinationLabel(for ref: String) -> String {
         let normalized = ref.trimmingCharacters(in: .whitespacesAndNewlines)
         switch normalized {
@@ -204,6 +249,55 @@ enum LocalRuntimeRepairSurfaceSummaryBuilder {
         )
     }
 
+    private static func repairTargetText(_ plan: RustLocalModelRepairPlan) -> String {
+        let task = plan.target.taskKind.isEmpty ? plan.resolved.taskKind : plan.target.taskKind
+        let provider = plan.target.providerID.isEmpty ? plan.resolved.providerID : plan.target.providerID
+        switch (provider.isEmpty, task.isEmpty) {
+        case (false, false):
+            return "\(provider) / \(task)"
+        case (false, true):
+            return provider
+        case (true, false):
+            return task
+        case (true, true):
+            return plan.resolved.action
+        }
+    }
+
+    private static func repairPlanNextStep(_ plan: RustLocalModelRepairPlan) -> String {
+        if let approvalStep = plan.steps.first(where: \.requiresUserApproval) {
+            let title = approvalStep.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !title.isEmpty {
+                return "\(title)：\(approvalStep.detail)"
+            }
+            return approvalStep.detail
+        }
+        if let firstStep = plan.steps.first {
+            let title = firstStep.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !title.isEmpty {
+                return "\(title)：\(firstStep.detail)"
+            }
+            return firstStep.detail
+        }
+        return plan.requiresUserApproval
+            ? "先确认修复动作，再由 Hub 执行安装、导入或 runtime 重启。"
+            : "刷新本地模型能力并重新检查 /model/capabilities。"
+    }
+
+    private static func repairPlanStepDetail(_ step: RustLocalModelRepairPlan.Step) -> String {
+        var parts: [String] = []
+        if !step.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(step.detail)
+        }
+        if step.requiresUserApproval {
+            parts.append("需要用户确认")
+        }
+        if step.requiresNetwork {
+            parts.append("可能需要网络")
+        }
+        return parts.isEmpty ? step.actionKind : parts.joined(separator: " · ")
+    }
+
     private static func clipboardText(
         reasonCode: String,
         severity: LocalRuntimeRepairSurfaceSummary.Severity,
@@ -241,6 +335,8 @@ struct LocalRuntimeRepairEntryCard: View {
     var onOpenSettings: (() -> Void)? = nil
     var onCopySummary: (() -> Void)? = nil
     var onOpenLog: (() -> Void)? = nil
+    var queueRepairTitle: String? = nil
+    var onQueueRepair: (() -> Void)? = nil
 
     private var tone: Color {
         switch summary.severity {
@@ -314,6 +410,11 @@ struct LocalRuntimeRepairEntryCard: View {
                 if let onOpenLog {
                     Button(HubUIStrings.Settings.RuntimeMonitor.openLog) {
                         onOpenLog()
+                    }
+                }
+                if let onQueueRepair {
+                    Button(queueRepairTitle ?? HubUIStrings.Models.Runtime.LocalServiceRecovery.queueRustRepairAction) {
+                        onQueueRepair()
                     }
                 }
                 Spacer()

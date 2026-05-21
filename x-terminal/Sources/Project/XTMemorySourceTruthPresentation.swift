@@ -37,6 +37,10 @@ enum XTMemorySourceTruthPresentation {
             return "仅本地 overlay"
         case XTProjectMemoryGovernance.localFallbackSource:
             return "本地 fallback"
+        case "rust_memory_gateway_prepare":
+            return "Rust memory gateway"
+        case "rust_memory_gateway_cutover_gate":
+            return "Rust memory gateway cutover gate"
         case "xt_cache":
             return "本地缓存"
         case "disabled":
@@ -66,6 +70,10 @@ enum XTMemorySourceTruthPresentation {
             return "local_truth"
         case XTProjectMemoryGovernance.localFallbackSource:
             return "local_fallback"
+        case "rust_memory_gateway_prepare":
+            return "rust_memory_gateway"
+        case "rust_memory_gateway_cutover_gate":
+            return "rust_memory_gateway_required"
         case "xt_cache":
             return "local_cache"
         case "disabled", "not_required":
@@ -89,6 +97,10 @@ enum XTMemorySourceTruthPresentation {
             return "Hub 不可用时兜底"
         case "local_cache":
             return "仅缓存视图"
+        case "rust_memory_gateway":
+            return "Rust prepare-only memory context"
+        case "rust_memory_gateway_required":
+            return "Rust gateway required; fallback disabled"
         default:
             return nil
         }

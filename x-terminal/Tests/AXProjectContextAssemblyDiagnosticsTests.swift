@@ -51,13 +51,21 @@ struct AXProjectContextAssemblyDiagnosticsTests {
                 "stage": "chat_plan",
                 "role_aware_memory_mode": "project_ai",
                 "project_memory_resolution_trigger": "manual_full_scan_request",
-                "memory_v1_source": "local_project_memory_v1",
+                "memory_v1_source": "rust_memory_gateway_prepare",
                 "memory_v1_freshness": "ttl_cache",
                 "memory_v1_cache_hit": true,
                 "memory_v1_remote_snapshot_cache_scope": "mode=project_chat project_id=proj-alpha",
                 "memory_v1_remote_snapshot_cached_at_ms": 1_774_000_000_000 as Int64,
                 "memory_v1_remote_snapshot_age_ms": 6000,
                 "memory_v1_remote_snapshot_ttl_remaining_ms": 9000,
+                "memory_gateway_source": "rust_memory_gateway_prepare",
+                "memory_gateway_primary_enabled": true,
+                "memory_gateway_mode": "prepare_only_no_model_call",
+                "memory_gateway_safety_mode": "compatibility_fallback_on_unavailable",
+                "memory_gateway_production_authority_change": false,
+                "memory_gateway_model_call": false,
+                "memory_gateway_object_count": 3,
+                "memory_gateway_effective_layers": ["l1_canonical", "l2_observations", "l3_working_set"],
                 "configured_recent_project_dialogue_profile": "extended_40_pairs",
                 "recommended_recent_project_dialogue_profile": "extended_40_pairs",
                 "effective_recent_project_dialogue_profile": "extended_40_pairs",
@@ -106,7 +114,10 @@ struct AXProjectContextAssemblyDiagnosticsTests {
 
         let summary = AXProjectContextAssemblyDiagnosticsStore.doctorSummary(for: ctx)
 
-        #expect(summary.latestEvent?.memoryV1Source == "local_project_memory_v1")
+        #expect(summary.latestEvent?.memoryV1Source == "rust_memory_gateway_prepare")
+        #expect(summary.latestEvent?.memoryGatewaySource == "rust_memory_gateway_prepare")
+        #expect(summary.latestEvent?.memoryGatewayProductionAuthorityChange == false)
+        #expect(summary.latestEvent?.memoryGatewayObjectCount == 3)
         #expect(summary.latestEvent?.recentProjectDialogueProfile == "extended_40_pairs")
         #expect(summary.latestEvent?.recentProjectDialogueFloorSatisfied == true)
         #expect(summary.memoryAssemblyReadiness.ready == true)
@@ -114,11 +125,21 @@ struct AXProjectContextAssemblyDiagnosticsTests {
         #expect(summary.detailLines.contains("project_context_diagnostics_source=latest_coder_usage"))
         #expect(summary.detailLines.contains("role_aware_memory_mode=project_ai"))
         #expect(summary.detailLines.contains("project_memory_resolution_trigger=manual_full_scan_request"))
+        #expect(summary.detailLines.contains("project_memory_v1_source_label=Rust memory gateway"))
+        #expect(summary.detailLines.contains("project_memory_v1_source_class=rust_memory_gateway"))
         #expect(summary.detailLines.contains("memory_v1_freshness=ttl_cache"))
         #expect(summary.detailLines.contains("memory_v1_cache_hit=true"))
         #expect(summary.detailLines.contains("memory_v1_remote_snapshot_cache_scope=mode=project_chat project_id=proj-alpha"))
         #expect(summary.detailLines.contains("memory_v1_remote_snapshot_age_ms=6000"))
         #expect(summary.detailLines.contains("memory_v1_remote_snapshot_ttl_remaining_ms=9000"))
+        #expect(summary.detailLines.contains("memory_gateway_source=rust_memory_gateway_prepare"))
+        #expect(summary.detailLines.contains("memory_gateway_primary_enabled=true"))
+        #expect(summary.detailLines.contains("memory_gateway_mode=prepare_only_no_model_call"))
+        #expect(summary.detailLines.contains("memory_gateway_safety_mode=compatibility_fallback_on_unavailable"))
+        #expect(summary.detailLines.contains("memory_gateway_production_authority_change=false"))
+        #expect(summary.detailLines.contains("memory_gateway_model_call=false"))
+        #expect(summary.detailLines.contains("memory_gateway_object_count=3"))
+        #expect(summary.detailLines.contains("memory_gateway_effective_layers=l1_canonical,l2_observations,l3_working_set"))
         #expect(summary.detailLines.contains("configured_recent_project_dialogue_profile=extended_40_pairs"))
         #expect(summary.detailLines.contains("recommended_recent_project_dialogue_profile=extended_40_pairs"))
         #expect(summary.detailLines.contains("effective_recent_project_dialogue_profile=extended_40_pairs"))

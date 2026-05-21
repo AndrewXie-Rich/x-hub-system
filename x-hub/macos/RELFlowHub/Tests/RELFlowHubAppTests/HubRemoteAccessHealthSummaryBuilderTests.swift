@@ -67,7 +67,7 @@ final class HubRemoteAccessHealthSummaryBuilderTests: XCTestCase {
         XCTAssertEqual(summary.operatorHintText, HubUIStrings.Settings.GRPC.RemoteHealth.hintReady)
     }
 
-    func testBuildTreatsAllowedPrivateVPNIPAsFormalRemoteHost() {
+    func testBuildTreatsAllowedPrivateRoutedIPAsFormalRemoteHost() {
         let summary = HubRemoteAccessHealthSummaryBuilder.build(
             autoStartEnabled: true,
             serverRunning: true,

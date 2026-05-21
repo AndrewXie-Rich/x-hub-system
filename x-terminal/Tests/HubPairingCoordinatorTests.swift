@@ -653,9 +653,12 @@ struct HubPairingCoordinatorTests {
     }
 
     @Test
-    func reusableInternetHostSkipsUnnamedRawIPv4() {
-        let host = HubPairingCoordinator.inferredReusableInternetHostForTesting("100.96.10.8")
-        #expect(host == nil)
+    func reusableInternetHostKeepsTailscaleIPButSkipsPublicRawIPv4() {
+        let tailscaleHost = HubPairingCoordinator.inferredReusableInternetHostForTesting("100.96.10.8")
+        let publicHost = HubPairingCoordinator.inferredReusableInternetHostForTesting("17.81.11.116")
+
+        #expect(tailscaleHost == "100.96.10.8")
+        #expect(publicHost == nil)
     }
 
     @Test
@@ -697,7 +700,7 @@ struct HubPairingCoordinatorTests {
     }
 
     @Test
-    func orderedConnectRouteCandidatesDropFormalRemotePathsForRawPublicIP() {
+    func orderedConnectRouteCandidatesAllowInternetDirectForRawPublicIPButNotTunnel() {
         let defaultOrder = HubPairingCoordinator.orderedConnectRouteCandidatesForTesting(
             requestedCandidates: [],
             preferredRoute: nil,
@@ -709,8 +712,25 @@ struct HubPairingCoordinatorTests {
             internetHost: "17.81.11.116"
         )
 
-        #expect(defaultOrder == [.lanDirect])
-        #expect(requestedRemoteOrder == [.lanDirect])
+        #expect(defaultOrder == [.lanDirect, .stableNamedRemote])
+        #expect(requestedRemoteOrder == [.stableNamedRemote])
+    }
+
+    @Test
+    func orderedConnectRouteCandidatesTreatTailscaleIPAsFormalRemoteWithoutManagedTunnel() {
+        let defaultOrder = HubPairingCoordinator.orderedConnectRouteCandidatesForTesting(
+            requestedCandidates: [],
+            preferredRoute: nil,
+            internetHost: "100.122.237.57"
+        )
+        let preferredTunnelOrder = HubPairingCoordinator.orderedConnectRouteCandidatesForTesting(
+            requestedCandidates: [],
+            preferredRoute: .managedTunnelFallback,
+            internetHost: "100.122.237.57"
+        )
+
+        #expect(defaultOrder == [.lanDirect, .stableNamedRemote])
+        #expect(preferredTunnelOrder == [.lanDirect, .stableNamedRemote])
     }
 
     @Test
@@ -775,6 +795,19 @@ struct HubPairingCoordinatorTests {
     func lanSubnetFallbackScanSkipsExplicitConfiguredRemoteHost() {
         let allowed = HubPairingCoordinator.shouldAttemptLANSubnetFallbackScanForTesting(
             configuredInternetHost: "hub.tailnet.example",
+            cachedHost: "17.81.11.116",
+            cachedPairingPort: 50054,
+            cachedGrpcPort: 50053,
+            allowConfiguredHostRepair: true
+        )
+
+        #expect(allowed == false)
+    }
+
+    @Test
+    func lanSubnetFallbackScanSkipsExplicitTailscaleRemoteHost() {
+        let allowed = HubPairingCoordinator.shouldAttemptLANSubnetFallbackScanForTesting(
+            configuredInternetHost: "100.122.237.57",
             cachedHost: "17.81.11.116",
             cachedPairingPort: 50054,
             cachedGrpcPort: 50053,
@@ -923,6 +956,15 @@ struct HubPairingCoordinatorTests {
     }
 
     @Test
+    func tailscaleConfiguredRemoteKeepsDiscoveredHostPinned() {
+        let shouldPin = HubPairingCoordinator.shouldPinDiscoveredHostToConfiguredRemoteForTesting(
+            configuredInternetHost: "100.122.237.57"
+        )
+
+        #expect(shouldPin == true)
+    }
+
+    @Test
     func pairingRepairDiscoveryStaysStrictWithoutCachedProfile() {
         let allowed = HubPairingCoordinator.shouldAttemptLANRepairDiscoveryForTesting(
             configuredInternetHost: "203.0.113.7",
@@ -995,6 +1037,17 @@ struct HubPairingCoordinatorTests {
     func authoritativeFormalBootstrapSkipsDiscoveryWhenStableNamedHostAndInviteTokenExist() {
         let skipped = HubPairingCoordinator.shouldSkipDiscoveryForAuthoritativeBootstrapForTesting(
             configuredInternetHost: "hub.xhubsystem.com",
+            inviteToken: "axhub_invite_test_123",
+            hasAuthoritativeLocalProfile: false
+        )
+
+        #expect(skipped == true)
+    }
+
+    @Test
+    func authoritativeFormalBootstrapSkipsDiscoveryWhenTailscaleHostAndInviteTokenExist() {
+        let skipped = HubPairingCoordinator.shouldSkipDiscoveryForAuthoritativeBootstrapForTesting(
+            configuredInternetHost: "100.122.237.57",
             inviteToken: "axhub_invite_test_123",
             hasAuthoritativeLocalProfile: false
         )

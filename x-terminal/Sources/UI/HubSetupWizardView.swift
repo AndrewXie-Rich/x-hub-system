@@ -1794,11 +1794,9 @@ struct HubSetupWizardView: View {
     }
 
     private var hasStableFormalEntry: Bool {
-        if case .stableNamed = XTHubRemoteAccessHostClassification
-            .classify(settingsSnapshot.hubInternetHost).kind {
-            return true
-        }
-        return false
+        XTHubRemoteAccessHostClassification
+            .classify(settingsSnapshot.hubInternetHost)
+            .isFormalRemoteEntry
     }
 
     private var pairingPortBinding: Binding<Int> {

@@ -1,6 +1,8 @@
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,12 +21,17 @@ const SCHEMA_XT_FILE_IPC_SHADOW_PROCESSOR_STATUS_V1: &str =
 const SCHEMA_XT_FILE_IPC_SHADOW_WATCHER_STATUS_V1: &str =
     "xhub.rust_hub.xt_file_ipc_shadow_watcher_status.v1";
 const SCHEMA_XT_FILE_IPC_LIVE_STATUS_V1: &str = "xhub.rust_hub.xt_file_ipc_live_status.v1";
+const SCHEMA_XT_FILE_IPC_RUNTIME_AUTHORITY_SYNC_V1: &str =
+    "xhub.rust_hub.xt_file_ipc_runtime_authority_sync.v1";
 const FAIL_CLOSED_REASON: &str = "rust_file_ipc_not_authoritative";
 const PROCESSOR_STATUS_FILENAME: &str = "rust_file_ipc_shadow_processor_status.json";
 const WATCHER_STATUS_FILENAME: &str = "rust_file_ipc_shadow_watcher_status.json";
 const WATCHER_LOCK_FILENAME: &str = "rust_file_ipc_shadow_watcher.lock";
 const MAX_REQUEST_FILE_BYTES: u64 = 1_048_576;
 const MAX_REQUEST_PROMPT_CHARS: usize = 200_000;
+const MAX_RUNTIME_AUTHORITY_FILE_BYTES: u64 = 16 * 1024 * 1024;
+const LIVE_STATUS_CACHE_TTL_MS: u128 = 250;
+const RUNTIME_AUTHORITY_FILE_NAMES: &[&str] = &["models_state.json", "hub_provider_keys.json"];
 
 #[derive(Clone, Debug)]
 struct XtFileIpcShadowInput {
@@ -58,10 +65,25 @@ struct BackgroundWatcherRuntime {
     stop_flag: Option<Arc<AtomicBool>>,
 }
 
+#[derive(Clone, Debug)]
+struct LiveStatusCacheEntry {
+    root_dir: String,
+    base_dir: String,
+    status_path: String,
+    status_file_modified_at_ms: i64,
+    checked_at_ms: u128,
+    value: Value,
+}
+
 static BACKGROUND_WATCHER: OnceLock<Mutex<BackgroundWatcherRuntime>> = OnceLock::new();
+static LIVE_STATUS_CACHE: OnceLock<Mutex<Option<LiveStatusCacheEntry>>> = OnceLock::new();
 
 fn background_watcher_runtime() -> &'static Mutex<BackgroundWatcherRuntime> {
     BACKGROUND_WATCHER.get_or_init(|| Mutex::new(BackgroundWatcherRuntime::default()))
+}
+
+fn live_status_cache() -> &'static Mutex<Option<LiveStatusCacheEntry>> {
+    LIVE_STATUS_CACHE.get_or_init(|| Mutex::new(None))
 }
 
 impl XtFileIpcShadowInput {
@@ -272,6 +294,61 @@ pub fn live_status_http_json(config: &HubConfig, method: &str) -> (&'static str,
     (status, format!("{value}\n"))
 }
 
+pub fn runtime_authority_sync_http_json(
+    config: &HubConfig,
+    method: &str,
+    body: &str,
+) -> (&'static str, String) {
+    if method != "GET" && method != "POST" {
+        return (
+            "405 Method Not Allowed",
+            format!(
+                "{}\n",
+                json!({
+                    "schema_version": SCHEMA_XT_FILE_IPC_RUNTIME_AUTHORITY_SYNC_V1,
+                    "ok": false,
+                    "ready": false,
+                    "wrote": false,
+                    "deny_code": "method_not_allowed",
+                    "required_method": "GET or POST",
+                    "authority": runtime_authority_sync_authority_json(false),
+                })
+            ),
+        );
+    }
+
+    let parsed = if body.trim().is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_str::<Value>(body) {
+            Ok(value) => value,
+            Err(error) => {
+                return (
+                    "400 Bad Request",
+                    format!(
+                        "{}\n",
+                        json!({
+                            "schema_version": SCHEMA_XT_FILE_IPC_RUNTIME_AUTHORITY_SYNC_V1,
+                            "ok": false,
+                            "ready": false,
+                            "wrote": false,
+                            "deny_code": "invalid_json_body",
+                            "error_message": error.to_string(),
+                            "authority": runtime_authority_sync_authority_json(false),
+                        })
+                    ),
+                );
+            }
+        }
+    };
+
+    let requested_apply = method == "POST" && value_bool(&parsed, "apply").unwrap_or(false);
+    let value = runtime_authority_sync_value(config, &parsed, requested_apply, now_ms());
+    let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let status = if ok { "200 OK" } else { "409 Conflict" };
+    (status, format!("{value}\n"))
+}
+
 fn shadow_status_value(config: &HubConfig) -> Value {
     let input = XtFileIpcShadowInput {
         root_dir: config.root_dir.clone(),
@@ -350,7 +427,13 @@ fn live_status_value(config: &HubConfig, generated_at_ms: u128) -> Value {
     };
     let status_path = env_path("XHUB_RUST_XT_CLASSIC_HUB_STATUS_PATH")
         .unwrap_or_else(|| base_dir.join("hub_status.json"));
-    live_status_value_for_base(config, generated_at_ms, &base_dir, &status_path)
+    if let Some(value) = cached_live_status_value(config, &base_dir, &status_path, generated_at_ms)
+    {
+        return value;
+    }
+    let value = live_status_value_for_base(config, generated_at_ms, &base_dir, &status_path);
+    cache_live_status_value(config, &base_dir, &status_path, generated_at_ms, &value);
+    value
 }
 
 fn live_status_value_for_base(
@@ -449,6 +532,398 @@ fn live_status_value_for_base(
             {"name": "read_only_status_projection", "ok": true, "blocking": false},
             {"name": "hub_status_untouched", "ok": true, "blocking": false}
         ],
+    })
+}
+
+fn cached_live_status_value(
+    config: &HubConfig,
+    base_dir: &Path,
+    status_path: &Path,
+    generated_at_ms: u128,
+) -> Option<Value> {
+    let status_file_modified_at_ms = file_modified_at_ms(status_path);
+    let root_dir = config.root_dir.display().to_string();
+    let base_dir = base_dir.display().to_string();
+    let status_path = status_path.display().to_string();
+    let guard = live_status_cache().lock().ok()?;
+    let entry = guard.as_ref()?;
+    if entry.root_dir == root_dir
+        && entry.base_dir == base_dir
+        && entry.status_path == status_path
+        && entry.status_file_modified_at_ms == status_file_modified_at_ms
+        && generated_at_ms >= entry.checked_at_ms
+        && generated_at_ms.saturating_sub(entry.checked_at_ms) <= LIVE_STATUS_CACHE_TTL_MS
+    {
+        return Some(live_status_value_with_generated_at(
+            entry.value.clone(),
+            generated_at_ms,
+        ));
+    }
+    None
+}
+
+fn cache_live_status_value(
+    config: &HubConfig,
+    base_dir: &Path,
+    status_path: &Path,
+    generated_at_ms: u128,
+    value: &Value,
+) {
+    let entry = LiveStatusCacheEntry {
+        root_dir: config.root_dir.display().to_string(),
+        base_dir: base_dir.display().to_string(),
+        status_path: status_path.display().to_string(),
+        status_file_modified_at_ms: file_modified_at_ms(status_path),
+        checked_at_ms: generated_at_ms,
+        value: value.clone(),
+    };
+    if let Ok(mut guard) = live_status_cache().lock() {
+        *guard = Some(entry);
+    }
+}
+
+fn live_status_value_with_generated_at(mut value: Value, generated_at_ms: u128) -> Value {
+    let generated_at_i64 = generated_at_ms.min(i64::MAX as u128) as i64;
+    let generated_at_sec = (generated_at_ms as f64) / 1000.0;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("generated_at_ms".to_string(), json!(generated_at_i64));
+        if let Some(status) = object.get_mut("status").and_then(Value::as_object_mut) {
+            status.insert("updatedAt".to_string(), json!(generated_at_sec));
+        }
+    }
+    value
+}
+
+fn runtime_authority_sync_value(
+    config: &HubConfig,
+    body: &Value,
+    requested_apply: bool,
+    generated_at_ms: u128,
+) -> Value {
+    let source_base_dir = value_string(body, "source_base_dir")
+        .or_else(|| value_string(body, "sourceBaseDir"))
+        .or_else(|| value_string(body, "app_base_dir"))
+        .or_else(|| value_string(body, "appBaseDir"))
+        .map(PathBuf::from);
+    let requested_live_base_dir = value_string(body, "live_base_dir")
+        .or_else(|| value_string(body, "liveBaseDir"))
+        .map(PathBuf::from);
+    let configured_live_base_dir = live_status_base_dir(config);
+    let live_base_dir = configured_live_base_dir
+        .clone()
+        .or_else(|| requested_live_base_dir.clone());
+    let production_cutover = env_bool("XHUB_RUST_XT_FILE_IPC_PRODUCTION_CUTOVER", false)
+        || env_bool("XHUB_RUST_XT_CLASSIC_PRODUCTION_CUTOVER", false);
+
+    let mut checks = vec![
+        json!({"name": "live_base_dir_configured", "ok": live_base_dir.is_some(), "blocking": true}),
+        json!({"name": "source_base_dir_configured", "ok": source_base_dir.is_some() || !requested_apply, "blocking": requested_apply}),
+        json!({"name": "production_cutover_for_apply", "ok": production_cutover || !requested_apply, "blocking": requested_apply}),
+        json!({"name": "classic_hub_status_untouched", "ok": true, "blocking": false}),
+    ];
+
+    if let (Some(configured), Some(requested)) =
+        (&configured_live_base_dir, &requested_live_base_dir)
+    {
+        checks.push(json!({
+            "name": "requested_live_base_matches_configured",
+            "ok": same_path(configured, requested),
+            "blocking": true,
+        }));
+    }
+
+    let source_display = source_base_dir
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let live_display = live_base_dir
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+
+    let deny_code = if live_base_dir.is_none() {
+        "live_base_dir_missing"
+    } else if requested_apply && source_base_dir.is_none() {
+        "source_base_dir_missing"
+    } else if requested_apply && !production_cutover {
+        "runtime_authority_sync_apply_requires_production_cutover"
+    } else if let (Some(configured), Some(requested)) =
+        (&configured_live_base_dir, &requested_live_base_dir)
+    {
+        if !same_path(configured, requested) {
+            "live_base_dir_mismatch"
+        } else {
+            ""
+        }
+    } else {
+        ""
+    };
+
+    if !deny_code.is_empty() {
+        return json!({
+            "schema_version": SCHEMA_XT_FILE_IPC_RUNTIME_AUTHORITY_SYNC_V1,
+            "ok": false,
+            "ready": false,
+            "wrote": false,
+            "dry_run": !requested_apply,
+            "requested_apply": requested_apply,
+            "deny_code": deny_code,
+            "generated_at_ms": generated_at_ms.min(i64::MAX as u128) as i64,
+            "mode": "rust_runtime_authority_sync_fail_closed",
+            "root_dir": config.root_dir.display().to_string(),
+            "source_base_dir": source_display,
+            "live_base_dir": live_display,
+            "files": [],
+            "copied_count": 0,
+            "would_copy_count": 0,
+            "skipped_count": 0,
+            "authority": runtime_authority_sync_authority_json(false),
+            "checks": checks,
+        });
+    }
+
+    let live_base_dir = live_base_dir.unwrap_or_default();
+    let mut files = Vec::new();
+    let mut copied_count = 0_u64;
+    let mut would_copy_count = 0_u64;
+    let mut skipped_count = 0_u64;
+    let mut issues = Vec::new();
+
+    if let Some(source_base_dir) = source_base_dir.as_ref() {
+        for file_name in RUNTIME_AUTHORITY_FILE_NAMES {
+            let result = runtime_authority_file_sync_value(
+                source_base_dir,
+                &live_base_dir,
+                file_name,
+                requested_apply,
+            );
+            if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+                if result
+                    .get("copied")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    copied_count += 1;
+                } else if result
+                    .get("would_copy")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    would_copy_count += 1;
+                } else {
+                    skipped_count += 1;
+                }
+            } else {
+                issues.push(
+                    result
+                        .get("deny_code")
+                        .and_then(Value::as_str)
+                        .unwrap_or("runtime_authority_file_sync_failed")
+                        .to_string(),
+                );
+            }
+            files.push(result);
+        }
+    }
+
+    let ok = issues.is_empty();
+    json!({
+        "schema_version": SCHEMA_XT_FILE_IPC_RUNTIME_AUTHORITY_SYNC_V1,
+        "ok": ok,
+        "ready": ok,
+        "wrote": copied_count > 0,
+        "dry_run": !requested_apply,
+        "requested_apply": requested_apply,
+        "deny_code": if ok { "" } else { "runtime_authority_file_sync_failed" },
+        "issues": issues,
+        "generated_at_ms": generated_at_ms.min(i64::MAX as u128) as i64,
+        "mode": if requested_apply { "rust_runtime_authority_sync_apply" } else { "rust_runtime_authority_sync_dry_run" },
+        "root_dir": config.root_dir.display().to_string(),
+        "source_base_dir": source_display,
+        "live_base_dir": live_display,
+        "files": files,
+        "copied_count": copied_count,
+        "would_copy_count": would_copy_count,
+        "skipped_count": skipped_count,
+        "authority": runtime_authority_sync_authority_json(copied_count > 0),
+        "checks": checks,
+    })
+}
+
+fn runtime_authority_file_sync_value(
+    source_base_dir: &Path,
+    live_base_dir: &Path,
+    file_name: &str,
+    requested_apply: bool,
+) -> Value {
+    let source = source_base_dir.join(file_name);
+    let destination = live_base_dir.join(file_name);
+    let source_display = source.display().to_string();
+    let destination_display = destination.display().to_string();
+
+    let Ok(metadata) = fs::metadata(&source) else {
+        return json!({
+            "ok": true,
+            "file_name": file_name,
+            "source_path": source_display,
+            "destination_path": destination_display,
+            "source_exists": false,
+            "copied": false,
+            "would_copy": false,
+            "skipped_reason": "source_missing",
+        });
+    };
+    if !metadata.is_file() {
+        return json!({
+            "ok": false,
+            "file_name": file_name,
+            "source_path": source_display,
+            "destination_path": destination_display,
+            "source_exists": true,
+            "copied": false,
+            "would_copy": false,
+            "deny_code": "source_not_regular_file",
+        });
+    }
+    if metadata.len() > MAX_RUNTIME_AUTHORITY_FILE_BYTES {
+        return json!({
+            "ok": false,
+            "file_name": file_name,
+            "source_path": source_display,
+            "destination_path": destination_display,
+            "source_exists": true,
+            "source_size_bytes": metadata.len(),
+            "max_size_bytes": MAX_RUNTIME_AUTHORITY_FILE_BYTES,
+            "copied": false,
+            "would_copy": false,
+            "deny_code": "source_file_too_large",
+        });
+    }
+
+    let source_modified_at_ms = file_modified_at_ms(&source);
+    let destination_modified_at_ms = file_modified_at_ms(&destination);
+    let destination_size = fs::metadata(&destination)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    if destination.is_file()
+        && destination_modified_at_ms >= source_modified_at_ms
+        && destination_size == metadata.len()
+    {
+        return json!({
+            "ok": true,
+            "file_name": file_name,
+            "source_path": source_display,
+            "destination_path": destination_display,
+            "source_exists": true,
+            "source_size_bytes": metadata.len(),
+            "source_modified_at_ms": source_modified_at_ms,
+            "destination_modified_at_ms": destination_modified_at_ms,
+            "copied": false,
+            "would_copy": false,
+            "skipped_reason": "destination_up_to_date",
+        });
+    }
+
+    if !requested_apply {
+        return json!({
+            "ok": true,
+            "file_name": file_name,
+            "source_path": source_display,
+            "destination_path": destination_display,
+            "source_exists": true,
+            "source_size_bytes": metadata.len(),
+            "source_modified_at_ms": source_modified_at_ms,
+            "destination_modified_at_ms": destination_modified_at_ms,
+            "copied": false,
+            "would_copy": true,
+            "skipped_reason": "dry_run",
+        });
+    }
+
+    match copy_runtime_authority_file_atomic(&source, &destination) {
+        Ok(()) => json!({
+            "ok": true,
+            "file_name": file_name,
+            "source_path": source_display,
+            "destination_path": destination_display,
+            "source_exists": true,
+            "source_size_bytes": metadata.len(),
+            "source_modified_at_ms": source_modified_at_ms,
+            "destination_modified_at_ms": file_modified_at_ms(&destination),
+            "copied": true,
+            "would_copy": false,
+            "skipped_reason": "",
+        }),
+        Err(error) => json!({
+            "ok": false,
+            "file_name": file_name,
+            "source_path": source_display,
+            "destination_path": destination_display,
+            "source_exists": true,
+            "source_size_bytes": metadata.len(),
+            "copied": false,
+            "would_copy": false,
+            "deny_code": "copy_failed",
+            "error_message": error,
+        }),
+    }
+}
+
+fn copy_runtime_authority_file_atomic(source: &Path, destination: &Path) -> Result<(), String> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "destination_parent_missing".to_string())?;
+    fs::create_dir_all(parent).map_err(|err| format!("create_destination_dir:{err}"))?;
+    let tmp_path = parent.join(format!(
+        ".{}.rust_runtime_authority_sync.{}.{}",
+        destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("authority.json"),
+        process::id(),
+        now_ms()
+    ));
+    let bytes = fs::read(source).map_err(|err| format!("read_source:{err}"))?;
+    if bytes.len() as u64 > MAX_RUNTIME_AUTHORITY_FILE_BYTES {
+        return Err(format!("source_file_too_large:{}", bytes.len()));
+    }
+    fs::write(&tmp_path, bytes).map_err(|err| format!("write_temp:{err}"))?;
+    secure_runtime_authority_file(&tmp_path)?;
+    fs::rename(&tmp_path, destination).map_err(|err| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("rename_destination:{err}")
+    })?;
+    secure_runtime_authority_file(destination)?;
+    Ok(())
+}
+
+fn secure_runtime_authority_file(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let permissions = fs::Permissions::from_mode(0o600);
+        fs::set_permissions(path, permissions).map_err(|err| format!("chmod_0600:{err}"))?;
+    }
+    Ok(())
+}
+
+fn same_path(lhs: &Path, rhs: &Path) -> bool {
+    lhs == rhs
+        || lhs
+            .canonicalize()
+            .ok()
+            .zip(rhs.canonicalize().ok())
+            .map(|(left, right)| left == right)
+            .unwrap_or(false)
+}
+
+fn runtime_authority_sync_authority_json(wrote: bool) -> Value {
+    json!({
+        "production_authority_change": false,
+        "rust_writes_runtime_authority_files": wrote,
+        "rust_writes_classic_hub_status": false,
+        "rust_executes_ml": false,
+        "rust_executes_third_party_skills": false,
+        "memory_writer_authority_in_rust": false,
     })
 }
 
@@ -3723,6 +4198,108 @@ mod tests {
         let value: Value = serde_json::from_str(body.trim()).unwrap();
         assert_eq!(value["ok"], false);
         assert_eq!(value["deny_code"], "live_base_dir_missing");
+    }
+
+    #[test]
+    fn live_status_short_cache_refreshes_generated_timestamps() {
+        let temp = unique_temp_dir("xhub-xt-file-ipc-live-status-cache");
+        fs::create_dir_all(temp.join("ipc_events")).unwrap();
+        fs::write(
+            temp.join("hub_status.json"),
+            r#"{"updatedAt":1,"baseDir":"/old","ipcPath":"/old/ipc_events","protocolVersion":1}"#,
+        )
+        .unwrap();
+        let config = config_for_runtime_dir(temp.clone());
+
+        let first = live_status_value(&config, 200_000);
+        let second = live_status_value(&config, 200_100);
+
+        assert_eq!(first["ok"], true);
+        assert_eq!(second["ok"], true);
+        assert_eq!(second["generated_at_ms"], 200_100);
+        assert_eq!(second["status"]["updatedAt"], 200.1);
+        assert_eq!(second["status"]["baseDir"], temp.display().to_string());
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn runtime_authority_sync_dry_run_reports_would_copy_without_writing() {
+        let temp = unique_temp_dir("xhub-xt-runtime-authority-dry");
+        let source = temp.join("app");
+        let live = temp.join("live");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&live).unwrap();
+        fs::write(
+            source.join("models_state.json"),
+            r#"{"schema_version":"xhub.models_state.v1","models":[]}"#,
+        )
+        .unwrap();
+        let config = config_for_runtime_dir(live.clone());
+        let body = json!({
+            "source_base_dir": source.display().to_string(),
+            "live_base_dir": live.display().to_string(),
+        });
+
+        let value = runtime_authority_sync_value(&config, &body, false, 123_456);
+
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["dry_run"], true);
+        assert_eq!(value["wrote"], false);
+        assert_eq!(value["would_copy_count"], 1);
+        assert_eq!(value["copied_count"], 0);
+        assert!(!live.join("models_state.json").exists());
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn runtime_authority_file_sync_apply_copies_fixed_file() {
+        let temp = unique_temp_dir("xhub-xt-runtime-authority-copy");
+        let source = temp.join("app");
+        let live = temp.join("live");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&live).unwrap();
+        let payload =
+            r#"{"schema_version":"xhub.models_state.v1","models":[{"id":"openai/gpt-5.5"}]}"#;
+        fs::write(source.join("models_state.json"), payload).unwrap();
+
+        let value = runtime_authority_file_sync_value(&source, &live, "models_state.json", true);
+
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["copied"], true);
+        assert_eq!(
+            fs::read_to_string(live.join("models_state.json")).unwrap(),
+            payload
+        );
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn runtime_authority_sync_apply_fails_closed_without_production_cutover() {
+        let temp = unique_temp_dir("xhub-xt-runtime-authority-fail-closed");
+        let source = temp.join("app");
+        let live = temp.join("live");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&live).unwrap();
+        fs::write(source.join("models_state.json"), "{}").unwrap();
+        let config = config_for_runtime_dir(live.clone());
+        let body = json!({
+            "source_base_dir": source.display().to_string(),
+            "live_base_dir": live.display().to_string(),
+        });
+
+        let value = runtime_authority_sync_value(&config, &body, true, 123_456);
+
+        assert_eq!(value["ok"], false);
+        assert_eq!(
+            value["deny_code"],
+            "runtime_authority_sync_apply_requires_production_cutover"
+        );
+        assert!(!live.join("models_state.json").exists());
+
+        let _ = fs::remove_dir_all(temp);
     }
 
     #[test]

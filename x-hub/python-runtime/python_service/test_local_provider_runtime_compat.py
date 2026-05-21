@@ -846,7 +846,7 @@ def _test_provider_status_snapshot() -> None:
         snapshot = provider_status_snapshot(base_dir, runtime=runtime)
 
         assert snapshot["mlx"]["ok"] is True
-        assert snapshot["mlx"]["availableTaskKinds"] == ["text_generate"]
+        assert snapshot["mlx"]["availableTaskKinds"] == ["text_generate", "embedding"]
         assert snapshot["mlx"]["loadedModels"] == ["mlx-qwen"]
         assert "mlx-qwen" in snapshot["mlx"]["registeredModels"]
         assert snapshot["mlx"]["packId"] == "mlx"
@@ -1031,6 +1031,83 @@ def _test_run_local_task_mlx_delegate() -> None:
         assert result["provider"] == "mlx"
         assert result["taskKind"] == "text_generate"
         assert result["error"] == "delegate_to_runtime_loop:mlx"
+
+
+def _test_run_local_task_mlx_embedding_executes_resident_runtime() -> None:
+    class EmbeddingRuntime(StubMLXRuntime):
+        def __init__(self) -> None:
+            super().__init__(ok=True, loaded={})
+            self.load_calls: list[dict[str, Any]] = []
+            self.embedding_calls: list[dict[str, Any]] = []
+            self.loaded = False
+
+        def is_loaded(self, model_id: str, **kwargs: Any) -> bool:
+            _ = model_id, kwargs
+            return self.loaded
+
+        def load(self, model_id: str, model_path: str, **kwargs: Any):
+            self.loaded = True
+            self.load_calls.append({"model_id": model_id, "model_path": model_path, "kwargs": dict(kwargs)})
+            self._loaded = {model_id: object()}
+            self._loaded_instances = [
+                {
+                    "instanceKey": kwargs.get("instance_key") or "mlx:mlx-embed:test",
+                    "modelId": model_id,
+                    "taskKinds": list(kwargs.get("task_kinds") or []),
+                    "loadProfileHash": kwargs.get("load_profile_hash") or "test",
+                    "effectiveContextLength": kwargs.get("effective_context_length") or 0,
+                    "loadedAt": 1.0,
+                    "lastUsedAt": 1.0,
+                    "residency": "resident",
+                    "residencyScope": "legacy_runtime",
+                    "deviceBackend": "mps",
+                }
+            ]
+            return True, "ok", 1024
+
+        def run_embedding(self, model_id: str, texts: list[str], **kwargs: Any):
+            self.embedding_calls.append({"model_id": model_id, "texts": list(texts), "kwargs": dict(kwargs)})
+            return [[0.6, 0.8]], 2, {"promptTokens": 2, "totalTokens": 2}
+
+    with tempfile.TemporaryDirectory(prefix="xhub_py_mlx_embed_runtime_") as base_dir:
+        write_json(
+            os.path.join(base_dir, "models_catalog.json"),
+            {
+                "models": [
+                    {
+                        "id": "mlx-embed",
+                        "name": "MLX Embed",
+                        "backend": "mlx",
+                        "modelPath": "/models/mlx-embed",
+                        "taskKinds": ["embedding"],
+                    }
+                ]
+            },
+        )
+        runtime = EmbeddingRuntime()
+        build_registry(base_dir=base_dir, runtime=runtime)
+
+        result = run_local_task(
+            {
+                "provider": "mlx",
+                "task_kind": "embedding",
+                "model_id": "mlx-embed",
+                "texts": ["hello hub"],
+                "input_sanitized": True,
+            },
+            base_dir=base_dir,
+        )
+        snapshot = provider_status_snapshot(base_dir)
+
+        assert result["ok"] is True
+        assert result["provider"] == "mlx"
+        assert result["taskKind"] == "embedding"
+        assert result["vectorCount"] == 1
+        assert result["dims"] == 2
+        assert result["vectors"] == [[0.6, 0.8]]
+        assert runtime.load_calls[0]["kwargs"]["task_kinds"] == ["embedding"]
+        assert runtime.embedding_calls[0]["texts"] == ["hello hub"]
+        assert snapshot["mlx"]["loadedInstances"][0]["taskKinds"] == ["embedding"]
 
 
 def _test_mlx_provider_import_error() -> None:
@@ -1289,6 +1366,178 @@ def _test_mlx_runtime_probe_skips_unsafe_xcode_python_without_spawning_probe() -
     assert "mlx_probe_skipped:unsafe_python_executable" in error
 
 
+def _test_mlx_runtime_probe_timeout_is_configurable() -> None:
+    import relflowhub_mlx_runtime as mlx_runtime_entry
+
+    original_run = mlx_runtime_entry.subprocess.run
+    original_executable = mlx_runtime_entry.sys.executable
+    original_cache = dict(mlx_runtime_entry._MLX_IMPORT_PROBE_CACHE)
+    original_timeout = os.environ.get("XHUB_MLX_IMPORT_PROBE_TIMEOUT_SEC")
+    original_legacy_timeout = os.environ.get("RELFLOWHUB_MLX_IMPORT_PROBE_TIMEOUT_SEC")
+    timeouts: list[float] = []
+    try:
+        mlx_runtime_entry._MLX_IMPORT_PROBE_CACHE.update(
+            {
+                "attempted": False,
+                "ok": False,
+                "error": "",
+                "transient": False,
+                "retry_at": 0.0,
+            }
+        )
+
+        def fake_run(*args, **kwargs):
+            _ = args
+            timeouts.append(float(kwargs.get("timeout") or 0.0))
+            return subprocess.CompletedProcess(
+                args=["python3", "-c", "probe"],
+                returncode=0,
+                stdout='{"ok": true}\n',
+                stderr="",
+            )
+
+        mlx_runtime_entry.subprocess.run = fake_run
+        mlx_runtime_entry.sys.executable = "/opt/homebrew/bin/python3"
+        os.environ.pop("XHUB_MLX_IMPORT_PROBE_TIMEOUT_SEC", None)
+        os.environ.pop("RELFLOWHUB_MLX_IMPORT_PROBE_TIMEOUT_SEC", None)
+        ok, error = mlx_runtime_entry.probe_mlx_runtime_support(force=True)
+        assert ok is True
+        assert error == ""
+        assert timeouts[-1] == float(mlx_runtime_entry.DEFAULT_MLX_IMPORT_PROBE_TIMEOUT_SEC)
+
+        os.environ["XHUB_MLX_IMPORT_PROBE_TIMEOUT_SEC"] = "7"
+        ok, error = mlx_runtime_entry.probe_mlx_runtime_support(force=True)
+        assert ok is True
+        assert error == ""
+        assert timeouts[-1] == 7.0
+    finally:
+        mlx_runtime_entry.subprocess.run = original_run
+        mlx_runtime_entry.sys.executable = original_executable
+        mlx_runtime_entry._MLX_IMPORT_PROBE_CACHE.update(original_cache)
+        if original_timeout is None:
+            os.environ.pop("XHUB_MLX_IMPORT_PROBE_TIMEOUT_SEC", None)
+        else:
+            os.environ["XHUB_MLX_IMPORT_PROBE_TIMEOUT_SEC"] = original_timeout
+        if original_legacy_timeout is None:
+            os.environ.pop("RELFLOWHUB_MLX_IMPORT_PROBE_TIMEOUT_SEC", None)
+        else:
+            os.environ["RELFLOWHUB_MLX_IMPORT_PROBE_TIMEOUT_SEC"] = original_legacy_timeout
+
+
+def _test_mlx_runtime_probe_timeout_retries_after_backoff() -> None:
+    import relflowhub_mlx_runtime as mlx_runtime_entry
+
+    original_run = mlx_runtime_entry.subprocess.run
+    original_executable = mlx_runtime_entry.sys.executable
+    original_cache = dict(mlx_runtime_entry._MLX_IMPORT_PROBE_CACHE)
+    original_retry = os.environ.get("XHUB_MLX_IMPORT_PROBE_RETRY_SEC")
+    calls = {"count": 0}
+    try:
+        mlx_runtime_entry._MLX_IMPORT_PROBE_CACHE.update(
+            {
+                "attempted": False,
+                "ok": False,
+                "error": "",
+                "transient": False,
+                "retry_at": 0.0,
+            }
+        )
+
+        def fake_run(*args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise subprocess.TimeoutExpired(cmd=["python3", "-c", "probe"], timeout=kwargs.get("timeout"))
+            return subprocess.CompletedProcess(
+                args=["python3", "-c", "probe"],
+                returncode=0,
+                stdout='{"ok": true}\n',
+                stderr="",
+            )
+
+        mlx_runtime_entry.subprocess.run = fake_run
+        mlx_runtime_entry.sys.executable = "/opt/homebrew/bin/python3"
+        os.environ["XHUB_MLX_IMPORT_PROBE_RETRY_SEC"] = "1"
+        ok, error = mlx_runtime_entry.probe_mlx_runtime_support(force=True)
+        assert ok is False
+        assert "TimeoutExpired" in error
+        assert mlx_runtime_entry._MLX_IMPORT_PROBE_CACHE["transient"] is True
+        assert calls["count"] == 1
+
+        ok, error = mlx_runtime_entry.probe_mlx_runtime_support()
+        assert ok is False
+        assert "TimeoutExpired" in error
+        assert calls["count"] == 1
+
+        mlx_runtime_entry._MLX_IMPORT_PROBE_CACHE["retry_at"] = 0.0
+        ok, error = mlx_runtime_entry.probe_mlx_runtime_support()
+        assert ok is True
+        assert error == ""
+        assert calls["count"] == 2
+    finally:
+        mlx_runtime_entry.subprocess.run = original_run
+        mlx_runtime_entry.sys.executable = original_executable
+        mlx_runtime_entry._MLX_IMPORT_PROBE_CACHE.update(original_cache)
+        if original_retry is None:
+            os.environ.pop("XHUB_MLX_IMPORT_PROBE_RETRY_SEC", None)
+        else:
+            os.environ["XHUB_MLX_IMPORT_PROBE_RETRY_SEC"] = original_retry
+
+
+def _test_mlx_runtime_retries_transient_probe_failure() -> None:
+    import relflowhub_mlx_runtime as mlx_runtime_entry
+
+    original_run = mlx_runtime_entry.subprocess.run
+    original_executable = mlx_runtime_entry.sys.executable
+    original_cache = dict(mlx_runtime_entry._MLX_IMPORT_PROBE_CACHE)
+    original_retry = os.environ.get("XHUB_MLX_IMPORT_PROBE_RETRY_SEC")
+    calls = {"count": 0}
+    try:
+        mlx_runtime_entry._MLX_IMPORT_PROBE_CACHE.update(
+            {
+                "attempted": False,
+                "ok": False,
+                "error": "",
+                "transient": False,
+                "retry_at": 0.0,
+            }
+        )
+
+        def fake_run(*args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise subprocess.TimeoutExpired(cmd=["python3", "-c", "probe"], timeout=kwargs.get("timeout"))
+            return subprocess.CompletedProcess(
+                args=["python3", "-c", "probe"],
+                returncode=0,
+                stdout='{"ok": true}\n',
+                stderr="",
+            )
+
+        mlx_runtime_entry.subprocess.run = fake_run
+        mlx_runtime_entry.sys.executable = "/opt/homebrew/bin/python3"
+        os.environ["XHUB_MLX_IMPORT_PROBE_RETRY_SEC"] = "1"
+        runtime = MLXRuntime()
+        ok, error = runtime._probe_runtime_support()
+        assert ok is False
+        assert "TimeoutExpired" in error
+        assert calls["count"] == 1
+
+        runtime._probe_retry_at = 0.0
+        mlx_runtime_entry._MLX_IMPORT_PROBE_CACHE["retry_at"] = 0.0
+        ok, error = runtime._probe_runtime_support()
+        assert ok is True
+        assert error == ""
+        assert calls["count"] == 2
+    finally:
+        mlx_runtime_entry.subprocess.run = original_run
+        mlx_runtime_entry.sys.executable = original_executable
+        mlx_runtime_entry._MLX_IMPORT_PROBE_CACHE.update(original_cache)
+        if original_retry is None:
+            os.environ.pop("XHUB_MLX_IMPORT_PROBE_RETRY_SEC", None)
+        else:
+            os.environ["XHUB_MLX_IMPORT_PROBE_RETRY_SEC"] = original_retry
+
+
 def _test_mlx_runtime_load_profile_instances_share_physical_load() -> None:
     runtime, load_calls, _, _ = _build_fake_mlx_runtime()
     with tempfile.TemporaryDirectory(prefix="xhub_py_mlx_model_a_") as model_dir_a, tempfile.TemporaryDirectory(
@@ -1325,6 +1574,8 @@ def _test_mlx_runtime_load_profile_instances_share_physical_load() -> None:
     second = next(row for row in rows if row["instanceKey"] == "mlx:mlx-qwen:hash-b")
     assert first["loadProfileHash"] == "hash-a"
     assert second["loadProfileHash"] == "hash-b"
+    assert first["residencyScope"] == "load_profile_instance"
+    assert second["residencyScope"] == "load_profile_instance"
     assert first["effectiveContextLength"] == 8192
     assert second["effectiveContextLength"] == 24576
     assert runtime.is_loaded("mlx-qwen", instance_key="mlx:mlx-qwen:hash-a") is True
@@ -2713,36 +2964,75 @@ def _test_provider_status_snapshot_exposes_runtime_resolution_state_and_hint() -
 
 
 def _test_provider_status_snapshot_marks_hub_py_deps_runtime_as_pack_ready() -> None:
-    with tempfile.TemporaryDirectory(prefix="xhub_py_lpr_pack_runtime_") as base_dir:
-        write_json(
-            os.path.join(base_dir, "models_catalog.json"),
-            {
-                "models": [
-                    {
-                        "id": "hf-embed",
-                        "name": "HF Embed",
-                        "backend": "transformers",
-                        "modelPath": "/models/hf-embed",
-                        "taskKinds": ["embedding"],
-                    },
-                ]
-            },
-        )
-        py_deps_root = os.path.join(base_dir, "py_deps")
-        site_packages = os.path.join(py_deps_root, "site-packages")
-        os.makedirs(site_packages, exist_ok=True)
-        with open(os.path.join(py_deps_root, "USE_PYTHONPATH"), "w", encoding="utf-8") as handle:
-            handle.write("1\n")
+    with tempfile.TemporaryDirectory(prefix="xhub_py_lpr_pack_home_") as fake_home:
+        with tempfile.TemporaryDirectory(prefix="xhub_py_lpr_pack_runtime_") as base_dir:
+            write_json(
+                os.path.join(base_dir, "models_catalog.json"),
+                {
+                    "models": [
+                        {
+                            "id": "hf-embed",
+                            "name": "HF Embed",
+                            "backend": "transformers",
+                            "modelPath": "/models/hf-embed",
+                            "taskKinds": ["embedding"],
+                        },
+                    ]
+                },
+            )
+            py_deps_root = os.path.join(base_dir, "py_deps")
+            site_packages = os.path.join(py_deps_root, "site-packages")
+            os.makedirs(site_packages, exist_ok=True)
+            with open(os.path.join(py_deps_root, "USE_PYTHONPATH"), "w", encoding="utf-8") as handle:
+                handle.write("1\n")
 
-        with temporary_transformers_runtime_modules(module_root=site_packages):
-            snapshot = provider_status_snapshot(base_dir)
+            with temporary_env("HOME", fake_home):
+                with temporary_transformers_runtime_modules(module_root=site_packages):
+                    snapshot = provider_status_snapshot(base_dir)
 
-        transformers = snapshot["transformers"]
-        assert transformers["runtimeResolutionState"] == "pack_runtime_ready"
-        assert transformers["runtimeSource"] == "hub_py_deps"
-        assert transformers["fallbackUsed"] is False
-        assert transformers["runtimeSourcePath"] == site_packages
-        assert transformers["runtimeHint"] == ""
+            transformers = snapshot["transformers"]
+            assert transformers["runtimeResolutionState"] == "pack_runtime_ready"
+            assert transformers["runtimeSource"] == "hub_py_deps"
+            assert transformers["fallbackUsed"] is False
+            assert transformers["runtimeSourcePath"] == site_packages
+            assert transformers["runtimeHint"] == ""
+
+
+def _test_resolve_provider_runtime_activates_hub_py_deps_marker() -> None:
+    with tempfile.TemporaryDirectory(prefix="xhub_py_lpr_pydeps_home_") as fake_home:
+        with tempfile.TemporaryDirectory(prefix="xhub_py_lpr_pydeps_runtime_") as base_dir:
+            os.makedirs(os.path.join(fake_home, "RELFlowHub", "ai_runtime"), exist_ok=True)
+            py_deps_root = os.path.join(base_dir, "py_deps")
+            site_packages = os.path.join(py_deps_root, "site-packages")
+            os.makedirs(site_packages, exist_ok=True)
+            with open(os.path.join(py_deps_root, "USE_PYTHONPATH"), "w", encoding="utf-8") as handle:
+                handle.write("1\n")
+            for module_name in ["mlx", "mlx_lm", "mlx_vlm", "transformers", "PIL"]:
+                package_dir = os.path.join(site_packages, *module_name.split("."))
+                os.makedirs(package_dir, exist_ok=True)
+                write_text(os.path.join(package_dir, "__init__.py"), "__version__ = 'fixture'\n")
+
+            original_sys_path = list(sys.path)
+            sentinel = object()
+            module_names = ["mlx", "mlx_lm", "mlx_vlm", "transformers", "PIL"]
+            previous_modules = {name: sys.modules.pop(name, sentinel) for name in module_names}
+            try:
+                with temporary_env("HOME", fake_home):
+                    resolution = resolve_provider_runtime("mlx_vlm", base_dir=base_dir)
+                assert resolution.ok is True
+                assert resolution.runtime_resolution_state == "pack_runtime_ready"
+                assert resolution.runtime_source == "hub_py_deps"
+                assert resolution.runtime_source_path == site_packages
+                assert resolution.fallback_used is False
+                assert set(resolution.ready_python_modules) == {name.lower() for name in module_names}
+                assert site_packages in sys.path
+            finally:
+                sys.path[:] = original_sys_path
+                for name, module in previous_modules.items():
+                    if module is sentinel:
+                        sys.modules.pop(name, None)
+                    else:
+                        sys.modules[name] = module
 
 
 def _test_provider_status_snapshot_marks_runtime_resident_transformers_when_requested() -> None:
@@ -6698,6 +6988,7 @@ run("provider pack inventory exposes builtin llama.cpp helper manifest", lambda:
 run("provider pack registry can disable providers fail-closed while preserving version truth", lambda: _test_provider_pack_registry_overrides_version_and_disables_provider_execution())
 run("provider_status_snapshot exposes llama.cpp helper runtime truth for gguf models", lambda: _test_provider_status_snapshot_exposes_llama_cpp_helper_runtime_truth_for_gguf_models())
 run("run_local_task preserves MLX legacy delegation contract", lambda: _test_run_local_task_mlx_delegate())
+run("run_local_task executes MLX embedding through the resident runtime", lambda: _test_run_local_task_mlx_embedding_executes_resident_runtime())
 run("mlx provider healthcheck preserves import error diagnostics", lambda: _test_mlx_provider_import_error())
 run("mlx provider healthcheck without runtime uses safe probe instead of module presence", lambda: _test_mlx_provider_without_runtime_uses_safe_probe_result())
 run("legacy runtime status writer keeps mlxOk while merging provider statuses", lambda: _test_runtime_status_writer_merge())
@@ -6709,6 +7000,9 @@ run("bridge base dir prefers fresh writable public IPC when app-group dir is rea
 run("bridge ai_generate uses public IPC when app-group dir is read-only", lambda: _test_bridge_ai_generate_uses_public_ipc_when_group_dir_is_read_only())
 run("mlx runtime probe failure stays fail-closed without killing provider-aware startup", lambda: _test_mlx_runtime_probe_failure_stays_fail_closed_without_importing_runtime())
 run("mlx runtime probe skips unsafe Xcode python before spawning a child probe", lambda: _test_mlx_runtime_probe_skips_unsafe_xcode_python_without_spawning_probe())
+run("mlx runtime probe timeout is configurable", lambda: _test_mlx_runtime_probe_timeout_is_configurable())
+run("mlx runtime probe timeout retries after backoff", lambda: _test_mlx_runtime_probe_timeout_retries_after_backoff())
+run("mlx runtime retries transient probe failure", lambda: _test_mlx_runtime_retries_transient_probe_failure())
 run("mlx runtime keeps load-profile instances isolated while sharing one physical load", lambda: _test_mlx_runtime_load_profile_instances_share_physical_load())
 run("mlx runtime applies effective context length to generate and bench max_kv_size", lambda: _test_mlx_runtime_generate_and_bench_apply_effective_context_length())
 run("mlx runtime evicts stale resident instances after idle timeout without opening legacy lifecycle controls", lambda: _test_mlx_runtime_idle_eviction_unloads_stale_instances())
@@ -6741,6 +7035,7 @@ run("provider_status_snapshot exposes real and fallback task metadata for monito
 run("provider_status_snapshot exposes lifecycle contract metadata for MLX legacy and warmable transformers", lambda: _test_provider_status_snapshot_exposes_lifecycle_contract_metadata())
 run("provider_status_snapshot exposes runtime resolution state and install hint", lambda: _test_provider_status_snapshot_exposes_runtime_resolution_state_and_hint())
 run("provider_status_snapshot marks Hub py_deps modules as pack runtime ready", lambda: _test_provider_status_snapshot_marks_hub_py_deps_runtime_as_pack_ready())
+run("resolve_provider_runtime activates Hub py_deps marker without launch PYTHONPATH", lambda: _test_resolve_provider_runtime_activates_hub_py_deps_marker())
 run("provider_status_snapshot can mark transformers as runtime-resident when the daemon owns them", lambda: _test_provider_status_snapshot_marks_runtime_resident_transformers_when_requested())
 run("runtime status proxy support requires a fresh local command IPC marker", lambda: _test_runtime_status_proxy_support_requires_fresh_ipc_marker())
 run("runtime command proxy round-trips requests and responses through file IPC", lambda: _test_proxy_runtime_command_round_trip_through_file_ipc())

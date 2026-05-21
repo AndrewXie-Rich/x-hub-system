@@ -173,9 +173,22 @@ fn models_contract() -> Value {
         "authority": "hub_model_route",
         "endpoints": {
             "inventory": "/model/inventory",
+            "local_capabilities": "/model/capabilities",
+            "repair_plan": "/model/repair-plan",
+            "repair_apply": "/model/repair-apply",
+            "repair_jobs": "/model/repair-jobs",
             "route": "/model/route",
             "diagnostics": "/model/diagnostics",
             "readiness": "/model/readiness"
+        },
+        "inventory_fields": {
+            "local_capability_summary": "task-level local text/embedding/vision/ocr/speech readiness for XT UI and repair hints"
+        },
+        "repair_plan_fields": {
+            "resolved": "Hub-normalized local model repair action, task kind, provider id, and source",
+            "requirements": "safe dependency, helper, model registry, or capability metadata requirements without secrets",
+            "steps": "UI-ready repair steps; install steps require explicit user approval",
+            "apply": "confirmed apply only queues a non-blocking repair job; heavy installs must run in a background executor"
         },
         "xt_role": "request_route_and_display_truth",
         "requires_auth": true,
@@ -372,6 +385,22 @@ mod tests {
         assert_eq!(
             value["capabilities"]["models"]["xt_must_not_select_paid_provider_directly"],
             true
+        );
+        assert_eq!(
+            value["capabilities"]["models"]["endpoints"]["local_capabilities"],
+            "/model/capabilities"
+        );
+        assert_eq!(
+            value["capabilities"]["models"]["endpoints"]["repair_plan"],
+            "/model/repair-plan"
+        );
+        assert_eq!(
+            value["capabilities"]["models"]["endpoints"]["repair_apply"],
+            "/model/repair-apply"
+        );
+        assert_eq!(
+            value["capabilities"]["models"]["endpoints"]["repair_jobs"],
+            "/model/repair-jobs"
         );
     }
 

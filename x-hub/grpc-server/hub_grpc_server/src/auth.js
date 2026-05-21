@@ -71,7 +71,7 @@ function isPrivateIPv4(ip) {
   if (((u & 0xfff00000) >>> 0) === 0xac100000) return true;
   // 192.168.0.0/16
   if (((u & 0xffff0000) >>> 0) === 0xc0a80000) return true;
-  // 100.64.0.0/10 (RFC 6598) - commonly used by Tailscale/Headscale tailnet IPs.
+  // 100.64.0.0/10 (RFC 6598) - commonly used by Tailscale tailnet IPs.
   // While not RFC1918, it is not globally routable on the public Internet.
   if (((u & 0xffc00000) >>> 0) === 0x64400000) return true;
   return false;
@@ -155,6 +155,19 @@ function peerCertSha256FromCall(call) {
 
 function safeString(v) {
   return String(v ?? '').trim();
+}
+
+function pinnedPairedClientCanRoam(client, peerCertSha256, tlsMode) {
+  const pairedClientRoaming = String(process.env.HUB_GRPC_PAIRED_CLIENT_ROAMING || '1').trim() !== '0';
+  const requirePin = String(process.env.HUB_GRPC_MTLS_REQUIRE_CERT_PIN || '1').trim() !== '0';
+  const expectedCertSha = safeString(client?.cert_sha256).toLowerCase();
+  const actualCertSha = safeString(peerCertSha256).toLowerCase();
+  return pairedClientRoaming
+    && tlsMode === 'mtls'
+    && requirePin
+    && !!expectedCertSha
+    && expectedCertSha === actualCertSha
+    && safeString(client?.auth_kind).toLowerCase() === 'paired_client';
 }
 
 function isDirectInProcessServiceCall(call) {
@@ -339,9 +352,10 @@ export function requireClientAuth(call) {
   // Optional global gate (defense-in-depth): restrict all clients to specific CIDRs.
   // Useful when running a LAN-only server that should never accept connections from non-local addresses.
   const globalAllowed = parseAllowedCidrsEnv(process.env.HUB_ALLOWED_CIDRS || '');
-  if (globalAllowed.length && !peerAllowedByRules(peerIp, globalAllowed)) {
+  const globalSourceIpAllowed = !globalAllowed.length || peerAllowedByRules(peerIp, globalAllowed);
+  const denyGlobalSourceIp = () => {
     return deny('source_ip_not_allowed', 'Client source IP is not allowed', { expected_allowed_cidrs: globalAllowed });
-  }
+  };
 
   // Preferred (v1): per-device client allowlist loaded from runtime base dir.
   // This makes quotas/policies meaningful because device_id is no longer user-controlled.
@@ -369,9 +383,17 @@ export function requireClientAuth(call) {
         // as the user identity (single-device == single-user).
         const user_id = String(c.user_id || '').trim() || device_id;
         const client_name = String(c.name || '').trim();
+        const expectedCertSha = String(c.cert_sha256 || '').trim().toLowerCase();
+        const requirePin = String(process.env.HUB_GRPC_MTLS_REQUIRE_CERT_PIN || '1').trim() !== '0';
+        const canRoamWithPinnedPairing = pinnedPairedClientCanRoam(c, peerCertSha256, tlsMode);
+        const skipSourceIpBind = canRoamWithPinnedPairing;
+
+        if (!globalSourceIpAllowed && !canRoamWithPinnedPairing) {
+          return denyGlobalSourceIp();
+        }
 
         // Optional per-device source IP bind.
-        if (Array.isArray(c.allowed_cidrs) && c.allowed_cidrs.length > 0) {
+        if (!skipSourceIpBind && Array.isArray(c.allowed_cidrs) && c.allowed_cidrs.length > 0) {
           if (!peerAllowedByRules(peerIp, c.allowed_cidrs)) {
             return deny('source_ip_not_allowed', 'Client source IP is not allowed', {
               device_id,
@@ -382,8 +404,6 @@ export function requireClientAuth(call) {
         }
 
         // Optional mTLS certificate pin (defense-in-depth): bind the token to a specific client cert.
-        const expectedCertSha = String(c.cert_sha256 || '').trim().toLowerCase();
-        const requirePin = String(process.env.HUB_GRPC_MTLS_REQUIRE_CERT_PIN || '1').trim() !== '0';
         if (tlsMode === 'mtls') {
           if (requirePin && !expectedCertSha) {
             return deny('client_cert_pin_missing', 'Client cert pin is not configured for this token', { device_id, client_name });
@@ -441,6 +461,9 @@ export function requireClientAuth(call) {
   }
   if (!tok || tok !== expected) {
     return deny('invalid_token', 'Missing/invalid client token');
+  }
+  if (!globalSourceIpAllowed) {
+    return denyGlobalSourceIp();
   }
   return { ok: true, device_id: '', client_name: '', capabilities: [], peer_ip: peerIp, peer_cert_sha256: peerCertSha256 };
 }

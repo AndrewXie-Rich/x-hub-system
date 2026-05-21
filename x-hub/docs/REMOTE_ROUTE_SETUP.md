@@ -1,8 +1,13 @@
 # X-Hub Remote Route Setup
 
 Use `tools/hub_remote_route_doctor.command` before giving a remote address to
-X-Terminal. The same command works for a public DNS name, MagicDNS/tailnet name,
-or a VPN encrypted IP.
+X-Terminal. XT needs two TCP paths to the Hub:
+
+- pairing: `host:50059`
+- gRPC: `host:50058`
+
+`/pairing/discovery` on the pairing port should return JSON with
+`internet_host_hint`, `grpc_port`, `pairing_port`, and `tls_mode`.
 
 ```bash
 tools/hub_remote_route_doctor.command \
@@ -14,142 +19,184 @@ tools/hub_remote_route_doctor.command \
 ## Product Default
 
 `hub.xhubsystem.com` is not a shared product endpoint. It is just one operator's
-Hub domain. Each Hub owner should configure one of their own stable addresses:
+Hub domain. Each Hub owner should configure their own stable address and let the
+Hub invite link or secure remote setup pack carry that host to XT.
 
-- `hub.<their-domain>` for direct DNS or a raw TCP tunnel/reverse proxy
-- `<machine>.<tailnet>.ts.net` for Tailscale/Headscale MagicDNS
-- `100.x.y.z` for a Tailscale/Headscale IP
-- another VPN/tunnel IP that every intended XT device can reach
+Recommended order, from simple to difficult:
 
-The Hub invite link and secure remote setup pack should carry that configured
-host. XT should not need to know any vendor-owned or Andrew-owned domain.
+1. Same Wi-Fi / LAN for first pairing and local use.
+2. Tailscale IP or MagicDNS when users accept installing Tailscale on roaming XT.
+3. Tailscale subnet router for fixed networks.
+4. Public IP direct for temporary validation.
+5. DNS-only domain direct for user-owned domains.
+6. Cloudflare Spectrum raw TCP when the account has Spectrum.
+7. VPS raw TCP relay / reverse proxy.
+8. Tailscale Funnel raw TCP after port/protocol adaptation.
+9. HTTPS/WebSocket 443 gateway as future product work.
 
-Recommended order:
+Out of scope for this route plan:
 
-1. **Own domain, DNS-only/raw TCP**: best default when the user controls DNS and
-   can expose or tunnel TCP `50058/50059`.
-2. **No domain: private VPN/MagicDNS**: safest self-hosted option when users do
-   not own a domain and accept Tailscale/Headscale/WireGuard/ZeroTier on both
-   Hub and XT.
-3. **Raw public IP**: temporary only; avoid using it in long-lived invite packs.
-4. **LAN-only**: fine for same-network use, but not a formal remote route.
+- Other VPN IP routes: WireGuard / ZeroTier / Headscale.
+- Cloudflare Tunnel arbitrary TCP.
 
-## No-Domain Users
+## Route Matrix
 
-Users do not need to buy a domain just to get stable cross-network XT access.
-The least complex no-domain path is a private network:
+| Route | Current status | XT install | Security | Convenience | Use when |
+| --- | --- | --- | --- | --- | --- |
+| Same Wi-Fi / LAN | Supported | None | High | High on same network, none across networks | First pairing, home-only use |
+| Tailscale IP / MagicDNS | Supported, auto-detects `100.x` | Tailscale on each roaming XT | High | Medium | No domain, stable cross-network use |
+| Tailscale subnet router | Manual, verify first | Not needed only for fixed networks behind a subnet router | High | Medium | Office/home site-to-site routes |
+| Public IP direct | Supported for temporary validation | None | Medium-low | High until IP changes | Quick smoke test, emergency access |
+| DNS-only domain direct | Supported | None | Medium | High | User controls DNS and port forwarding |
+| Cloudflare Spectrum raw TCP | Hub/XT compatible, external setup required | None | Medium-high | High | User has Spectrum and wants no XT network install |
+| VPS raw TCP relay / reverse proxy | Hub/XT compatible, external deployment required | None | Medium-high | High | User wants self-controlled public relay |
+| Tailscale Funnel raw TCP | Pending adaptation | None after public exposure | Medium | High | Later route, public endpoint acceptable |
+| HTTPS/WebSocket 443 gateway | Not implemented | None | High | Highest | Future product-grade remote access |
 
-1. Install or join the same private network on the Hub Mac and every XT Mac.
-   Tailscale/Headscale, WireGuard, and ZeroTier are all acceptable.
-2. In Hub Settings > LAN/gRPC > Advanced Settings, use **No domain? Use private
-   network entry**. If Hub detects a stable tunnel address such as `100.x.y.z`
-   or a WireGuard/ZeroTier `10.x` address on a tunnel interface, it can apply
-   that host as External Address.
-3. Copy the invite link or secure remote setup pack from Hub and open it on XT.
+All remote routes should keep mTLS enabled and use an invite token. Public,
+DNS-only, Spectrum, and relay routes should also restrict allowed source IPs
+where practical and keep paid AI / Web Fetch disabled unless explicitly needed.
 
-This keeps the default user experience domain-free while avoiding brittle raw
-public IPs. If no private network address is detected, the product should keep
-the user in LAN-only mode and clearly ask them to choose one stable route:
-their own domain, a private VPN, or a future X-Hub relay/tunnel.
+## Same Wi-Fi / LAN
 
-## What Must Be Reachable
+This is already supported and should remain the first-pairing path.
 
-XT needs two TCP paths to the Hub:
+1. Put XT and Hub on the same Wi-Fi/LAN.
+2. Open the invite link or scan the QR code from Hub Settings.
+3. XT stores the Hub host, pairing port, gRPC port, invite token, and mTLS client
+   material.
 
-- pairing: `host:50059`
-- gRPC: `host:50058`
+This route does not satisfy the cross-network requirement by itself. Once XT
+leaves the LAN, it will reconnect only if a stable external address is also
+configured.
 
-`/pairing/discovery` on the pairing port should return JSON with
-`internet_host_hint`, `grpc_port`, and `pairing_port`.
+## Tailscale IP Or MagicDNS
 
-## Stable DNS Name
+This is the simplest long-term no-domain route when installing Tailscale on XT
+is acceptable.
 
-Use a DNS name when the Hub has a stable public endpoint or a raw TCP tunnel.
-If the domain is hosted on Cloudflare, keep the record DNS-only unless you have
-a raw TCP product such as Spectrum. The normal orange-cloud proxy is not enough
-for arbitrary gRPC/pairing TCP ports.
-
-For a user-owned domain, the minimum DNS setup is:
-
-- create an `A` record such as `hub.your-domain.example`
-- point it to the Hub's public IP, or to the raw TCP tunnel/reverse-proxy
-  endpoint that forwards TCP `50058/50059` to the Hub
-- verify from outside the Hub network:
-
-```bash
-nc -vz hub.your-domain.example 50059
-nc -vz hub.your-domain.example 50058
-curl -fsS http://hub.your-domain.example:50059/pairing/discovery
-```
-
-If the ISP changes the public IP, use DDNS, a provider API update, or a raw TCP
-tunnel/relay instead of asking XT users to re-enter a raw IP.
-
-## VPN Or Encrypted IP
-
-Tailscale, Headscale, WireGuard, and ZeroTier are preferred for long-term remote
-XT access. Put the tailnet/MagicDNS name or encrypted IP in Hub Settings >
-LAN/gRPC > Advanced Settings > External Address, then copy the Hub invite link
-or secure remote setup pack.
-
-Examples:
-
-- `mini.tailnet.ts.net`
-- `100.96.10.8`
-- `10.7.0.12`
-
-Only use these addresses when every XT device joins the same VPN/tailnet.
-Tailscale/Headscale `100.64.0.0/10` addresses are treated as formal encrypted
-IP entries directly. RFC1918 addresses such as `10.x`, `172.16-31.x`, or
-`192.168.x` should be used only when they are assigned by a VPN; set them
-explicitly in External Address if the app cannot infer the tunnel interface.
-
-## Current Mac Tailscale Note
-
-The Homebrew `tailscaled` daemon requires root on macOS unless it is run in
-userspace networking mode. For normal desktop use, the official Tailscale macOS
-app is the least surprising path.
-
-Official install links:
-
-- Tailscale download: https://tailscale.com/download
-- macOS direct download: https://tailscale.com/download/mac
-- macOS install guide: https://tailscale.com/kb/1016/install-mac
-
-Install Tailscale on both sides of the private route: the Hub Mac and every XT
-Mac that should reach the Hub through MagicDNS or a `100.x` Tailscale IP. All
-machines must be signed into the same tailnet, or explicitly shared into a
-tailnet that can reach the Hub.
-
-For a long-running Hub host:
-
-1. Install `/Applications/Tailscale.app`.
-2. Approve `Tailscale Network Extension` in System Settings.
-3. Add `Tailscale` to macOS Login Items.
-4. Remove or disable `~/Library/LaunchAgents/homebrew.mxcl.tailscale.plist`
-   if it exists; that user LaunchAgent cannot create the normal tunnel.
-5. Put the MagicDNS name or `100.64.0.0/10` Tailscale IP in Hub Settings >
-   LAN/gRPC > Advanced Settings > External Address.
-
-Verify the full service path with:
+1. Install the official Tailscale app on the Hub Mac and each XT Mac.
+2. Sign all devices into the same tailnet.
+3. In Hub Settings > LAN/gRPC > Advanced Settings, set External Address to:
+   - the Hub `100.x.y.z` Tailscale IP, or
+   - the Hub MagicDNS name such as `<machine>.<tailnet>.ts.net`.
+4. Keep transport mode on mTLS.
+5. Copy the secure remote setup pack or invite link to XT.
+6. Verify:
 
 ```bash
-tools/tailscale_hub_service_doctor.command
+tools/hub_remote_route_doctor.command --host 100.x.y.z
+tools/hub_remote_route_doctor.command --host <machine>.<tailnet>.ts.net
 ```
 
-When MagicDNS is enabled, this doctor prefers the MagicDNS name as the default
-External Address recommendation. If MagicDNS is not available, it falls back to
-the local `100.x` Tailscale IP.
+Current implementation notes:
 
-For a different tailnet host, MagicDNS name, or encrypted IP:
+- Hub detects `100.64.0.0/10` Tailscale addresses as no-domain candidates.
+- The no-domain button now recommends Tailscale only, not other VPN interfaces.
+- XT must have a route into the same tailnet. For roaming XT, that normally
+  means installing Tailscale on XT.
+
+## Tailscale Subnet Router
+
+This route can avoid installing Tailscale on every device only when the XT
+device is inside another fixed network that already routes into the tailnet.
+Roaming laptops still need their own route into Tailscale.
+
+1. Deploy and approve a Tailscale subnet router for the Hub LAN.
+2. Confirm the XT-side network can reach the Hub LAN IP.
+3. Set Hub External Address to the reachable Hub LAN IP or internal DNS name.
+4. Run the remote route doctor from a network equivalent to XT's network.
+
+Use this only after both TCP ports and `/pairing/discovery` pass. The Hub app
+does not auto-detect this route because a private `192.168.x` or `10.x` address
+is ambiguous without a verified subnet route.
+
+## Public IP Direct
+
+This route is supported for temporary validation and emergency use. It is not a
+good long-term default because the IP can change and both raw TCP ports are
+exposed to the internet.
+
+1. Find the Hub network's public IP.
+2. On the router/NAT, forward TCP `50059` and `50058` to the Hub Mac.
+3. In Hub Settings, set External Address to the public IP.
+4. Use the invite link on XT.
+5. Verify from outside the Hub network:
 
 ```bash
-tools/tailscale_hub_service_doctor.command --host <magic-dns-or-100.x-ip>
+nc -vz <public-ip> 50059
+nc -vz <public-ip> 50058
+curl -fsS http://<public-ip>:50059/pairing/discovery
 ```
 
-You can still run the generic remote route doctor for DNS, public IP, and other
-VPN/tunnel routes:
+Keep mTLS and invite-token validation enabled. Restrict allowed source IPs if
+the XT networks are predictable.
 
-```bash
-tools/hub_remote_route_doctor.command --host <magic-dns-or-100.x-ip>
-```
+## DNS-Only Domain Direct
+
+Use this when the user owns a domain and can expose TCP `50059/50058` directly.
+
+1. Create `A`/`AAAA` records such as `hub.your-domain.example`.
+2. Point them to the Hub public IP or to a raw TCP endpoint that forwards to the
+   Hub.
+3. If DNS is hosted on Cloudflare, keep the record DNS-only. The normal
+   orange-cloud HTTP proxy does not forward these raw TCP ports.
+4. Forward TCP `50059/50058` to the Hub Mac.
+5. Set External Address to the DNS name.
+6. Copy the secure remote setup pack or invite link.
+
+If the ISP changes the public IP, use DDNS, provider API updates, Cloudflare
+Spectrum, or a VPS relay instead of asking XT users to re-enter a raw IP.
+
+## Cloudflare Spectrum Raw TCP
+
+This is the Cloudflare route that can keep XT install-free while avoiding direct
+router exposure. It requires Spectrum support on the Cloudflare account.
+
+1. Put a hostname such as `hub.your-domain.example` in Cloudflare.
+2. Create raw TCP Spectrum apps for:
+   - external TCP `50059` -> origin `Hub-or-relay:50059`
+   - external TCP `50058` -> origin `Hub-or-relay:50058`
+3. Set Hub External Address to the Spectrum hostname.
+4. Verify the same doctor command against the Spectrum hostname.
+
+Do not use Cloudflare Tunnel arbitrary TCP for this plan. The Hub/XT protocol
+expects raw TCP reachability on the pairing and gRPC ports.
+
+## VPS Raw TCP Relay / Reverse Proxy
+
+This is the self-controlled long-term route when users do not want Tailscale on
+XT and do not have Spectrum.
+
+1. Provision a VPS with a stable public IP and DNS name.
+2. Run a raw TCP forwarder such as HAProxy, nginx `stream`, systemd socket
+   forwarding, or a small relay service.
+3. Forward VPS TCP `50059/50058` to the Hub reachable path.
+4. Secure the VPS with a firewall, automatic restarts, logs, and source IP
+   restrictions where possible.
+5. Set Hub External Address to the VPS DNS name.
+6. Verify with the doctor and then copy the secure remote setup pack.
+
+Security depends on the relay hardening. Keep mTLS and invite tokens on, because
+the relay is still carrying the Hub's raw pairing/gRPC traffic.
+
+## Tailscale Funnel Raw TCP
+
+This remains a later route. It is attractive because XT would not need
+Tailscale after the Funnel endpoint is public, but the current Hub/XT pairing
+ports still need explicit port/protocol adaptation and verification.
+
+Do not present this as ready until:
+
+- the public endpoint can carry both pairing and gRPC traffic,
+- the external host/port mapping is encoded in the setup pack, and
+- the doctor passes from a normal non-tailnet network.
+
+## Future HTTPS/WebSocket 443 Gateway
+
+This is the cleanest product experience but the largest development task. The
+gateway should expose one HTTPS `443` hostname, authenticate with invite tokens
+and mTLS-equivalent client identity, and bridge to the local pairing/gRPC
+services behind the scenes.
+
+Until this exists, XT must still receive a host plus pairing/gRPC ports.

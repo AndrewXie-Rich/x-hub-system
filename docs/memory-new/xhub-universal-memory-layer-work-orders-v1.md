@@ -3,7 +3,7 @@
 - version: v1.0
 - updatedAt: 2026-05-19
 - owner: Rust Hub Kernel / XT Runtime / Swift Shell / Supervisor / Coder / Security / QA
-- status: draft-ready-for-execution
+- status: in-progress-w0-w5-gateway-prep-implemented
 - purpose:
   - 把 mem0 / OpenMemory 这类开源模型通用记忆系统的可借鉴点，转成 X-Hub 可执行工单
   - 在不牺牲 X-Hub 现有安全边界的前提下，把 Memory 做成所有模型、所有 Agent、所有运行面统一调用的 Rust kernel capability
@@ -13,6 +13,172 @@
   - Rust 内核负责判断、状态、策略、接口、memory authority、检索和审计
   - Swift 壳负责产品 UI、展示、用户确认、调用 Rust kernel
   - Node 只保留兼容层、admin bridge、老接口迁移桥，不再新增 memory authority
+
+## Implementation Status 2026-05-19
+
+First implementation slice landed in `rust/rust hub`:
+
+- `UML-W0`: v1 contract captured in this work-order doc.
+- `UML-W1`: SQLite `memory_objects` / `memory_events` store added through migration `0007_memory_objects.sql`.
+- `UML-W2`: first CRUD surface implemented for create, get, list, and history.
+  - HTTP:
+    - `POST /memory/objects`
+    - `GET /memory/objects`
+    - `GET /memory/objects/{memory_id}`
+    - `GET /memory/objects/{memory_id}/history`
+  - CLI:
+    - `xhubd memory object-create`
+    - `xhubd memory object-list`
+    - `xhubd memory object-get`
+    - `xhubd memory object-history`
+- `UML-W3`: minimal Rust policy matrix implemented with fail-closed behavior for unknown modes, Project Coder personal memory deny, lane handoff fulltext deny, remote raw evidence deny, Supervisor raw evidence deny, and high-risk tool-act fresh snapshot requirement.
+- `UML-W4`: Rust-side first bridge and Swift/XT caller cutover implemented for existing XT `project_canonical_memory` payloads.
+  - HTTP:
+    - `POST /memory/project-canonical-sync`
+    - default is dry-run
+    - `?apply=1` writes deterministic Rust memory objects
+  - CLI:
+    - `xhubd memory project-canonical-sync --payload-json ...`
+    - `--apply` writes deterministic Rust memory objects
+  - Existing XT keys mapped:
+    - `xterminal.project.memory.goal` -> `project` / `l1_canonical` / `project_goal`
+    - `xterminal.project.memory.requirements` -> `project` / `l1_canonical` / `project_requirement`
+    - `xterminal.project.memory.current_state` -> `project` / `l3_working_set` / `current_state`
+    - `xterminal.project.memory.decisions` -> `project` / `l1_canonical` / `decision_track`
+    - `xterminal.project.memory.next_steps` -> `project` / `l3_working_set` / `next_step`
+    - `xterminal.project.memory.open_questions` -> `project` / `l2_observations` / `open_question`
+    - `xterminal.project.memory.risks` -> `project` / `l2_observations` / `risk`
+    - `xterminal.project.memory.recommendations` -> `project` / `l2_observations` / `recommendation`
+  - Metadata keys such as `schema_version`, `project_name`, `project_root`, `updated_at`, and `summary_json` are skipped rather than duplicated as long-term facts.
+  - Re-sync updates existing deterministic memory IDs and appends history events.
+  - XT `HubIPCClient.syncProjectCanonicalMemory` now prefers Rust HTTP `POST /memory/project-canonical-sync?apply=1` in `.auto` / `.grpc` modes.
+  - `.fileIPC` remains explicit local compatibility behavior.
+  - If Rust HTTP is unavailable or rejects the write, `.auto` falls back to existing remote/local compatibility path so Coder prompt flow does not block.
+  - If Rust HTTP is unavailable for project-backed AXMemory sync, XT writes a retryable pending snapshot at `.xterminal/memory_lifecycle/pending_project_canonical_rust_sync.json`.
+  - A later Rust success clears the pending snapshot.
+  - Project load schedules a pending Rust canonical sync retry through `HubIPCClient.retryPendingProjectCanonicalRustSync(ctx:)`.
+  - XT memory-context assembly and `requestMemoryRetrieval` now check `canonical_memory_sync_status.json`; after a successful Rust project canonical sync, `.auto` / `.grpc` reads prefer active Rust `/memory/objects?scope=project&project_id=...&status=active` objects for L1/L2/L3 while keeping local projection, Hub remote snapshot, and local IPC as compatibility fallback.
+  - `HubIPCClient.diagnoseProjectCanonicalRustImport(...)` compares the current AXMemory projection against active deterministic Rust project objects.
+    - It skips metadata-only keys instead of requiring Rust long-term objects for them.
+    - It refuses to fetch Rust objects until local sync status proves a successful Rust delivery.
+    - It reports missing, stale, metadata-mismatched, and extra Rust objects with schema-versioned issue codes.
+- `UML-W5`: first Rust Memory Gateway prepare surface implemented without model-call cutover.
+  - HTTP:
+    - `POST /memory/gateway/prepare`
+    - alias `POST /memory/context`
+  - CLI:
+    - `xhubd memory gateway-prepare`
+  - Behavior:
+    - prepare-only, no model call, no production authority change.
+    - Rust policy runs before object selection.
+    - default context only includes `l1_canonical`, `l2_observations`, and `l3_working_set`.
+    - `l4_raw_evidence` requires explicit request and policy allow.
+    - remote export requests skip local-only / never-export objects.
+    - response includes schema-versioned policy, selected slots, context text, and skip counters.
+  - Swift/XT shadow compare added:
+    - `HubIPCClient.compareMemoryContextWithRustGateway(...)`
+    - product Memory V1 remains Swift/local/remote builder output.
+    - Rust gateway output is compared by selected object text anchors and stable text hashes.
+    - results write `memory_gateway_shadow_compare_status.json` when recorded.
+    - results also append bounded safe metadata history to `memory_gateway_shadow_compare_history.json`.
+    - automatic shadow compare is gated by `XHUB_RUST_MEMORY_CONTEXT_GATEWAY_SHADOW=1`.
+  - Swift/XT guarded primary path added:
+    - `XHUB_RUST_MEMORY_CONTEXT_GATEWAY=1` makes memory context assembly try Rust `/memory/gateway/prepare` first for non-`.fileIPC` routes.
+    - Rust success returns product-compatible `MemoryContextResponsePayload` with `source=rust_memory_gateway_prepare` and `freshness=fresh_rust_gateway`.
+    - Rust unavailable, denied, authority-unsafe, or empty-context responses fall back to existing Swift/local/remote builders unless the explicit require gate is enabled.
+  - Swift/XT fail-closed require gate added:
+    - `XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE=1` requires Rust `/memory/gateway/prepare` for non-`.fileIPC` memory context calls.
+    - Require mode first checks local `memory_gateway_shadow_compare_status.json`.
+    - Evidence must be fresh, same requester_role/use_mode/project_id, `ok=true`, `parity_ok=true`, `rust_source=rust_memory_gateway_prepare`, and `production_authority_change=false`.
+    - `XHUB_RUST_MEMORY_CONTEXT_GATEWAY_PARITY_MAX_AGE_MS` controls evidence freshness; default is 10 minutes.
+    - If evidence is missing/stale/mismatched or Rust fails, caller receives `source=rust_memory_gateway_cutover_gate` with fallback disabled instead of silently using Swift/local memory.
+    - Coder and Supervisor memory builders now preserve that cutover-gate failure block instead of using local fallback.
+  - Swift/XT live cutover readiness evidence added:
+    - `HubIPCClient.rustMemoryGatewayCutoverReadinessEvidence(...)`
+    - requires sustained fresh same-scope parity samples from `memory_gateway_shadow_compare_history.json`.
+    - writes `memory_gateway_cutover_readiness.json` when requested.
+    - report schema is `xt.rust_memory_gateway_cutover_readiness.v1`.
+    - report contains only bounded metadata and hashes, not memory context text.
+  - Doctor/evidence rollup added:
+    - `HubIPCClient.rustMemoryGatewayShadowCompareStatus()` reads latest `memory_gateway_shadow_compare_status.json`.
+    - Supervisor memory assembly diagnostics surface `memory_gateway_shadow_compare_drift` as warning.
+    - Supervisor memory assembly diagnostics surface `memory_gateway_shadow_authority_violation` as blocking if shadow evidence reports `production_authority_change=true`.
+    - Supervisor Doctor now consumes `memory_gateway_cutover_readiness.json` / generated readiness evidence.
+    - Not-ready cutover evidence surfaces as `memory_gateway_cutover_readiness_not_ready`; it is a warning before require mode and blocking when `XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE=1`.
+    - `daemon_ops_gate` / `daemon_ops_report` now include bounded `memory_gateway_cutover_readiness` evidence.
+    - Ops gate does not block just because the report is absent; it blocks when `--require-memory-gateway-cutover-ready` is set, `XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE=1` is present, or the report contains a cutover authority violation.
+- `UML-W11`: `/memory/readiness` now reports object store readiness summary and policy gate readiness.
+- `MS-1`: first `memsearch-main` retrieval-engine lesson absorbed into Rust shadow file retrieval.
+  - `.md` / `.txt` files are chunked by Markdown headings instead of treated as one monolithic document.
+  - Stable section refs use line range + content hash style IDs.
+  - Secret-bearing sections can be redacted/skipped without hiding unrelated public sections in the same file.
+  - This remains shadow file-scan retrieval only; it does not introduce semantic embeddings, vector DB, or production authority change.
+- `UML-W6`: first Rust object-store indexed retrieval slice started.
+  - `/memory/search` and `POST /memory/retrieve` first try active Rust project memory objects when `project_id` is supplied.
+  - Matching uses deterministic filters, in-memory lexical/FTS-like scoring, cheap property boosts, and optional result-level explain.
+  - Returned source is `rust_memory_objects_hybrid_v1`; response includes `xhub.memory.hybrid_retrieval.v1` engine evidence.
+  - Semantic retrieval and rerank remain disabled and explicitly reported as `false`.
+  - No object match falls back to existing Rust shadow file-scan retrieval.
+
+Validation completed:
+
+- `cargo fmt`
+- `cargo test -p xhub-db`
+- `cargo test -p xhubd`
+- `cargo build -p xhubd`
+- Temporary HTTP smoke on `127.0.0.1:50251` for create/get/list/history/policy/readiness.
+- CLI smoke on a temporary DB for create/list/get/history/policy.
+- CLI smoke on a temporary DB for project canonical sync dry-run/apply/update/history.
+- Temporary HTTP smoke on `127.0.0.1:50251` for `POST /memory/project-canonical-sync?apply=1` followed by object listing.
+- `cargo test -p xhubd memory_gateway_prepare`
+  - validates prepare-only gateway returns policy-gated project memory slots from Rust objects.
+  - validates default prepare excludes raw evidence.
+  - validates remote export skips local-only objects.
+  - validates Supervisor raw evidence request fails closed before model route.
+- `cargo test -p xhubd`
+  - validates the full xhubd unit suite after gateway endpoint/readiness changes.
+- `cargo test -p xhub-memory`
+  - validates memsearch-inspired heading chunking, stable section refs, get-ref compatibility, and secret section isolation for Rust shadow file retrieval.
+- `cargo test -p xhubd memory_object_hybrid_retrieval`
+  - validates Rust object-store indexed retrieval finds decision memory with explain and supports layer filtering plus object `get_ref`.
+- `swift test --filter HubIPCClientProjectCanonicalMemorySyncTests`
+  - validates Rust preferred dispatch writes no local `xterminal_project_memory_` file.
+  - validates Rust unavailable fallback still queues one local file IPC compatibility event.
+  - validates retryable pending snapshot write/clear behavior.
+  - validates pending retry success clears the snapshot and pending retry unavailable keeps it.
+  - validates memory-context read preference for Rust canonical objects after successful Rust sync status.
+  - validates no Rust object read is attempted before successful Rust sync status exists.
+  - validates Rust import diagnostics detect missing, stale, metadata-mismatched, and extra deterministic project objects.
+  - validates Rust import diagnostics do not fetch Rust objects before successful Rust sync status exists.
+  - validates Swift Rust Memory Gateway shadow compare matches product context and records status.
+  - validates Swift Rust Memory Gateway shadow compare reports missing Rust anchors as drift.
+- `swift test --filter HubIPCClientMemoryRetrievalContractTests`
+  - validates project-chat retrieval returns `rust_memory_objects` snippets before remote/local retrieval after successful Rust sync status.
+- `swift build --target XTerminal`
+  - validates Swift shell/client compile after Rust gateway primary gate and doctor rollup changes.
+- `swift test --skip-build --filter requestMemoryContextUsesRustGatewayWhenPrimaryGateIsEnabled`
+  - validates explicit Rust memory context primary gate uses the Rust gateway response and does not include Swift fallback text.
+- `swift test --skip-build --filter requestMemoryContextRequireGate`
+  - validates required Rust gateway cutover blocks before contacting Rust when fresh parity evidence is missing.
+  - validates required Rust gateway cutover uses Rust output and disables fallback once fresh same-scope parity evidence exists.
+- `swift test --filter rustMemoryGatewayCutoverReadiness`
+  - validates shadow compare writes bounded history.
+  - validates require-readiness needs sustained fresh same-scope parity samples.
+  - validates `memory_gateway_cutover_readiness.json` generation.
+- `swift test --skip-build --filter SupervisorDoctorTests`
+  - validates doctor keeps existing memory assembly findings and now reports Rust gateway shadow drift / authority violation evidence.
+- `node --check tools/xhubd_daemon.js`
+  - validates daemon ops gate/report syntax after adding bounded memory gateway cutover readiness evidence.
+
+Still intentionally not done:
+
+- No semantic embeddings.
+- No Swift Memory Inspector.
+- No Node memory authority.
+- No public delete/pin/archive candidate mutation surface beyond first-slice stubs.
+- No full AXMemory pipeline authority flip yet; XT caller now prefers Rust for canonical sync, context/retrieval reads can prefer active Rust project objects, and import diagnostics can prove projection drift, but local AXMemory files remain fallback/projection until Rust memory gateway cutover lands.
+- No model-call execution in Rust Memory Gateway yet; the gateway is prepare-only. Swift shadow compare is available behind an explicit env gate, Rust primary context is opt-in with compatibility fallback, fail-closed require mode is available but still must be explicitly enabled with fresh parity evidence, and readiness evidence is now visible in Supervisor Doctor plus daemon ops gate/report.
+- Existing file scanner retrieval remains untouched until hybrid retrieval and migration tests land.
 
 ## 0) How To Use This File
 
@@ -49,6 +215,16 @@
 - mem0 search operation: `https://docs.mem0.ai/core-concepts/memory-operations/search`
 - mem0 async memory: `https://docs.mem0.ai/open-source/features/async-memory`
 - mem0 GitHub: `https://github.com/mem0ai/mem0`
+- memsearch local reference: `/Users/andrew.xie/Documents/AX/source/memsearch-main`
+  - `README.md`
+  - `docs/architecture.md`
+  - `docs/design-philosophy.md`
+  - `docs/home/comparison.md`
+  - `docs/home/embedding-evaluation.md`
+  - `src/memsearch/chunker.py`
+  - `src/memsearch/store.py`
+  - `src/memsearch/reranker.py`
+  - `plugins/codex/hooks/`
 
 ### 1.1 What mem0 / OpenMemory Does Well
 
@@ -110,6 +286,212 @@ X-Hub 不是普通 memory SDK。X-Hub 已经有更强的治理边界：
 
 `吸收 mem0 的模型通用 memory layer 优势，同时保留 X-Hub 的 local-first、policy-first、role-aware、fail-closed 安全模型。`
 
+### 1.3 What memsearch-main Adds That X-Hub Should Absorb
+
+`memsearch-main` 的优势更偏 coding-agent memory retrieval engine。它不是 authority model 的参考；X-Hub 不能照搬它的 plugin writes 或 Markdown-as-truth 模型，因为 Hub truth 必须在 Rust object store / Writer + Gate 内。但它有一组值得吸收的 retrieval/index 工程点：
+
+| memsearch advantage | X-Hub absorption status | X-Hub target |
+| --- | --- | --- |
+| Cross-platform one memory | Partially absorbed | Hub truth + role-aware projection lets XT/Supervisor/Coder consume one truth. Other clients should consume Hub APIs, not local Markdown plugins. |
+| Markdown human-readable truth | Not adopted as authority | X-Hub canonical truth remains Rust memory objects/events. Markdown/file outputs may be projection/export only. |
+| Rebuildable shadow index | Planned | Any FTS/vector index must be derived from Rust objects or sanctioned projections and droppable/rebuildable. |
+| Heading-aware chunking with paragraph fallback | First Rust file-scan slice implemented | Rust shadow file retrieval now chunks `.md`/`.txt` by headings with stable section refs; object-store indexing still needs the same rule in W6. |
+| Content-addressed dedup / stable chunk IDs | Partially absorbed | File-scan refs now include stable section line/hash IDs. W6 must use deterministic object chunk IDs across reindex. |
+| Hybrid dense + BM25 + RRF | Planned, not implemented | W6 starts with FTS/deterministic boosts; W7 adds local semantic; W8 adds profile-gated fusion/rerank. |
+| ONNX bge-m3 int8 local default | Planned, not implemented | Best candidate default for local bilingual embeddings once local runtime supports embedding tasks. Remote embeddings remain off by default. |
+| Optional cross-encoder rerank | Planned, not implemented | Profile-gated only for plan/review/deep-dive, never heartbeat/hot execute path by default. |
+| Progressive disclosure search -> expand -> transcript | Partially absorbed | X-Hub has L1/L2/L3/L4 policy layers and role transcript projection. Need explicit retrieve/expand/transcript APIs and selected/omitted trace. |
+| Watch/debounce live sync | Partially absorbed | X-Hub has sync/retry/gateway shadow compare; canonical watch should be Rust-supervised, not per-client plugin authority. |
+| Compact loop into daily memory | Planned as governed candidate path | X-Hub should create write candidates / rollups, not directly mutate durable memory without approval gate. |
+| Plugin hook ergonomics | Partially absorbed | XT/Swift should show memory availability and selected/omitted evidence, but hooks must call Hub truth instead of writing local memory authority. |
+
+Current answer to "have we absorbed all useful memsearch advantages?": no. We have absorbed the architecture lessons into the plan and one low-risk Rust retrieval slice, but hybrid semantic retrieval, local ONNX embedding default, RRF/rerank, explicit expand/transcript API, and governed compact/candidate loop are still work items.
+
+### 1.4 Detailed memsearch-main Absorption Work Orders
+
+这些工单只吸收 `memsearch-main` 的 retrieval/index/product ergonomics 优点，不改变 X-Hub authority 边界。所有 durable truth 仍在 Rust memory objects/events；所有模型调用仍必须经过 Rust policy/gateway；Swift/XT 只做 shell、projection、hot cache 和调用。
+
+#### MS-W1 Heading-Aware Chunking And Stable Section Refs
+
+- status: first Rust shadow file-scan slice implemented; object-store index adoption still pending in W6.
+- source reference:
+  - `source/memsearch-main/src/memsearch/chunker.py`
+  - `source/memsearch-main/docs/architecture.md`
+- value to absorb:
+  - Markdown heading sections are natural retrieval units.
+  - Oversized sections should split at paragraph/line boundaries with small overlap.
+  - Chunk refs should be deterministic from source + line range + content hash.
+- X-Hub implementation:
+  - Done: `.md` / `.txt` shadow file retrieval now chunks by Markdown headings and returns stable section refs.
+  - Done: secret-like section content can be skipped/redacted without hiding unrelated public sections in the same file.
+  - Next: W6 object-store retrieval must use the same chunk identity concept for Rust objects and future FTS/vector chunks.
+- acceptance:
+  - Query for one heading does not return unrelated headings from the same file.
+  - Re-running retrieval on unchanged memory returns the same ref.
+  - Secret section does not leak and does not poison public sections.
+- verification:
+  - `cargo test -p xhub-memory markdown`
+
+#### MS-W2 Rebuildable Derived Index
+
+- status: planned in W6.
+- source reference:
+  - `source/memsearch-main/docs/design-philosophy.md`
+  - `source/memsearch-main/src/memsearch/core.py`
+- value to absorb:
+  - Index is disposable and rebuildable from canonical source.
+  - Stale chunks for deleted/changed sources are removed.
+- X-Hub adaptation:
+  - Canonical source is not Markdown; it is Rust `rust_hub_memory_objects` plus governed projections.
+  - Add a derived retrieval index table or in-memory indexed read surface that can be regenerated from active objects.
+  - Readiness must report index generation, stale count, and rebuild availability.
+- implementation steps:
+  1. Define `xhub.memory.hybrid_retrieval.v1` evidence fields.
+  2. Add object-store indexed retrieval over active project objects.
+  3. Add deterministic chunk IDs for object chunks.
+  4. Add reindex/report command once persistent FTS table lands.
+  5. Add stale-index detection once persistent index exists.
+- acceptance:
+  - Deleted/archived objects are not returned.
+  - Rebuild from objects produces equivalent refs/scores for unchanged data.
+  - Readiness can explain index state without exposing memory text.
+
+#### MS-W3 Hybrid BM25/FTS + Deterministic Boosts
+
+- status: W6 first slice started.
+- source reference:
+  - `source/memsearch-main/src/memsearch/store.py`
+  - `source/memsearch-main/docs/architecture.md`
+- value to absorb:
+  - Exact terms, identifiers, error codes, and config names need keyword retrieval.
+  - Semantic retrieval alone is not enough for coding memory.
+- X-Hub adaptation:
+  - Start with policy-gated active object filtering, lexical/FTS-like scoring, and deterministic property boosts.
+  - Move to SQLite FTS table after first in-memory object retrieval slice is stable.
+  - Keep old shadow file scan as fallback until W6 parity is proven.
+- first slice shipped in this update:
+  - `/memory/search` and `POST /memory/retrieve` can return `source=rust_memory_objects_hybrid_v1` when active project objects match.
+  - Response includes `retrieval_engine.schema_version=xhub.memory.hybrid_retrieval.v1`.
+  - `semantic_used=false` and `rerank_used=false` are explicit.
+  - Result-level explain is available with `explain=true`.
+- acceptance:
+  - Decision/risk/next-step objects can be found by query.
+  - `requested_layers`, `requested_kinds`, `visibility`, `sensitivity_max`, `created_after_ms`, `updated_after_ms` filters work.
+  - No active object match falls back to file-scan compatibility.
+
+#### MS-W4 Local ONNX bge-m3 Embedding Default
+
+- status: planned in W7; not implemented.
+- source reference:
+  - `source/memsearch-main/docs/home/embedding-evaluation.md`
+  - `source/memsearch-main/src/memsearch/embeddings/onnx.py`
+- value to absorb:
+  - `gpahal/bge-m3-onnx-int8` is a strong local bilingual default candidate.
+  - CPU-only, no API key, lower dependency footprint than PyTorch, good Chinese/English recall.
+- X-Hub adaptation:
+  - Implement through Hub Local Provider Runtime as `embedding` task kind.
+  - Default remote embeddings off.
+  - Embed sanitized local text only; secret/private handling must be policy gated.
+  - Readiness must report provider, model, pending/failed counts, local-only status.
+- acceptance:
+  - Local embedding smoke passes without external API key.
+  - Remote embedding attempts are denied unless explicit remote gate permits.
+  - Search response says whether semantic retrieval was used.
+
+#### MS-W5 RRF Fusion And Optional Cross-Encoder Rerank
+
+- status: planned in W8; not implemented.
+- source reference:
+  - `source/memsearch-main/src/memsearch/reranker.py`
+  - `source/memsearch-main/docs/architecture.md`
+- value to absorb:
+  - Dense + keyword result lists should be fused.
+  - Cross-encoder rerank improves deep recall but is too expensive for hot paths.
+- X-Hub adaptation:
+  - Add profile-gated fusion/rerank:
+    - heartbeat/hot execute: no semantic, no rerank
+    - plan/review: semantic optional, rerank only above candidate threshold
+    - deep dive/full scan: semantic + rerank allowed if ready
+  - Explain must show why rerank was or was not used.
+- acceptance:
+  - Hot execute remains under latency budget.
+  - Deep dive improves recall fixtures.
+  - Remote bundles cannot rerank/expand into raw evidence.
+
+#### MS-W6 Progressive Disclosure Search -> Expand -> Transcript
+
+- status: partially absorbed; explicit APIs still pending.
+- source reference:
+  - `source/memsearch-main/docs/design-philosophy.md`
+  - `source/memsearch-main/plugins/codex/skills/memory-recall/SKILL.md`
+- value to absorb:
+  - Start cheap with snippets, expand only selected sections, drill into raw transcript only when needed.
+- X-Hub adaptation:
+  - Map to X-Hub layers:
+    - L1/L2 snippets from memory objects
+    - L3 working set / role transcript projection
+    - L4 raw evidence only with explicit policy allow
+  - Add `Get/HTTP expand` that returns full object/section by ref with policy checks.
+  - Add selected/omitted trace so UI can show what was used and why.
+- acceptance:
+  - Search response includes refs enough for expand.
+  - Expand enforces same role/use-mode/scope policy.
+  - Transcript/raw evidence requests fail closed unless explicitly allowed.
+
+#### MS-W7 Watch/Debounce Live Sync
+
+- status: partially absorbed through sync/retry/gateway shadow compare; canonical Rust watcher still pending.
+- source reference:
+  - `source/memsearch-main/src/memsearch/watcher.py`
+  - `source/memsearch-main/plugins/codex/hooks/session-start.sh`
+- value to absorb:
+  - Debounced reindex avoids stutter and redundant work.
+  - Watcher failures should not crash the session.
+- X-Hub adaptation:
+  - Watch/sync must be Rust-supervised and evidence-backed, not per-client authority.
+  - Apply to sanctioned projection imports and derived index rebuilds.
+  - Keep live UI responsive with short TTL caches and route metrics.
+- acceptance:
+  - Repeated project memory edits coalesce.
+  - Index drift is detected and repaired.
+  - Watcher errors appear in readiness/doctor without blocking `/health`.
+
+#### MS-W8 Governed Compact/Rollup Candidate Loop
+
+- status: planned; not implemented.
+- source reference:
+  - `source/memsearch-main/src/memsearch/compact.py`
+  - `source/memsearch-main/plugins/codex/hooks/stop.sh`
+- value to absorb:
+  - Long transcripts need compact summaries.
+  - Capture can run asynchronously after a turn.
+- X-Hub adaptation:
+  - Model-generated compaction must create memory candidates or rollup objects behind approval/policy gates.
+  - No direct durable mutation from model summary without Writer + Gate.
+  - Store source refs/audit refs, not raw secret text.
+- acceptance:
+  - Compact candidate creation does not alter active canonical memory.
+  - Approval creates active memory object and event.
+  - Rejection records event.
+  - Secret-like candidates are denied or redacted.
+
+#### MS-W9 Plugin Ergonomics Without Local Authority
+
+- status: partially absorbed; product surface pending.
+- source reference:
+  - `source/memsearch-main/plugins/codex/skills/memory-recall/SKILL.md`
+  - `source/memsearch-main/docs/platforms/codex/how-it-works.md`
+- value to absorb:
+  - Users need clear "memory available" and recall affordances.
+  - Agent should know when memory recall is useful.
+- X-Hub adaptation:
+  - XT/Swift should show Hub memory availability, selected/omitted evidence, and recall/expand controls.
+  - Any hooks or bridge calls must consume Hub truth/projection, not write a second local authority.
+- acceptance:
+  - UI/XT can show memory status and evidence refs.
+  - Coder/Supervisor prompts can cite selected Hub memory refs.
+  - No new XT-local durable memory writer is introduced.
+
 ## 2) Current Local Architecture Baseline
 
 当前代码路径：
@@ -158,6 +540,7 @@ X-Hub 不是普通 memory SDK。X-Hub 已经有更强的治理边界：
   - `XHUB_RUST_MEMORY_PRODUCTION_AUTHORITY`
 - 目前检索主要是文件扫描 + lexical score。
 - 支持 `.json`、`.jsonl`、`.md`、`.txt`。
+- `.md` / `.txt` file-scan retrieval now has memsearch-inspired heading-aware chunking with stable section refs, so one large Markdown file no longer returns as a single monolithic chunk.
 - source kind 主要由路径启发式推断。
 
 当前短板：
@@ -168,6 +551,7 @@ X-Hub 不是普通 memory SDK。X-Hub 已经有更强的治理边界：
 - AXMemory project memory 仍有大量 truth 在 XT local project store。
 - 没有统一 hybrid retrieval index。
 - 没有 optional semantic index / embedding abstraction。
+- 没有 local ONNX bge-m3 embedding default、BM25+dense+RRF、cross-encoder rerank，只有 shadow file-scan chunking 的第一步。
 - 没有 memory inspector 产品面。
 - Node / Swift compatibility path 仍会让下一位 AI 误以为 memory authority 分散。
 
@@ -779,33 +1163,44 @@ Parallel lanes:
   - `risks` -> `project` / `l2_observations`
   - `recommendations` -> `project` / `l2_observations`
 - implementation steps:
-  1. Add `AXMemoryRustSyncPayload`.
-  2. Add `HubIPCClient.syncProjectMemoryToRust(...)`.
-  3. After `AXMemoryPipeline.updateMemory` succeeds, enqueue sync.
-  4. If Rust unavailable, record pending sync under `.xterminal/memory_lifecycle/`.
-  5. On project open, retry pending sync.
-  6. Add idempotency key:
+  1. Done: Rust accepts existing `ProjectCanonicalMemoryIPCRequest` payloads at `POST /memory/project-canonical-sync`.
+  2. Done: `HubIPCClient.syncProjectCanonicalMemory` prefers Rust HTTP in `.auto` / `.grpc` and preserves `.fileIPC` local compatibility.
+  3. Done: existing `AXMemoryPipeline.updateMemory` callers continue through `syncProjectCanonicalMemory`, so successful AXMemory updates now enter the Rust-preferred path.
+  4. Done: if Rust HTTP is unavailable, record pending sync under `.xterminal/memory_lifecycle/pending_project_canonical_rust_sync.json`.
+  5. Done: on project load, retry pending sync in the background.
+  6. Done: after successful Rust project canonical sync status, XT memory-context assembly reads active Rust project objects and prefers them over local projection / Hub remote snapshot for L1 canonical, L2 observations, and L3 working set.
+  7. Done: after successful Rust project canonical sync status, `requestMemoryRetrieval` can return `rust_memory_objects` snippets from active Rust project objects before remote/local retrieval.
+  8. Done: add Swift import diagnostics that compare current AXMemory-derived expected deterministic Rust objects against active Rust objects, fail closed until successful Rust sync status exists, and report missing/stale/metadata-mismatched/extra records.
+  9. Add idempotency key:
      - project_id
      - AXMemory updatedAt
      - normalized section hash
-  7. Avoid duplicate records.
-  8. Add Rust import endpoint if needed:
+  10. Avoid duplicate records.
+  11. Add Rust import endpoint if needed:
      - `POST /memory/import/ax-project`
 - acceptance:
-  - Updating project memory creates or updates Rust memory objects.
-  - Re-running sync is idempotent.
-  - Rust unavailable does not break Coder prompt.
-  - Pending sync is visible in diagnostics.
-  - Rust object history points back to AXMemory lifecycle audit.
+  - Done at bridge/caller level: updating project memory can create or update Rust memory objects through deterministic project canonical sync.
+  - Done at bridge level: re-running sync updates deterministic Rust memory IDs and appends history.
+  - Done at caller level: Rust unavailable does not break Coder prompt and falls back to local file IPC in `.auto`.
+  - Done at local diagnostics level: pending sync is visible in `.xterminal/memory_lifecycle/pending_project_canonical_rust_sync.json`.
+  - Done at read-preference level: when `canonical_memory_sync_status.json` says the project was delivered to Rust, Coder/Supervisor memory-context assembly can hydrate L1/L2/L3 from Rust active project objects first, and project memory retrieval can return Rust object snippets first.
+  - Done at import diagnostics level: XT can detect AXMemory-to-Rust drift for deterministic project canonical objects without touching Rust before successful sync status.
+  - Still needed: Rust object history points back to AXMemory lifecycle audit.
 - tests:
-  - AXMemory sync payload encoding.
-  - Idempotent retry.
-  - Rust object creation from AXMemory sections.
-  - Offline fallback.
+  - Done: AXMemory / project canonical payload encoding through existing `ProjectCanonicalMemoryIPCRequest`.
+  - Done: Rust object creation/update/history from project canonical sections.
+  - Done: Swift Rust-preferred dispatch and offline fallback.
+  - Done: pending retry success clears the snapshot and retry unavailable preserves it.
+  - Done: Swift memory-context read preference uses Rust canonical project objects only after successful Rust sync status.
+  - Done: Swift memory-context read preference does not touch Rust object store before successful Rust sync status.
+  - Done: Swift project-chat memory retrieval prefers Rust canonical project objects after successful Rust sync status.
+  - Done: Swift import diagnostics detect missing, stale, metadata-mismatched, and extra deterministic Rust project objects.
+  - Done: Swift import diagnostics do not fetch Rust objects before successful Rust sync status.
+  - Still needed: AXMemory lifecycle audit ref assertions.
 - verification commands:
-  - `swift test --filter AXMemory`
-  - `swift test --filter HubIPCClient`
-  - `cargo test -p xhubd ax_project_memory`
+  - `swift test --filter HubIPCClientProjectCanonicalMemorySyncTests`
+  - `cargo test -p xhub-db`
+  - `cargo test -p xhubd`
 - risks:
   - Duplicate memory records could pollute retrieval.
   - Local fallback and Rust canonical could diverge.
@@ -859,21 +1254,67 @@ Parallel lanes:
   - remote export posture
   - audit ref
 - implementation steps:
-  1. Add Rust memory context builder that can assemble Memory V1 from object store + request payload.
-  2. Keep existing Swift builders as fallback/compatibility only.
-  3. Change Coder Memory V1 build to prefer Rust `/memory/context`.
-  4. Change Supervisor Memory V1 build to prefer Rust `/memory/context`.
-  5. Change AXMemory coarse/refine model calls to request memory through gateway where relevant.
-  6. Change skill execution memory needs to call gateway.
-  7. Add gateway result into model usage audit.
-  8. Add no-memory fallback only where policy allows.
+  1. Done: add Rust memory context builder that can assemble prepare-only Memory V1 context slots from object store + request payload.
+     - `POST /memory/gateway/prepare`
+     - `POST /memory/context`
+     - `xhubd memory gateway-prepare`
+     - returns schema `xhub.memory.gateway_prepare.v1`
+     - default layers are L1/L2/L3; L4 raw evidence is never default.
+     - response includes selected slots, `context_text`, Rust policy result, and skip counters.
+  2. Done: add Swift shadow compare while keeping existing Swift builders as product output.
+     - `HubIPCClient.compareMemoryContextWithRustGateway(...)`
+     - automatic background compare only when `XHUB_RUST_MEMORY_CONTEXT_GATEWAY_SHADOW=1`
+     - records latest compare to `memory_gateway_shadow_compare_status.json`
+     - product output is unchanged; this is not a cutover.
+  3. Done: add doctor/evidence rollup for latest `memory_gateway_shadow_compare_status.json`.
+     - parity drift becomes `memory_gateway_shadow_compare_drift`.
+     - unexpected shadow authority change becomes blocking `memory_gateway_shadow_authority_violation`.
+  4. Done: add opt-in caller integration gate while keeping existing Swift builders as product fallback.
+     - `XHUB_RUST_MEMORY_CONTEXT_GATEWAY=1`
+     - non-`.fileIPC` routes try Rust `/memory/gateway/prepare` before existing builders.
+     - Rust success returns product-compatible `MemoryContextResponsePayload`.
+     - Rust unavailable/denied/unsafe/empty responses fall back; this is not fail-closed production cutover.
+  5. Done: add explicit fail-closed require gate for Coder/Supervisor context callers.
+     - `XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE=1`
+     - requires fresh same-scope `memory_gateway_shadow_compare_status.json` parity evidence.
+     - missing/stale/mismatched evidence returns `rust_memory_gateway_cutover_gate` and disables local fallback.
+     - successful required Rust response records `memory_gateway_safety_mode=fail_closed_required_after_shadow_parity`.
+  6. Done: add sustained live parity evidence report.
+     - `memory_gateway_shadow_compare_history.json`
+     - `memory_gateway_cutover_readiness.json`
+     - requires N fresh same-scope parity samples before reporting `ready_for_require=true`.
+  7. Done for Supervisor Doctor: include cutover readiness report in memory assembly diagnostics and Doctor findings.
+  8. Done: include cutover readiness report in daemon ops gate / ops report without adding hot-path runtime work.
+  7. Change AXMemory coarse/refine model calls to request memory through gateway where relevant.
+  8. Change skill execution memory needs to call gateway.
+  9. Done: add gateway result into model usage audit and doctor detail lines.
+  10. Add no-memory fallback only where policy allows.
 - acceptance:
+  - Done at prepare surface level: Rust can assemble policy-gated context text from active memory objects.
+  - Done at prepare surface level: Gateway records selected slots and skip counters.
+  - Done at prepare surface level: Gateway enforces Rust policy before model route.
+  - Done at prepare surface level: Remote export requests exclude local-only objects.
+  - Done at Swift shadow level: product Memory V1 remains unchanged while Rust gateway compare can detect parity or drift.
+  - Done at Swift shadow level: latest compare status is schema-versioned and stored locally for doctor/evidence consumption.
+  - Done at doctor/evidence level: shadow drift and authority-safety violations are visible in Supervisor memory assembly readiness and doctor findings.
+  - Done at opt-in caller level: `XHUB_RUST_MEMORY_CONTEXT_GATEWAY=1` can make Coder/Supervisor memory context assembly prefer Rust gateway output while preserving compatibility fallback.
+  - Done at gated cutover level: `XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE=1` blocks fallback until fresh same-scope shadow parity evidence exists, then uses Rust gateway output with fail-closed safety metadata.
+  - Done at live evidence level: sustained same-scope shadow parity is summarized in `memory_gateway_cutover_readiness.json`.
   - Coder, Supervisor, coarse/refine, skills can use one memory gateway.
   - Memory V1 text remains backward compatible.
   - Existing prompt sections still appear.
-  - Gateway records selected/omitted memory ids.
-  - Gateway enforces policy before model route.
+  - Still needed: live operational enablement of the fail-closed gate after fresh live readiness evidence is collected.
 - tests:
+  - Done: Rust gateway prepare returns policy-gated project slots.
+  - Done: Rust gateway prepare defaults exclude raw evidence.
+  - Done: Rust gateway prepare denies Supervisor raw evidence request.
+  - Done: Rust gateway prepare remote export skips local-only objects.
+  - Done: Swift shadow compare matches product context and records status.
+  - Done: Swift shadow compare reports missing Rust anchors as drift.
+  - Done: Swift doctor reports shadow drift and shadow authority violation.
+  - Done: Swift caller uses Rust gateway output when `XHUB_RUST_MEMORY_CONTEXT_GATEWAY=1`.
+  - Done: Swift require gate fails closed without fresh parity evidence and uses Rust with `fail_closed_required_after_shadow_parity` when evidence is fresh.
+  - Done: Swift readiness evidence report requires sustained fresh parity history before `ready_for_require=true`.
   - Coder prompt still includes Memory V1.
   - Supervisor prompt still includes selected sections.
   - High-risk tool act requires fresh memory.
@@ -881,6 +1322,9 @@ Parallel lanes:
   - Gateway denied result does not call model.
 - verification commands:
   - `cargo test -p xhubd memory_gateway`
+  - `swift build --target XTerminal`
+  - `swift test --skip-build --filter requestMemoryContextUsesRustGatewayWhenPrimaryGateIsEnabled`
+  - `swift test --skip-build --filter SupervisorDoctorTests`
   - `swift test --filter ChatSessionModel`
   - `swift test --filter Supervisor`
 - risks:
@@ -897,6 +1341,7 @@ Parallel lanes:
 
 - priority: P1
 - owner: Rust Hub Kernel / Memory Retrieval
+- status: in-progress-persistent-derived-index-slice
 - goal:
   - Improve retrieval beyond lexical file scan without jumping directly to always-on embeddings.
 - write set:
@@ -932,18 +1377,42 @@ Parallel lanes:
   - `threshold`
   - `explain`
 - implementation steps:
-  1. Build FTS table or equivalent local full-text index.
-  2. Index only policy-eligible active memory objects.
-  3. Add property extraction on create/update.
-  4. Add reindex command.
-  5. Add stale-index detection.
-  6. Add explain output:
+  1. Done first slice: equivalent in-memory full-text over active Rust memory objects for `/memory/search` / `POST /memory/retrieve`, with file-scan fallback when no object match exists.
+  2. Done first slice: index only project-scoped active non-secret memory objects when `project_id` is supplied.
+  3. Done first slice: deterministic property extraction at retrieval time:
+     - `has_code`
+     - `has_todo`
+     - `has_error`
+     - `has_decision`
+     - `has_approval`
+     - `has_blocker`
+     - `has_link`
+     - title-like lexical overlap
+  4. Done W6 slice: add `memory object-index-rebuild` / `memory reindex` CLI command.
+  5. Done W6 slice: add stale-index detection and readiness evidence:
+     - `memory_index_ready`
+     - `memory_index_row_count`
+     - `memory_index_stale_count`
+     - `memory_index_generation.latest_indexed_at_ms`
+  6. Done first slice: add explain output when `explain=true`:
      - score
      - lexical_score
      - property_boost
      - policy_filter
      - omitted reason
-  7. Keep old file scan retrieval as compatibility import.
+  7. Done W6 slice: persistent rebuildable derived index table `rust_hub_memory_object_index`; `/memory/retrieve` prefers this table and can rebuild it on demand before falling back to live object scan.
+  8. Done W6 slice: selected/omitted trace ledger for `explain=true` retrieval:
+     - `retrieval_trace.selected`
+     - `retrieval_trace.omitted`
+     - stable `reason_code` values for layer/source/visibility/sensitivity/no-match/inactive/secret filters
+     - content-redacted omission evidence for UI/debug surfaces
+  9. Done W6 slice: route-sensitive HTTP quality bench:
+     - `tools/memory_hybrid_quality_bench.command`
+     - covers project chat, supervisor next-step layer filter, remote sanitized visibility, raw-evidence opt-in, and private sensitivity filter
+     - asserts derived index source, trace schema, top hit, and no production authority change
+  10. Still needed: optional SQLite FTS5 virtual table or equivalent BM25 scorer over the derived index.
+  11. Still needed: sustained/large fixture retrieval quality bench.
+  12. Keep old file scan retrieval as compatibility import.
 - acceptance:
   - Retrieval quality improves for project decision/blocker/next-step queries.
   - Policy gate runs before index search.
@@ -951,14 +1420,18 @@ Parallel lanes:
   - Secret records are not indexed.
   - Explain output can justify selected snippets.
 - tests:
-  - `memory_hybrid_retrieval_finds_decision`
-  - `memory_hybrid_retrieval_filters_scope`
+  - Done first slice: `memory_object_hybrid_retrieval_finds_decision_with_explain`
+  - Done first slice: `memory_object_hybrid_retrieval_filters_layer_and_supports_get_ref`
+  - Done W6 slice: `memory_object_reindex_command_recovers_derived_index`
+  - Done W6 slice: `tools/memory_hybrid_quality_bench.command`
+  - Still needed: `memory_hybrid_retrieval_filters_scope`
   - `memory_hybrid_retrieval_omits_deleted`
-  - `memory_hybrid_retrieval_explain`
-  - `memory_hybrid_reindex_recovers`
+  - Done W6 slice: `memory_hybrid_retrieval_explain`
+  - Done W6 slice: `memory_hybrid_reindex_recovers`
 - verification commands:
-  - `cargo test -p xhub-memory hybrid_retrieval`
-  - `cargo test -p xhubd memory_reindex`
+  - `cargo test -p xhubd memory_object_hybrid_retrieval`
+  - `cargo test -p xhubd memory_object_reindex_command_recovers_derived_index`
+  - `bash tools/memory_hybrid_quality_bench.command`
 - risks:
   - Index drift.
   - Search quality regressions hidden by old lexical fallback.
@@ -974,6 +1447,7 @@ Parallel lanes:
   - Add semantic retrieval while preserving local-first safety and cost control.
 - borrowed from open source:
   - mem0 search benefits from vector/semantic matching.
+  - memsearch's `gpahal/bge-m3-onnx-int8` evaluation is the best current local default candidate for bilingual coding memory: CPU-only, no API key, small enough for managed download, and better Chinese recall than common API/default alternatives.
   - X-Hub should support this as optional profile-based capability.
 - write set:
   - `rust/rust hub/crates/xhub-memory/src/lib.rs`
@@ -1042,7 +1516,8 @@ Parallel lanes:
   - Use rerank and expansion only when the mode/profile warrants it.
 - borrowed from open source:
   - mem0 supports reranker search.
-  - X-Hub should use rerank selectively, not always-on.
+  - memsearch adds BM25+dense RRF plus optional cross-encoder rerank.
+  - X-Hub should use fusion/rerank selectively, not always-on.
 - write set:
   - `rust/rust hub/crates/xhub-memory/src/lib.rs`
   - `rust/rust hub/crates/xhubd/src/memory_bridge.rs`
@@ -1490,13 +1965,15 @@ Universal Memory Layer v1 is done only when:
 
 ## 11) First Slice Recommendation
 
-The safest next implementation slice is:
+First slice target:
 
 1. `UML-W0`
 2. `UML-W1`
 3. `UML-W2` only for create/get/list/history, not delete/update yet
 4. `UML-W3` minimal policy matrix
 5. `UML-W11` readiness for those pieces
+
+As of 2026-05-20, this first slice is implemented and validated at the Rust package / temporary HTTP / CLI smoke level. `UML-W4` has also landed the Swift/XT caller cutover: existing XT `project_canonical_memory` payloads can dry-run/apply into Rust memory objects, and `HubIPCClient.syncProjectCanonicalMemory` prefers Rust HTTP with local compatibility fallback. Retryable Rust-unavailable failures now leave a pending snapshot under project memory lifecycle, project load schedules a retry, successful Rust sync status lets context/retrieval reads prefer active Rust project objects, and import diagnostics can prove deterministic AXMemory-to-Rust drift. `UML-W5` now has a prepare-only Rust gateway surface for policy-gated context assembly, Swift shadow compare behind an explicit env gate, Supervisor doctor/evidence rollup for shadow drift, an opt-in Rust primary context gate with compatibility fallback, model usage audit fields for Rust gateway context results (`memory_gateway_source`, `memory_gateway_mode`, `memory_gateway_production_authority_change`, object count, and effective layers), an explicit fail-closed require gate guarded by fresh same-scope parity evidence, sustained parity readiness evidence (`memory_gateway_shadow_compare_history.json` plus `memory_gateway_cutover_readiness.json`), Supervisor Doctor visibility for readiness not-ready / authority-violation states, and daemon ops gate/report inclusion for the same readiness evidence. The current next slice is live evidence collection, then explicit require-gate enablement only when readiness is green, with no Swift UI inspector and no semantic embeddings yet.
 
 Do not start semantic embeddings or UI inspector until create/get/list/history and policy matrix are stable.
 
@@ -1512,7 +1989,11 @@ Read:
 - description/MEMORY_SYSTEM.md
 - docs/memory-new/xhub-memory-v3-m2-work-orders-v1.md
 
-Start with UML-W0 through UML-W3 only.
+UML-W0 through UML-W3 first slice already exists. Verify it with:
+- cargo test -p xhub-db
+- cargo test -p xhubd
+
+Then continue UML-W5 by collecting fresh live `memory_gateway_cutover_readiness.json` evidence and running daemon ops gate with `--require-memory-gateway-cutover-ready`. Supervisor Doctor visibility, daemon ops gate/report inclusion, model usage audit, the explicit fail-closed require gate, and sustained live parity readiness report already exist. Keep existing Swift builders as compatibility fallback unless require mode is explicitly enabled with fresh same-scope parity evidence.
 
 Do not implement semantic embeddings.
 Do not modify Swift UI yet.
@@ -1526,13 +2007,16 @@ Before editing, inspect:
 - rust/rust hub/crates/xhub-memory/src/lib.rs
 - rust/rust hub/crates/xhubd/src/memory_bridge.rs
 - rust/rust hub/crates/xhubd/src/main.rs
+- rust/rust hub/crates/xhub-db/src/lib.rs
+- rust/rust hub/migrations/0007_memory_objects.sql
 - x-terminal/Sources/Hub/XTMemoryUsePolicy.swift
+- x-terminal/Sources/Project/AXMemory.swift
+- x-terminal/Sources/Project/AXMemoryPipeline.swift
 
 Deliver:
-- Rust memory object structs
-- SQLite object/event store
-- create/get/list/history endpoints or internal APIs
-- minimal policy matrix
-- readiness fields
+- rollback/projection state
+- import diagnostics
+- retrieval preference for Rust canonical project memory
+- Rust policy enforcement on every sync write
 - tests and daemon ops evidence
 ```

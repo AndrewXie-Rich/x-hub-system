@@ -85,7 +85,13 @@ pub struct MemoryRetrievalRequest {
     pub max_results: usize,
     pub max_snippet_chars: usize,
     pub requested_kinds: Vec<String>,
+    pub requested_layers: Vec<String>,
     pub explicit_refs: Vec<String>,
+    pub sensitivity_max: String,
+    pub visibility: String,
+    pub created_after_ms: i64,
+    pub updated_after_ms: i64,
+    pub explain: bool,
     pub audit_ref: String,
 }
 
@@ -103,7 +109,13 @@ impl MemoryRetrievalRequest {
             max_results: 5,
             max_snippet_chars: 480,
             requested_kinds: Vec::new(),
+            requested_layers: Vec::new(),
             explicit_refs: Vec::new(),
+            sensitivity_max: String::new(),
+            visibility: String::new(),
+            created_after_ms: 0,
+            updated_after_ms: 0,
+            explain: false,
             audit_ref: String::new(),
         }
     }
@@ -244,6 +256,8 @@ pub struct MemoryIndexSnapshot {
 const MAX_FILES: usize = 1000;
 const MAX_FILE_BYTES: usize = 256 * 1024;
 const MAX_TEXT_BYTES: usize = 32 * 1024;
+const MAX_MARKDOWN_CHUNK_CHARS: usize = 1500;
+const MARKDOWN_OVERLAP_LINES: usize = 2;
 
 pub fn readiness(memory_dir: &Path) -> MemoryReadiness {
     let snapshot = scan_memory_snapshot(memory_dir);
@@ -802,6 +816,10 @@ fn documents_from_file(root: &Path, path: &Path, raw: &str) -> Vec<MemoryDocumen
             .collect();
     }
 
+    if ext == "md" || ext == "txt" {
+        return documents_from_markdown_like_file(rel_text.as_str(), raw);
+    }
+
     let text = if ext == "json" {
         match serde_json::from_str::<Value>(raw) {
             Ok(value) => collect_json_text(&value),
@@ -811,6 +829,179 @@ fn documents_from_file(root: &Path, path: &Path, raw: &str) -> Vec<MemoryDocumen
         truncate_to_chars(raw, MAX_TEXT_BYTES)
     };
     vec![document_from_text(rel_text.as_str(), "chunk-1", text)]
+}
+
+fn documents_from_markdown_like_file(relative_path: &str, raw: &str) -> Vec<MemoryDocument> {
+    let lines = raw.split('\n').collect::<Vec<_>>();
+    let mut heading_positions = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if let Some((_, title)) = markdown_heading(line) {
+            heading_positions.push((idx, title));
+        }
+    }
+
+    if heading_positions.is_empty() {
+        let text = truncate_to_chars(raw, MAX_TEXT_BYTES);
+        if text.trim().is_empty() {
+            return Vec::new();
+        }
+        return split_markdown_section(relative_path, &text, 1, "", true);
+    }
+
+    let mut sections = Vec::new();
+    if heading_positions[0].0 > 0 {
+        sections.push((0, heading_positions[0].0, String::new()));
+    }
+    for (pos, (start, title)) in heading_positions.iter().enumerate() {
+        let end = heading_positions
+            .get(pos + 1)
+            .map(|(next_start, _)| *next_start)
+            .unwrap_or(lines.len());
+        sections.push((*start, end, title.clone()));
+    }
+
+    let mut out = Vec::new();
+    for (start, end, heading) in sections {
+        let section = lines[start..end].join("\n");
+        if !has_meaningful_markdown_body(&section) {
+            continue;
+        }
+        out.extend(split_markdown_section(
+            relative_path,
+            &section,
+            start + 1,
+            heading.as_str(),
+            false,
+        ));
+    }
+    out
+}
+
+fn markdown_heading(line: &str) -> Option<(usize, String)> {
+    let trimmed = line.trim_start();
+    let level = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if !(1..=6).contains(&level) {
+        return None;
+    }
+    let rest = trimmed.get(level..)?.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    Some((level, rest.to_string()))
+}
+
+fn has_meaningful_markdown_body(text: &str) -> bool {
+    let body = text
+        .lines()
+        .filter(|line| markdown_heading(line).is_none())
+        .map(str::trim)
+        .filter(|line| !line.starts_with("<!--") && !line.ends_with("-->"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+    body.chars().count() >= 2
+}
+
+fn split_markdown_section(
+    relative_path: &str,
+    text: &str,
+    base_line: usize,
+    heading: &str,
+    preserve_single_chunk_id: bool,
+) -> Vec<MemoryDocument> {
+    let text = truncate_to_chars(text, MAX_TEXT_BYTES);
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    if text.chars().count() <= MAX_MARKDOWN_CHUNK_CHARS {
+        let end_line = base_line + text.lines().count().saturating_sub(1);
+        let chunk_id = if preserve_single_chunk_id {
+            "chunk-1".to_string()
+        } else {
+            stable_section_chunk_id(base_line, end_line, &text)
+        };
+        return vec![document_from_text(relative_path, chunk_id.as_str(), text)];
+    }
+
+    let lines = text.split('\n').collect::<Vec<_>>();
+    let mut out = Vec::new();
+    let mut current = Vec::new();
+    let mut current_start = 0_usize;
+
+    for (idx, line) in lines.iter().enumerate() {
+        current.push(*line);
+        let current_text = current.join("\n");
+        let at_boundary = line.trim().is_empty() || idx + 1 == lines.len();
+        let over_budget = current_text.chars().count() >= MAX_MARKDOWN_CHUNK_CHARS;
+        if (over_budget && at_boundary) || idx + 1 == lines.len() {
+            push_markdown_chunk(
+                relative_path,
+                heading,
+                base_line,
+                current_start,
+                idx,
+                &current_text,
+                &mut out,
+            );
+            let overlap_start = current.len().saturating_sub(MARKDOWN_OVERLAP_LINES);
+            current = current[overlap_start..].to_vec();
+            current_start = idx + 1 - current.len();
+        } else if over_budget && current.len() > 1 {
+            current.pop();
+            let previous_text = current.join("\n");
+            push_markdown_chunk(
+                relative_path,
+                heading,
+                base_line,
+                current_start,
+                idx.saturating_sub(1),
+                &previous_text,
+                &mut out,
+            );
+            let overlap_start = current.len().saturating_sub(MARKDOWN_OVERLAP_LINES);
+            current = current[overlap_start..].to_vec();
+            current.push(*line);
+            current_start = idx - current.len() + 1;
+        }
+    }
+
+    out
+}
+
+fn push_markdown_chunk(
+    relative_path: &str,
+    heading: &str,
+    base_line: usize,
+    start_idx: usize,
+    end_idx: usize,
+    text: &str,
+    out: &mut Vec<MemoryDocument>,
+) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || !has_meaningful_markdown_body(trimmed) {
+        return;
+    }
+    let start_line = base_line + start_idx;
+    let end_line = base_line + end_idx;
+    let chunk_text = if heading.is_empty() || trimmed.starts_with('#') {
+        trimmed.to_string()
+    } else {
+        format!("## {heading}\n{trimmed}")
+    };
+    let chunk_id = stable_section_chunk_id(start_line, end_line, &chunk_text);
+    out.push(document_from_text(
+        relative_path,
+        chunk_id.as_str(),
+        chunk_text,
+    ));
+}
+
+fn stable_section_chunk_id(start_line: usize, end_line: usize, text: &str) -> String {
+    format!(
+        "section-{start_line}-{end_line}-{}",
+        stable_hash16(text.as_bytes())
+    )
 }
 
 fn document_from_text(relative_path: &str, chunk_id: &str, text: String) -> MemoryDocument {
@@ -1062,6 +1253,15 @@ fn stable_ref_path(relative_path: &str) -> String {
         .collect()
 }
 
+fn stable_hash16(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1252,6 +1452,53 @@ mod tests {
         let out = retrieve_memory(request);
         assert_eq!(out.results.len(), 1);
         assert_eq!(out.results[0].ref_id, ref_id);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn markdown_headings_are_indexed_as_separate_stable_chunks() {
+        let dir = temp_dir("markdown_chunks");
+        fs::create_dir_all(&dir).expect("mkdir");
+        fs::write(
+            dir.join("project.md"),
+            "# Project Notes\n\nGeneral setup notes.\n\n## Redis TTL\n\nDecision: cache sessions for five minutes.\n\n## OAuth Review\n\nReviewer asked to keep redirect validation strict.\n",
+        )
+        .expect("write md");
+
+        let mut request = MemoryRetrievalRequest::with_defaults(dir.clone());
+        request.query = "Redis TTL sessions".to_string();
+        let out = retrieve_memory(request);
+        assert_eq!(out.status, "ok");
+        assert_eq!(out.results.len(), 1);
+        assert!(out.results[0].snippet.contains("Redis TTL"));
+        assert!(out.results[0].snippet.contains("five minutes"));
+        assert!(!out.results[0].snippet.contains("OAuth Review"));
+        assert!(out.results[0].ref_id.contains("#section-"));
+
+        let mut repeat = MemoryRetrievalRequest::with_defaults(dir.clone());
+        repeat.query = "Redis TTL sessions".to_string();
+        let repeated = retrieve_memory(repeat);
+        assert_eq!(repeated.results[0].ref_id, out.results[0].ref_id);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn markdown_chunk_redaction_does_not_hide_unrelated_sections() {
+        let dir = temp_dir("markdown_secret_section");
+        fs::create_dir_all(&dir).expect("mkdir");
+        fs::write(
+            dir.join("project.md"),
+            "# Project Notes\n\n## Public Decision\n\nUse governed retrieval for project context.\n\n## Private Credential\n\napi_key: sk-secret-value\n",
+        )
+        .expect("write md");
+
+        let mut request = MemoryRetrievalRequest::with_defaults(dir.clone());
+        request.query = "governed retrieval context".to_string();
+        let out = retrieve_memory(request);
+        assert_eq!(out.status, "ok");
+        assert_eq!(out.results.len(), 1);
+        assert!(out.results[0].snippet.contains("governed retrieval"));
+        assert!(!out.results[0].snippet.contains("sk-secret-value"));
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -11,6 +11,7 @@ struct XTRustModelInventoryProjection: Equatable {
     var snapshot: ModelStateSnapshot
     var remoteModels: [XTRustRemoteModelInventoryRow]
     var localModels: [XTRustLocalModelInventoryRow]
+    var localCapabilitySummary: XTRustLocalCapabilitySummary?
 
     static let consumedFieldNames: [String] = [
         "schema_version",
@@ -46,7 +47,15 @@ struct XTRustModelInventoryProjection: Equatable {
         "local_models.runtime_preflight.side_effect_free",
         "local_models.runtime_preflight.runtime_updated_at_ms",
         "local_models.runtime_preflight.capability_tags",
-        "local_models.runtime_preflight.runtime_missing_requirements"
+        "local_models.runtime_preflight.runtime_missing_requirements",
+        "local_capability_summary.by_task.*.task_kind",
+        "local_capability_summary.by_task.*.ready",
+        "local_capability_summary.by_task.*.state",
+        "local_capability_summary.by_task.*.repair_action",
+        "local_capability_summary.coverage_state",
+        "local_capability_summary.all_tasks_ready",
+        "local_capability_summary.providers.*.provider_id",
+        "local_capability_summary.providers.*.runtime_missing_requirements"
     ]
 
     var firstRemoteQuotaBlocked: XTRustRemoteModelInventoryRow? {
@@ -123,7 +132,12 @@ struct XTRustModelInventoryProjection: Equatable {
                 updatedAt: updatedAtMs > 0 ? Double(updatedAtMs) / 1000.0 : 0
             ),
             remoteModels: remoteRows,
-            localModels: localRows
+            localModels: localRows,
+            localCapabilitySummary: XTRustLocalCapabilitySummary(
+                jsonObject: XTRustInventoryJSON.object(
+                    object["local_capability_summary"] ?? object["localCapabilitySummary"]
+                )
+            )
         )
     }
 }
@@ -312,17 +326,105 @@ struct XTRustLocalModelInventoryRow: Equatable {
         switch capability.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: "_", with: ".") {
         case "embedding.generate", "embedding", "embeddings":
             return "embedding"
-        case "vision.describe", "image.describe":
+        case "vision.understand", "vision.describe", "image.describe", "image.understand":
             return "vision_understand"
         case "vision.ocr", "ocr":
             return "ocr"
-        case "audio.transcribe", "transcribe":
+        case "speech.to.text", "audio.transcribe", "transcribe", "asr":
             return "speech_to_text"
-        case "audio.tts", "tts":
+        case "text.to.speech", "audio.tts", "tts":
             return "text_to_speech"
         default:
             return "text_generate"
         }
+    }
+}
+
+struct XTRustLocalCapabilitySummary: Equatable {
+    var schemaVersion: String
+    var ready: Bool
+    var allTasksReady: Bool
+    var coverageState: String
+    var readyTaskCount: Int
+    var taskCount: Int
+    var tasksByKind: [String: XTRustLocalCapabilityTask]
+    var providers: [XTRustRuntimeProviderSummary]
+
+    init?(jsonObject: [String: Any]) {
+        guard !jsonObject.isEmpty else { return nil }
+        schemaVersion = XTRustInventoryJSON.string(jsonObject["schema_version"] ?? jsonObject["schemaVersion"])
+        ready = XTRustInventoryJSON.bool(jsonObject["ready"]) ?? false
+        allTasksReady = XTRustInventoryJSON.bool(jsonObject["all_tasks_ready"] ?? jsonObject["allTasksReady"]) ?? false
+        coverageState = XTRustInventoryJSON.lowercasedString(jsonObject["coverage_state"] ?? jsonObject["coverageState"])
+        readyTaskCount = XTRustInventoryJSON.int(jsonObject["ready_task_count"] ?? jsonObject["readyTaskCount"]) ?? 0
+        taskCount = XTRustInventoryJSON.int(jsonObject["task_count"] ?? jsonObject["taskCount"]) ?? 0
+        let rawTasks = XTRustInventoryJSON.object(jsonObject["by_task"] ?? jsonObject["byTask"])
+        var tasks: [String: XTRustLocalCapabilityTask] = [:]
+        for (key, rawValue) in rawTasks {
+            let task = XTRustLocalCapabilityTask(
+                fallbackTaskKind: key,
+                jsonObject: XTRustInventoryJSON.object(rawValue)
+            )
+            guard !task.taskKind.isEmpty else { continue }
+            tasks[task.taskKind] = task
+        }
+        tasksByKind = tasks
+        providers = XTRustInventoryJSON.array(jsonObject["providers"]).compactMap { rawValue in
+            let object = XTRustInventoryJSON.object(rawValue)
+            guard !object.isEmpty else { return nil }
+            return XTRustRuntimeProviderSummary(jsonObject: object)
+        }
+    }
+
+    func task(_ taskKind: String) -> XTRustLocalCapabilityTask? {
+        tasksByKind[taskKind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()]
+    }
+}
+
+struct XTRustLocalCapabilityTask: Equatable {
+    var taskKind: String
+    var capability: String
+    var ready: Bool
+    var state: String
+    var readyModelCount: Int
+    var candidateModelCount: Int
+    var primaryBlockingReasonCode: String
+    var repairAction: String
+
+    init(fallbackTaskKind: String, jsonObject: [String: Any]) {
+        taskKind = XTRustInventoryJSON.lowercasedString(jsonObject["task_kind"] ?? jsonObject["taskKind"])
+        if taskKind.isEmpty {
+            taskKind = fallbackTaskKind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        capability = XTRustInventoryJSON.lowercasedString(jsonObject["capability"])
+        ready = XTRustInventoryJSON.bool(jsonObject["ready"]) ?? false
+        state = XTRustInventoryJSON.lowercasedString(jsonObject["state"])
+        readyModelCount = XTRustInventoryJSON.int(jsonObject["ready_model_count"] ?? jsonObject["readyModelCount"]) ?? 0
+        candidateModelCount = XTRustInventoryJSON.int(jsonObject["candidate_model_count"] ?? jsonObject["candidateModelCount"]) ?? 0
+        primaryBlockingReasonCode = XTRustInventoryJSON.lowercasedString(
+            jsonObject["primary_blocking_reason_code"] ?? jsonObject["primaryBlockingReasonCode"]
+        )
+        repairAction = XTRustInventoryJSON.lowercasedString(jsonObject["repair_action"] ?? jsonObject["repairAction"])
+    }
+}
+
+struct XTRustRuntimeProviderSummary: Equatable {
+    var providerID: String
+    var ok: Bool
+    var reasonCode: String
+    var availableTaskKinds: [String]
+    var runtimeMissingRequirements: [String]
+    var repairAction: String
+
+    init(jsonObject: [String: Any]) {
+        providerID = XTRustInventoryJSON.lowercasedString(jsonObject["provider_id"] ?? jsonObject["providerId"])
+        ok = XTRustInventoryJSON.bool(jsonObject["ok"]) ?? false
+        reasonCode = XTRustInventoryJSON.lowercasedString(jsonObject["reason_code"] ?? jsonObject["reasonCode"])
+        availableTaskKinds = XTRustInventoryJSON.stringList(jsonObject["available_task_kinds"] ?? jsonObject["availableTaskKinds"])
+        runtimeMissingRequirements = XTRustInventoryJSON.stringList(
+            jsonObject["runtime_missing_requirements"] ?? jsonObject["runtimeMissingRequirements"]
+        )
+        repairAction = XTRustInventoryJSON.lowercasedString(jsonObject["repair_action"] ?? jsonObject["repairAction"])
     }
 }
 
@@ -349,6 +451,146 @@ struct XTRustLocalRuntimePreflight: Equatable {
         runtimeUpdatedAtMs = XTRustInventoryJSON.int64(jsonObject["runtime_updated_at_ms"] ?? jsonObject["runtimeUpdatedAtMs"] ?? jsonObject["updated_at_ms"] ?? jsonObject["updatedAtMs"]) ?? 0
         capabilityTags = XTRustInventoryJSON.stringList(jsonObject["capability_tags"] ?? jsonObject["capabilityTags"])
         runtimeMissingRequirements = XTRustInventoryJSON.stringList(jsonObject["runtime_missing_requirements"] ?? jsonObject["runtimeMissingRequirements"])
+    }
+}
+
+struct XTRustModelRepairPlanProjection: Equatable {
+    var schemaVersion: String
+    var state: String
+    var safeToAutoApply: Bool
+    var requiresUserApproval: Bool
+    var requiresNetwork: Bool
+    var requiresDownload: Bool
+    var secretFieldsIncluded: Bool
+    var summary: String
+    var resolved: XTRustModelRepairPlanResolved
+    var target: XTRustModelRepairPlanTarget
+    var requirements: XTRustModelRepairPlanRequirements
+    var missingRequirements: [String]
+    var steps: [XTRustModelRepairPlanStep]
+
+    static let consumedFieldNames: [String] = [
+        "schema_version",
+        "resolved.action",
+        "resolved.task_kind",
+        "resolved.provider_id",
+        "state",
+        "safe_to_auto_apply",
+        "requires_user_approval",
+        "requires_network",
+        "requires_download",
+        "target.kind",
+        "target.provider_id",
+        "target.task_kind",
+        "requirements.python_import_modules",
+        "requirements.python_packages",
+        "requirements.helper_binary",
+        "missing_requirements",
+        "steps.*.action_kind",
+        "steps.*.requires_user_approval",
+        "secret_fields_included"
+    ]
+
+    static func decode(from data: Data) throws -> XTRustModelRepairPlanProjection {
+        let raw = try JSONSerialization.jsonObject(with: data)
+        guard let object = raw as? [String: Any] else {
+            throw XTRustModelInventoryProjectionError.invalidTopLevel
+        }
+        return XTRustModelRepairPlanProjection(jsonObject: object)
+    }
+
+    init(jsonObject: [String: Any]) {
+        schemaVersion = XTRustInventoryJSON.lowercasedString(jsonObject["schema_version"] ?? jsonObject["schemaVersion"])
+        state = XTRustInventoryJSON.lowercasedString(jsonObject["state"])
+        safeToAutoApply = XTRustInventoryJSON.bool(jsonObject["safe_to_auto_apply"] ?? jsonObject["safeToAutoApply"]) ?? false
+        requiresUserApproval = XTRustInventoryJSON.bool(jsonObject["requires_user_approval"] ?? jsonObject["requiresUserApproval"]) ?? false
+        requiresNetwork = XTRustInventoryJSON.bool(jsonObject["requires_network"] ?? jsonObject["requiresNetwork"]) ?? false
+        requiresDownload = XTRustInventoryJSON.bool(jsonObject["requires_download"] ?? jsonObject["requiresDownload"]) ?? false
+        secretFieldsIncluded = XTRustInventoryJSON.bool(jsonObject["secret_fields_included"] ?? jsonObject["secretFieldsIncluded"]) ?? false
+        summary = XTRustInventoryJSON.string(jsonObject["summary"])
+        resolved = XTRustModelRepairPlanResolved(
+            jsonObject: XTRustInventoryJSON.object(jsonObject["resolved"])
+        )
+        target = XTRustModelRepairPlanTarget(
+            jsonObject: XTRustInventoryJSON.object(jsonObject["target"])
+        )
+        requirements = XTRustModelRepairPlanRequirements(
+            jsonObject: XTRustInventoryJSON.object(jsonObject["requirements"])
+        )
+        missingRequirements = XTRustInventoryJSON.stringList(jsonObject["missing_requirements"] ?? jsonObject["missingRequirements"])
+        steps = XTRustInventoryJSON.array(jsonObject["steps"]).compactMap { raw in
+            let object = XTRustInventoryJSON.object(raw)
+            guard !object.isEmpty else { return nil }
+            return XTRustModelRepairPlanStep(jsonObject: object)
+        }
+    }
+}
+
+struct XTRustModelRepairPlanResolved: Equatable {
+    var action: String
+    var taskKind: String
+    var providerID: String
+    var source: String
+
+    init(jsonObject: [String: Any]) {
+        action = XTRustInventoryJSON.lowercasedString(jsonObject["action"])
+        taskKind = XTRustInventoryJSON.lowercasedString(jsonObject["task_kind"] ?? jsonObject["taskKind"])
+        providerID = XTRustInventoryJSON.lowercasedString(jsonObject["provider_id"] ?? jsonObject["providerId"])
+        source = XTRustInventoryJSON.lowercasedString(jsonObject["source"])
+    }
+}
+
+struct XTRustModelRepairPlanTarget: Equatable {
+    var kind: String
+    var providerID: String
+    var taskKind: String
+
+    init(jsonObject: [String: Any]) {
+        kind = XTRustInventoryJSON.lowercasedString(jsonObject["kind"])
+        providerID = XTRustInventoryJSON.lowercasedString(jsonObject["provider_id"] ?? jsonObject["providerId"])
+        taskKind = XTRustInventoryJSON.lowercasedString(jsonObject["task_kind"] ?? jsonObject["taskKind"])
+    }
+}
+
+struct XTRustModelRepairPlanRequirements: Equatable {
+    var engine: String
+    var executionMode: String
+    var installTarget: String
+    var pythonImportModules: [String]
+    var pythonPackages: [String]
+    var helperBinary: String
+    var expectedTaskKinds: [String]
+    var supportedDomains: [String]
+    var expectedCapability: String
+
+    init(jsonObject: [String: Any]) {
+        engine = XTRustInventoryJSON.lowercasedString(jsonObject["engine"])
+        executionMode = XTRustInventoryJSON.lowercasedString(jsonObject["execution_mode"] ?? jsonObject["executionMode"])
+        installTarget = XTRustInventoryJSON.lowercasedString(jsonObject["install_target"] ?? jsonObject["installTarget"])
+        pythonImportModules = XTRustInventoryJSON.stringList(jsonObject["python_import_modules"] ?? jsonObject["pythonImportModules"])
+        pythonPackages = XTRustInventoryJSON.stringList(jsonObject["python_packages"] ?? jsonObject["pythonPackages"])
+        helperBinary = XTRustInventoryJSON.lowercasedString(jsonObject["helper_binary"] ?? jsonObject["helperBinary"])
+        expectedTaskKinds = XTRustInventoryJSON.stringList(jsonObject["expected_task_kinds"] ?? jsonObject["expectedTaskKinds"])
+        supportedDomains = XTRustInventoryJSON.stringList(jsonObject["supported_domains"] ?? jsonObject["supportedDomains"])
+        expectedCapability = XTRustInventoryJSON.lowercasedString(jsonObject["expected_capability"] ?? jsonObject["expectedCapability"])
+    }
+}
+
+struct XTRustModelRepairPlanStep: Equatable {
+    var stepID: String
+    var actionKind: String
+    var title: String
+    var description: String
+    var requiresUserApproval: Bool
+    var requiresNetwork: Bool
+
+    init(jsonObject: [String: Any]) {
+        stepID = XTRustInventoryJSON.lowercasedString(jsonObject["step_id"] ?? jsonObject["stepID"])
+        actionKind = XTRustInventoryJSON.lowercasedString(jsonObject["action_kind"] ?? jsonObject["actionKind"])
+        title = XTRustInventoryJSON.string(jsonObject["title"])
+        description = XTRustInventoryJSON.string(jsonObject["description"])
+        requiresUserApproval = XTRustInventoryJSON.bool(jsonObject["requires_user_approval"] ?? jsonObject["requiresUserApproval"]) ?? false
+        requiresNetwork = XTRustInventoryJSON.bool(jsonObject["requires_network"] ?? jsonObject["requiresNetwork"]) ?? false
     }
 }
 

@@ -826,6 +826,30 @@ struct XTUnifiedDoctorReportTests {
     }
 
     @Test
+    func hubReachabilitySectionExplainsTailscaleIPAsFormalRemoteEntry() {
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: false,
+                remoteConnected: false,
+                configuredModelIDs: [],
+                models: [],
+                bridgeAlive: false,
+                bridgeEnabled: false,
+                sessionRuntime: nil,
+                skillsSnapshot: readySkillsSnapshot(),
+                internetHost: "100.122.237.57"
+            )
+        )
+
+        let section = report.section(.hubReachability)
+        #expect(section?.state == .diagnosticRequired)
+        #expect(section?.headline == "Hub 暂时不可达，但 Tailscale 正式入口已配置")
+        #expect(section?.summary.contains("安全等级高") == true)
+        #expect(section?.nextStep.contains("同一个 Tailscale tailnet") == true)
+        #expect(section?.detailLines.contains("internet_host_scope=tailscale") == true)
+    }
+
+    @Test
     func hubReachabilitySectionExplainsPrivateLanRawIPNeedsSameLanOrVPN() {
         let report = XTUnifiedDoctorBuilder.build(
             input: makeDoctorInput(

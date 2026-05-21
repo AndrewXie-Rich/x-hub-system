@@ -12,6 +12,99 @@ const os = require('node:os');
 const DEFAULT_GRPC_PORT = 50058;
 const DEFAULT_TIMEOUT_MS = 5000;
 
+const ROUTE_OPTIONS = Object.freeze([
+  {
+    id: 'lan_same_wifi',
+    title: 'LAN / same Wi-Fi',
+    status: 'supported',
+    xt_install: 'none',
+    security: 'high',
+    convenience: 'high on the same network, unavailable across networks',
+    how_to_connect: 'Pair XT on the same Wi-Fi/LAN with the invite link, QR code, or the Hub LAN host plus pairing/grpc ports.',
+  },
+  {
+    id: 'tailscale_ip_or_magicdns',
+    title: 'Tailscale IP / MagicDNS',
+    status: 'supported and auto-detected for 100.x addresses',
+    xt_install: 'Tailscale required on each roaming XT device',
+    security: 'high',
+    convenience: 'medium',
+    how_to_connect: 'Join Hub and XT to the same tailnet, set External Address to the 100.x IP or .ts.net name, then copy the secure remote setup pack.',
+  },
+  {
+    id: 'tailscale_subnet_router',
+    title: 'Tailscale subnet router',
+    status: 'manual, verify with this doctor first',
+    xt_install: 'not needed only for fixed networks behind a subnet router; roaming XT still needs a route into the tailnet',
+    security: 'high',
+    convenience: 'medium',
+    how_to_connect: 'Advertise the Hub LAN subnet through Tailscale, set External Address to the reachable Hub LAN IP/name, then verify TCP pairing/grpc.',
+  },
+  {
+    id: 'public_ip_direct',
+    title: 'Public IP direct',
+    status: 'supported for temporary validation',
+    xt_install: 'none',
+    security: 'medium-low',
+    convenience: 'high until the IP changes',
+    how_to_connect: 'Port-forward TCP pairing/grpc to the Hub, set External Address to the public IP, and keep invite token plus mTLS enabled.',
+  },
+  {
+    id: 'dns_only_direct',
+    title: 'DNS-only domain direct',
+    status: 'supported',
+    xt_install: 'none',
+    security: 'medium',
+    convenience: 'high',
+    how_to_connect: 'Point A/AAAA to the Hub public IP or raw TCP endpoint, keep Cloudflare records DNS-only if using Cloudflare, and forward pairing/grpc ports.',
+  },
+  {
+    id: 'cloudflare_spectrum',
+    title: 'Cloudflare Spectrum raw TCP',
+    status: 'compatible on Hub/XT side, requires Cloudflare Spectrum setup',
+    xt_install: 'none',
+    security: 'medium-high',
+    convenience: 'high',
+    how_to_connect: 'Configure Spectrum TCP apps for pairing/grpc to the Hub or an origin relay, then use the Spectrum hostname in External Address.',
+  },
+  {
+    id: 'vps_raw_tcp_relay',
+    title: 'VPS raw TCP relay / reverse proxy',
+    status: 'compatible on Hub/XT side, requires external deployment',
+    xt_install: 'none',
+    security: 'medium-high depending on VPS hardening',
+    convenience: 'high',
+    how_to_connect: 'Run a VPS listener for TCP pairing/grpc and forward raw TCP to the Hub reachable path, then use the VPS DNS name in External Address.',
+  },
+  {
+    id: 'tailscale_funnel_raw_tcp',
+    title: 'Tailscale Funnel raw TCP',
+    status: 'pending port/protocol adaptation',
+    xt_install: 'none for XT after public exposure is configured',
+    security: 'medium',
+    convenience: 'high after adaptation',
+    how_to_connect: 'Expose the Hub entry through Funnel and map the public entry back to pairing/grpc; not treated as ready yet.',
+  },
+  {
+    id: 'https_websocket_443_gateway',
+    title: 'HTTPS/WebSocket 443 gateway',
+    status: 'future product work',
+    xt_install: 'none',
+    security: 'high',
+    convenience: 'highest',
+    how_to_connect: 'Future gateway will wrap pairing/grpc behind one HTTPS 443 hostname.',
+  },
+]);
+
+const EXCLUDED_ROUTES = Object.freeze([
+  'Other VPN IP routes: WireGuard / ZeroTier / Headscale',
+  'Cloudflare Tunnel arbitrary TCP',
+]);
+
+function routeOptions() {
+  return ROUTE_OPTIONS.map((option) => ({ ...option }));
+}
+
 function safeString(value) {
   return String(value ?? '').trim();
 }
@@ -182,7 +275,7 @@ function classifyHost(raw) {
     return { kind: 'raw_ip', scope: 'link_local', normalized: host, encrypted_ip_candidate: false, label: 'link-local IPv6' };
   }
   if (host.startsWith('fc') || host.startsWith('fd')) {
-    return { kind: 'raw_ip', scope: 'unique_local_ipv6', normalized: host, encrypted_ip_candidate: true, label: 'VPN/private IPv6 candidate' };
+    return { kind: 'raw_ip', scope: 'unique_local_ipv6', normalized: host, encrypted_ip_candidate: false, label: 'private IPv6 candidate' };
   }
   if (host.includes(':')) {
     return { kind: 'raw_ip', scope: 'public_ipv6', normalized: host, encrypted_ip_candidate: false, label: 'public IPv6' };
@@ -194,7 +287,7 @@ function classifyHost(raw) {
       scope: tailnet ? 'tailnet_dns' : 'dns_name',
       normalized: host,
       encrypted_ip_candidate: tailnet,
-      label: tailnet ? 'tailnet/MagicDNS name' : 'stable DNS name',
+      label: tailnet ? 'Tailscale MagicDNS name' : 'stable DNS name',
     };
   }
   return { kind: 'lan_only', scope: 'single_label', normalized: host, encrypted_ip_candidate: false, label: 'single-label LAN host' };
@@ -208,10 +301,10 @@ function classifyIPv4(host) {
   const [a, b] = octets;
   if (a === 127) return { scope: 'loopback', encrypted: false, label: 'loopback IP' };
   if (a === 169 && b === 254) return { scope: 'link_local', encrypted: false, label: 'link-local IP' };
-  if (a === 100 && b >= 64 && b <= 127) return { scope: 'tailscale_headscale_ip', encrypted: true, label: 'Tailscale/Headscale encrypted IP candidate' };
-  if (a === 10) return { scope: 'private_or_vpn_ip', encrypted: true, label: 'private/VPN IP candidate' };
-  if (a === 172 && b >= 16 && b <= 31) return { scope: 'private_or_vpn_ip', encrypted: true, label: 'private/VPN IP candidate' };
-  if (a === 192 && b === 168) return { scope: 'private_or_vpn_ip', encrypted: true, label: 'private/LAN IP candidate' };
+  if (a === 100 && b >= 64 && b <= 127) return { scope: 'tailscale_ip', encrypted: true, label: 'Tailscale IP candidate' };
+  if (a === 10) return { scope: 'private_lan_ip', encrypted: false, label: 'private/LAN IP candidate' };
+  if (a === 172 && b >= 16 && b <= 31) return { scope: 'private_lan_ip', encrypted: false, label: 'private/LAN IP candidate' };
+  if (a === 192 && b === 168) return { scope: 'private_lan_ip', encrypted: false, label: 'private/LAN IP candidate' };
   return { scope: 'public_internet_ip', encrypted: false, label: 'public raw IP' };
 }
 
@@ -224,6 +317,20 @@ function localIPv4Addresses() {
     }
   }
   return rows;
+}
+
+function localPublicIPv6Addresses() {
+  const ips = [];
+  for (const addrs of Object.values(os.networkInterfaces())) {
+    for (const addr of addrs || []) {
+      if (addr.family !== 'IPv6' || addr.internal) continue;
+      const ip = safeString(addr.address).split('%')[0];
+      const lower = ip.toLowerCase();
+      if (!ip || lower === '::1' || lower.startsWith('fe80:') || lower.startsWith('fc') || lower.startsWith('fd')) continue;
+      ips.push(ip);
+    }
+  }
+  return uniqueStrings(ips);
 }
 
 function urlHost(host) {
@@ -378,6 +485,7 @@ async function buildReport(args) {
   const pairingPort = args.pairingPort || parsePort(process.env.XHUB_PAIRING_PORT, defaults.pairingPort || grpcPort + 1);
   const classification = classifyHost(host);
   const lanAddresses = localIPv4Addresses();
+  const localPublicIPv6 = localPublicIPv6Addresses();
   const publicIp = args.noNetwork ? { ok: false, body: '', error: 'network_skipped' } : await textRequest('https://ifconfig.me/ip', args.timeoutMs);
   const dnsInfo = args.noNetwork ? { a: [], aaaa: [], ns: [], error: 'network_skipped' } : await resolveDns(host);
   const tailscale = await tailscaleState();
@@ -412,6 +520,7 @@ async function buildReport(args) {
     pairingPort,
     classification,
     publicIp,
+    localPublicIPv6,
     dnsInfo,
     local,
     remote,
@@ -423,6 +532,7 @@ async function buildReport(args) {
     pairingPort,
     classification,
     publicIp,
+    localPublicIPv6,
     dnsInfo,
     remote,
     tailscale,
@@ -434,11 +544,13 @@ async function buildReport(args) {
     generated_at_iso: new Date().toISOString(),
     target: { host, grpc_port: grpcPort, pairing_port: pairingPort },
     host_classification: classification,
-    public_ip: { ok: publicIp.ok, address: publicIp.body, error: publicIp.error },
+    public_ip: { ok: publicIp.ok, address: publicIp.body, local_ipv6: localPublicIPv6, error: publicIp.error },
     dns: dnsInfo,
     local,
     remote: redactDiscovery(remote),
     tailscale,
+    route_options: routeOptions(),
+    excluded_routes: [...EXCLUDED_ROUTES],
     issues,
     recommendations,
   };
@@ -447,7 +559,13 @@ async function buildReport(args) {
 function collectIssues(ctx) {
   const issues = [];
   const add = (severity, code, detail) => issues.push({ severity, code, detail });
-  if (!ctx.host) add('blocker', 'external_host_missing', 'Set a DNS name, tailnet name, or VPN/encrypted IP as the Hub external address.');
+  const publicIp = safeString(ctx.publicIp.body);
+  const publicIpIsV6 = publicIp.includes(':');
+  const localPublicIPv6 = Array.isArray(ctx.localPublicIPv6) ? ctx.localPublicIPv6 : [];
+  const stableNameBlocked = ctx.classification.kind === 'stable_named'
+    && ctx.remote.pairing.ok !== true
+    && ctx.remote.grpc.ok !== true;
+  if (!ctx.host) add('blocker', 'external_host_missing', 'Set a Tailscale IP/MagicDNS name, DNS-only domain, relay/Spectrum endpoint, or temporary public IP as the Hub external address.');
   const anyLocalPairing = ctx.local.some((row) => row.pairing.ok);
   const anyLocalGrpc = ctx.local.some((row) => row.grpc.ok);
   if (!anyLocalPairing) add('blocker', 'local_pairing_port_not_listening', `No local interface accepts TCP ${ctx.pairingPort}.`);
@@ -460,16 +578,34 @@ function collectIssues(ctx) {
   }
   if (ctx.classification.kind === 'stable_named'
       && ctx.publicIp.ok
-      && ctx.dnsInfo.a.length > 0
-      && !ctx.dnsInfo.a.includes(ctx.publicIp.body)
-      && ctx.remote.pairing.ok !== true
-      && ctx.remote.grpc.ok !== true) {
-    add('blocker', 'dns_does_not_point_to_current_hub_ip', `${ctx.host} resolves to ${ctx.dnsInfo.a.join(', ')}, but this Hub currently exits as ${ctx.publicIp.body}.`);
+      && (publicIpIsV6 ? ctx.dnsInfo.aaaa.length > 0 : ctx.dnsInfo.a.length > 0)
+      && !(publicIpIsV6 ? ctx.dnsInfo.aaaa : ctx.dnsInfo.a).includes(publicIp)
+      && stableNameBlocked) {
+    const records = publicIpIsV6 ? ctx.dnsInfo.aaaa : ctx.dnsInfo.a;
+    const recordType = publicIpIsV6 ? 'AAAA' : 'A';
+    add('blocker', 'dns_does_not_point_to_current_hub_ip', `${ctx.host} ${recordType} resolves to ${records.join(', ')}, but this Hub currently exits as ${publicIp}.`);
+  }
+  if (ctx.classification.kind === 'stable_named'
+      && ctx.publicIp.ok
+      && publicIpIsV6
+      && ctx.dnsInfo.aaaa.length === 0
+      && stableNameBlocked) {
+    add('blocker', 'dns_missing_current_hub_aaaa', `${ctx.host} has no AAAA record for the current Hub IPv6 ${publicIp}.`);
+  }
+  if (stableNameBlocked && !publicIpIsV6 && localPublicIPv6.length > 0 && ctx.dnsInfo.aaaa.length === 0) {
+    add('blocker', 'dns_missing_reachable_hub_aaaa', `${ctx.host} has no AAAA record. This Hub has public IPv6 candidate(s): ${localPublicIPv6.join(', ')}.`);
+  }
+  if (stableNameBlocked && !publicIpIsV6 && localPublicIPv6.length > 0 && ctx.dnsInfo.aaaa.length > 0) {
+    const matched = ctx.dnsInfo.aaaa.some((record) => localPublicIPv6.includes(record));
+    if (!matched) {
+      add('blocker', 'dns_aaaa_does_not_point_to_current_hub_ipv6', `${ctx.host} AAAA resolves to ${ctx.dnsInfo.aaaa.join(', ')}, but this Hub has public IPv6 candidate(s): ${localPublicIPv6.join(', ')}.`);
+    }
   }
   if (ctx.tailscale.installed && !ctx.tailscale.running && ctx.tailscale.service_hint) {
     add('warning', 'tailscale_service_not_running', ctx.tailscale.service_hint);
   }
-  if (ctx.classification.kind === 'raw_ip' && ctx.classification.scope === 'public_internet_ip') {
+  if (ctx.classification.kind === 'raw_ip'
+      && (ctx.classification.scope === 'public_internet_ip' || ctx.classification.scope === 'public_ipv6')) {
     add('warning', 'raw_public_ip_is_brittle', 'A public raw IP can change and is not a good long-term XT route.');
   }
   return issues;
@@ -478,30 +614,40 @@ function collectIssues(ctx) {
 function collectRecommendations(ctx) {
   const lines = [];
   const ns = ctx.dnsInfo.ns.join(', ').toLowerCase();
+  const publicIp = safeString(ctx.publicIp.body);
+  const publicIpIsV6 = publicIp.includes(':');
+  const localPublicIPv6 = Array.isArray(ctx.localPublicIPv6) ? ctx.localPublicIPv6 : [];
   if (ctx.classification.kind === 'stable_named') {
     lines.push(`Use ${ctx.host} as the Hub external address only after both TCP ports are reachable: pairing ${ctx.pairingPort}, gRPC ${ctx.grpcPort}.`);
     if (ctx.classification.scope !== 'tailnet_dns'
         && ctx.publicIp.ok
-        && ctx.dnsInfo.a.length > 0
-        && !ctx.dnsInfo.a.includes(ctx.publicIp.body)) {
-      lines.push(`DNS direct option: update the A record for ${ctx.host} to ${ctx.publicIp.body}, then verify from an XT network with: nc -vz ${ctx.host} ${ctx.pairingPort} && nc -vz ${ctx.host} ${ctx.grpcPort}.`);
+        && !(publicIpIsV6 ? ctx.dnsInfo.aaaa : ctx.dnsInfo.a).includes(publicIp)) {
+      const recordType = publicIpIsV6 ? 'AAAA' : 'A';
+      lines.push(`DNS-only direct option: update the ${recordType} record for ${ctx.host} to ${publicIp}, then verify from an XT network with nc on pairing/grpc ports.`);
+    }
+    if (!publicIpIsV6 && localPublicIPv6.length > 0 && !ctx.dnsInfo.aaaa.includes(localPublicIPv6[0])) {
+      lines.push(`DNS-only IPv6 option: add/update a DNS-only AAAA record for ${ctx.host} to ${localPublicIPv6[0]}, then verify TCP ${ctx.pairingPort}/${ctx.grpcPort}.`);
     }
     if (ns.includes('cloudflare')) {
-      lines.push('Cloudflare note: ordinary orange-cloud proxy does not forward raw TCP gRPC/pairing ports. Use DNS-only for direct TCP, Cloudflare Spectrum/raw TCP, or a VPN/tunnel that both Hub and XT join.');
+      lines.push('Cloudflare note: ordinary orange-cloud proxy does not forward these raw TCP gRPC/pairing ports. Use DNS-only direct TCP or Cloudflare Spectrum raw TCP; Cloudflare Tunnel arbitrary TCP is not an active route here.');
     }
     if (ctx.classification.scope === 'tailnet_dns') {
-      lines.push('Tailnet DNS option: make sure both Hub and XT are logged into the same Tailscale/Headscale network, then use the MagicDNS name instead of a public A record.');
+      lines.push('Tailscale MagicDNS option: make sure both Hub and XT are logged into the same Tailscale tailnet, then use the .ts.net name instead of a public A record.');
     }
   } else if (ctx.classification.encrypted_ip_candidate) {
-    lines.push(`Encrypted/VPN IP option: ${ctx.host} can be used only if every XT device joins the same VPN/tailnet and can reach TCP ${ctx.pairingPort}/${ctx.grpcPort}.`);
-    lines.push('In Hub Settings > LAN/gRPC > Advanced Settings, put this VPN/tailnet IP in External Address. In XT, use the invite link/setup pack or enter the same host and ports.');
+    lines.push(`Tailscale IP option: ${ctx.host} can be used only if every XT device joins the same Tailscale tailnet and can reach TCP ${ctx.pairingPort}/${ctx.grpcPort}.`);
+    lines.push('In Hub Settings > LAN/gRPC > Advanced Settings, put this Tailscale IP in External Address. In XT, use the invite link/setup pack or enter the same host and ports.');
   } else if (ctx.classification.kind === 'raw_ip') {
-    lines.push('Raw public IP option is only temporary. Prefer a stable DNS name, MagicDNS tailnet name, or VPN/relay endpoint.');
+    if (ctx.classification.scope === 'public_internet_ip' || ctx.classification.scope === 'public_ipv6') {
+      lines.push('Public IP direct option is supported for temporary validation only. Prefer a stable DNS-only domain, Tailscale entry, Cloudflare Spectrum, or VPS relay endpoint.');
+    } else {
+      lines.push('Private IP direct option works only on the same LAN or through a verified Tailscale subnet route. It is not treated as an automatic other-VPN route.');
+    }
   } else {
     if (ctx.classification.kind === 'missing' && ctx.tailscale.running && ctx.tailscale.ips.length > 0) {
-      lines.push(`No-domain private network option: this machine has Tailscale/Headscale IP ${ctx.tailscale.ips[0]}. Put that value in Hub Settings > LAN/gRPC > Advanced Settings > External Address, then rerun this doctor with --host ${ctx.tailscale.ips[0]}.`);
+      lines.push(`No-domain Tailscale option: this machine has Tailscale IP ${ctx.tailscale.ips[0]}. Put that value in Hub Settings > LAN/gRPC > Advanced Settings > External Address, then rerun this doctor with --host ${ctx.tailscale.ips[0]}.`);
     }
-    lines.push('First choose an external route: stable DNS name, MagicDNS/tailnet name, or VPN encrypted IP. Then rerun this doctor with --host <value>.');
+    lines.push('First choose an external route: Tailscale IP/MagicDNS, DNS-only domain, temporary public IP, Cloudflare Spectrum, or VPS relay. Then rerun this doctor with --host <value>.');
   }
   if (ctx.tailscale.installed && !ctx.tailscale.running) {
     lines.push('Tailscale repair: install/use the official macOS Tailscale app or run tailscaled as a system service. The current Homebrew user LaunchAgent cannot create the tunnel because tailscaled requires root.');
@@ -541,6 +687,9 @@ function renderText(report) {
   lines.push(`Target: host=${report.target.host || '(missing)'} pairing=${report.target.pairing_port} grpc=${report.target.grpc_port}`);
   lines.push(`Host kind: ${report.host_classification.kind} ${report.host_classification.scope ? `(${report.host_classification.scope})` : ''}`);
   lines.push(`Public IP: ${report.public_ip.ok ? report.public_ip.address : `unavailable (${report.public_ip.error})`}`);
+  if (Array.isArray(report.public_ip.local_ipv6) && report.public_ip.local_ipv6.length) {
+    lines.push(`Local public IPv6 candidates: ${report.public_ip.local_ipv6.join(', ')}`);
+  }
   if (report.dns.a.length || report.dns.aaaa.length || report.dns.error) {
     lines.push(`DNS A: ${report.dns.a.length ? report.dns.a.join(', ') : '(none)'}`);
     if (report.dns.aaaa.length) lines.push(`DNS AAAA: ${report.dns.aaaa.join(', ')}`);
@@ -562,6 +711,12 @@ function renderText(report) {
   }
   lines.push('');
   lines.push(`Tailscale: ${report.tailscale.installed ? (report.tailscale.running ? `running ${report.tailscale.ips.join(', ')}` : `installed but not running (${report.tailscale.service_hint || report.tailscale.error})`) : 'not installed'}`);
+  lines.push('');
+  lines.push('Connection options and security:');
+  for (const option of report.route_options) {
+    lines.push(`- ${option.title}: status=${option.status}; security=${option.security}; XT install=${option.xt_install}; connect=${option.how_to_connect}`);
+  }
+  lines.push(`Excluded routes: ${report.excluded_routes.join('; ')}`);
   if (report.issues.length) {
     lines.push('');
     lines.push('Issues:');
@@ -574,16 +729,17 @@ function renderText(report) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage: hub_remote_route_doctor.command [--host <host>] [--grpc-port <n>] [--pairing-port <n>] [--json]\n\nChecks a Hub remote route for XT across DNS, VPN/encrypted IP, local ports, remote ports, pairing discovery, and Tailscale state.\n\nExamples:\n  tools/hub_remote_route_doctor.command --host hub.your-domain.example --grpc-port 50058 --pairing-port 50059\n  tools/hub_remote_route_doctor.command --host 100.96.10.8 --grpc-port 50058 --pairing-port 50059\n`);
+  process.stdout.write(`Usage: hub_remote_route_doctor.command [--host <host>] [--grpc-port <n>] [--pairing-port <n>] [--json]\n\nChecks a Hub remote route for XT across DNS, IP direct routes, local ports, remote ports, pairing discovery, and Tailscale state.\n\nExamples:\n  tools/hub_remote_route_doctor.command --host hub.your-domain.example --grpc-port 50058 --pairing-port 50059\n  tools/hub_remote_route_doctor.command --host 100.96.10.8 --grpc-port 50058 --pairing-port 50059\n`);
 }
 
 async function selfTest() {
   const cases = [
     ['hub.tailnet.example', 'stable_named', 'dns_name', false],
     ['mini.tail000.ts.net', 'stable_named', 'tailnet_dns', true],
-    ['100.96.10.8', 'raw_ip', 'tailscale_headscale_ip', true],
-    ['192.168.10.9', 'raw_ip', 'private_or_vpn_ip', true],
+    ['100.96.10.8', 'raw_ip', 'tailscale_ip', true],
+    ['192.168.10.9', 'raw_ip', 'private_lan_ip', false],
     ['17.81.11.116', 'raw_ip', 'public_internet_ip', false],
+    ['2409:8a55:34d4:8591:191b:e6cd:7157:74bc', 'raw_ip', 'public_ipv6', false],
     ['hub.local', 'lan_only', 'lan_name', false],
   ];
   for (const [input, kind, scope, encrypted] of cases) {

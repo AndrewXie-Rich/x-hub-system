@@ -1079,12 +1079,12 @@ actor HubAIClient {
         if let host = HubRemoteHostPolicy.normalizedNonEmpty(cachedProfile.host) {
             if HubRemoteHostPolicy.isLoopbackHost(host),
                let effectiveInternetHost,
-               HubRemoteHostPolicy.isStableNamedRemoteHost(effectiveInternetHost) {
+               HubRemoteHostPolicy.isFormalRemoteHost(effectiveInternetHost) {
                 // Background reconnect must not install or refresh a managed tunnel,
                 // because that can flap system VPN/network state on macOS.
                 return .stableNamedRemote
             }
-            if HubRemoteHostPolicy.isStableNamedRemoteHost(host) {
+            if HubRemoteHostPolicy.isFormalRemoteHost(host) {
                 return .stableNamedRemote
             }
             if HubRemoteHostPolicy.isDirectLocalFallbackHost(host) {
@@ -1093,7 +1093,7 @@ actor HubAIClient {
         }
 
         if let effectiveInternetHost,
-           HubRemoteHostPolicy.isStableNamedRemoteHost(effectiveInternetHost) {
+           HubRemoteHostPolicy.isFormalRemoteHost(effectiveInternetHost) {
             return .stableNamedRemote
         }
 
@@ -1113,7 +1113,7 @@ actor HubAIClient {
                 lanDiscoveryName: cachedProfile.lanDiscoveryName
             )
         let hasFormalRemoteHost =
-            effectiveInternetHost.map(HubRemoteHostPolicy.isStableNamedRemoteHost) == true
+            effectiveInternetHost.map(HubRemoteHostPolicy.isFormalRemoteHost) == true
         let preferredRoute = preferredRemoteReconnectRoute(
             cachedProfile: cachedProfile,
             internetHost: internetHost
@@ -1171,7 +1171,7 @@ actor HubAIClient {
                 lanDiscoveryName: cachedProfile.lanDiscoveryName
             )
 
-        if effectiveInternetHost.map(HubRemoteHostPolicy.isStableNamedRemoteHost) == true {
+        if effectiveInternetHost.map(HubRemoteHostPolicy.isFormalRemoteHost) == true {
             return false
         }
 

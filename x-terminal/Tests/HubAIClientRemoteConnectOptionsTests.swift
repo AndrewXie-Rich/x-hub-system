@@ -28,7 +28,27 @@ struct HubAIClientRemoteConnectOptionsTests {
     }
 
     @Test
-    func remoteConnectOptionsDoNotInferRawIPv4AsReusableInternetHost() throws {
+    func remoteConnectOptionsDoNotInferPublicRawIPv4AsReusableInternetHost() throws {
+        let tempDir = try makeTempStateDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try writePairingEnv(
+            at: tempDir,
+            contents: """
+            AXHUB_HUB_HOST='17.81.11.116'
+            AXHUB_PAIRING_PORT='50052'
+            AXHUB_GRPC_PORT='50051'
+            """
+        )
+
+        try withHubRemoteDefaultsCleared {
+            let options = HubAIClient.remoteConnectOptionsFromDefaults(stateDir: tempDir)
+            #expect(options.internetHost.isEmpty)
+        }
+    }
+
+    @Test
+    func remoteConnectOptionsInferTailscaleIPv4AsReusableInternetHost() throws {
         let tempDir = try makeTempStateDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -43,7 +63,7 @@ struct HubAIClientRemoteConnectOptionsTests {
 
         try withHubRemoteDefaultsCleared {
             let options = HubAIClient.remoteConnectOptionsFromDefaults(stateDir: tempDir)
-            #expect(options.internetHost.isEmpty)
+            #expect(options.internetHost == "100.96.10.8")
         }
     }
 
@@ -294,6 +314,33 @@ struct HubAIClientRemoteConnectOptionsTests {
         #expect(snapshot.readinessReasonCode == "cached_remote_reconnect_smoke_verified")
         #expect(snapshot.summaryLine == "正式异网入口已验证，切网后可继续重连。")
         #expect(snapshot.stableRemoteRoute?.host == "hub.tailnet.example")
+        #expect(snapshot.lastKnownGoodRoute?.routeKind == .internet)
+    }
+
+    @Test
+    func pairedRouteSetMarksTailscaleIPEntryAsFormalRemoteReadyAfterRemoteSmokePass() {
+        let snapshot = XTPairedRouteSetSnapshotBuilder.build(
+            input: makePairedRouteSetBuildInput(
+                cachedProfile: HubAIClient.CachedRemoteProfile(
+                    host: "192.168.0.10",
+                    internetHost: "100.122.237.57",
+                    pairingPort: 50052,
+                    grpcPort: 50051,
+                    hubInstanceID: "hub_tailnet",
+                    lanDiscoveryName: "axhub-lan"
+                ),
+                freshPairReconnectSmokeSnapshot: makeReconnectSmokeSnapshot(
+                    status: .succeeded,
+                    route: .internet,
+                    reasonCode: nil
+                )
+            )
+        )
+
+        #expect(snapshot.readiness == .remoteReady)
+        #expect(snapshot.summaryLine == "正式异网入口已验证，切网后可继续重连。")
+        #expect(snapshot.stableRemoteRoute?.host == "100.122.237.57")
+        #expect(snapshot.stableRemoteRoute?.hostKind == "raw_ip")
         #expect(snapshot.lastKnownGoodRoute?.routeKind == .internet)
     }
 

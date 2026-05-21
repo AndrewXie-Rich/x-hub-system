@@ -20,6 +20,8 @@ Current slice:
   a fresh memory-only overlay.
 - `xhubd serve` short-TTL memory snapshot and skills catalog caches for
   read-only HTTP paths.
+- `xhubd serve` read-only role-aware project transcript projection over Hub
+  SQLite turns for XT Supervisor/Coder/Reviewer continuity.
 - `xhubd serve` global HTTP in-flight backpressure guard for business routes.
 - `xhubd serve` bounded HTTP socket read/write timeouts for slow or half-open
   client connections.
@@ -722,8 +724,10 @@ Memory retrieval shadow path:
 ```bash
 bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" memory readiness
 bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" memory search --query "governed retrieval" --max-results 5
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" memory object-index-rebuild
 bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/memory_retrieval_shadow_smoke.command"
 bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/memory_retrieval_http_smoke.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/memory_hybrid_quality_bench.command"
 ```
 
 Rust memory retrieval is read-only and shadow-only. It scans supported local
@@ -734,7 +738,35 @@ capsules by default, denies secret-seeking queries, and skips secret-like
 fields/content before returning snippets. Durable canonical memory writeback
 still belongs to the existing Writer + Gate path.
 `memory_retrieval_http_smoke.command` starts a temporary warm daemon and checks
-`/ready`, `/memory/readiness`, `/memory/search`, and `POST /memory/retrieve`.
+`/ready`, `/memory/readiness`, `/memory/search`, `POST /memory/retrieve`, and
+the role-aware `/memory/project-role-transcript` projection against a temporary
+SQLite fixture. It also creates a temporary Rust memory object and verifies
+`POST /memory/retrieve` can return the `rust_memory_objects_hybrid_v1` W6
+retrieval path through the rebuildable `rust_hub_memory_object_index` derived
+table without enabling semantic search or writer authority. The derived index is
+not memory truth; `memory object-index-rebuild` and `POST /memory/reindex`
+rebuild it from canonical Rust memory objects, and `/memory/readiness` reports
+row count, stale count, and latest index generation evidence.
+When `explain=true`, object retrieval also returns
+`xhub.memory.retrieval_trace.v1` with selected/omitted refs and redacted reason
+codes for UI diagnostics. `memory_hybrid_quality_bench.command` runs a temporary
+daemon fixture covering project chat, supervisor next-step, remote sanitized
+visibility, raw evidence opt-in, and private sensitivity filter cases.
+
+Role-aware project transcript projection:
+
+```bash
+curl -fsS "http://127.0.0.1:50151/memory/project-role-transcript?project_id=<PROJECT_ID>&thread_key=xterminal_project_<PROJECT_ID>&limit=50"
+```
+
+`/memory/project-role-transcript` is a Rust shadow read-only endpoint. It reads
+the Hub SQLite `threads`/`turns` rows, returns
+`xhub.project_role_transcript_projection.v1`, preserves
+`xhub.role_turn_metadata.v1` fields such as `source_role`, `target_role`, and
+`dispatch_id`, and redacts encrypted `xhubenc:v1:` content when content is
+requested. It does not write memory, grant skill/model/provider authority, or
+replace the Node Hub memory writer; XT should consume this as Hub truth
+projection and keep local transcript parsing as fallback only.
 
 Skills catalog policy gate:
 
@@ -1298,6 +1330,7 @@ Shadow HTTP endpoints:
 - `POST /xt/file-ipc-shadow/runtime-adapter-candidate`
 - `GET /memory/readiness`
 - `GET /memory/search`
+- `GET /memory/project-role-transcript`
 - `POST /memory/retrieve`
 - `POST /memory/write`
 - `POST /skills/execute`

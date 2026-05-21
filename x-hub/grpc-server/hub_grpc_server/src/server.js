@@ -35,8 +35,22 @@ function grpcMaxMessageBytesFromEnv(env = process.env) {
   return Math.max(4 * 1024 * 1024, Math.min(256 * 1024 * 1024, mb * 1024 * 1024));
 }
 
+function grpcBindAddress(host, port) {
+  const h = String(host || '').trim() || '0.0.0.0';
+  const p = Number(port || 0) || 50051;
+  if (h.includes(':') && !h.startsWith('[')) return `[${h}]:${p}`;
+  return `${h}:${p}`;
+}
+
+function serviceBindHostFromEnv(rawHost, env = process.env) {
+  const host = String(rawHost || '').trim() || '0.0.0.0';
+  const dualStack = String(env.HUB_IPV6_DUALSTACK || '1').trim() !== '0';
+  if (dualStack && host === '0.0.0.0') return '::';
+  return host;
+}
+
 function main() {
-  const host = (process.env.HUB_HOST || '0.0.0.0').trim();
+  const host = serviceBindHostFromEnv(process.env.HUB_HOST || '0.0.0.0');
   const port = Number(process.env.HUB_PORT || 50051);
   const dbPath = (process.env.HUB_DB_PATH || './data/hub.sqlite3').trim();
   const tlsMode = tlsModeFromEnv(process.env);
@@ -95,7 +109,7 @@ function main() {
     server.addService(proto.HubProviderKeys.service, impl.HubProviderKeys);
   }
 
-  const addr = `${host}:${port}`;
+  const addr = grpcBindAddress(host, port);
   const { creds } = makeServerCredentials({ runtimeBaseDir: process.env.HUB_RUNTIME_BASE_DIR || '' });
   server.bindAsync(addr, creds, (err) => {
     if (err) throw err;

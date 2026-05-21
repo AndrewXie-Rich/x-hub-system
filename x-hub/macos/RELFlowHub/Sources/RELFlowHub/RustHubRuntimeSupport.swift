@@ -1,4 +1,5 @@
 import Foundation
+import RELFlowHubCore
 
 struct RustHubEmbeddedPackageInfo: Equatable, Sendable {
     var rootPath: String
@@ -171,6 +172,10 @@ struct RustHubRemoteEntryCandidates: Equatable, Sendable {
 }
 
 enum RustHubRuntimeSupport {
+    private static let httpAccessKeyCacheTTL: TimeInterval = 5
+    private static let httpAccessKeyCacheLock = NSLock()
+    nonisolated(unsafe) private static var cachedHTTPAccessKeyEntry: (checkedAt: TimeInterval, value: String?)?
+
     static let defaultHost = "127.0.0.1"
     static let defaultHTTPPort = 50151
     static let defaultHTTPBaseURL = "http://127.0.0.1:50151"
@@ -304,6 +309,13 @@ enum RustHubRuntimeSupport {
         return infos.first(where: { $0.exists }) ?? .empty
     }
 
+    static func selectedPackageInfo(bundle: Bundle = .main) -> RustHubEmbeddedPackageInfo {
+        preferredPackageInfo(
+            embeddedPackage: embeddedPackageInfo(bundle: bundle),
+            activePackage: activePackageInfo()
+        )
+    }
+
     static func embeddedPackageInfo(root: URL?) -> RustHubEmbeddedPackageInfo {
         guard let root else { return .empty }
         let xhubdURL = root.appendingPathComponent("bin/xhubd")
@@ -397,6 +409,15 @@ enum RustHubRuntimeSupport {
             "XHUB_RUST_HUB_HTTP_PORT": String(defaultHTTPPort),
             "XHUB_RUST_HUB_HTTP_BASE_URL": defaultHTTPBaseURL
         ]
+        if let accessKey = httpAccessKey(
+            environment: baseEnvironment,
+            activePackageRoots: [URL(fileURLWithPath: rootPath, isDirectory: true)]
+        ) {
+            out["XHUB_RUST_HTTP_ACCESS_KEY"] = accessKey
+            out["XHUB_RUST_HUB_ACCESS_KEY"] = accessKey
+            out.removeValue(forKey: "XHUB_RUST_HTTP_ACCESS_KEY_FILE")
+            out.removeValue(forKey: "XHUB_RUST_HUB_ACCESS_KEY_FILE")
+        }
         if allowProductionPassthrough {
             for key in nodeProductionPassthroughKeys {
                 guard !alwaysClampedNodeAuthorityKeys.contains(key) else { continue }
@@ -517,6 +538,175 @@ enum RustHubRuntimeSupport {
         )
     }
 
+    static func loadLocalModelRepairPlan(
+        taskKind: String? = nil,
+        runtimeBaseDir: URL = SharedPaths.ensureHubDirectory(),
+        baseURL: String = defaultHTTPBaseURL
+    ) async -> RustLocalModelRepairPlan? {
+        guard let url = localModelRepairPlanURL(
+            taskKind: taskKind,
+            runtimeBaseDir: runtimeBaseDir,
+            baseURL: baseURL
+        ) else {
+            return nil
+        }
+        guard let data = await fetchData(url: url, authorize: true) else {
+            return nil
+        }
+        return RustLocalModelRepairPlanSupport.decode(data: data)
+    }
+
+    static func applyLocalModelRepair(
+        plan: RustLocalModelRepairPlan,
+        runtimeBaseDir: URL = SharedPaths.ensureHubDirectory(),
+        baseURL: String = defaultHTTPBaseURL
+    ) async -> RustLocalModelRepairApplyResult? {
+        guard let url = localModelRepairApplyURL(baseURL: baseURL),
+              let body = localModelRepairApplyRequestBody(
+                plan: plan,
+                runtimeBaseDir: runtimeBaseDir
+              ) else {
+            return nil
+        }
+        guard let data = await postJSONData(url: url, body: body, authorize: true) else {
+            return nil
+        }
+        return RustLocalModelRepairApplySupport.decode(data: data)
+    }
+
+    static func loadLocalModelRepairJobs(
+        limit: Int = 10,
+        runtimeBaseDir: URL = SharedPaths.ensureHubDirectory(),
+        baseURL: String = defaultHTTPBaseURL
+    ) async -> RustLocalModelRepairJobsSnapshot {
+        guard let url = localModelRepairJobsURL(
+            limit: limit,
+            runtimeBaseDir: runtimeBaseDir,
+            baseURL: baseURL
+        ) else {
+            return .empty
+        }
+        guard let data = await fetchData(url: url, authorize: true),
+              let snapshot = RustLocalModelRepairApplySupport.decodeJobs(data: data) else {
+            return .empty
+        }
+        return snapshot
+    }
+
+    static func runLocalModelRepairExecutor(
+        runtimeBaseDir: URL = SharedPaths.ensureHubDirectory(),
+        allowNetwork: Bool = true,
+        timeoutMs: Int = 600_000,
+        requestedBy: String = "swift_hub_settings"
+    ) async -> RustLocalModelRepairExecutorResult? {
+        let package = selectedPackageInfo()
+        guard package.valid else { return nil }
+        let arguments = [
+            "model",
+            "repair-executor",
+            "--runtime-base-dir",
+            runtimeBaseDir.standardizedFileURL.path,
+            "--allow-network",
+            allowNetwork ? "true" : "false",
+            "--timeout-ms",
+            "\(max(1_000, timeoutMs))",
+            "--requested-by",
+            requestedBy
+        ]
+        guard let data = await runXHubdJSON(
+            executablePath: package.xhubdPath,
+            arguments: arguments,
+            timeoutMs: max(1_000, timeoutMs) + 5_000
+        ) else {
+            return nil
+        }
+        return RustLocalModelRepairApplySupport.decodeExecutor(data: data)
+    }
+
+    static func localModelRepairPlanURL(
+        taskKind: String? = nil,
+        runtimeBaseDir: URL = SharedPaths.ensureHubDirectory(),
+        baseURL: String = defaultHTTPBaseURL
+    ) -> URL? {
+        let trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBase.isEmpty else { return nil }
+        let normalizedBase = trimmedBase.hasSuffix("/") ? String(trimmedBase.dropLast()) : trimmedBase
+        guard var components = URLComponents(string: normalizedBase + "/model/repair-plan") else {
+            return nil
+        }
+        var queryItems = [
+            URLQueryItem(name: "runtime_base_dir", value: runtimeBaseDir.standardizedFileURL.path)
+        ]
+        let normalizedTaskKind = (taskKind ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !normalizedTaskKind.isEmpty {
+            queryItems.append(URLQueryItem(name: "task_kind", value: normalizedTaskKind))
+        }
+        components.queryItems = queryItems
+        return components.url
+    }
+
+    static func localModelRepairApplyURL(
+        baseURL: String = defaultHTTPBaseURL
+    ) -> URL? {
+        let trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBase.isEmpty else { return nil }
+        let normalizedBase = trimmedBase.hasSuffix("/") ? String(trimmedBase.dropLast()) : trimmedBase
+        return URL(string: normalizedBase + "/model/repair-apply")
+    }
+
+    static func localModelRepairJobsURL(
+        limit: Int = 10,
+        runtimeBaseDir: URL = SharedPaths.ensureHubDirectory(),
+        baseURL: String = defaultHTTPBaseURL
+    ) -> URL? {
+        let trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBase.isEmpty else { return nil }
+        let normalizedBase = trimmedBase.hasSuffix("/") ? String(trimmedBase.dropLast()) : trimmedBase
+        guard var components = URLComponents(string: normalizedBase + "/model/repair-jobs") else {
+            return nil
+        }
+        components.queryItems = [
+            URLQueryItem(name: "runtime_base_dir", value: runtimeBaseDir.standardizedFileURL.path),
+            URLQueryItem(name: "limit", value: "\(max(1, min(50, limit)))")
+        ]
+        return components.url
+    }
+
+    static func localModelRepairApplyRequestBody(
+        plan: RustLocalModelRepairPlan,
+        confirm: Bool = true,
+        dryRun: Bool = false,
+        requestedBy: String = "swift_hub_settings",
+        runtimeBaseDir: URL = SharedPaths.ensureHubDirectory()
+    ) -> Data? {
+        guard plan.isActionableRepair else { return nil }
+        let action = plan.resolved.action.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !action.isEmpty else { return nil }
+        let taskKind = firstNonEmpty(
+            plan.target.taskKind,
+            plan.resolved.taskKind
+        )
+        let providerID = firstNonEmpty(
+            plan.target.providerID,
+            plan.resolved.providerID
+        )
+        let token = firstNonEmpty(
+            plan.confirmation.tokenHint,
+            "confirm:\(action)"
+        )
+        let body: [String: Any] = [
+            "action": action,
+            "task_kind": taskKind,
+            "provider_id": providerID,
+            "confirm": confirm,
+            "dry_run": dryRun,
+            "confirmation_token": token,
+            "requested_by": requestedBy,
+            "runtime_base_dir": runtimeBaseDir.standardizedFileURL.path
+        ]
+        return try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+    }
+
     static func makeSnapshot(
         embeddedPackage: RustHubEmbeddedPackageInfo = .empty,
         activePackage: RustHubEmbeddedPackageInfo = .empty,
@@ -577,9 +767,13 @@ enum RustHubRuntimeSupport {
 
     private static func fetchData(path: String, authorize: Bool = true) async -> Data? {
         guard let url = URL(string: defaultHTTPBaseURL + path) else { return nil }
+        return await fetchData(url: url, authorize: authorize)
+    }
+
+    private static func fetchData(url: URL, authorize: Bool = true) async -> Data? {
         var request = URLRequest(url: url)
         request.timeoutInterval = 1.0
-        if authorize, let accessKey = httpAccessKey() {
+        if authorize, let accessKey = cachedHTTPAccessKey() {
             request.setValue("Bearer \(accessKey)", forHTTPHeaderField: "Authorization")
             request.setValue(accessKey, forHTTPHeaderField: "X-XHub-Access-Key")
         }
@@ -593,6 +787,103 @@ enum RustHubRuntimeSupport {
         } catch {
             return nil
         }
+    }
+
+    private static func postJSONData(url: URL, body: Data, authorize: Bool = true) async -> Data? {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 2.0
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        if authorize, let accessKey = cachedHTTPAccessKey() {
+            request.setValue("Bearer \(accessKey)", forHTTPHeaderField: "Authorization")
+            request.setValue(accessKey, forHTTPHeaderField: "X-XHub-Access-Key")
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse,
+               !(200..<300).contains(http.statusCode) {
+                return nil
+            }
+            return data
+        } catch {
+            return nil
+        }
+    }
+
+    private static func runXHubdJSON(
+        executablePath: String,
+        arguments: [String],
+        timeoutMs: Int
+    ) async -> Data? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: executablePath)
+                process.arguments = arguments
+                let tempRoot = FileManager.default.temporaryDirectory
+                let stdoutURL = tempRoot.appendingPathComponent("xhub-repair-executor-\(UUID().uuidString).out")
+                let stderrURL = tempRoot.appendingPathComponent("xhub-repair-executor-\(UUID().uuidString).err")
+                FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
+                FileManager.default.createFile(atPath: stderrURL.path, contents: nil)
+                guard let stdoutHandle = try? FileHandle(forWritingTo: stdoutURL),
+                      let stderrHandle = try? FileHandle(forWritingTo: stderrURL) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                defer {
+                    try? stdoutHandle.close()
+                    try? stderrHandle.close()
+                    try? FileManager.default.removeItem(at: stdoutURL)
+                    try? FileManager.default.removeItem(at: stderrURL)
+                }
+                process.standardOutput = stdoutHandle
+                process.standardError = stderrHandle
+                do {
+                    try process.run()
+                } catch {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                let deadline = Date().addingTimeInterval(Double(max(1_000, timeoutMs)) / 1000.0)
+                while process.isRunning {
+                    if Date() >= deadline {
+                        process.terminate()
+                        Thread.sleep(forTimeInterval: 0.2)
+                        continuation.resume(returning: nil)
+                        return
+                    }
+                    Thread.sleep(forTimeInterval: 0.2)
+                }
+                guard process.terminationStatus == 0 else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: try? Data(contentsOf: stdoutURL))
+            }
+        }
+    }
+
+    static func cachedHTTPAccessKey(now: TimeInterval = Date().timeIntervalSince1970) -> String? {
+        httpAccessKeyCacheLock.lock()
+        if let entry = cachedHTTPAccessKeyEntry,
+           (now - entry.checkedAt) >= 0,
+           (now - entry.checkedAt) <= httpAccessKeyCacheTTL {
+            let value = entry.value
+            httpAccessKeyCacheLock.unlock()
+            return value
+        }
+        httpAccessKeyCacheLock.unlock()
+
+        let value = httpAccessKey(
+            environment: ProcessInfo.processInfo.environment,
+            activePackageRoots: activePackageRoots()
+        )
+        httpAccessKeyCacheLock.lock()
+        cachedHTTPAccessKeyEntry = (checkedAt: now, value: value)
+        httpAccessKeyCacheLock.unlock()
+        return value
     }
 
     static func httpAccessKey(
@@ -616,7 +907,10 @@ enum RustHubRuntimeSupport {
             [
                 root.appendingPathComponent("secrets/xhubd_http_access_key"),
                 root.appendingPathComponent("secrets/xhubd_domain_access_key"),
-                root.appendingPathComponent("secrets/xhubd_lan_access_key")
+                root.appendingPathComponent("secrets/xhubd_lan_access_key"),
+                root.appendingPathComponent("config/xhubd_http_access_key"),
+                root.appendingPathComponent("config/xhubd_domain_access_key"),
+                root.appendingPathComponent("config/xhubd_lan_access_key")
             ]
         }
         for file in candidateFiles {
@@ -811,6 +1105,16 @@ enum RustHubRuntimeSupport {
         default:
             return false
         }
+    }
+
+    private static func firstNonEmpty(_ values: String...) -> String {
+        for value in values {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return ""
     }
 
     private static func nowMs() -> Int64 {

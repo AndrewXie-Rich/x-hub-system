@@ -47,6 +47,7 @@ final class HubGRPCServerSupportInternetHostTests: XCTestCase {
         let selected = HubGRPCServerSupport.preferredNoDomainPrivateRemoteHost(
             interfaceRows: [
                 "en0: 192.168.0.12",
+                "utun6: 10.7.0.12",
                 "en1: 17.81.11.116",
             ]
         )
@@ -64,7 +65,7 @@ final class HubGRPCServerSupportInternetHostTests: XCTestCase {
     }
 
     @MainActor
-    func testSecureRemoteHostAllowsExplicitPrivateVPNIP() {
+    func testSecureRemoteHostAllowsExplicitPrivateRoutedIP() {
         XCTAssertNil(HubExternalAccessInviteSupport.normalizedSecureRemoteHost("10.7.0.12"))
         XCTAssertEqual(
             HubExternalAccessInviteSupport.normalizedSecureRemoteHost("10.7.0.12", allowPrivateVPNIP: true),

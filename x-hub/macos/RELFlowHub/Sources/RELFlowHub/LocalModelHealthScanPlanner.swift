@@ -29,7 +29,7 @@ enum LocalModelHealthScanPlanner {
                 LocalModelHealthScanJob(
                     model: model,
                     mode: requestedMode,
-                    updatesTrialStatus: requestedTrialStatusUpdates && requestedMode == .full
+                    updatesTrialStatus: requestedTrialStatusUpdates
                 )
             }
         }

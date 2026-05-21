@@ -60,6 +60,12 @@ function appendMemorySkillsAuthorityIssues(issues, readiness, args = {}) {
   return { allow, require, ...state };
 }
 
+function requireMemoryGatewayCutoverReady(args = {}) {
+  return parseBool(args['require-memory-gateway-cutover-ready'], false)
+    || parseBool(process.env.XHUB_RUST_MEMORY_GATEWAY_CUTOVER_REQUIRE_READY, false)
+    || parseBool(process.env.XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE, false);
+}
+
 function parseArgs(argv) {
   const args = { _: [] };
   for (let i = 0; i < argv.length; i += 1) {
@@ -103,6 +109,14 @@ function isLoopbackHost(host) {
 function isWildcardHost(host) {
   const normalized = safeString(host).replace(/^\[/, '').replace(/\]$/, '').toLowerCase();
   return normalized === '0.0.0.0' || normalized === '::' || normalized === '';
+}
+
+function urlHostname(raw) {
+  try {
+    return safeString(new URL(safeString(raw)).hostname);
+  } catch {
+    return '';
+  }
 }
 
 function discoverLanHost() {
@@ -181,7 +195,14 @@ function resolveConfig(args = {}, env = process.env) {
   const port = parseIntInRange(firstValue([args.port, env.XHUB_RUST_HUB_HTTP_PORT, profileConfig.port]), 50151, 1, 65535);
   const connectHost = isWildcardHost(host) ? '127.0.0.1' : host;
   const discoveredPublicHost = profile === 'lan' ? discoverLanHost() : '';
-  const publicHost = safeString(firstValue([args['public-host'], env.XHUB_RUST_HUB_PUBLIC_HOST, profileConfig.public_host, profileConfig.publicHost]))
+  const publicBaseUrlRaw = safeString(firstValue([
+    args['public-base-url'],
+    env.XHUB_RUST_HUB_PUBLIC_BASE_URL,
+    profileConfig.public_base_url,
+    profileConfig.publicBaseUrl,
+  ]));
+  const publicBaseUrlHost = urlHostname(publicBaseUrlRaw);
+  const publicHost = safeString(firstValue([args['public-host'], publicBaseUrlHost, env.XHUB_RUST_HUB_PUBLIC_HOST, profileConfig.public_host, profileConfig.publicHost]))
     || discoveredPublicHost
     || connectHost;
   const publicEndpoint = profile === 'domain'
@@ -194,12 +215,6 @@ function resolveConfig(args = {}, env = process.env) {
       profileConfig.publicEndpoint,
       profileConfig.domain,
     ]), false);
-  const publicBaseUrlRaw = safeString(firstValue([
-    args['public-base-url'],
-    env.XHUB_RUST_HUB_PUBLIC_BASE_URL,
-    profileConfig.public_base_url,
-    profileConfig.publicBaseUrl,
-  ]));
   const publicBaseUrl = publicBaseUrlRaw || `http://${publicHost}:${port}`;
   const runDir = path.resolve(pathFromRoot(firstValue([args['run-dir'], env.XHUB_RUST_DAEMON_RUN_DIR, profileConfig.run_dir, profileConfig.runDir])) || path.join(ROOT_DIR, 'run'));
   const logDir = path.resolve(pathFromRoot(firstValue([args['log-dir'], env.XHUB_RUST_DAEMON_LOG_DIR, profileConfig.log_dir, profileConfig.logDir])) || path.join(ROOT_DIR, 'logs'));
@@ -1037,6 +1052,7 @@ function launchdPassthroughEnvironment() {
 
 function launchdEnvironment(config) {
   return {
+    ...launchdPassthroughEnvironment(),
     XHUB_RUST_HUB_ROOT: config.rootDir,
     XHUB_RUST_HUB_HOST: config.host,
     XHUB_RUST_HUB_HTTP_PORT: String(config.port),
@@ -1050,8 +1066,42 @@ function launchdEnvironment(config) {
     XHUB_RUST_SKILLS_DIR: config.skillsDir,
     XHUB_RUST_HTTP_ACCESS_KEY_FILE: config.accessKeyFile || '',
     XHUB_RUST_HTTP_REQUIRE_ACCESS_KEY: config.httpRequireAccessKey ? '1' : '0',
-    ...launchdPassthroughEnvironment(),
   };
+}
+
+function assertLaunchdExplicitConfigWins() {
+  const previousPublicBaseUrl = process.env.XHUB_RUST_HUB_PUBLIC_BASE_URL;
+  const previousPublicHost = process.env.XHUB_RUST_HUB_PUBLIC_HOST;
+  process.env.XHUB_RUST_HUB_PUBLIC_BASE_URL = 'http://stale.example.invalid';
+  process.env.XHUB_RUST_HUB_PUBLIC_HOST = 'stale.example.invalid';
+  try {
+    const env = launchdEnvironment({
+      rootDir: '/tmp/xhubd-self-test',
+      host: '127.0.0.1',
+      port: 50151,
+      allowLan: false,
+      publicHost: 'andrew.tailbe79cd.ts.net',
+      publicBaseUrl: 'https://andrew.tailbe79cd.ts.net',
+      dbPath: '/tmp/xhubd-self-test/data/hub.sqlite3',
+      runtimeBaseDir: '/tmp/xhubd-self-test/runtime',
+      memoryDir: '/tmp/xhubd-self-test/data/memory',
+      skillsDir: '/tmp/xhubd-self-test/skills',
+      accessKeyFile: '/tmp/xhubd-self-test/secrets/access_key',
+      httpRequireAccessKey: true,
+      publicEndpoint: true,
+    });
+    if (env.XHUB_RUST_HUB_PUBLIC_BASE_URL !== 'https://andrew.tailbe79cd.ts.net') {
+      throw new Error('launchd_explicit_public_base_url_overridden_by_passthrough_env');
+    }
+    if (env.XHUB_RUST_HUB_PUBLIC_HOST !== 'andrew.tailbe79cd.ts.net') {
+      throw new Error('launchd_explicit_public_host_overridden_by_passthrough_env');
+    }
+  } finally {
+    if (previousPublicBaseUrl === undefined) delete process.env.XHUB_RUST_HUB_PUBLIC_BASE_URL;
+    else process.env.XHUB_RUST_HUB_PUBLIC_BASE_URL = previousPublicBaseUrl;
+    if (previousPublicHost === undefined) delete process.env.XHUB_RUST_HUB_PUBLIC_HOST;
+    else process.env.XHUB_RUST_HUB_PUBLIC_HOST = previousPublicHost;
+  }
 }
 
 function launchdPlistXml(config) {
@@ -2475,6 +2525,12 @@ async function opsReport(config, args = {}) {
   const readiness = statusOut.readiness || launchdOut.readiness || null;
   const healthy = statusOut.running === true || launchdOut.running === true;
   const readyState = readiness?.ready === true;
+  const memoryGatewayCutoverReadiness = collectMemoryGatewayCutoverReadiness(
+    config,
+    args,
+    statusOut,
+    launchdOut,
+  );
   const memorySkills = {
     allow: allowMemorySkillsProduction(args) || requireMemorySkillsProduction(args),
     require: requireMemorySkillsProduction(args),
@@ -2504,6 +2560,10 @@ async function opsReport(config, args = {}) {
     ui_compatibility: uiGate,
     xt_file_ipc_run_once_smoke: xtFileIpcRunOnceSmoke,
     xt_file_ipc_background_watcher_smoke: xtFileIpcBackgroundWatcherSmoke,
+    memory_gateway_cutover_readiness: memoryGatewayCutoverReadiness,
+    memory_gateway_cutover_readiness_required: memoryGatewayCutoverReadiness.required === true,
+    memory_gateway_cutover_ready: memoryGatewayCutoverReadiness.ready_for_require === true,
+    memory_gateway_cutover_readiness_ok: memoryGatewayCutoverReadiness.ok === true,
     ui_product_change: uiGate.product_ui_change === true,
     swift_ui_files_touched: uiGate.swift_ui_files_touched === true,
     rust_browser_product_ui: uiGate.rust_browser_product_ui === true,
@@ -2535,6 +2595,7 @@ async function opsReport(config, args = {}) {
     && (memorySkills.allow || report.skills_execution_authority_in_rust === false)
     && (!memorySkills.require || report.memory_writer_authority_in_rust === true)
     && (!memorySkills.require || report.skills_execution_authority_in_rust === true)
+    && report.memory_gateway_cutover_readiness_ok === true
     && report.xt_file_ipc_run_once_smoke_ok === true
     && report.xt_file_ipc_background_watcher_smoke_ok === true;
   ensureDir(path.dirname(reportPath));
@@ -2544,6 +2605,162 @@ async function opsReport(config, args = {}) {
 
 function uniquePaths(values) {
   return Array.from(new Set(values.filter((value) => safeString(value)).map((value) => path.resolve(value))));
+}
+
+function parentOfDataDbPath(dbPath) {
+  const resolved = safeString(dbPath);
+  if (!resolved) return '';
+  const dataDir = path.dirname(resolved);
+  if (path.basename(dataDir) !== 'data') return '';
+  return path.dirname(dataDir);
+}
+
+function memoryGatewayCutoverReadinessCandidatePaths(config, args = {}, statusOut = {}, launchdOut = {}) {
+  const explicitPath = pathFromRoot(firstValue([
+    args['memory-gateway-cutover-readiness-path'],
+    process.env.XHUB_RUST_MEMORY_GATEWAY_CUTOVER_READINESS_PATH,
+  ]));
+  const explicitBaseDir = pathFromRoot(firstValue([
+    args['memory-gateway-cutover-base-dir'],
+    process.env.XHUB_RUST_MEMORY_GATEWAY_CUTOVER_BASE_DIR,
+    process.env.REL_FLOW_HUB_BASE_DIR,
+  ]));
+  const serviceConfig = launchdRuntimeConfig(config);
+  const groupBaseDir = path.join(os.homedir(), 'Library', 'Group Containers', 'group.rel.flowhub');
+  const appSupportBaseDir = path.join(os.homedir(), 'Library', 'Application Support', 'AX', 'rust-hub', config.profile);
+  const liveStatusBaseDir = safeString(statusOut?.health?.db_path)
+    ? parentOfDataDbPath(statusOut.health.db_path)
+    : '';
+  const liveLaunchdBaseDir = safeString(launchdOut?.health?.db_path)
+    ? parentOfDataDbPath(launchdOut.health.db_path)
+    : '';
+  const fileName = 'memory_gateway_cutover_readiness.json';
+
+  return uniquePaths([
+    explicitPath,
+    explicitBaseDir ? path.join(explicitBaseDir, fileName) : '',
+    path.join(config.rootDir, fileName),
+    path.join(serviceConfig.rootDir, fileName),
+    liveStatusBaseDir ? path.join(liveStatusBaseDir, fileName) : '',
+    liveLaunchdBaseDir ? path.join(liveLaunchdBaseDir, fileName) : '',
+    path.join(appSupportBaseDir, fileName),
+    path.join(groupBaseDir, fileName),
+  ]);
+}
+
+function readMemoryGatewayCutoverReadinessReport(filePath) {
+  try {
+    const data = fs.readFileSync(filePath, 'utf8');
+    const parsed = JSON.parse(data);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, error: 'json_not_object', report: null };
+    }
+    return { ok: true, error: '', report: parsed };
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error), report: null };
+  }
+}
+
+function compactMemoryGatewayCutoverIssue(issue) {
+  const code = safeString(issue?.code);
+  const detail = safeString(issue?.detail);
+  return {
+    code,
+    blocking: issue?.blocking === true,
+    detail: detail.slice(0, 300),
+  };
+}
+
+function collectMemoryGatewayCutoverReadiness(config, args = {}, statusOut = {}, launchdOut = {}) {
+  const required = requireMemoryGatewayCutoverReady(args);
+  const candidates = memoryGatewayCutoverReadinessCandidatePaths(config, args, statusOut, launchdOut);
+  const explicitPath = safeString(args['memory-gateway-cutover-readiness-path'])
+    || safeString(process.env.XHUB_RUST_MEMORY_GATEWAY_CUTOVER_READINESS_PATH);
+  const out = {
+    schema_version: 'xhub.rust_hub.memory_gateway_cutover_readiness_gate.v1',
+    ok: true,
+    required,
+    enabled: false,
+    report_found: false,
+    report_path: '',
+    candidate_paths: candidates,
+    schema_ok: false,
+    ready_for_require: false,
+    report_ok: false,
+    source: '',
+    generated_at_ms: null,
+    age_ms: null,
+    requester_role: '',
+    use_mode: '',
+    project_id: '',
+    required_sample_count: 0,
+    matching_sample_count: 0,
+    fresh_matching_sample_count: 0,
+    considered_sample_count: 0,
+    passing_sample_count: 0,
+    stale_matching_sample_count: 0,
+    authority_violation_count: 0,
+    parity_failure_count: 0,
+    rust_source_mismatch_count: 0,
+    report_issue_codes: [],
+    report_issues: [],
+    blocking_issues: [],
+    error: '',
+  };
+
+  const reportPath = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!reportPath) {
+    if (required) out.blocking_issues.push('memory_gateway_cutover_readiness_missing');
+    out.ok = out.blocking_issues.length === 0;
+    return out;
+  }
+
+  out.enabled = true;
+  out.report_found = true;
+  out.report_path = reportPath;
+  const loaded = readMemoryGatewayCutoverReadinessReport(reportPath);
+  if (!loaded.ok) {
+    out.error = loaded.error;
+    if (required || explicitPath) out.blocking_issues.push('memory_gateway_cutover_readiness_invalid');
+    out.ok = out.blocking_issues.length === 0;
+    return out;
+  }
+
+  const report = loaded.report;
+  out.schema_ok = report.schema_version === 'xt.rust_memory_gateway_cutover_readiness.v1';
+  out.ready_for_require = report.ready_for_require === true;
+  out.report_ok = report.ok === true;
+  out.source = safeString(report.source);
+  out.generated_at_ms = Number.isFinite(Number(report.generated_at_ms)) ? Number(report.generated_at_ms) : null;
+  out.age_ms = out.generated_at_ms !== null ? Math.max(0, Date.now() - out.generated_at_ms) : null;
+  out.requester_role = safeString(report.requester_role);
+  out.use_mode = safeString(report.use_mode);
+  out.project_id = safeString(report.project_id);
+  out.required_sample_count = Number(report.required_sample_count || 0);
+  out.matching_sample_count = Number(report.matching_sample_count || 0);
+  out.fresh_matching_sample_count = Number(report.fresh_matching_sample_count || 0);
+  out.considered_sample_count = Number(report.considered_sample_count || 0);
+  out.passing_sample_count = Number(report.passing_sample_count || 0);
+  out.stale_matching_sample_count = Number(report.stale_matching_sample_count || 0);
+  out.authority_violation_count = Number(report.authority_violation_count || 0);
+  out.parity_failure_count = Number(report.parity_failure_count || 0);
+  out.rust_source_mismatch_count = Number(report.rust_source_mismatch_count || 0);
+  out.report_issues = Array.isArray(report.issues)
+    ? report.issues.slice(0, 12).map(compactMemoryGatewayCutoverIssue)
+    : [];
+  out.report_issue_codes = out.report_issues.map((issue) => issue.code).filter(Boolean);
+
+  if (!out.schema_ok && (required || explicitPath)) {
+    out.blocking_issues.push('memory_gateway_cutover_readiness_schema_mismatch');
+  }
+  if (out.authority_violation_count > 0 || out.report_issue_codes.includes('memory_gateway_cutover_authority_violation')) {
+    out.blocking_issues.push('memory_gateway_cutover_authority_violation');
+  }
+  if (required && (!out.report_ok || !out.ready_for_require)) {
+    out.blocking_issues.push('memory_gateway_cutover_readiness_not_ready');
+  }
+  out.ok = out.blocking_issues.length === 0;
+  return out;
 }
 
 function maintenanceLogFiles(config) {
@@ -3064,6 +3281,12 @@ async function opsGate(config, args = {}) {
   const budgetSlowRequests = recentSlowAvailable ? Number(recentSlowRequests || 0) : cumulativeSlowRequests;
   const maintenanceNeeded = Number(logMaintenance.files_over_limit || 0) > 0
     || Number(reportMaintenance.files_planned_delete || 0) > 0;
+  const memoryGatewayCutoverReadiness = collectMemoryGatewayCutoverReadiness(
+    config,
+    args,
+    statusOut,
+    launchdOut,
+  );
   const issues = [];
   if (requireReady && !healthy) issues.push('daemon_health_unavailable');
   if (requireReady && !readyState) issues.push('daemon_readiness_unavailable');
@@ -3074,6 +3297,7 @@ async function opsGate(config, args = {}) {
   if (uiGate.rust_browser_product_ui === true) issues.push('rust_browser_product_ui');
   if (xtFileIpcRunOnceSmoke.ok !== true) issues.push('xt_file_ipc_run_once_smoke_failed');
   if (xtFileIpcBackgroundWatcherSmoke.ok !== true) issues.push('xt_file_ipc_background_watcher_smoke_failed');
+  issues.push(...memoryGatewayCutoverReadiness.blocking_issues);
   const memorySkills = appendMemorySkillsAuthorityIssues(issues, readiness, args);
 
   const report = {
@@ -3118,6 +3342,10 @@ async function opsGate(config, args = {}) {
     ui_compatibility: uiGate,
     xt_file_ipc_run_once_smoke: xtFileIpcRunOnceSmoke,
     xt_file_ipc_background_watcher_smoke: xtFileIpcBackgroundWatcherSmoke,
+    memory_gateway_cutover_readiness: memoryGatewayCutoverReadiness,
+    memory_gateway_cutover_readiness_required: memoryGatewayCutoverReadiness.required === true,
+    memory_gateway_cutover_ready: memoryGatewayCutoverReadiness.ready_for_require === true,
+    memory_gateway_cutover_readiness_ok: memoryGatewayCutoverReadiness.ok === true,
     ui_product_change: uiGate.product_ui_change === true,
     swift_ui_files_touched: uiGate.swift_ui_files_touched === true,
     rust_browser_product_ui: uiGate.rust_browser_product_ui === true,
@@ -3348,6 +3576,7 @@ function printEnv(config) {
 }
 
 async function selfTest(config) {
+  assertLaunchdExplicitConfigWins();
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xhubd-daemon-self-test-'));
   const port = 57000 + (process.pid % 1000);
   const selfConfig = {
@@ -3455,6 +3684,8 @@ Options:
   --xt-file-ipc-run-once-smoke-timeout-ms <n> Timeout for that isolated smoke
   --xt-file-ipc-background-watcher-smoke For ops-report/ops-gate, run isolated XT file IPC background watcher smoke
   --xt-file-ipc-background-watcher-smoke-timeout-ms <n> Timeout for that isolated smoke
+  --memory-gateway-cutover-readiness-path <p> For ops-report/ops-gate, explicit memory_gateway_cutover_readiness.json
+  --require-memory-gateway-cutover-ready For ops-gate, require ready_for_require=true before live require cutover
   --allow-memory-skills-production For ops/report/watchdog gates, permit explicit Rust memory writer and skills execution authority
   --require-memory-skills-production For ops/report/watchdog gates, require both Rust memory writer and skills execution authority
   --allow-manual   For watchdog, do not require launchd to be loaded

@@ -42,6 +42,15 @@ xt_memory_truth_closure_step_status="not_run"
 xt_memory_truth_closure_step_log="${LOG_DIR}/xt_memory_truth_closure_smoke.log"
 xt_memory_truth_closure_step_command="bash scripts/smoke_xhub_doctor_xt_memory_truth_closure.sh"
 
+role_turn_metadata_step_status="not_run"
+role_turn_metadata_step_log="${LOG_DIR}/role_turn_metadata_live_smoke.log"
+role_turn_metadata_report_path="${REPORT_DIR}/role_turn_metadata_live_smoke.v1.json"
+role_turn_metadata_step_command="XHUB_ROLE_TURN_SMOKE_REPORT_PATH=${role_turn_metadata_report_path} npm --prefix x-hub/grpc-server/hub_grpc_server run smoke:role-turn-metadata"
+
+xt_role_turn_bridge_step_status="not_run"
+xt_role_turn_bridge_step_log="${LOG_DIR}/xt_role_turn_bridge_live_e2e.log"
+xt_role_turn_bridge_step_command="swift test --package-path x-terminal --filter HubPairingCoordinatorRoleTurnBridgeLiveTests"
+
 smoke_step_status="not_run"
 smoke_step_log="${LOG_DIR}/all_source_smoke.log"
 smoke_step_command="bash scripts/smoke_xhub_doctor_all_source_export.sh"
@@ -131,6 +140,27 @@ else
 fi
 
 if run_step \
+  "role_turn_metadata_live_smoke" \
+  "Hub role-aware memory contract live smoke" \
+  "${role_turn_metadata_step_log}" \
+  env XHUB_ROLE_TURN_SMOKE_REPORT_PATH="${role_turn_metadata_report_path}" \
+    npm --prefix x-hub/grpc-server/hub_grpc_server run smoke:role-turn-metadata; then
+  role_turn_metadata_step_status="pass"
+else
+  role_turn_metadata_step_status="fail"
+fi
+
+if run_step \
+  "xt_role_turn_bridge_live_e2e" \
+  "XT Hub role-turn bridge live E2E" \
+  "${xt_role_turn_bridge_step_log}" \
+  swift test --package-path x-terminal --filter HubPairingCoordinatorRoleTurnBridgeLiveTests; then
+  xt_role_turn_bridge_step_status="pass"
+else
+  xt_role_turn_bridge_step_status="fail"
+fi
+
+if run_step \
   "all_source_smoke" \
   "Aggregate Hub + XT source smoke" \
   "${smoke_step_log}" \
@@ -167,16 +197,20 @@ export XHUB_DOCTOR_SOURCE_GATE_XT_PAIRING_REPAIR_STATUS="${xt_pairing_repair_ste
 export XHUB_DOCTOR_SOURCE_GATE_XT_PAIRING_REPAIR_COMMAND="${xt_pairing_repair_step_command}"
 export XHUB_DOCTOR_SOURCE_GATE_XT_MEMORY_TRUTH_CLOSURE_STATUS="${xt_memory_truth_closure_step_status}"
 export XHUB_DOCTOR_SOURCE_GATE_XT_MEMORY_TRUTH_CLOSURE_COMMAND="${xt_memory_truth_closure_step_command}"
+export XHUB_DOCTOR_SOURCE_GATE_ROLE_TURN_METADATA_STATUS="${role_turn_metadata_step_status}"
+export XHUB_DOCTOR_SOURCE_GATE_ROLE_TURN_METADATA_COMMAND="${role_turn_metadata_step_command}"
+export XHUB_DOCTOR_SOURCE_GATE_XT_ROLE_TURN_BRIDGE_STATUS="${xt_role_turn_bridge_step_status}"
+export XHUB_DOCTOR_SOURCE_GATE_XT_ROLE_TURN_BRIDGE_COMMAND="${xt_role_turn_bridge_step_command}"
 export XHUB_DOCTOR_SOURCE_GATE_SMOKE_STATUS="${smoke_step_status}"
 export XHUB_DOCTOR_SOURCE_GATE_SMOKE_COMMAND="${smoke_step_command}"
 
-python3 - "${SUMMARY_PATH}" "${REPORT_DIR}" "${wrapper_step_log}" "${build_snapshot_retention_step_log}" "${hub_local_service_snapshot_step_log}" "${xt_smoke_step_log}" "${xt_pairing_repair_step_log}" "${xt_memory_truth_closure_step_log}" "${smoke_step_log}" "${build_snapshot_inventory_step_log}" <<'PY'
+python3 - "${SUMMARY_PATH}" "${REPORT_DIR}" "${wrapper_step_log}" "${build_snapshot_retention_step_log}" "${hub_local_service_snapshot_step_log}" "${xt_smoke_step_log}" "${xt_pairing_repair_step_log}" "${xt_memory_truth_closure_step_log}" "${role_turn_metadata_step_log}" "${xt_role_turn_bridge_step_log}" "${smoke_step_log}" "${build_snapshot_inventory_step_log}" <<'PY'
 import json
 import os
 import sys
 import time
 
-summary_path, report_dir, wrapper_log, build_snapshot_retention_log, hub_local_service_snapshot_log, xt_smoke_log, xt_pairing_repair_log, xt_memory_truth_closure_log, smoke_log, build_snapshot_inventory_log = sys.argv[1:11]
+summary_path, report_dir, wrapper_log, build_snapshot_retention_log, hub_local_service_snapshot_log, xt_smoke_log, xt_pairing_repair_log, xt_memory_truth_closure_log, role_turn_metadata_log, xt_role_turn_bridge_log, smoke_log, build_snapshot_inventory_log = sys.argv[1:13]
 
 
 def load_json_if_exists(path):
@@ -987,11 +1021,41 @@ def compact_build_snapshot_inventory_report(payload):
     }
 
 
+def compact_role_turn_metadata_live_smoke(payload):
+    if not isinstance(payload, dict):
+        return None
+    evidence = payload.get("evidence") or {}
+    rows = evidence.get("rows") if isinstance(evidence.get("rows"), list) else []
+    role_rows = [
+        row for row in rows
+        if isinstance(row, dict) and row.get("dispatch_id")
+    ]
+    return {
+        "ok": payload.get("ok"),
+        "schema_version": payload.get("schema_version"),
+        "duration_ms": payload.get("duration_ms"),
+        "thread_id": payload.get("thread_id"),
+        "dispatch_id": payload.get("dispatch_id"),
+        "append_request_id": payload.get("append_request_id"),
+        "assertions": payload.get("assertions") if isinstance(payload.get("assertions"), dict) else {},
+        "role_turn_count": len(role_rows),
+        "source_roles": [row.get("source_role") for row in role_rows],
+        "target_roles": [row.get("target_role") for row in role_rows],
+        "dispatch_kinds": [row.get("dispatch_kind") for row in role_rows],
+        "legacy_turn_metadata_empty": (evidence.get("legacy_row") or {}).get("role_metadata_json") is None,
+        "mismatch_row_count": evidence.get("mismatch_row_count"),
+        "audit_role_metadata_count": (evidence.get("append_audit_ext") or {}).get("role_metadata_count"),
+        "audit_dispatch_ids": (evidence.get("append_audit_ext") or {}).get("dispatch_ids") or [],
+        "audit_source_roles": (evidence.get("append_audit_ext") or {}).get("source_roles") or [],
+    }
+
+
 hub_local_service_snapshot_evidence_ref = os.path.join(report_dir, "xhub_doctor_hub_local_service_snapshot_smoke_evidence.v1.json")
 xt_smoke_evidence_ref = os.path.join(report_dir, "xhub_doctor_xt_source_smoke_evidence.v1.json")
 xt_pairing_repair_evidence_ref = os.path.join(report_dir, "xhub_doctor_xt_pairing_repair_smoke_evidence.v1.json")
 xt_stale_profile_repair_evidence_ref = os.path.join(report_dir, "xt_stale_profile_repair_evidence.v1.json")
 xt_memory_truth_closure_evidence_ref = os.path.join(report_dir, "xhub_doctor_xt_memory_truth_closure_smoke_evidence.v1.json")
+role_turn_metadata_evidence_ref = os.path.join(report_dir, "role_turn_metadata_live_smoke.v1.json")
 all_smoke_evidence_ref = os.path.join(report_dir, "xhub_doctor_all_source_smoke_evidence.v1.json")
 hub_pairing_launch_only_evidence_ref = os.path.join(report_dir, "xhub_background_launch_only_smoke_evidence.v1.json")
 hub_pairing_verify_only_evidence_ref = os.path.join(report_dir, "xhub_pairing_roundtrip_verify_only_smoke_evidence.v1.json")
@@ -1000,6 +1064,8 @@ hub_local_service_snapshot_status = os.environ["XHUB_DOCTOR_SOURCE_GATE_HUB_LOCA
 xt_smoke_status = os.environ["XHUB_DOCTOR_SOURCE_GATE_XT_SMOKE_STATUS"]
 xt_pairing_repair_status = os.environ["XHUB_DOCTOR_SOURCE_GATE_XT_PAIRING_REPAIR_STATUS"]
 xt_memory_truth_closure_status = os.environ["XHUB_DOCTOR_SOURCE_GATE_XT_MEMORY_TRUTH_CLOSURE_STATUS"]
+role_turn_metadata_status = os.environ["XHUB_DOCTOR_SOURCE_GATE_ROLE_TURN_METADATA_STATUS"]
+xt_role_turn_bridge_status = os.environ["XHUB_DOCTOR_SOURCE_GATE_XT_ROLE_TURN_BRIDGE_STATUS"]
 all_smoke_status = os.environ["XHUB_DOCTOR_SOURCE_GATE_SMOKE_STATUS"]
 build_snapshot_inventory_status = os.environ["XHUB_DOCTOR_SOURCE_GATE_BUILD_SNAPSHOT_INVENTORY_STATUS"]
 
@@ -1026,6 +1092,11 @@ xt_stale_profile_repair_evidence = (
 xt_memory_truth_closure_evidence = (
     load_json_if_exists(xt_memory_truth_closure_evidence_ref)
     if xt_memory_truth_closure_status == "pass"
+    else None
+)
+role_turn_metadata_evidence = (
+    load_json_if_exists(role_turn_metadata_evidence_ref)
+    if role_turn_metadata_status == "pass"
     else None
 )
 hub_pairing_launch_only_evidence = load_json_if_exists(hub_pairing_launch_only_evidence_ref)
@@ -1144,6 +1215,23 @@ payload = {
             "structured_memory_truth_closure_snapshot": compact_xt_memory_truth_closure_snapshot(
                 xt_memory_truth_closure_evidence if xt_memory_truth_closure_evidence else None
             ),
+        },
+        {
+            "step_id": "role_turn_metadata_live_smoke",
+            "status": role_turn_metadata_status,
+            "command": os.environ["XHUB_DOCTOR_SOURCE_GATE_ROLE_TURN_METADATA_COMMAND"],
+            "log_path": os.path.realpath(role_turn_metadata_log),
+            "evidence_ref": os.path.realpath(role_turn_metadata_evidence_ref) if role_turn_metadata_evidence else "",
+            "structured_role_turn_metadata_live_smoke": compact_role_turn_metadata_live_smoke(
+                role_turn_metadata_evidence if role_turn_metadata_evidence else None
+            ),
+        },
+        {
+            "step_id": "xt_role_turn_bridge_live_e2e",
+            "status": xt_role_turn_bridge_status,
+            "command": os.environ["XHUB_DOCTOR_SOURCE_GATE_XT_ROLE_TURN_BRIDGE_COMMAND"],
+            "log_path": os.path.realpath(xt_role_turn_bridge_log),
+            "boundary": "XT bridge consumes Hub Memory role metadata truth; no XT durable Memory authority",
         },
         {
             "step_id": "all_source_smoke",
@@ -1473,6 +1561,20 @@ payload = {
         "xt_memory_truth_closure_snapshot": compact_xt_memory_truth_closure_snapshot(
             xt_memory_truth_closure_evidence if xt_memory_truth_closure_evidence else None
         ),
+    },
+    "role_turn_metadata_contract_support": {
+        "role_turn_metadata_smoke_evidence_ref": (
+            os.path.realpath(role_turn_metadata_evidence_ref) if role_turn_metadata_evidence else ""
+        ),
+        "role_turn_metadata_smoke_status": role_turn_metadata_status,
+        "role_turn_metadata_live_smoke": compact_role_turn_metadata_live_smoke(
+            role_turn_metadata_evidence if role_turn_metadata_evidence else None
+        ),
+    },
+    "xt_role_turn_bridge_support": {
+        "xt_role_turn_bridge_live_e2e_status": xt_role_turn_bridge_status,
+        "xt_role_turn_bridge_live_e2e_log_ref": os.path.realpath(xt_role_turn_bridge_log),
+        "boundary": "XT bridge consumes Hub Memory role metadata truth; no XT durable Memory authority",
     },
     "build_snapshot_inventory_support": {
         "report_ref": os.path.realpath(build_snapshot_inventory_report_ref) if build_snapshot_inventory_report else "",

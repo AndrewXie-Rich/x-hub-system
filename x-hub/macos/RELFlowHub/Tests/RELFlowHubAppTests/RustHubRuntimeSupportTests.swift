@@ -24,6 +24,116 @@ final class RustHubRuntimeSupportTests: XCTestCase {
         XCTAssertEqual(info.embeddedAtUTC, "2026-05-12T15:22:03Z")
     }
 
+    func testLocalModelRepairPlanURLCarriesRuntimeBaseDirAndTaskKind() throws {
+        let runtimeBaseDir = URL(fileURLWithPath: "/Users/test/Library/Application Support/AX/RELFlowHub", isDirectory: true)
+
+        let url = try XCTUnwrap(
+            RustHubRuntimeSupport.localModelRepairPlanURL(
+                taskKind: "vision_understand",
+                runtimeBaseDir: runtimeBaseDir,
+                baseURL: "http://127.0.0.1:50151/"
+            )
+        )
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+
+        XCTAssertEqual(components.scheme, "http")
+        XCTAssertEqual(components.host, "127.0.0.1")
+        XCTAssertEqual(components.path, "/model/repair-plan")
+        XCTAssertEqual(
+            components.queryItems?.first(where: { $0.name == "runtime_base_dir" })?.value,
+            runtimeBaseDir.standardizedFileURL.path
+        )
+        XCTAssertEqual(
+            components.queryItems?.first(where: { $0.name == "task_kind" })?.value,
+            "vision_understand"
+        )
+    }
+
+    func testLocalModelRepairApplyURLAndBodyCarriesConfirmationToken() throws {
+        let runtimeBaseDir = URL(fileURLWithPath: "/Users/test/Library/Application Support/AX/RELFlowHub", isDirectory: true)
+        let plan = try XCTUnwrap(
+            RustLocalModelRepairPlanSupport.decode(data: Data(sampleRustRepairPlanJSON.utf8))
+        )
+
+        let url = try XCTUnwrap(
+            RustHubRuntimeSupport.localModelRepairApplyURL(baseURL: "http://127.0.0.1:50151/")
+        )
+        let body = try XCTUnwrap(
+            RustHubRuntimeSupport.localModelRepairApplyRequestBody(
+                plan: plan,
+                requestedBy: "unit_test",
+                runtimeBaseDir: runtimeBaseDir
+            )
+        )
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+
+        XCTAssertEqual(url.path, "/model/repair-apply")
+        XCTAssertEqual(object["action"] as? String, "install_provider_pack:mlx_vlm")
+        XCTAssertEqual(object["task_kind"] as? String, "vision_understand")
+        XCTAssertEqual(object["provider_id"] as? String, "mlx_vlm")
+        XCTAssertEqual(object["confirm"] as? Bool, true)
+        XCTAssertEqual(object["dry_run"] as? Bool, false)
+        XCTAssertEqual(object["confirmation_token"] as? String, "confirm:install_provider_pack:mlx_vlm")
+        XCTAssertEqual(object["requested_by"] as? String, "unit_test")
+        XCTAssertEqual(object["runtime_base_dir"] as? String, runtimeBaseDir.standardizedFileURL.path)
+    }
+
+    func testLocalModelRepairApplyDecodeCarriesQueuedJobPolicyWithoutSecrets() throws {
+        let result = try XCTUnwrap(
+            RustLocalModelRepairApplySupport.decode(data: Data(sampleRustRepairApplyJSON.utf8))
+        )
+
+        XCTAssertTrue(result.ok)
+        XCTAssertTrue(result.accepted)
+        XCTAssertFalse(result.dryRun)
+        XCTAssertEqual(result.status, "queued_waiting_executor")
+        XCTAssertEqual(result.jobID, "repair_install_provider_pack_mlx_vlm_1001")
+        XCTAssertEqual(result.resolved.action, "install_provider_pack:mlx_vlm")
+        XCTAssertEqual(result.jobPolicy.executionMode, "queued_nonblocking")
+        XCTAssertFalse(result.jobPolicy.uiThreadBlockingAllowed)
+        XCTAssertFalse(result.jobPolicy.httpRequestBlockingAllowed)
+        XCTAssertTrue(result.jobPolicy.executorReady)
+
+        let secretRaw = sampleRustRepairApplyJSON.replacingOccurrences(
+            of: "\"job_id\": \"repair_install_provider_pack_mlx_vlm_1001\"",
+            with: "\"job_id\": \"api_key=sk-should-not-cross-ui\""
+        )
+        XCTAssertNil(RustLocalModelRepairApplySupport.decode(data: Data(secretRaw.utf8)))
+    }
+
+    func testLocalModelRepairJobsURLAndDecodeCarriesLatestJob() throws {
+        let runtimeBaseDir = URL(fileURLWithPath: "/Users/test/Library/Application Support/AX/RELFlowHub", isDirectory: true)
+        let url = try XCTUnwrap(
+            RustHubRuntimeSupport.localModelRepairJobsURL(
+                limit: 7,
+                runtimeBaseDir: runtimeBaseDir,
+                baseURL: "http://127.0.0.1:50151/"
+            )
+        )
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let snapshot = try XCTUnwrap(
+            RustLocalModelRepairApplySupport.decodeJobs(data: Data(sampleRustRepairJobsJSON.utf8))
+        )
+
+        XCTAssertEqual(components.path, "/model/repair-jobs")
+        XCTAssertEqual(components.queryItems?.first(where: { $0.name == "limit" })?.value, "7")
+        XCTAssertEqual(
+            components.queryItems?.first(where: { $0.name == "runtime_base_dir" })?.value,
+            runtimeBaseDir.standardizedFileURL.path
+        )
+        XCTAssertTrue(snapshot.ok)
+        XCTAssertEqual(snapshot.jobs.count, 2)
+        XCTAssertEqual(snapshot.latestJob?.jobID, "repair_install_provider_pack_mlx_vlm_1002")
+        XCTAssertEqual(snapshot.latestJob?.status, "applied_pending_runtime_restart")
+        XCTAssertEqual(snapshot.latestJob?.executorState.reasonCode, "rust_model_repair_executor_completed")
+
+        let secretRaw = sampleRustRepairJobsJSON.replacingOccurrences(
+            of: "\"requested_by\": \"swift_hub_settings\"",
+            with: "\"requested_by\": \"api_key=sk-should-not-cross-ui\""
+        )
+        XCTAssertNil(RustLocalModelRepairApplySupport.decodeJobs(data: Data(secretRaw.utf8)))
+    }
+
     func testNodeSidecarEnvironmentPointsAtEmbeddedPackageWithoutCutoverAuthority() throws {
         let info = RustHubEmbeddedPackageInfo(
             rootPath: "/Applications/X-Hub.app/Contents/Resources/rust-hub",
@@ -139,6 +249,37 @@ final class RustHubRuntimeSupportTests: XCTestCase {
         XCTAssertNil(env["XHUB_RUST_SCHEDULER_AUTHORITY"])
         XCTAssertNil(env["XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY"])
         XCTAssertNil(env["XHUB_RUST_MODEL_ROUTE_PRODUCTION_AUTHORITY"])
+    }
+
+    func testNodeSidecarEnvironmentPassesResolvedRustAccessKeyWithoutFilePath() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try makeExecutableFile(at: root.appendingPathComponent("bin/xhubd"))
+        try makeExecutableFile(at: root.appendingPathComponent("tools/run_rust_hub.command"))
+        let keyFile = root.appendingPathComponent("secrets/xhubd_domain_access_key")
+        try FileManager.default.createDirectory(at: keyFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "node-sidecar-secret\n".write(to: keyFile, atomically: true, encoding: .utf8)
+
+        let info = RustHubEmbeddedPackageInfo(
+            rootPath: root.path,
+            xhubdPath: root.appendingPathComponent("bin/xhubd").path,
+            runnerPath: root.appendingPathComponent("tools/run_rust_hub.command").path,
+            manifestPath: "",
+            exists: true,
+            valid: true,
+            sourcePackageDir: "",
+            embeddedAtUTC: ""
+        )
+
+        let env = RustHubRuntimeSupport.nodeSidecarEnvironmentAdditions(
+            embeddedPackage: info,
+            baseEnvironment: [:]
+        )
+
+        XCTAssertEqual(env["XHUB_RUST_HTTP_ACCESS_KEY"], "node-sidecar-secret")
+        XCTAssertEqual(env["XHUB_RUST_HUB_ACCESS_KEY"], "node-sidecar-secret")
+        XCTAssertNil(env["XHUB_RUST_HTTP_ACCESS_KEY_FILE"])
+        XCTAssertNil(env["XHUB_RUST_HUB_ACCESS_KEY_FILE"])
     }
 
     func testNodeSidecarBaseEnvironmentRemovesFalseAuthorityDefaults() {
@@ -406,6 +547,36 @@ final class RustHubRuntimeSupportTests: XCTestCase {
         XCTAssertEqual(key, "file-secret")
     }
 
+    func testHTTPAccessKeyReadsActivePackageSecretCandidates() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let keyFile = root.appendingPathComponent("secrets/xhubd_domain_access_key")
+        try FileManager.default.createDirectory(at: keyFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "active-root-secret\n".write(to: keyFile, atomically: true, encoding: .utf8)
+
+        let key = RustHubRuntimeSupport.httpAccessKey(
+            environment: [:],
+            activePackageRoots: [root]
+        )
+
+        XCTAssertEqual(key, "active-root-secret")
+    }
+
+    func testHTTPAccessKeyReadsActivePackageConfigCandidates() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let keyFile = root.appendingPathComponent("config/xhubd_domain_access_key")
+        try FileManager.default.createDirectory(at: keyFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "active-root-config-secret\n".write(to: keyFile, atomically: true, encoding: .utf8)
+
+        let key = RustHubRuntimeSupport.httpAccessKey(
+            environment: [:],
+            activePackageRoots: [root]
+        )
+
+        XCTAssertEqual(key, "active-root-config-secret")
+    }
+
     func testRemoteEntryCandidatesPrefersNoDomainPrivateHostFromRustCore() {
         let candidates = RustHubRuntimeSupport.makeRemoteEntryCandidates(object: [
             "schema_version": "xhub.rust_hub.remote_entry_candidates.v1",
@@ -422,7 +593,7 @@ final class RustHubRuntimeSupportTests: XCTestCase {
                 "requires_mtls": true,
                 "classification": [
                     "kind": "vpn_raw",
-                    "scope": "tailscale_headscale_ip",
+                    "scope": "tailscale_ip",
                     "stable": true,
                     "encrypted_private_candidate": true
                 ]
@@ -437,7 +608,7 @@ final class RustHubRuntimeSupportTests: XCTestCase {
                 "requires_mtls": true,
                 "classification": [
                     "kind": "vpn_raw",
-                    "scope": "tailscale_headscale_ip",
+                    "scope": "tailscale_ip",
                     "stable": true,
                     "encrypted_private_candidate": true
                 ]
@@ -447,7 +618,7 @@ final class RustHubRuntimeSupportTests: XCTestCase {
         XCTAssertTrue(candidates.ok)
         XCTAssertEqual(candidates.recommendedSetup, "use_no_domain_private_network")
         XCTAssertEqual(candidates.preferredNoDomainPrivateHost, "100.122.237.57")
-        XCTAssertEqual(candidates.candidates.first?.classification.scope, "tailscale_headscale_ip")
+        XCTAssertEqual(candidates.candidates.first?.classification.scope, "tailscale_ip")
     }
 
     func testRemoteEntryCandidatesDoesNotTreatDomainAsNoDomainPrivateHost() {
@@ -472,6 +643,174 @@ final class RustHubRuntimeSupportTests: XCTestCase {
         ])
 
         XCTAssertNil(candidates.preferredNoDomainPrivateHost)
+    }
+
+    private var sampleRustRepairPlanJSON: String {
+        """
+        {
+          "schema_version": "xhub.model_local_runtime_repair_plan.v1",
+          "ok": true,
+          "state": "repair_required",
+          "safe_to_auto_apply": false,
+          "requires_user_approval": true,
+          "requires_network": true,
+          "requires_download": true,
+          "secret_fields_included": false,
+          "summary": "Install or repair Hub local provider pack `mlx_vlm` before XT uses local model tasks.",
+          "resolved": {
+            "action": "install_provider_pack:mlx_vlm",
+            "task_kind": "vision_understand",
+            "provider_id": "mlx_vlm",
+            "source": "request_task_kind"
+          },
+          "target": {
+            "kind": "provider_pack",
+            "provider_id": "mlx_vlm",
+            "task_kind": "vision_understand"
+          },
+          "requirements": {
+            "engine": "mlx-vlm",
+            "execution_mode": "builtin_python",
+            "install_target": "hub_managed_python_runtime",
+            "python_import_modules": ["mlx_vlm"],
+            "python_packages": ["mlx-vlm"],
+            "supported_domains": ["vision"],
+            "expected_task_kinds": ["vision_understand"]
+          },
+          "missing_requirements": ["python_module:mlx_vlm"],
+          "confirmation": {
+            "required_for_apply": true,
+            "token_hint": "confirm:install_provider_pack:mlx_vlm",
+            "apply_endpoint": "/model/repair-apply",
+            "heavy_work_policy": "never_run_installs_on_ui_or_http_request_thread"
+          },
+          "steps": []
+        }
+        """
+    }
+
+    private var sampleRustRepairApplyJSON: String {
+        """
+        {
+          "schema_version": "xhub.model_local_runtime_repair_apply.v1",
+          "ok": true,
+          "accepted": true,
+          "dry_run": false,
+          "status": "queued_waiting_executor",
+          "updated_at_ms": 1001,
+          "runtime_base_dir": "/Users/test/Library/Application Support/AX/RELFlowHub",
+          "job_id": "repair_install_provider_pack_mlx_vlm_1001",
+          "job_path": "/Users/test/Library/Application Support/AX/RELFlowHub/model_repair_jobs/repair_install_provider_pack_mlx_vlm_1001.json",
+          "resolved": {
+            "action": "install_provider_pack:mlx_vlm",
+            "task_kind": "vision_understand",
+            "provider_id": "mlx_vlm",
+            "source": "request_task_kind"
+          },
+          "target": {
+            "kind": "provider_pack",
+            "provider_id": "mlx_vlm",
+            "task_kind": "vision_understand"
+          },
+          "requirements": {
+            "engine": "mlx-vlm",
+            "execution_mode": "builtin_python",
+            "install_target": "hub_managed_python_runtime",
+            "python_import_modules": ["mlx_vlm"],
+            "python_packages": ["mlx-vlm"],
+            "supported_domains": ["vision"],
+            "expected_task_kinds": ["vision_understand"]
+          },
+          "job_policy": {
+            "execution_mode": "queued_nonblocking",
+            "ui_thread_blocking_allowed": false,
+            "http_request_blocking_allowed": false,
+            "network_install_requires_user_approval": true,
+            "executor": "rust_model_repair_executor",
+            "executor_ready": true
+          },
+          "secret_fields_included": false
+        }
+        """
+    }
+
+    private var sampleRustRepairJobsJSON: String {
+        """
+        {
+          "schema_version": "xhub.model_local_runtime_repair_jobs.v1",
+          "ok": true,
+          "runtime_base_dir": "/Users/test/Library/Application Support/AX/RELFlowHub",
+          "jobs_dir": "/Users/test/Library/Application Support/AX/RELFlowHub/model_repair_jobs",
+          "count": 2,
+          "limit": 10,
+          "updated_at_ms": 1003,
+          "secret_fields_included": false,
+          "jobs": [
+            {
+              "job_id": "repair_install_provider_pack_mlx_vlm_1001",
+              "status": "queued_waiting_executor",
+              "created_at_ms": 1001,
+              "updated_at_ms": 1001,
+              "requested_by": "swift_hub_settings",
+              "resolved": {
+                "action": "install_provider_pack:mlx_vlm",
+                "task_kind": "vision_understand",
+                "provider_id": "mlx_vlm",
+                "source": "request_task_kind"
+              },
+              "target": {
+                "kind": "provider_pack",
+                "provider_id": "mlx_vlm",
+                "task_kind": "vision_understand"
+              },
+              "job_policy": {
+                "execution_mode": "queued_nonblocking",
+                "ui_thread_blocking_allowed": false,
+                "http_request_blocking_allowed": false,
+                "network_install_requires_user_approval": true,
+                "executor": "rust_model_repair_executor",
+                "executor_ready": true
+              },
+              "executor_state": {
+                "ready": true,
+                "reason_code": "rust_model_repair_executor_available"
+              },
+              "secret_fields_included": false
+            },
+            {
+              "job_id": "repair_install_provider_pack_mlx_vlm_1002",
+              "status": "applied_pending_runtime_restart",
+              "created_at_ms": 1002,
+              "updated_at_ms": 1003,
+              "requested_by": "swift_hub_settings",
+              "resolved": {
+                "action": "install_provider_pack:mlx_vlm",
+                "task_kind": "vision_understand",
+                "provider_id": "mlx_vlm",
+                "source": "request_task_kind"
+              },
+              "target": {
+                "kind": "provider_pack",
+                "provider_id": "mlx_vlm",
+                "task_kind": "vision_understand"
+              },
+              "job_policy": {
+                "execution_mode": "queued_nonblocking",
+                "ui_thread_blocking_allowed": false,
+                "http_request_blocking_allowed": false,
+                "network_install_requires_user_approval": true,
+                "executor": "rust_model_repair_executor",
+                "executor_ready": true
+              },
+              "executor_state": {
+                "ready": true,
+                "reason_code": "rust_model_repair_executor_completed"
+              },
+              "secret_fields_included": false
+            }
+          ]
+        }
+        """
     }
 
     private func makeTemporaryDirectory() throws -> URL {

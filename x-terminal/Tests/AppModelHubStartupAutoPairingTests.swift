@@ -124,6 +124,18 @@ struct AppModelHubStartupAutoPairingTests {
     }
 
     @Test
+    func automaticFirstPairRepairContextTreatsTailscaleIPAsFormalRemoteEntry() {
+        let context = AppModel.automaticFirstPairRepairContext(
+            for: "grpc_unavailable",
+            internetHost: "100.122.237.57"
+        )
+
+        #expect(context.title == "Tailscale 入口已配置，先检查 tailnet 和 Hub 服务")
+        #expect(context.detail.contains("Tailscale IP 100.122.237.57"))
+        #expect(context.detail.contains("同一个 tailnet"))
+    }
+
+    @Test
     func automaticFirstPairRepairContextExplainsLocalNetworkDiscoveryBlock() {
         let context = AppModel.automaticFirstPairRepairContext(
             for: "local_network_permission_required",

@@ -720,7 +720,8 @@ def build_registry(
 
     mlx_provider = registry.get("mlx")
     if isinstance(mlx_provider, MLXProvider):
-        mlx_provider._runtime = runtime
+        if runtime is not None:
+            mlx_provider._runtime = runtime
         mlx_provider._runtime_version = RUNTIME_VERSION
     else:
         registry.register(MLXProvider(runtime=runtime, runtime_version=RUNTIME_VERSION))

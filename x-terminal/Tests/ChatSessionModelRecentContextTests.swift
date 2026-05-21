@@ -1926,6 +1926,89 @@ goal: keep governed memory continuity
     }
 
     @Test
+    func projectMemoryUsageFieldsCarryRustGatewayAuditFromHubResponse() async throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-memory-usage-rust-gateway-audit")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        let config = AXProjectConfig.default(forProjectRoot: root)
+            .settingHubMemoryPreference(enabled: true)
+        session.messages = [
+            AXChatMessage(role: .user, content: "继续整理 Rust memory gateway 切换证据。", createdAt: 32),
+            AXChatMessage(role: .assistant, content: "我会记录模型上下文来源。", createdAt: 33),
+        ]
+
+        HubIPCClient.installMemoryContextResolutionOverrideForTesting { route, mode, _ in
+            let response = HubIPCClient.MemoryContextResponsePayload(
+                text: """
+[MEMORY_V1]
+[DIALOGUE_WINDOW]
+messages:
+user: keep Rust gateway evidence bounded
+[/DIALOGUE_WINDOW]
+[FOCUSED_PROJECT_ANCHOR_PACK]
+goal: expose Rust gateway context provenance
+[/FOCUSED_PROJECT_ANCHOR_PACK]
+[/MEMORY_V1]
+""",
+                source: "rust_memory_gateway_prepare",
+                resolvedMode: mode.rawValue,
+                requestedProfile: route.servingProfile.rawValue,
+                resolvedProfile: route.servingProfile.rawValue,
+                freshness: "fresh_rust_gateway",
+                cacheHit: false,
+                memoryGatewaySource: "rust_memory_gateway_prepare",
+                memoryGatewayPrimaryEnabled: true,
+                memoryGatewayMode: "prepare_only_no_model_call",
+                memoryGatewaySafetyMode: "compatibility_fallback_on_unavailable",
+                memoryGatewayProductionAuthorityChange: false,
+                memoryGatewayModelCall: false,
+                memoryGatewayObjectCount: 2,
+                memoryGatewayEffectiveLayers: ["l1_canonical", "l3_working_set"],
+                budgetTotalTokens: 768,
+                usedTotalTokens: 164,
+                layerUsage: [],
+                truncatedLayers: [],
+                redactedItems: 0,
+                privateDrops: 0
+            )
+            return HubIPCClient.MemoryContextResolutionResult(
+                response: response,
+                source: response.source,
+                resolvedMode: mode,
+                requestedProfile: route.servingProfile.rawValue,
+                attemptedProfiles: [route.servingProfile.rawValue],
+                freshness: "fresh_rust_gateway",
+                cacheHit: false,
+                denyCode: nil,
+                downgradeCode: nil,
+                reasonCode: nil
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+
+        let fields = await session.projectMemoryUsageFieldsForTesting(
+            ctx: ctx,
+            canonicalMemory: "# Goal\nKeep Rust gateway audit machine-readable.",
+            userText: "继续整理 Rust memory gateway 切换证据",
+            config: config
+        )
+
+        #expect(fields["memory_v1_source"] as? String == "rust_memory_gateway_prepare")
+        #expect(fields["memory_v1_freshness"] as? String == "fresh_rust_gateway")
+        #expect(fields["memory_gateway_source"] as? String == "rust_memory_gateway_prepare")
+        #expect(fields["memory_gateway_primary_enabled"] as? Bool == true)
+        #expect(fields["memory_gateway_mode"] as? String == "prepare_only_no_model_call")
+        #expect(fields["memory_gateway_safety_mode"] as? String == "compatibility_fallback_on_unavailable")
+        #expect(fields["memory_gateway_production_authority_change"] as? Bool == false)
+        #expect(fields["memory_gateway_model_call"] as? Bool == false)
+        #expect(fields["memory_gateway_object_count"] as? Int == 2)
+        #expect(fields["memory_gateway_effective_layers"] as? [String] == ["l1_canonical", "l3_working_set"])
+    }
+
+    @Test
     func projectMemoryUsageFieldsExposeHeartbeatDigestInjectionTruth() async throws {
         let session = ChatSessionModel()
         let root = try makeProjectRoot(named: "project-memory-usage-heartbeat-digest")

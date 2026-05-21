@@ -82,6 +82,20 @@ Build the Hub app bundle:
 x-hub/tools/build_hub_app.command
 ```
 
+Build, package the unified Rust kernel, install `/Applications/X-Hub.app`, and avoid the legacy external Rust Hub tree:
+
+```bash
+bash x-hub/tools/build_install_latest_hub.command
+```
+
+Refresh Python runtime resources in an existing `build/X-Hub.app` without recompiling Swift:
+
+```bash
+bash x-hub/tools/refresh_hub_runtime_resources.command
+```
+
+Hub builds now treat `rust/xhubd` in this repository as the canonical Rust kernel source. External Rust Hub packages are refused unless `XHUB_ALLOW_EXTERNAL_RUST_HUB_PACKAGE=1` is set for an explicit diagnostic build.
+
 Launch the built Hub app:
 
 ```bash
@@ -124,20 +138,22 @@ Validate the staged local dev Agent baseline end to end:
 bash x-hub/tools/run_local_dev_agent_skills_baseline_smoke.command
 ```
 
-Remote XT access through a stable DNS name, MagicDNS, or Tailscale/private VPN
-IP is covered in:
+Remote XT access through same Wi-Fi/LAN, Tailscale, public IP direct, DNS-only
+domain direct, Cloudflare Spectrum, or a VPS raw TCP relay is covered in:
 
 - `x-hub/docs/REMOTE_ROUTE_SETUP.md`
 - Tailscale install: https://tailscale.com/download
 - macOS install guide: https://tailscale.com/kb/1016/install-mac
 
-Remote access is bring-your-own-domain by default: each Hub owner should set
-their own domain, MagicDNS name, or VPN/tunnel IP in Hub Settings before sharing
-an invite link with XT.
+Remote access is bring-your-own-address by default: each Hub owner should set
+their own Tailscale IP/MagicDNS name, DNS-only domain, public IP, Spectrum
+hostname, or relay hostname in Hub Settings before sharing an invite link with
+XT.
 
-Users without a domain should use the no-domain private network path in Hub
-Settings. When Hub detects a Tailscale/Headscale/WireGuard/ZeroTier-style tunnel
-address, it can use that as the stable External Address for XT invites.
+Users without a domain should use the no-domain Tailscale path in Hub Settings.
+When Hub detects a Tailscale `100.x` address, it can use that as the stable
+External Address for XT invites. WireGuard / ZeroTier / Headscale IP routes and
+Cloudflare Tunnel arbitrary TCP are not active routes for this plan.
 
 ## Operational Boundaries
 

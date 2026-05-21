@@ -686,7 +686,17 @@ export class HubDB {
         role TEXT NOT NULL,
         content TEXT NOT NULL,
         is_private INTEGER NOT NULL,
-        created_at_ms INTEGER NOT NULL
+        created_at_ms INTEGER NOT NULL,
+        role_metadata_json TEXT,
+        client_message_id TEXT,
+        source_role TEXT,
+        target_role TEXT,
+        dispatch_id TEXT,
+        dispatch_kind TEXT,
+        run_id TEXT,
+        launch_run_id TEXT,
+        reviewer_note_id TEXT,
+        status TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_turns_thread_time
@@ -1572,6 +1582,26 @@ export class HubDB {
     this._ensureColumn('grant_requests', 'user_ack_understood', 'INTEGER');
     this._ensureColumn('grant_requests', 'explain_rounds', 'INTEGER');
     this._ensureColumn('grant_requests', 'options_presented', 'INTEGER');
+    this._ensureColumn('turns', 'role_metadata_json', 'TEXT');
+    this._ensureColumn('turns', 'client_message_id', 'TEXT');
+    this._ensureColumn('turns', 'source_role', 'TEXT');
+    this._ensureColumn('turns', 'target_role', 'TEXT');
+    this._ensureColumn('turns', 'dispatch_id', 'TEXT');
+    this._ensureColumn('turns', 'dispatch_kind', 'TEXT');
+    this._ensureColumn('turns', 'run_id', 'TEXT');
+    this._ensureColumn('turns', 'launch_run_id', 'TEXT');
+    this._ensureColumn('turns', 'reviewer_note_id', 'TEXT');
+    this._ensureColumn('turns', 'status', 'TEXT');
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_turns_dispatch
+        ON turns(thread_id, dispatch_id, created_at_ms);
+
+      CREATE INDEX IF NOT EXISTS idx_turns_role_time
+        ON turns(thread_id, source_role, created_at_ms);
+
+      CREATE INDEX IF NOT EXISTS idx_turns_project_run
+        ON turns(run_id, launch_run_id, created_at_ms);
+    `);
     this._ensureColumn('memory_markdown_pending_changes', 'reviewed_markdown', 'TEXT');
     this._ensureColumn('memory_markdown_pending_changes', 'review_findings_json', 'TEXT');
     this._ensureColumn('memory_markdown_pending_changes', 'review_decision', 'TEXT');
@@ -4452,8 +4482,12 @@ export class HubDB {
     };
 
     const ins = this.db.prepare(
-      `INSERT INTO turns(turn_id, thread_id, request_id, role, content, is_private, created_at_ms)
-       VALUES(?,?,?,?,?,?,?)`
+      `INSERT INTO turns(
+         turn_id, thread_id, request_id, role, content, is_private, created_at_ms,
+         role_metadata_json, client_message_id, source_role, target_role,
+         dispatch_id, dispatch_kind, run_id, launch_run_id, reviewer_note_id, status
+       )
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     );
 
     let n = 0;
@@ -4466,13 +4500,44 @@ export class HubDB {
         if (!role || !content) continue;
         const isPrivate = t?.is_private ? 1 : 0;
         const createdAt = Number(t?.created_at_ms || nowMs());
+        const roleMetadata = (t?.role_metadata && typeof t.role_metadata === 'object')
+          ? t.role_metadata
+          : null;
+        const roleMetadataJson = roleMetadata ? JSON.stringify(roleMetadata) : null;
+        const clientMessageId = roleMetadata ? String(roleMetadata.client_message_id || '').trim() : '';
+        const sourceRole = roleMetadata ? String(roleMetadata.source_role || '').trim() : '';
+        const targetRole = roleMetadata ? String(roleMetadata.target_role || '').trim() : '';
+        const dispatchId = roleMetadata ? String(roleMetadata.dispatch_id || '').trim() : '';
+        const dispatchKind = roleMetadata ? String(roleMetadata.dispatch_kind || '').trim() : '';
+        const runId = roleMetadata ? String(roleMetadata.run_id || '').trim() : '';
+        const launchRunId = roleMetadata ? String(roleMetadata.launch_run_id || '').trim() : '';
+        const reviewerNoteId = roleMetadata ? String(roleMetadata.reviewer_note_id || '').trim() : '';
+        const status = roleMetadata ? String(roleMetadata.status || '').trim() : '';
         const storedContent = this._encryptTurnContent({
           turn_id: turnId,
           thread_id: threadId,
           role,
           content,
         });
-        ins.run(turnId, threadId, request_id ? String(request_id) : null, role, storedContent, isPrivate, createdAt);
+        ins.run(
+          turnId,
+          threadId,
+          request_id ? String(request_id) : null,
+          role,
+          storedContent,
+          isPrivate,
+          createdAt,
+          roleMetadataJson,
+          clientMessageId || null,
+          sourceRole || null,
+          targetRole || null,
+          dispatchId || null,
+          dispatchKind || null,
+          runId || null,
+          launchRunId || null,
+          reviewerNoteId || null,
+          status || null
+        );
         this._appendMemoryIndexChangelog({
           event_type: 'insert',
           table_name: 'turns',
@@ -4486,6 +4551,16 @@ export class HubDB {
             request_id: request_id ? String(request_id) : null,
             created_at_ms: createdAt,
             content_bytes: utf8Bytes(content),
+            role_metadata_schema: roleMetadata ? String(roleMetadata.schema_version || '') : '',
+            client_message_id: clientMessageId || null,
+            source_role: sourceRole || null,
+            target_role: targetRole || null,
+            dispatch_id: dispatchId || null,
+            dispatch_kind: dispatchKind || null,
+            run_id: runId || null,
+            launch_run_id: launchRunId || null,
+            reviewer_note_id: reviewerNoteId || null,
+            status: status || null,
           },
         });
         n += 1;
@@ -4560,8 +4635,12 @@ export class HubDB {
       project_id: String(scopeThread.project_id || ''),
     };
     const insertTurn = this.db.prepare(
-      `INSERT INTO turns(turn_id, thread_id, request_id, role, content, is_private, created_at_ms)
-       VALUES(?,?,?,?,?,?,?)`
+      `INSERT INTO turns(
+         turn_id, thread_id, request_id, role, content, is_private, created_at_ms,
+         role_metadata_json, client_message_id, source_role, target_role,
+         dispatch_id, dispatch_kind, run_id, launch_run_id, reviewer_note_id, status
+       )
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     );
     const insertCarrier = this.db.prepare(
       `INSERT INTO supervisor_memory_candidate_carrier(
@@ -4586,13 +4665,44 @@ export class HubDB {
         if (!role || !content) continue;
         const isPrivate = t?.is_private ? 1 : 0;
         const createdAt = Number(t?.created_at_ms || nowMs());
+        const roleMetadata = (t?.role_metadata && typeof t.role_metadata === 'object')
+          ? t.role_metadata
+          : null;
+        const roleMetadataJson = roleMetadata ? JSON.stringify(roleMetadata) : null;
+        const clientMessageId = roleMetadata ? String(roleMetadata.client_message_id || '').trim() : '';
+        const sourceRole = roleMetadata ? String(roleMetadata.source_role || '').trim() : '';
+        const targetRole = roleMetadata ? String(roleMetadata.target_role || '').trim() : '';
+        const dispatchId = roleMetadata ? String(roleMetadata.dispatch_id || '').trim() : '';
+        const dispatchKind = roleMetadata ? String(roleMetadata.dispatch_kind || '').trim() : '';
+        const runId = roleMetadata ? String(roleMetadata.run_id || '').trim() : '';
+        const launchRunId = roleMetadata ? String(roleMetadata.launch_run_id || '').trim() : '';
+        const reviewerNoteId = roleMetadata ? String(roleMetadata.reviewer_note_id || '').trim() : '';
+        const status = roleMetadata ? String(roleMetadata.status || '').trim() : '';
         const storedContent = this._encryptTurnContent({
           turn_id: turnId,
           thread_id: threadId,
           role,
           content,
         });
-        insertTurn.run(turnId, threadId, requestId, role, storedContent, isPrivate, createdAt);
+        insertTurn.run(
+          turnId,
+          threadId,
+          requestId,
+          role,
+          storedContent,
+          isPrivate,
+          createdAt,
+          roleMetadataJson,
+          clientMessageId || null,
+          sourceRole || null,
+          targetRole || null,
+          dispatchId || null,
+          dispatchKind || null,
+          runId || null,
+          launchRunId || null,
+          reviewerNoteId || null,
+          status || null
+        );
         this._appendMemoryIndexChangelog({
           event_type: 'insert',
           table_name: 'turns',
@@ -4606,6 +4716,16 @@ export class HubDB {
             request_id: requestId,
             created_at_ms: createdAt,
             content_bytes: utf8Bytes(content),
+            role_metadata_schema: roleMetadata ? String(roleMetadata.schema_version || '') : '',
+            client_message_id: clientMessageId || null,
+            source_role: sourceRole || null,
+            target_role: targetRole || null,
+            dispatch_id: dispatchId || null,
+            dispatch_kind: dispatchKind || null,
+            run_id: runId || null,
+            launch_run_id: launchRunId || null,
+            reviewer_note_id: reviewerNoteId || null,
+            status: status || null,
           },
         });
         appendedTurns += 1;
@@ -4976,7 +5096,9 @@ export class HubDB {
     const lim = Math.max(1, Math.min(2000, Number(limit || 50)));
     const rows = this.db
       .prepare(
-        `SELECT turn_id, thread_id, role, content, created_at_ms
+        `SELECT turn_id, thread_id, request_id, role, content, created_at_ms,
+                role_metadata_json, client_message_id, source_role, target_role,
+                dispatch_id, dispatch_kind, run_id, launch_run_id, reviewer_note_id, status
          FROM turns
          WHERE thread_id = ?
          ORDER BY created_at_ms DESC
@@ -4984,9 +5106,23 @@ export class HubDB {
       )
       .all(threadId, lim);
     return rows.map((r) => ({
+      turn_id: String(r.turn_id || ''),
+      thread_id: String(r.thread_id || ''),
+      request_id: r.request_id == null ? '' : String(r.request_id || ''),
       role: String(r.role || ''),
       content: this._decryptTurnContentRow(r),
       created_at_ms: Number(r.created_at_ms || 0),
+      role_metadata: parseJsonObject(r.role_metadata_json, null),
+      role_metadata_json: r.role_metadata_json == null ? null : String(r.role_metadata_json || ''),
+      client_message_id: r.client_message_id == null ? '' : String(r.client_message_id || ''),
+      source_role: r.source_role == null ? '' : String(r.source_role || ''),
+      target_role: r.target_role == null ? '' : String(r.target_role || ''),
+      dispatch_id: r.dispatch_id == null ? '' : String(r.dispatch_id || ''),
+      dispatch_kind: r.dispatch_kind == null ? '' : String(r.dispatch_kind || ''),
+      run_id: r.run_id == null ? '' : String(r.run_id || ''),
+      launch_run_id: r.launch_run_id == null ? '' : String(r.launch_run_id || ''),
+      reviewer_note_id: r.reviewer_note_id == null ? '' : String(r.reviewer_note_id || ''),
+      status: r.status == null ? '' : String(r.status || ''),
     }));
   }
 

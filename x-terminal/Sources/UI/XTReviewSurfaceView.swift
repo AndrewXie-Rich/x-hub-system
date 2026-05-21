@@ -16,10 +16,16 @@ struct XTReviewSurfaceView: View {
     private static let initialRefreshDelayNanoseconds: UInt64 = 180_000_000
 
     var body: some View {
+        let transcriptInputs = projectTranscriptInputs
+
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
                 summaryStrip
+
+                if !transcriptInputs.isEmpty {
+                    projectTranscriptSection(transcriptInputs)
+                }
 
                 if grants.isEmpty && approvals.isEmpty && candidateReviews.isEmpty {
                     emptyState
@@ -48,6 +54,27 @@ struct XTReviewSurfaceView: View {
             initialRefreshTask?.cancel()
             initialRefreshTask = nil
             reviewStore.unbind()
+        }
+    }
+
+    private func projectTranscriptSection(
+        _ inputs: [XTProjectTranscriptObservationInput]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader(
+                title: "项目角色对话",
+                subtitle: "Reviewer 复用 XT 本地运行时投影查看 Supervisor 派发、Coder 回复和 Reviewer 备注；Hub 仍是 Memory、Skills、grant、model route、quota、kill-switch、audit 的权威。",
+                count: inputs.count
+            )
+
+            ForEach(inputs) { input in
+                XTProjectTranscriptObservationPanel(
+                    input: input,
+                    style: .elevated,
+                    loadLimit: 120,
+                    showsEmptyState: true
+                )
+            }
         }
     }
 
@@ -349,6 +376,46 @@ struct XTReviewSurfaceView: View {
 
     private var reviewSnapshot: XTReviewSurfaceSnapshot {
         reviewStore.snapshot
+    }
+
+    private var projectTranscriptInputs: [XTProjectTranscriptObservationInput] {
+        var seen = Set<String>()
+        var ids: [String] = []
+
+        func appendProjectId(_ raw: String?) {
+            let projectId = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !projectId.isEmpty,
+                  projectId != AXProjectRegistry.globalHomeId,
+                  seen.insert(projectId).inserted else {
+                return
+            }
+            ids.append(projectId)
+        }
+
+        appendProjectId(appModel.selectedProjectId)
+        grants.forEach { appendProjectId($0.projectId) }
+        approvals.forEach { appendProjectId($0.projectId) }
+        candidateReviews.forEach { item in
+            appendProjectId(item.projectId)
+            item.projectIds.forEach { appendProjectId($0) }
+        }
+
+        return ids.prefix(4).compactMap(projectTranscriptInput)
+    }
+
+    private func projectTranscriptInput(
+        for projectId: String
+    ) -> XTProjectTranscriptObservationInput? {
+        guard let project = appModel.registry.project(for: projectId),
+              let context = appModel.projectContext(for: projectId) else {
+            return nil
+        }
+        return XTProjectTranscriptObservationInput(
+            projectId: project.projectId,
+            projectName: project.displayName,
+            context: context,
+            session: appModel.session(for: context)
+        )
     }
 
     private var supervisor: SupervisorManager {

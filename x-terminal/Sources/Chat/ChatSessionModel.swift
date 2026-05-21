@@ -17,6 +17,15 @@ private func xtCompactJSONObject<T: Encodable>(_ value: T) -> Any? {
     return try? JSONSerialization.jsonObject(with: data)
 }
 
+private func xtDecodeJSONObject<T: Decodable>(_ type: T.Type, from object: Any?) -> T? {
+    guard let object,
+          JSONSerialization.isValidJSONObject(object),
+          let data = try? JSONSerialization.data(withJSONObject: object) else {
+        return nil
+    }
+    return try? JSONDecoder().decode(type, from: data)
+}
+
 private func xtCompactJSONString<T: Encodable>(_ value: T) -> String? {
     let encoder = JSONEncoder()
     guard let data = try? encoder.encode(value),
@@ -449,6 +458,14 @@ final class ChatSessionModel: ObservableObject {
         var remoteSnapshotTTLRemainingMs: Int? = nil
         var remoteSnapshotCachePosture: String? = nil
         var remoteSnapshotInvalidationReason: String? = nil
+        var memoryGatewaySource: String? = nil
+        var memoryGatewayPrimaryEnabled: Bool? = nil
+        var memoryGatewayMode: String? = nil
+        var memoryGatewaySafetyMode: String? = nil
+        var memoryGatewayProductionAuthorityChange: Bool? = nil
+        var memoryGatewayModelCall: Bool? = nil
+        var memoryGatewayObjectCount: Int? = nil
+        var memoryGatewayEffectiveLayers: [String]? = nil
         var usedTokens: Int?
         var budgetTokens: Int?
         var truncatedLayers: [String]
@@ -953,7 +970,15 @@ messages:
         guard FileManager.default.fileExists(atPath: ctx.rawLogURL.path) else { return }
         guard let data = try? Data(contentsOf: ctx.rawLogURL), let s = String(data: data, encoding: .utf8) else { return }
 
-        var turns: [(Double, String, String, AXChatMessageSender?, [AXChatAttachment])] = []
+        var turns: [(
+            createdAt: Double,
+            user: String,
+            assistant: String,
+            userSender: AXChatMessageSender?,
+            attachments: [AXChatAttachment],
+            userLineage: AXChatMessageLineageMetadata?,
+            assistantLineage: AXChatMessageLineageMetadata?
+        )] = []
         for line in s.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let ld = line.data(using: .utf8) else { continue }
             guard let obj = try? JSONSerialization.jsonObject(with: ld) as? [String: Any] else { continue }
@@ -970,23 +995,47 @@ messages:
             } else {
                 attachments = []
             }
-            turns.append((ts, u, a, userSender, attachments))
+            let userLineage = xtDecodeJSONObject(AXChatMessageLineageMetadata.self, from: obj["user_lineage"])
+            let assistantLineage = xtDecodeJSONObject(AXChatMessageLineageMetadata.self, from: obj["assistant_lineage"])
+            turns.append((
+                createdAt: ts,
+                user: u,
+                assistant: a,
+                userSender: userSender,
+                attachments: attachments,
+                userLineage: userLineage,
+                assistantLineage: assistantLineage
+            ))
         }
-        turns.sort { $0.0 < $1.0 }
+        turns.sort { $0.createdAt < $1.createdAt }
         let tail = turns.suffix(max(0, limit))
-        for (ts, u, a, userSender, attachments) in tail {
-            if !u.isEmpty {
+        for turn in tail {
+            if !turn.user.isEmpty {
                 messages.append(
                     AXChatMessage(
                         role: .user,
-                        sender: userSender ?? Self.inferredUserSender(for: u),
-                        content: u,
-                        createdAt: ts,
-                        attachments: attachments
+                        sender: turn.userSender ?? Self.inferredUserSender(for: turn.user),
+                        content: turn.user,
+                        createdAt: turn.createdAt,
+                        attachments: turn.attachments,
+                        lineage: turn.userLineage
                     )
                 )
             }
-            if !a.isEmpty { messages.append(AXChatMessage(role: .assistant, content: a, createdAt: ts)) }
+            if !turn.assistant.isEmpty {
+                let assistantLineage = turn.assistantLineage
+                    ?? (turn.userLineage?.isSupervisorToCoderDispatch == true
+                        ? turn.userLineage?.coderReply(status: "completed")
+                        : nil)
+                messages.append(
+                    AXChatMessage(
+                        role: .assistant,
+                        content: turn.assistant,
+                        createdAt: turn.createdAt,
+                        lineage: assistantLineage
+                    )
+                )
+            }
         }
     }
 
@@ -1155,6 +1204,220 @@ messages:
             runtime.resumeToken = "tool_approval:\(runID)"
             runtime.recoverable = true
         }
+        appendToolApprovalRoleTurnToHub(ctx: ctx, calls: calls, reason: reason, createdAt: now)
+    }
+
+    private func appendProjectRoleEventsToHub(
+        ctx: AXProjectContext,
+        messages: [XTProjectConversationMirrorMessage],
+        createdAt: Double,
+        config: AXProjectConfig?
+    ) {
+        guard !messages.isEmpty else { return }
+        Task {
+            _ = await HubIPCClient.appendProjectConversationTurns(
+                ctx: ctx,
+                messages: messages,
+                createdAt: createdAt,
+                config: config
+            )
+        }
+    }
+
+    private func appendToolApprovalRoleTurnToHub(
+        ctx: AXProjectContext,
+        calls: [ToolCall],
+        reason: String,
+        createdAt: Double
+    ) {
+        guard !calls.isEmpty else { return }
+        let normalizedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedReason.hasPrefix("restored_"),
+              !normalizedReason.hasPrefix("recovered_") else {
+            return
+        }
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let threadKey = XTProjectConversationMirror.projectThreadKey(projectId: projectId)
+        let lineage = pendingToolApprovalLineage()
+        let messages = calls.enumerated().compactMap { offset, call in
+            XTProjectConversationMirror.roleEventMessage(
+                role: "tool",
+                projectId: projectId,
+                threadKey: threadKey,
+                content: toolApprovalRoleTurnContent(call: call, callCount: calls.count, reason: normalizedReason),
+                createdAt: createdAt + (Double(offset) / 1000.0),
+                sourceRole: "tool",
+                targetRole: "supervisor",
+                dispatchKind: "tool_approval",
+                status: "awaiting_authorization",
+                lineage: lineage,
+                toolCallId: call.id,
+                tags: ["xt_tool_approval", "awaiting_authorization"]
+            )
+        }
+        guard !messages.isEmpty else { return }
+
+        let config = pendingFlow?.config ?? activeConfig
+        appendProjectRoleEventsToHub(
+            ctx: ctx,
+            messages: messages,
+            createdAt: createdAt,
+            config: config
+        )
+    }
+
+    private func appendToolApprovalDecisionRoleTurnToHub(
+        ctx: AXProjectContext,
+        flow: ToolFlowState,
+        calls: [ToolCall],
+        action: String,
+        remainingToolCallCount: Int? = nil
+    ) {
+        guard !calls.isEmpty else { return }
+        let createdAt = Date().timeIntervalSince1970
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let threadKey = XTProjectConversationMirror.projectThreadKey(projectId: projectId)
+        let lineage = flowLineage(flow)
+        let messages = calls.enumerated().compactMap { offset, call in
+            XTProjectConversationMirror.roleEventMessage(
+                role: "system",
+                projectId: projectId,
+                threadKey: threadKey,
+                content: toolApprovalDecisionRoleTurnContent(
+                    call: call,
+                    action: action,
+                    remainingToolCallCount: remainingToolCallCount
+                ),
+                createdAt: createdAt + (Double(offset) / 1000.0),
+                sourceRole: "user",
+                targetRole: "coder",
+                dispatchKind: "tool_approval_decision",
+                status: "completed",
+                lineage: lineage,
+                toolCallId: call.id,
+                tags: ["xt_tool_approval_decision", action]
+            )
+        }
+        appendProjectRoleEventsToHub(
+            ctx: ctx,
+            messages: messages,
+            createdAt: createdAt,
+            config: flow.config ?? activeConfig
+        )
+    }
+
+    private func appendToolResultRoleTurnToHub(
+        ctx: AXProjectContext,
+        flow: ToolFlowState,
+        result: ToolResult,
+        source: String
+    ) {
+        let createdAt = Date().timeIntervalSince1970
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let threadKey = XTProjectConversationMirror.projectThreadKey(projectId: projectId)
+        guard let message = XTProjectConversationMirror.roleEventMessage(
+            role: "tool",
+            projectId: projectId,
+            threadKey: threadKey,
+            content: toolResultRoleTurnContent(result: result, source: source),
+            createdAt: createdAt,
+            sourceRole: "tool",
+            targetRole: "coder",
+            dispatchKind: "tool_result",
+            status: result.ok ? "completed" : "failed",
+            lineage: flowLineage(flow),
+            toolCallId: result.id,
+            tags: ["xt_tool_result", source, result.ok ? "ok" : "failed"]
+        ) else {
+            return
+        }
+        appendProjectRoleEventsToHub(
+            ctx: ctx,
+            messages: [message],
+            createdAt: createdAt,
+            config: flow.config ?? activeConfig
+        )
+    }
+
+    private func pendingToolApprovalLineage() -> AXChatMessageLineageMetadata? {
+        if let flow = pendingFlow {
+            if messages.indices.contains(flow.assistantIndex),
+               let assistantLineage = messages[flow.assistantIndex].lineage {
+                return assistantLineage
+            }
+            let userIndex = flow.assistantIndex - 1
+            if messages.indices.contains(userIndex),
+               let userLineage = messages[userIndex].lineage {
+                return userLineage
+            }
+        }
+
+        return messages.reversed().compactMap(\.lineage).first {
+            !$0.dispatchId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private func flowLineage(_ flow: ToolFlowState) -> AXChatMessageLineageMetadata? {
+        if messages.indices.contains(flow.assistantIndex),
+           let assistantLineage = messages[flow.assistantIndex].lineage {
+            return assistantLineage
+        }
+        let userIndex = flow.assistantIndex - 1
+        if messages.indices.contains(userIndex),
+           let userLineage = messages[userIndex].lineage {
+            return userLineage
+        }
+        return messages.reversed().compactMap(\.lineage).first {
+            !$0.dispatchId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private func toolApprovalRoleTurnContent(
+        call: ToolCall,
+        callCount: Int,
+        reason: String
+    ) -> String {
+        let requestId = call.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let boundedReason = reason.isEmpty ? "awaiting_tool_approval" : reason
+        return [
+            "Tool approval awaiting authorization.",
+            "reason=\(boundedReason)",
+            "tool=\(call.tool.rawValue)",
+            "tool_call_id=\(requestId.isEmpty ? "(missing)" : requestId)",
+            "pending_tool_call_count=\(callCount)"
+        ].joined(separator: "\n")
+    }
+
+    private func toolApprovalDecisionRoleTurnContent(
+        call: ToolCall,
+        action: String,
+        remainingToolCallCount: Int?
+    ) -> String {
+        let requestId = call.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        var lines = [
+            "Tool approval decision observed.",
+            "action=\(action.trimmingCharacters(in: .whitespacesAndNewlines))",
+            "tool=\(call.tool.rawValue)",
+            "tool_call_id=\(requestId.isEmpty ? "(missing)" : requestId)"
+        ]
+        if let remainingToolCallCount {
+            lines.append("remaining_tool_call_count=\(remainingToolCallCount)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func toolResultRoleTurnContent(result: ToolResult, source: String) -> String {
+        let requestId = result.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let outputCharCount = result.output.count
+        return [
+            "Tool result observed.",
+            "source=\(source.trimmingCharacters(in: .whitespacesAndNewlines))",
+            "tool=\(result.tool.rawValue)",
+            "tool_call_id=\(requestId.isEmpty ? "(missing)" : requestId)",
+            "ok=\(result.ok ? "true" : "false")",
+            "output_chars=\(outputCharCount)"
+        ].joined(separator: "\n")
     }
 
     private func pendingToolApprovalAssistantStub(
@@ -1632,7 +1895,8 @@ messages:
         memory: AXMemory?,
         config: AXProjectConfig?,
         router: LLMRouter,
-        sender: AXChatMessageSender? = nil
+        sender: AXChatMessageSender? = nil,
+        lineage: AXChatMessageLineageMetadata? = nil
     ) {
         activeRouter = router
         let runtimeConfig = resolvedToolRuntimeConfig(
@@ -1671,13 +1935,15 @@ messages:
         isSending = true
 
         let userCreatedAt = Date().timeIntervalSince1970
+        let userLineage = lineage
         messages.append(
             AXChatMessage(
                 role: .user,
                 sender: sender,
                 content: userDisplayText,
                 createdAt: userCreatedAt,
-                attachments: currentTurnAttachments
+                attachments: currentTurnAttachments,
+                lineage: userLineage
             )
         )
         // Keep a crash-resilient short-term buffer so prompt assembly doesn't depend on UI state.
@@ -1689,7 +1955,16 @@ messages:
         )
         touchProjectActivity(ctx: ctx, eventAt: userCreatedAt)
         let assistantIndex = messages.count
-        messages.append(AXChatMessage(role: .assistant, tag: lastCoderProviderTag, content: ""))
+        messages.append(
+            AXChatMessage(
+                role: .assistant,
+                tag: lastCoderProviderTag,
+                content: "",
+                lineage: userLineage?.isSupervisorToCoderDispatch == true
+                    ? userLineage?.coderReply(status: "running")
+                    : nil
+            )
+        )
 
         pendingToolCalls = []
         pendingFlow = nil
@@ -1801,6 +2076,12 @@ messages:
                 "timestamp_ms": currentEpochMs()
             ],
             for: flow.ctx
+        )
+        appendToolApprovalDecisionRoleTurnToHub(
+            ctx: flow.ctx,
+            flow: flow,
+            calls: calls,
+            action: "approve_all"
         )
         pendingToolCalls = []
         pendingFlow = nil
@@ -1920,6 +2201,13 @@ messages:
                 "timestamp_ms": currentEpochMs()
             ],
             for: flow.ctx
+        )
+        appendToolApprovalDecisionRoleTurnToHub(
+            ctx: flow.ctx,
+            flow: flow,
+            calls: approvedCalls,
+            action: "approve_one",
+            remainingToolCallCount: remainingCalls.count
         )
 
         pendingToolCalls = remainingCalls
@@ -2068,7 +2356,14 @@ messages:
         let ctx = flow.ctx
         let userText = flow.userText
         let assistantIndex = flow.assistantIndex
+        let calls = pendingToolCalls
 
+        appendToolApprovalDecisionRoleTurnToHub(
+            ctx: ctx,
+            flow: flow,
+            calls: calls,
+            action: "reject_all"
+        )
         pendingToolCalls = []
         pendingFlow = nil
         isSending = false
@@ -2092,6 +2387,13 @@ messages:
         let rejectedCalls = pendingToolCalls.filter { $0.id == normalizedRequestID }
         guard !rejectedCalls.isEmpty else { return }
         let remainingCalls = pendingToolCalls.filter { $0.id != normalizedRequestID }
+        appendToolApprovalDecisionRoleTurnToHub(
+            ctx: flow.ctx,
+            flow: flow,
+            calls: rejectedCalls,
+            action: "reject_one",
+            remainingToolCallCount: remainingCalls.count
+        )
         let projectSkillDispatchesByCallID = projectSkillDispatchesForToolCalls(
             ctx: flow.ctx,
             toolCalls: rejectedCalls
@@ -4492,6 +4794,7 @@ Memory 使用方式：
         let blocked = ToolResult(id: call.id, tool: call.tool, ok: false, output: output)
         flow.toolResults.append(blocked)
         AXProjectStore.appendToolLog(action: call.tool.rawValue, input: jsonArgs(call.args), output: output, ok: false, for: ctx)
+        appendToolResultRoleTurnToHub(ctx: ctx, flow: flow, result: blocked, source: "authorization_blocked")
     }
 
     private func appendRejectedPendingToolResult(
@@ -4517,6 +4820,7 @@ Memory 使用方式：
             ok: false,
             for: ctx
         )
+        appendToolResultRoleTurnToHub(ctx: ctx, flow: flow, result: blocked, source: "user_rejected")
     }
 
     private func handleSlashTools(args: [String], ctx: AXProjectContext, config: AXProjectConfig?) -> String {
@@ -9023,6 +9327,7 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
                     )
                 }
                 AXProjectStore.appendToolLog(action: call.tool.rawValue, input: jsonArgs(call.args), output: res.output, ok: res.ok, for: f.ctx)
+                appendToolResultRoleTurnToHub(ctx: f.ctx, flow: f, result: res, source: "execution")
                 if call.tool == .run_command, let id = streamId {
                     finishToolStream(id: id, result: res)
                 } else if shouldSurfaceSuccessfulToolResult(call: call, result: res) {
@@ -9049,6 +9354,7 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
                         let diffTool = ToolResult(id: "auto_diff_after_\(call.id)", tool: .git_diff, ok: diffRes.exitCode == 0, output: diffText)
                         f.toolResults.append(diffTool)
                         AXProjectStore.appendToolLog(action: "git_diff", input: ["auto": true], output: diffText, ok: diffRes.exitCode == 0, for: f.ctx)
+                        appendToolResultRoleTurnToHub(ctx: f.ctx, flow: f, result: diffTool, source: "auto_diff")
                         if shouldSurfaceSuccessfulToolResult(call: ToolCall(id: diffTool.id, tool: .git_diff, args: [:]), result: diffTool) {
                             messages.append(AXChatMessage(role: .tool, content: "[tool:git_diff] ok=\(diffRes.exitCode == 0)\n\(diffText)"))
                         }
@@ -9066,6 +9372,7 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
                     )
                 }
                 AXProjectStore.appendToolLog(action: call.tool.rawValue, input: jsonArgs(call.args), output: msg, ok: false, for: f.ctx)
+                appendToolResultRoleTurnToHub(ctx: f.ctx, flow: f, result: res, source: "execution_error")
                 if call.tool == .run_command, let id = streamId {
                     finishToolStreamWithError(id: id, error: msg)
                 }
@@ -10250,7 +10557,8 @@ Original output:
             AXChatMessage(
                 role: .assistant,
                 tag: messages[assistantIndex].tag,
-                content: ""
+                content: "",
+                lineage: messages[assistantIndex].lineage
             )
         )
         return messages.count - 1
@@ -10267,7 +10575,18 @@ Original output:
         )
         if messages.indices.contains(finalAssistantIndex) {
             messages[finalAssistantIndex].content = failureText
+            if let lineage = messages[finalAssistantIndex].lineage {
+                messages[finalAssistantIndex].lineage = lineage.withStatus("failed")
+            }
         }
+    }
+
+    private func finalizedAssistantLineageStatus(for assistantText: String) -> String {
+        let trimmed = assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == "请求失败。" || trimmed.hasPrefix("请求失败：") {
+            return "failed"
+        }
+        return "completed"
     }
 
     private func finalizeTurn(
@@ -10284,6 +10603,14 @@ Original output:
                 ? messages[assistantIndex - 1].sender
                 : nil)
             ?? Self.inferredUserSender(for: userText)
+        let resolvedUserLineage: AXChatMessageLineageMetadata? = {
+            guard assistantIndex > 0,
+                  messages.indices.contains(assistantIndex - 1),
+                  messages[assistantIndex - 1].role == .user else {
+                return nil
+            }
+            return messages[assistantIndex - 1].lineage
+        }()
         let inferredAttachments: [AXChatAttachment] = {
             guard attachments.isEmpty,
                   assistantIndex > 0,
@@ -10299,7 +10626,15 @@ Original output:
         )
         if finalAssistantIndex < messages.count {
             messages[finalAssistantIndex].content = assistantText
+            if let lineage = messages[finalAssistantIndex].lineage {
+                messages[finalAssistantIndex].lineage = lineage.withStatus(
+                    finalizedAssistantLineageStatus(for: assistantText)
+                )
+            }
         }
+        let resolvedAssistantLineage = finalAssistantIndex < messages.count
+            ? messages[finalAssistantIndex].lineage
+            : nil
 
         let createdAt = Date().timeIntervalSince1970
         AXRecentContextStore.appendAssistantMessage(ctx: ctx, text: assistantText, createdAt: createdAt)
@@ -10325,6 +10660,14 @@ Original output:
             if let resolvedUserSender {
                 row["user_sender"] = resolvedUserSender.rawValue
             }
+            if let resolvedUserLineage,
+               let encodedUserLineage = xtCompactJSONObject(resolvedUserLineage) {
+                row["user_lineage"] = encodedUserLineage
+            }
+            if let resolvedAssistantLineage,
+               let encodedAssistantLineage = xtCompactJSONObject(resolvedAssistantLineage) {
+                row["assistant_lineage"] = encodedAssistantLineage
+            }
             return row
         }()
         AXProjectStore.appendRawLog(
@@ -10345,7 +10688,10 @@ Original output:
                 userText: mirroredUserText,
                 assistantText: assistantText,
                 createdAt: createdAt,
-                config: config
+                config: config,
+                userSender: resolvedUserSender,
+                userLineage: resolvedUserLineage,
+                assistantLineage: resolvedAssistantLineage
             )
             do {
                 _ = try await AXMemoryPipeline.updateMemory(ctx: ctx, turn: turn, projectConfig: config, router: router)
@@ -12344,7 +12690,7 @@ latest_user:
             )
         }
 
-        let hubMemory = await HubIPCClient.requestMemoryContext(
+        let hubResult = await HubIPCClient.requestMemoryContextDetailed(
             useMode: .projectChat,
             requesterRole: .chat,
             projectId: projectId,
@@ -12376,6 +12722,7 @@ latest_user:
             budgets: nil,
             timeoutSec: 1.2
         )
+        let hubMemory = hubResult.response
         if let hubMemory {
             let source = XTProjectMemoryGovernance.normalizedResolvedSource(hubMemory.source)
             let disclosure = HubIPCClient.resolveMemoryLongtermDisclosure(
@@ -12403,6 +12750,14 @@ latest_user:
                 remoteSnapshotTTLRemainingMs: hubMemory.remoteSnapshotTTLRemainingMs,
                 remoteSnapshotCachePosture: hubMemory.remoteSnapshotCachePosture,
                 remoteSnapshotInvalidationReason: hubMemory.remoteSnapshotInvalidationReason,
+                memoryGatewaySource: hubMemory.memoryGatewaySource,
+                memoryGatewayPrimaryEnabled: hubMemory.memoryGatewayPrimaryEnabled,
+                memoryGatewayMode: hubMemory.memoryGatewayMode,
+                memoryGatewaySafetyMode: hubMemory.memoryGatewaySafetyMode,
+                memoryGatewayProductionAuthorityChange: hubMemory.memoryGatewayProductionAuthorityChange,
+                memoryGatewayModelCall: hubMemory.memoryGatewayModelCall,
+                memoryGatewayObjectCount: hubMemory.memoryGatewayObjectCount,
+                memoryGatewayEffectiveLayers: hubMemory.memoryGatewayEffectiveLayers,
                 usedTokens: hubMemory.usedTotalTokens,
                 budgetTokens: hubMemory.budgetTotalTokens,
                 truncatedLayers: hubMemory.truncatedLayers,
@@ -12415,6 +12770,39 @@ latest_user:
                     usedTokens: hubMemory.usedTotalTokens,
                     budgetTokens: hubMemory.budgetTotalTokens,
                     truncatedLayers: hubMemory.truncatedLayers
+                ),
+                visiblePendingGuidanceInjectionId: guidanceSnapshot.visiblePendingGuidanceInjectionId
+            )
+        }
+        if HubIPCClient.isRustMemoryGatewayRequiredFailure(hubResult) {
+            let failClosedText = HubIPCClient.rustMemoryGatewayRequiredFailureMemoryText(hubResult)
+            let usedTokens = TokenEstimator.estimateTokens(failClosedText)
+            return MemoryV1BuildInfo(
+                text: failClosedText,
+                source: hubResult.source,
+                longtermMode: XTMemoryLongtermPolicy.denied.rawValue,
+                retrievalAvailable: false,
+                fulltextNotLoaded: true,
+                freshness: hubResult.freshness,
+                cacheHit: hubResult.cacheHit,
+                remoteSnapshotCacheScope: nil,
+                remoteSnapshotCachedAtMs: nil,
+                remoteSnapshotAgeMs: nil,
+                remoteSnapshotTTLRemainingMs: nil,
+                remoteSnapshotCachePosture: nil,
+                remoteSnapshotInvalidationReason: nil,
+                usedTokens: usedTokens,
+                budgetTokens: nil,
+                truncatedLayers: [],
+                redactedItems: nil,
+                privateDrops: nil,
+                projectExplainability: actualizedProjectPromptExplainability(
+                    contextAssembly.diagnostics,
+                    memoryText: failClosedText,
+                    source: hubResult.source,
+                    usedTokens: usedTokens,
+                    budgetTokens: nil,
+                    truncatedLayers: []
                 ),
                 visiblePendingGuidanceInjectionId: guidanceSnapshot.visiblePendingGuidanceInjectionId
             )
@@ -12476,6 +12864,27 @@ latest_user:
             "memory_v1_private_drops": memory.privateDrops as Any,
             "prompt_compact_mode": promptCompactMode,
         ]
+        let isRustGatewayContext = memory.source == "rust_memory_gateway_prepare"
+            || memory.source == "rust_memory_gateway_cutover_gate"
+            || memory.memoryGatewaySource != nil
+        if isRustGatewayContext {
+            fields["memory_gateway_source"] = memory.memoryGatewaySource ?? memory.source
+            fields["memory_gateway_primary_enabled"] = memory.memoryGatewayPrimaryEnabled ?? true
+            fields["memory_gateway_required"] = memory.source == "rust_memory_gateway_cutover_gate"
+            fields["memory_gateway_mode"] = memory.memoryGatewayMode ?? "prepare_only_no_model_call"
+            fields["memory_gateway_safety_mode"] = memory.memoryGatewaySafetyMode
+                ?? (memory.source == "rust_memory_gateway_cutover_gate"
+                    ? "fail_closed_required_after_shadow_parity"
+                    : "compatibility_fallback_on_unavailable")
+            fields["memory_gateway_production_authority_change"] = memory.memoryGatewayProductionAuthorityChange ?? false
+            fields["memory_gateway_model_call"] = memory.memoryGatewayModelCall ?? false
+            if let objectCount = memory.memoryGatewayObjectCount {
+                fields["memory_gateway_object_count"] = objectCount
+            }
+            if let effectiveLayers = memory.memoryGatewayEffectiveLayers {
+                fields["memory_gateway_effective_layers"] = effectiveLayers
+            }
+        }
         if let diagnostics = memory.projectExplainability {
             for (key, value) in diagnostics.usageFields {
                 fields[key] = value

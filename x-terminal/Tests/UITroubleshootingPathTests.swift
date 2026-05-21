@@ -273,6 +273,19 @@ struct UITroubleshootingPathTests {
     }
 
     @Test
+    func hubUnreachableGuideExplainsTailscaleIPEntryAsFormalRemoteFailure() {
+        let guide = UITroubleshootKnowledgeBase.guide(
+            for: .hubUnreachable,
+            internetHost: "100.122.237.57"
+        )
+
+        #expect(guide.summary.contains("Tailscale IP"))
+        #expect(guide.summary.contains("安全等级高"))
+        #expect(guide.steps[0].instruction.contains("100.122.237.57"))
+        #expect(guide.steps[1].instruction.contains("同一个 Tailscale tailnet"))
+    }
+
+    @Test
     func hubUnreachableGuideUsesProofToExplainLocalReadyRemoteVerificationPending() throws {
         let guide = UITroubleshootKnowledgeBase.guide(
             for: .hubUnreachable,

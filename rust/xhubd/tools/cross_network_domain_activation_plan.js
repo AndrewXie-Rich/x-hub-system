@@ -188,6 +188,7 @@ function validatePublicBaseUrl(config) {
 }
 
 function commonArgs(config) {
+  const publicHost = publicHostFromBaseUrl(config.publicBaseUrl);
   const args = [
     '--profile', config.profile,
     '--public-base-url', config.publicBaseUrl,
@@ -197,9 +198,18 @@ function commonArgs(config) {
     '--launchd-runtime-root', config.launchdRuntimeRoot,
     '--watchdog-launchd-label', config.watchdogLaunchdLabel,
   ];
+  if (publicHost) args.push('--public-host', publicHost);
   if (config.allowLoopbackPublicHost) args.push('--allow-loopback-public-host');
   if (config.requireMemorySkillsProduction) args.push('--require-memory-skills-production');
   return args;
+}
+
+function publicHostFromBaseUrl(raw) {
+  try {
+    return safeString(new URL(safeString(raw)).hostname);
+  } catch {
+    return '';
+  }
 }
 
 function remoteRouteGateArgs(config) {

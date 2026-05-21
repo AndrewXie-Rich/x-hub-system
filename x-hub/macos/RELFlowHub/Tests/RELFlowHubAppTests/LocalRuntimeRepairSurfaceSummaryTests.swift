@@ -92,6 +92,37 @@ final class LocalRuntimeRepairSurfaceSummaryTests: XCTestCase {
         XCTAssertTrue(summary.message.contains("无法访问"))
     }
 
+    func testBuildReturnsRustLocalModelRepairPlanSummaryWhenProviderPackIsMissing() throws {
+        let plan = try XCTUnwrap(
+            RustLocalModelRepairPlanSupport.decode(data: Data(sampleRustRepairPlanJSON.utf8))
+        )
+
+        let summary = try XCTUnwrap(
+            LocalRuntimeRepairSurfaceSummaryBuilder.build(rustRepairPlan: plan)
+        )
+
+        XCTAssertEqual(summary.reasonCode, "install_provider_pack:mlx_vlm")
+        XCTAssertEqual(summary.severity, .warning)
+        XCTAssertEqual(summary.repairDestinationRef, "hub://settings/models/runtime")
+        XCTAssertTrue(summary.headline.contains("mlx_vlm / vision_understand"))
+        XCTAssertTrue(summary.message.contains("python_module:mlx_vlm"))
+        XCTAssertTrue(summary.nextStep.contains("Confirm provider pack repair"))
+        XCTAssertEqual(summary.actions.map(\.actionID), [
+            "confirm_provider_pack_repair",
+            "install_provider_pack_dependencies"
+        ])
+        XCTAssertTrue(summary.clipboardText.contains("install_provider_pack:mlx_vlm"))
+    }
+
+    func testRustRepairPlanDecodeRejectsSecretMaterial() {
+        let raw = sampleRustRepairPlanJSON.replacingOccurrences(
+            of: "\"summary\": \"Install or repair Hub local provider pack `mlx_vlm` before XT uses local model tasks.\"",
+            with: "\"summary\": \"api_key=sk-should-not-cross-ui\""
+        )
+
+        XCTAssertNil(RustLocalModelRepairPlanSupport.decode(data: Data(raw.utf8)))
+    }
+
     func testRuntimeCaptureWritesW9C4EvidenceWhenRequested() throws {
         guard let captureDir = ProcessInfo.processInfo.environment["XHUB_W9_C4_CAPTURE_DIR"], !captureDir.isEmpty else {
             return
@@ -126,6 +157,61 @@ final class LocalRuntimeRepairSurfaceSummaryTests: XCTestCase {
             try writeJSON(evidence, to: destination)
             XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
         }
+    }
+
+    private var sampleRustRepairPlanJSON: String {
+        """
+        {
+          "schema_version": "xhub.model_local_runtime_repair_plan.v1",
+          "ok": true,
+          "state": "repair_required",
+          "safe_to_auto_apply": false,
+          "requires_user_approval": true,
+          "requires_network": true,
+          "requires_download": true,
+          "secret_fields_included": false,
+          "summary": "Install or repair Hub local provider pack `mlx_vlm` before XT uses local model tasks.",
+          "resolved": {
+            "action": "install_provider_pack:mlx_vlm",
+            "task_kind": "vision_understand",
+            "provider_id": "mlx_vlm",
+            "source": "request_task_kind"
+          },
+          "target": {
+            "kind": "provider_pack",
+            "provider_id": "mlx_vlm",
+            "task_kind": "vision_understand"
+          },
+          "requirements": {
+            "engine": "mlx-vlm",
+            "execution_mode": "builtin_python",
+            "install_target": "hub_managed_python_runtime",
+            "python_import_modules": ["mlx", "mlx_lm", "mlx_vlm", "transformers", "PIL"],
+            "python_packages": ["mlx", "mlx-lm", "mlx-vlm", "transformers", "Pillow"],
+            "supported_domains": ["vision", "ocr"],
+            "expected_task_kinds": ["vision_understand", "ocr"]
+          },
+          "missing_requirements": ["python_module:mlx_vlm"],
+          "steps": [
+            {
+              "step_id": "confirm_provider_pack_repair",
+              "action_kind": "request_user_approval",
+              "title": "Confirm provider pack repair",
+              "description": "Hub or XT UI must ask the user before installing runtime dependencies.",
+              "requires_user_approval": true,
+              "requires_network": false
+            },
+            {
+              "step_id": "install_provider_pack_dependencies",
+              "action_kind": "install_provider_pack",
+              "title": "Install Hub-managed provider dependencies",
+              "description": "Install the required Python modules into Hub's managed runtime.",
+              "requires_user_approval": true,
+              "requires_network": true
+            }
+          ]
+        }
+        """
     }
 
     private func makeEvidenceScenarios() -> [EvidenceScenario] {

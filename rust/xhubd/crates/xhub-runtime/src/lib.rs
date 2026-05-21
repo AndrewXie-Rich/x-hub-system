@@ -116,8 +116,9 @@ fn local_model_inventory_row(
         &first_value_string(value, &["format", "artifact_format", "artifactFormat"]),
         &infer_model_format(&artifact_path, &backend),
     ));
-    let runtime_provider = normalized_runtime_provider(&backend, &format);
     let capabilities = capability_tags(value, &format);
+    let runtime_provider =
+        normalized_runtime_provider_for_capabilities(&backend, &format, &capabilities);
     let artifact_size_bytes = artifact_size_bytes(&artifact_path);
     let estimated_memory_bytes = estimated_memory_bytes(value, artifact_size_bytes);
     let memory_risk = model_memory_risk(value, estimated_memory_bytes, host_memory_bytes);
@@ -228,6 +229,22 @@ fn normalized_runtime_provider(backend: &str, format: &str) -> String {
         "transformers" => "transformers".to_string(),
         _ => "unknown".to_string(),
     }
+}
+
+fn normalized_runtime_provider_for_capabilities(
+    backend: &str,
+    format: &str,
+    capabilities: &[String],
+) -> String {
+    let provider = normalized_runtime_provider(backend, format);
+    if provider == "mlx"
+        && capabilities
+            .iter()
+            .any(|capability| matches!(capability.as_str(), "vision.describe" | "vision.ocr"))
+    {
+        return "mlx_vlm".to_string();
+    }
+    provider
 }
 
 fn resolve_artifact_path(runtime_base_dir: &Path, value: &Value) -> String {
@@ -647,17 +664,21 @@ fn capability_tags_from_strings(values: &[String]) -> Vec<String> {
                 .replace('-', ".")
                 .as_str()
             {
-                "text.generate" | "generate.text" => "text.generate".to_string(),
+                "text.generate" | "generate.text" | "text" => "text.generate".to_string(),
                 "text.summarize" | "summarize" => "text.summarize".to_string(),
                 "code.assist" | "code" => "code.assist".to_string(),
                 "code.review" => "code.review".to_string(),
                 "embedding.generate" | "embeddings" | "embedding" => {
                     "embedding.generate".to_string()
                 }
-                "vision.describe" | "image.describe" => "vision.describe".to_string(),
+                "vision.understand" | "vision.describe" | "image.describe" | "image.understand" => {
+                    "vision.describe".to_string()
+                }
                 "vision.ocr" | "ocr" => "vision.ocr".to_string(),
-                "audio.transcribe" | "transcribe" => "audio.transcribe".to_string(),
-                "audio.tts" | "tts" => "audio.tts".to_string(),
+                "speech.to.text" | "audio.transcribe" | "transcribe" | "asr" => {
+                    "audio.transcribe".to_string()
+                }
+                "text.to.speech" | "audio.tts" | "tts" => "audio.tts".to_string(),
                 "tool.calling" | "tool.use" | "function.calling" => "tool.calling".to_string(),
                 other => other.to_string(),
             }
@@ -982,6 +1003,40 @@ mod tests {
             rows[0].blocking_reason_code,
             "capability_mismatch:vision.ocr"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_inventory_routes_mlx_vision_models_to_mlx_vlm_provider() {
+        let dir = unique_temp_dir("xhub-local-inventory-mlx-vlm");
+        fs::create_dir_all(&dir).expect("temp dir should be created");
+        let artifact_path = dir.join("vision.mlx");
+        fs::write(&artifact_path, "fixture").expect("artifact should be written");
+        fs::write(
+            dir.join("models_state.json"),
+            format!(
+                r#"{{
+                  "models": [
+                    {{
+                      "id": "qwen-vl",
+                      "backend": "mlx",
+                      "modelPath": "{}",
+                      "taskKinds": ["vision_understand", "ocr"]
+                    }}
+                  ]
+                }}"#,
+                artifact_path.display()
+            ),
+        )
+        .expect("models_state should be written");
+        write_runtime_status(&dir, "mlx_vlm", false, &[]);
+
+        let rows = local_model_inventory_rows(&dir);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].runtime_provider, "mlx_vlm");
+        assert_eq!(rows[0].capabilities, vec!["vision.describe", "vision.ocr"]);
+        assert_eq!(rows[0].availability_state, "blocked");
         let _ = fs::remove_dir_all(&dir);
     }
 

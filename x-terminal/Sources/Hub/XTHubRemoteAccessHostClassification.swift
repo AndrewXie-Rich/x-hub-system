@@ -11,6 +11,7 @@ struct XTHubRemoteAccessHostClassification: Equatable {
     enum IPScope: String, Equatable {
         case loopback
         case privateLAN
+        case tailscale
         case carrierGradeNat
         case linkLocal
         case publicInternet
@@ -22,6 +23,8 @@ struct XTHubRemoteAccessHostClassification: Equatable {
                 return "回环地址"
             case .privateLAN:
                 return "私有局域网 IP"
+            case .tailscale:
+                return "Tailscale IP"
             case .carrierGradeNat:
                 return "运营商 NAT IP"
             case .linkLocal:
@@ -30,6 +33,15 @@ struct XTHubRemoteAccessHostClassification: Equatable {
                 return "公网 IP"
             case .unknown:
                 return "未识别地址"
+            }
+        }
+
+        var isFormalRemoteEntry: Bool {
+            switch self {
+            case .tailscale:
+                return true
+            case .loopback, .privateLAN, .carrierGradeNat, .linkLocal, .publicInternet, .unknown:
+                return false
             }
         }
     }
@@ -98,6 +110,17 @@ struct XTHubRemoteAccessHostClassification: Equatable {
         }
     }
 
+    var isFormalRemoteEntry: Bool {
+        switch kind {
+        case .stableNamed:
+            return true
+        case .rawIP(let scope):
+            return scope.isFormalRemoteEntry
+        case .missing, .lanOnly:
+            return false
+        }
+    }
+
     private static func looksLikeStableNamedHost(_ raw: String) -> Bool {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -132,7 +155,7 @@ struct XTHubRemoteAccessHostClassification: Equatable {
             return .privateLAN
         }
         if a == 100 && b >= 64 && b <= 127 {
-            return .carrierGradeNat
+            return .tailscale
         }
         return .publicInternet
     }

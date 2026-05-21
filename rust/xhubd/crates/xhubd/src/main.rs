@@ -34,6 +34,7 @@ mod evidence_bridge;
 mod grpc_runtime;
 mod local_ml_bridge;
 mod memory_bridge;
+mod memory_role_projection;
 mod model_bridge;
 mod network_bridge;
 mod provider_bridge;
@@ -118,12 +119,18 @@ fn print_help() {
     println!("           JSON bridge commands for Node/shadow integration");
     println!("  network <remote-entry-candidates>");
     println!("           JSON remote-entry candidates for Swift Hub shell setup");
-    println!("  model <inventory|route|compare|reports|readiness|diagnostics>");
+    println!(
+        "  model <inventory|capabilities|repair-plan|repair-apply|repair-jobs|repair-executor|route|compare|reports|readiness|diagnostics>"
+    );
     println!("           JSON remote/local model inventory and route bridge commands");
     println!("  local-ml HTTP: /local-ml/execute, /local-ml/readiness");
     println!("           Rust-governed local ML execution bridge, opt-in only");
-    println!("  memory <retrieve|search|readiness>");
-    println!("           JSON memory retrieval shadow read-only commands");
+    println!(
+        "  memory <retrieve|search|write|object-create|object-list|object-get|object-history|object-index-rebuild|policy-evaluate|project-canonical-sync|gateway-prepare|readiness>"
+    );
+    println!(
+        "           JSON memory retrieval, object store, project canonical sync, policy, and readiness commands"
+    );
     println!("  evidence <write|list>");
     println!("           JSON unified evidence ledger commands");
     println!("  skills <catalog|readiness|policy-readiness|pin|grant|unpin|revoke-grant|policy|policy-events|policy-events-prune|audit|audit-prune|preflight>");
@@ -533,6 +540,15 @@ fn handle_client(mut stream: TcpStream, state: &HubState) -> Result<(), String> 
             | "/compat/xt-file-ipc/live-status" => {
                 xt_file_ipc::live_status_http_json(config, request.method.as_str())
             }
+            "/xt/file-ipc/runtime-authority-sync"
+            | "/xt/file-ipc-runtime-authority-sync"
+            | "/compat/xt-file-ipc/runtime-authority-sync" => {
+                xt_file_ipc::runtime_authority_sync_http_json(
+                    config,
+                    request.method.as_str(),
+                    request.body.as_str(),
+                )
+            }
             "/xt/file-ipc-shadow"
             | "/xt/file-ipc-shadow/respond-once"
             | "/xt/file-ipc-shadow/drain"
@@ -627,10 +643,43 @@ fn handle_client(mut stream: TcpStream, state: &HubState) -> Result<(), String> 
             "/provider/readiness" => provider_readiness_http_json(config, query),
             "/memory/search" => memory_search_http_json(state, query),
             "/memory/retrieve" => memory_retrieve_http_json(state, query, request.body.as_str()),
+            "/memory/project-role-transcript"
+            | "/memory/project-role-transcript-projection"
+            | "/memory/role-transcript" => memory_role_transcript_http_json(config, query),
             "/memory/write" | "/memory/append" => {
                 memory_write_http_json(config, request.body.as_str())
             }
             "/memory/readiness" | "/memory/status" => memory_readiness_http_json(state, query),
+            "/memory/object-index/rebuild" | "/memory/reindex" => {
+                memory_bridge::object_index_rebuild_http_json(config, request.method.as_str())
+            }
+            "/memory/objects" => memory_bridge::object_collection_http_json(
+                config,
+                request.method.as_str(),
+                query,
+                request.body.as_str(),
+            ),
+            path if path.starts_with("/memory/objects/") => {
+                memory_bridge::object_item_http_json(config, path, request.method.as_str(), query)
+            }
+            "/memory/policy/evaluate" => {
+                memory_bridge::policy_evaluate_http_json(request.body.as_str())
+            }
+            "/memory/project-canonical-sync" | "/memory/project-canonical" => {
+                memory_bridge::project_canonical_sync_http_json(
+                    config,
+                    request.method.as_str(),
+                    query,
+                    request.body.as_str(),
+                )
+            }
+            "/memory/gateway/prepare" | "/memory/context" => {
+                memory_bridge::memory_gateway_prepare_http_json(
+                    config,
+                    request.method.as_str(),
+                    request.body.as_str(),
+                )
+            }
             "/evidence/ledger" | "/evidence/list" => evidence_ledger_http_json(config, query),
             "/evidence/write" => evidence_write_http_json(config, request.body.as_str()),
             "/skills/catalog" => skills_catalog_http_json(state, query),
@@ -662,6 +711,18 @@ fn handle_client(mut stream: TcpStream, state: &HubState) -> Result<(), String> 
                 skills_execute_http_json(config, query, request.body.as_str())
             }
             "/model/inventory" => model_inventory_http_json(config, query),
+            "/model/capabilities" | "/model/local-capabilities" => {
+                model_capabilities_http_json(config, query)
+            }
+            "/model/repair-plan" | "/model/local-repair-plan" => {
+                model_repair_plan_http_json(config, query)
+            }
+            "/model/repair-apply" | "/model/local-repair-apply" => {
+                model_repair_apply_http_json(config, query, request.body.as_str())
+            }
+            "/model/repair-jobs" | "/model/local-repair-jobs" => {
+                model_repair_jobs_http_json(config, query)
+            }
             "/model/route" => model_route_http_json(config, query, request.body.as_str()),
             "/model/compare" => model_compare_http_json(config, query, request.body.as_str()),
             "/model/reports" => model_reports_http_json(config, query),
@@ -1994,13 +2055,37 @@ fn memory_search_http_json(state: &HubState, query: &str) -> (&'static str, Stri
     request.requested_kinds = query_param_list(query, "requested_kinds")
         .or_else(|| query_param_list(query, "requestedKinds"))
         .unwrap_or_default();
+    request.requested_layers = query_param_list(query, "requested_layers")
+        .or_else(|| query_param_list(query, "requestedLayers"))
+        .or_else(|| query_param_list(query, "layers"))
+        .unwrap_or_default();
     request.explicit_refs = query_param_list(query, "explicit_refs")
         .or_else(|| query_param_list(query, "explicitRefs"))
         .unwrap_or_default();
+    request.sensitivity_max = query_param(query, "sensitivity_max")
+        .or_else(|| query_param(query, "sensitivityMax"))
+        .unwrap_or_default();
+    request.visibility = query_param(query, "visibility").unwrap_or_default();
+    request.created_after_ms =
+        match optional_query_i64_alias(query, "created_after_ms", "createdAfterMs", 0) {
+            Ok(value) => value,
+            Err(body) => return ("400 Bad Request", body),
+        };
+    request.updated_after_ms =
+        match optional_query_i64_alias(query, "updated_after_ms", "updatedAfterMs", 0) {
+            Ok(value) => value,
+            Err(body) => return ("400 Bad Request", body),
+        };
+    request.explain = match optional_query_bool_alias(query, "explain", "explain", false) {
+        Ok(value) => value,
+        Err(body) => return ("400 Bad Request", body),
+    };
     request.audit_ref = query_param(query, "audit_ref")
         .or_else(|| query_param(query, "auditRef"))
         .unwrap_or_default();
-    match memory_bridge::retrieve_json_from_request_with_snapshot(request, &snapshot) {
+    match memory_bridge::retrieve_json_from_request_with_config_and_snapshot(
+        config, request, &snapshot,
+    ) {
         Ok(body) => ("200 OK", format!("{body}\n")),
         Err(err) => (
             "400 Bad Request",
@@ -2032,12 +2117,66 @@ fn memory_retrieve_http_json(state: &HubState, _query: &str, body: &str) -> (&'s
     };
     let request = memory_bridge::retrieve_request_from_value(config, &parsed);
     let snapshot = cached_memory_snapshot(state, request.memory_dir.clone());
-    match memory_bridge::retrieve_json_from_request_with_snapshot(request, &snapshot) {
+    match memory_bridge::retrieve_json_from_request_with_config_and_snapshot(
+        config, request, &snapshot,
+    ) {
         Ok(body) => ("200 OK", format!("{body}\n")),
         Err(err) => (
             "400 Bad Request",
             format!(
                 "{{\"ok\":false,\"error\":\"memory_retrieve_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn memory_role_transcript_http_json(config: &HubConfig, query: &str) -> (&'static str, String) {
+    let project_id = query_param(query, "project_id")
+        .or_else(|| query_param(query, "projectId"))
+        .unwrap_or_default();
+    let thread_key = query_param(query, "thread_key")
+        .or_else(|| query_param(query, "threadKey"))
+        .unwrap_or_else(|| {
+            if project_id.trim().is_empty() {
+                String::new()
+            } else {
+                format!("xterminal_project_{}", project_id.trim())
+            }
+        });
+    let limit = match optional_query_usize_alias(query, "limit", "limit", 50) {
+        Ok(value) => value.clamp(1, 500),
+        Err(body) => return ("400 Bad Request", body),
+    };
+    let include_content =
+        match optional_query_bool_alias(query, "include_content", "includeContent", false) {
+            Ok(value) => value,
+            Err(body) => return ("400 Bad Request", body),
+        };
+    if project_id.trim().is_empty() || thread_key.trim().is_empty() {
+        return (
+            "400 Bad Request",
+            "{\"ok\":false,\"error\":\"invalid_project_role_transcript_request\",\"message\":\"project_id and thread_key are required\"}\n".to_string(),
+        );
+    }
+    match memory_role_projection::projection_json_from_parts(
+        config,
+        query_param(query, "device_id").or_else(|| query_param(query, "deviceId")),
+        query_param(query, "app_id").or_else(|| query_param(query, "appId")),
+        project_id,
+        thread_key,
+        limit,
+        include_content,
+    ) {
+        Ok(body) => ("200 OK", format!("{body}\n")),
+        Err(err) if err == "role_metadata_project_mismatch" => (
+            "409 Conflict",
+            "{\"ok\":false,\"error\":\"role_metadata_project_mismatch\"}\n".to_string(),
+        ),
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"project_role_transcript_projection_failed\",\"message\":\"{}\"}}\n",
                 json_escape(&err)
             ),
         ),
@@ -2089,7 +2228,7 @@ fn memory_readiness_http_json(state: &HubState, query: &str) -> (&'static str, S
         .map(PathBuf::from)
         .unwrap_or_else(|| memory_bridge::memory_dir_from_env(config));
     let snapshot = cached_memory_snapshot(state, memory_dir);
-    match memory_bridge::readiness_json_from_snapshot(&snapshot) {
+    match memory_bridge::readiness_json_from_snapshot_with_config(config, &snapshot) {
         Ok(body) => ("200 OK", format!("{body}\n")),
         Err(err) => (
             "400 Bad Request",
@@ -2806,6 +2945,183 @@ fn model_inventory_http_json(config: &HubConfig, query: &str) -> (&'static str, 
             "400 Bad Request",
             format!(
                 "{{\"ok\":false,\"error\":\"model_inventory_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn model_capabilities_http_json(config: &HubConfig, query: &str) -> (&'static str, String) {
+    let runtime_base_dir = query_param(query, "runtime_base_dir")
+        .or_else(|| query_param(query, "runtimeBaseDir"))
+        .map(PathBuf::from);
+    let request_now_ms = match optional_query_u128_alias(query, "now_ms", "nowMs") {
+        Ok(value) => value,
+        Err(body) => return ("400 Bad Request", body),
+    };
+    match model_bridge::local_capabilities_json_from_parts(config, runtime_base_dir, request_now_ms)
+    {
+        Ok(body) => ("200 OK", format!("{body}\n")),
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"model_capabilities_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn model_repair_plan_http_json(config: &HubConfig, query: &str) -> (&'static str, String) {
+    let runtime_base_dir = query_param(query, "runtime_base_dir")
+        .or_else(|| query_param(query, "runtimeBaseDir"))
+        .map(PathBuf::from);
+    let request_now_ms = match optional_query_u128_alias(query, "now_ms", "nowMs") {
+        Ok(value) => value,
+        Err(body) => return ("400 Bad Request", body),
+    };
+    let request = model_bridge::ModelLocalRepairPlanRequest {
+        action: query_param(query, "action")
+            .or_else(|| query_param(query, "repair_action"))
+            .or_else(|| query_param(query, "repairAction"))
+            .unwrap_or_default(),
+        task_kind: query_param(query, "task_kind")
+            .or_else(|| query_param(query, "taskKind"))
+            .or_else(|| query_param(query, "task"))
+            .unwrap_or_default(),
+        provider_id: query_param(query, "provider_id")
+            .or_else(|| query_param(query, "providerId"))
+            .or_else(|| query_param(query, "provider"))
+            .unwrap_or_default(),
+    };
+    match model_bridge::local_repair_plan_json_from_parts(
+        config,
+        runtime_base_dir,
+        request,
+        request_now_ms,
+    ) {
+        Ok(body) => ("200 OK", format!("{body}\n")),
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"model_repair_plan_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn model_repair_apply_http_json(
+    config: &HubConfig,
+    query: &str,
+    body: &str,
+) -> (&'static str, String) {
+    let parsed_body = if body.trim().is_empty() {
+        Value::Object(Default::default())
+    } else {
+        match serde_json::from_str::<Value>(body) {
+            Ok(value) => value,
+            Err(err) => {
+                return (
+                    "400 Bad Request",
+                    format!(
+                        "{{\"ok\":false,\"error\":\"invalid_model_repair_apply_json\",\"message\":\"{}\"}}\n",
+                        json_escape(&err.to_string())
+                    ),
+                )
+            }
+        }
+    };
+    let runtime_base_dir = query_param(query, "runtime_base_dir")
+        .or_else(|| query_param(query, "runtimeBaseDir"))
+        .or_else(|| body_string_alias(&parsed_body, "runtime_base_dir", "runtimeBaseDir"))
+        .map(PathBuf::from);
+    let request_now_ms = match optional_query_u128_alias(query, "now_ms", "nowMs") {
+        Ok(value) => value,
+        Err(body) => return ("400 Bad Request", body),
+    };
+    let query_confirm = match optional_query_bool_alias(query, "confirm", "confirmed", false) {
+        Ok(value) => value,
+        Err(body) => return ("400 Bad Request", body),
+    };
+    let query_dry_run = match optional_query_bool_alias(query, "dry_run", "dryRun", false) {
+        Ok(value) => value,
+        Err(body) => return ("400 Bad Request", body),
+    };
+    let request = model_bridge::ModelLocalRepairApplyRequest {
+        action: body_string(&parsed_body, "action")
+            .or_else(|| body_string_alias(&parsed_body, "repair_action", "repairAction"))
+            .or_else(|| query_param(query, "action"))
+            .or_else(|| query_param(query, "repair_action"))
+            .or_else(|| query_param(query, "repairAction"))
+            .unwrap_or_default(),
+        task_kind: body_string_alias(&parsed_body, "task_kind", "taskKind")
+            .or_else(|| body_string(&parsed_body, "task"))
+            .or_else(|| query_param(query, "task_kind"))
+            .or_else(|| query_param(query, "taskKind"))
+            .or_else(|| query_param(query, "task"))
+            .unwrap_or_default(),
+        provider_id: body_string_alias(&parsed_body, "provider_id", "providerId")
+            .or_else(|| body_string(&parsed_body, "provider"))
+            .or_else(|| query_param(query, "provider_id"))
+            .or_else(|| query_param(query, "providerId"))
+            .or_else(|| query_param(query, "provider"))
+            .unwrap_or_default(),
+        confirm: body_bool_alias(&parsed_body, "confirm", "confirmed").unwrap_or(query_confirm),
+        dry_run: body_bool_alias(&parsed_body, "dry_run", "dryRun").unwrap_or(query_dry_run),
+        confirmation_token: body_string_alias(
+            &parsed_body,
+            "confirmation_token",
+            "confirmationToken",
+        )
+        .or_else(|| query_param(query, "confirmation_token"))
+        .or_else(|| query_param(query, "confirmationToken"))
+        .unwrap_or_default(),
+        requested_by: body_string_alias(&parsed_body, "requested_by", "requestedBy")
+            .or_else(|| query_param(query, "requested_by"))
+            .or_else(|| query_param(query, "requestedBy"))
+            .unwrap_or_else(|| "http".to_string()),
+    };
+    match model_bridge::local_repair_apply_json_from_parts(
+        config,
+        runtime_base_dir,
+        request,
+        request_now_ms,
+    ) {
+        Ok(body) => ("200 OK", format!("{body}\n")),
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"model_repair_apply_failed\",\"message\":\"{}\"}}\n",
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn model_repair_jobs_http_json(config: &HubConfig, query: &str) -> (&'static str, String) {
+    let runtime_base_dir = query_param(query, "runtime_base_dir")
+        .or_else(|| query_param(query, "runtimeBaseDir"))
+        .map(PathBuf::from);
+    let request_now_ms = match optional_query_u128_alias(query, "now_ms", "nowMs") {
+        Ok(value) => value,
+        Err(body) => return ("400 Bad Request", body),
+    };
+    let limit = match optional_query_usize(query, "limit", 20) {
+        Ok(value) => value,
+        Err(body) => return ("400 Bad Request", body),
+    };
+    match model_bridge::local_repair_jobs_json_from_parts(
+        config,
+        runtime_base_dir,
+        limit,
+        request_now_ms,
+    ) {
+        Ok(body) => ("200 OK", format!("{body}\n")),
+        Err(err) => (
+            "400 Bad Request",
+            format!(
+                "{{\"ok\":false,\"error\":\"model_repair_jobs_failed\",\"message\":\"{}\"}}\n",
                 json_escape(&err)
             ),
         ),
@@ -4019,6 +4335,10 @@ fn root_body() -> String {
           <a href="/health">Health JSON</a>
           <a href="/ready">Ready JSON</a>
           <a href="/model/inventory">Model Inventory</a>
+          <a href="/model/capabilities">Local Model Capabilities</a>
+          <a href="/model/repair-plan">Local Model Repair Plan</a>
+          <a href="/model/repair-apply">Local Model Repair Apply</a>
+          <a href="/model/repair-jobs">Local Model Repair Jobs</a>
           <a href="/model/route">Model Route</a>
           <a href="/model/diagnostics">Model Diagnostics</a>
           <a href="/xt/hub-contract">XT Hub Contract</a>
@@ -4061,6 +4381,9 @@ export XHUB_RUST_MODEL_INVENTORY_HTTP_BASE_URL=http://127.0.0.1:50151</pre>
           row('Runtime status', ready.runtime && ready.runtime.runtime_status_file_exists),
           row('Provider store', ready.runtime && ready.runtime.provider_store_file_exists),
           row('Model inventory HTTP', ready.capabilities && ready.capabilities.model_inventory_http),
+          row('Local model repair plan HTTP', ready.capabilities && ready.capabilities.model_local_repair_plan_http),
+          row('Local model repair apply HTTP', ready.capabilities && ready.capabilities.model_local_repair_apply_http),
+          row('Local model repair jobs HTTP', ready.capabilities && ready.capabilities.model_local_repair_jobs_http),
           row('Model diagnostics HTTP', ready.capabilities && ready.capabilities.model_route_diagnostics_http),
           row('Provider route HTTP', ready.capabilities && ready.capabilities.provider_route_http),
           row('Provider import HTTP', ready.capabilities && ready.capabilities.provider_key_import_http),
@@ -4612,6 +4935,10 @@ fn readiness_json(
             "quota_refresh_state_writer_in_rust": true,
             "provider_route_authority_in_rust": provider_route_authority,
             "model_inventory_http": true,
+            "model_local_capabilities_http": true,
+            "model_local_repair_plan_http": true,
+            "model_local_repair_apply_http": true,
+            "model_local_repair_jobs_http": true,
             "model_route_diagnostics_http": true,
             "model_route_authority_in_rust": model_route_authority,
             "local_ml_execution_bridge_http": true,
@@ -4633,6 +4960,11 @@ fn readiness_json(
             "canonical_writer_in_rust": memory_writer_authority,
             "retrieval_shadow_http": true,
             "write_http": true,
+            "gateway_prepare_http": true,
+            "role_transcript_projection_http": true,
+            "role_transcript_projection_schema": memory_role_projection::PROJECT_ROLE_TRANSCRIPT_PROJECTION_SCHEMA,
+            "role_transcript_projection_authority": "shadow_read_only",
+            "gateway_prepare_authority": "prepare_only_no_model_call",
             "write_result_schema": xhub_memory::MEMORY_WRITE_RESULT_SCHEMA,
             "retrieval_result_schema": xhub_memory::MEMORY_RETRIEVAL_RESULT_SCHEMA,
         },
@@ -4686,6 +5018,10 @@ fn readiness_json(
             "quota_refresh_state_writer_in_rust": true,
             "provider_route_authority_in_rust": provider_route_authority,
             "model_inventory_http": true,
+            "model_local_capabilities_http": true,
+            "model_local_repair_plan_http": true,
+            "model_local_repair_apply_http": true,
+            "model_local_repair_jobs_http": true,
             "model_route_diagnostics_http": true,
             "model_route_authority_in_rust": model_route_authority,
             "local_ml_execution_bridge_http": true,
@@ -4699,12 +5035,15 @@ fn readiness_json(
             "swift_shell_remote_entry_authority": true,
             "memory_retrieval_http": true,
             "memory_write_http": true,
+            "memory_gateway_prepare_http": true,
+            "memory_role_transcript_projection_http": true,
             "memory_writer_authority_in_rust": memory_writer_authority,
             "xt_classic_hub_compat_preflight_http": true,
             "xt_classic_hub_grpc_probe_http": true,
             "xt_classic_hub_compat_authority": "preflight_only",
             "xt_classic_hub_status_writer_http": true,
             "xt_classic_hub_status_writer_authority": "explicit_cutover_only",
+            "xt_file_ipc_runtime_authority_sync_http": true,
             "xt_file_ipc_shadow_responder_http": true,
             "xt_file_ipc_shadow_drain_http": true,
             "xt_file_ipc_shadow_cycle_http": true,

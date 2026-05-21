@@ -5,6 +5,14 @@ on:
     paths:
       - "x-hub/macos/RELFlowHub/**"
       - "x-hub/tools/run_xhub_from_source.command"
+      - "protocol/hub_protocol_v1.proto"
+      - "protocol/hub_protocol_v1.md"
+      - "x-hub/grpc-server/hub_grpc_server/package.json"
+      - "x-hub/grpc-server/hub_grpc_server/package-lock.json"
+      - "x-hub/grpc-server/hub_grpc_server/src/db.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/role_turn_metadata*.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/server.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/services.js"
       - "x-terminal/**"
       - "scripts/run_xhub_doctor_from_source.command"
       - "scripts/run_xhub_doctor_from_source.test.js"
@@ -19,6 +27,14 @@ on:
     paths:
       - "x-hub/macos/RELFlowHub/**"
       - "x-hub/tools/run_xhub_from_source.command"
+      - "protocol/hub_protocol_v1.proto"
+      - "protocol/hub_protocol_v1.md"
+      - "x-hub/grpc-server/hub_grpc_server/package.json"
+      - "x-hub/grpc-server/hub_grpc_server/package-lock.json"
+      - "x-hub/grpc-server/hub_grpc_server/src/db.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/role_turn_metadata*.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/server.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/services.js"
       - "x-terminal/**"
       - "scripts/run_xhub_doctor_from_source.command"
       - "scripts/run_xhub_doctor_from_source.test.js"
@@ -42,6 +58,9 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Install Hub gRPC server dependencies
+        run: npm ci --prefix ./x-hub/grpc-server/hub_grpc_server
+
       - name: Run repo-level doctor source gate
         env:
           XHUB_DOCTOR_ALL_SOURCE_SMOKE_TMP_ROOT: ${{ runner.temp }}/xhub_doctor_all_source_smoke
@@ -55,5 +74,6 @@ jobs:
           name: xhub-doctor-source-gate-reports
           path: |
             ./build/reports/xhub_doctor_source_gate_summary.v1.json
+            ./build/reports/role_turn_metadata_live_smoke.v1.json
             ./build/reports/xhub_doctor_source_gate_logs
           if-no-files-found: warn

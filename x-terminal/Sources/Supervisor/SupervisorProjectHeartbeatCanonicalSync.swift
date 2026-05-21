@@ -139,6 +139,31 @@ enum SupervisorProjectHeartbeatCanonicalSync {
         }
     }
 
+    static func roleTurnMessage(
+        record: SupervisorProjectHeartbeatCanonicalRecord
+    ) -> XTProjectConversationMirrorMessage? {
+        let projectId = normalizedScalar(record.projectId)
+        guard !projectId.isEmpty else { return nil }
+        let createdAtMs = max(record.updatedAtMs, record.lastHeartbeatAtMs)
+        let createdAt = Double(max(Int64(0), createdAtMs)) / 1000.0
+        let threadKey = XTProjectConversationMirror.projectThreadKey(projectId: projectId)
+        return XTProjectConversationMirror.roleEventMessage(
+            role: "system",
+            projectId: projectId,
+            threadKey: threadKey,
+            content: roleTurnContent(record: record),
+            createdAt: createdAt,
+            sourceRole: "hub",
+            targetRole: "all",
+            dispatchKind: "heartbeat",
+            status: "observed",
+            dispatchId: roleTurnDispatchID(record: record, createdAtMs: createdAtMs),
+            evidenceRefs: ["heartbeat_projection:\(projectId):\(max(Int64(0), createdAtMs))"],
+            auditRefs: [record.auditRef],
+            tags: ["xt_heartbeat_governance", "heartbeat_memory_projection"]
+        )
+    }
+
     private static func nextReview(
         from cadence: SupervisorCadenceExplainability
     ) -> (kind: SupervisorCadenceDimension?, atMs: Int64, isDue: Bool) {
@@ -202,5 +227,45 @@ enum SupervisorProjectHeartbeatCanonicalSync {
             return ""
         }
         return text
+    }
+
+    private static func roleTurnDispatchID(
+        record: SupervisorProjectHeartbeatCanonicalRecord,
+        createdAtMs: Int64
+    ) -> String {
+        AXChatMessageLineageMetadata.makeDispatchId(
+            projectId: "heartbeat_\(record.projectId)",
+            createdAtMs: max(0, createdAtMs)
+        )
+    }
+
+    private static func roleTurnContent(record: SupervisorProjectHeartbeatCanonicalRecord) -> String {
+        var lines = [
+            "Heartbeat governance projection observed.",
+            "project_id=\(normalizedScalar(record.projectId))",
+            "last_heartbeat_at_ms=\(max(Int64(0), record.lastHeartbeatAtMs))",
+            "updated_at_ms=\(max(Int64(0), record.updatedAtMs))"
+        ]
+        appendLine("status_digest", record.statusDigest, to: &lines)
+        appendLine("current_state", record.currentStateSummary, to: &lines)
+        appendLine("next_step", record.nextStepSummary, to: &lines)
+        appendLine("blocker", record.blockerSummary, to: &lines)
+        appendLine("latest_quality_band", record.latestQualityBand?.rawValue ?? "", to: &lines)
+        if let score = record.latestQualityScore {
+            lines.append("latest_quality_score=\(score)")
+        }
+        appendLine("open_anomaly_types", record.openAnomalyTypes.map(\.rawValue).joined(separator: ","), to: &lines)
+        appendLine("next_review_kind", record.nextReviewKind?.rawValue ?? "", to: &lines)
+        lines.append("next_review_due=\(record.nextReviewDue ? "true" : "false")")
+        appendLine("recovery_action", record.recoveryDecision?.action.rawValue ?? "", to: &lines)
+        appendLine("recovery_reason_code", record.recoveryDecision?.reasonCode ?? "", to: &lines)
+        appendLine("audit_ref", record.auditRef, to: &lines)
+        return lines.joined(separator: "\n")
+    }
+
+    private static func appendLine(_ key: String, _ rawValue: String, to lines: inout [String]) {
+        let value = normalizedScalar(rawValue)
+        guard !value.isEmpty else { return }
+        lines.append("\(key)=\(value)")
     }
 }

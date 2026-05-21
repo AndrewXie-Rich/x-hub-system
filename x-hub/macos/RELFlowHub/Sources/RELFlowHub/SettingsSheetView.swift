@@ -535,6 +535,19 @@ struct SettingsSheetView: View {
     @State private var rustHubRuntimeSnapshot: RustHubRuntimeSnapshot = RustHubRuntimeSupport.localSnapshot()
     @State private var rustHubRuntimeRefreshing: Bool = false
     @State private var rustHubRuntimeLastRefreshAt: Date = .distantPast
+    @State private var rustLocalModelRepairPlan: RustLocalModelRepairPlan? = nil
+    @State private var rustLocalModelRepairPlanRefreshing: Bool = false
+    @State private var rustLocalModelRepairPlanLastRefreshAt: Date = .distantPast
+    @State private var rustLocalModelRepairApplyDialogPresented: Bool = false
+    @State private var rustLocalModelRepairApplyPendingPlan: RustLocalModelRepairPlan? = nil
+    @State private var rustLocalModelRepairApplyInFlight: Bool = false
+    @State private var rustLocalModelRepairApplyResult: RustLocalModelRepairApplyResult? = nil
+    @State private var rustLocalModelRepairExecutorInFlight: Bool = false
+    @State private var rustLocalModelRepairExecutorResult: RustLocalModelRepairExecutorResult? = nil
+    @State private var rustLocalModelRepairApplyErrorText: String = ""
+    @State private var rustLocalModelRepairJobsSnapshot: RustLocalModelRepairJobsSnapshot = .empty
+    @State private var rustLocalModelRepairJobsRefreshing: Bool = false
+    @State private var rustLocalModelRepairJobsLastRefreshAt: Date = .distantPast
     @State private var rustHubRemoteEntryCandidates: RustHubRemoteEntryCandidates = .empty
     @State private var rustHubRemoteEntryRefreshing: Bool = false
     @State private var rustHubRemoteEntryLastRefreshAt: Date = .distantPast
@@ -608,6 +621,14 @@ struct SettingsSheetView: View {
             status: store.aiRuntimeStatusSnapshot,
             blockedCapabilities: hubLaunchStatus?.degraded.blockedCapabilities ?? []
         )
+    }
+
+    private var rustLocalModelRepairSurfaceSummary: LocalRuntimeRepairSurfaceSummary? {
+        LocalRuntimeRepairSurfaceSummaryBuilder.build(rustRepairPlan: rustLocalModelRepairPlan)
+    }
+
+    private var effectiveRuntimeRepairSurfaceSummary: LocalRuntimeRepairSurfaceSummary? {
+        rustLocalModelRepairSurfaceSummary ?? runtimeRepairSurfaceSummary
     }
 
     private var grpcRemoteAccessHealthSummary: HubRemoteAccessHealthSummary {
@@ -704,6 +725,8 @@ struct SettingsSheetView: View {
             maybeRebuildProviderKeySectionSnapshot()
             if selectedSettingsPage == .runtime {
                 refreshRustHubRuntimeSnapshot(force: true)
+                refreshRustLocalModelRepairPlan(force: true)
+                refreshRustLocalModelRepairJobs(force: true)
             }
             if selectedSettingsPage == .access || selectedSettingsPage == .overview {
                 refreshRustHubRemoteEntryCandidates(force: true)
@@ -863,6 +886,29 @@ struct SettingsSheetView: View {
             }
         } message: { client in
             Text(deleteClientConfirmationMessage(client))
+        }
+        .confirmationDialog(
+            HubUIStrings.Models.Runtime.LocalServiceRecovery.queueRustRepairDialogTitle,
+            isPresented: $rustLocalModelRepairApplyDialogPresented,
+            titleVisibility: .visible
+        ) {
+            Button(HubUIStrings.Models.Runtime.LocalServiceRecovery.queueRustRepairDialogConfirm) {
+                if let plan = rustLocalModelRepairApplyPendingPlan {
+                    applyRustLocalModelRepair(plan)
+                }
+            }
+            Button(HubUIStrings.Models.Runtime.LocalServiceRecovery.queueRustRepairDialogCancel, role: .cancel) {
+                rustLocalModelRepairApplyPendingPlan = nil
+            }
+        } message: {
+            let plan = rustLocalModelRepairApplyPendingPlan
+            Text(
+                HubUIStrings.Models.Runtime.LocalServiceRecovery.queueRustRepairDialogMessage(
+                    action: plan?.resolved.action ?? "",
+                    taskKind: plan?.target.taskKind.isEmpty == false ? plan?.target.taskKind ?? "" : plan?.resolved.taskKind ?? "",
+                    requiresNetwork: plan?.requiresNetwork ?? false
+                )
+            )
         }
     }
 
@@ -1132,6 +1178,8 @@ struct SettingsSheetView: View {
         reloadCLIProxyOAuthConfiguration()
         reloadAXConstitutionStatus()
         refreshRustHubRuntimeSnapshot(force: true)
+        refreshRustLocalModelRepairPlan(force: true)
+        refreshRustLocalModelRepairJobs(force: true)
         refreshRustHubRemoteEntryCandidates(force: true)
         Task { await reloadOperatorChannelProviderReadiness() }
         Task { await reloadTerminalAccessKeys() }
@@ -1167,6 +1215,8 @@ struct SettingsSheetView: View {
         case .runtime:
             hubLaunchStatus = HubLaunchStatusStorage.load()
             refreshRustHubRuntimeSnapshot()
+            refreshRustLocalModelRepairPlan()
+            refreshRustLocalModelRepairJobs()
             Task { await maybeRefreshCLIProxyRuntimeStatus() }
         case .integrations:
             skillsIndex = HubSkillsStoreStorage.loadSkillsIndex()
@@ -1212,6 +1262,93 @@ struct SettingsSheetView: View {
                 rustHubRuntimeSnapshot = snapshot
                 rustHubRuntimeLastRefreshAt = Date()
                 rustHubRuntimeRefreshing = false
+            }
+        }
+    }
+
+    private func refreshRustLocalModelRepairPlan(force: Bool = false) {
+        let now = Date()
+        if rustLocalModelRepairPlanRefreshing { return }
+        if !force && now.timeIntervalSince(rustLocalModelRepairPlanLastRefreshAt) < 10.0 { return }
+        rustLocalModelRepairPlanRefreshing = true
+        Task {
+            let plan = await RustHubRuntimeSupport.loadLocalModelRepairPlan()
+            await MainActor.run {
+                rustLocalModelRepairPlan = plan
+                rustLocalModelRepairPlanLastRefreshAt = Date()
+                rustLocalModelRepairPlanRefreshing = false
+            }
+        }
+    }
+
+    private func refreshRustLocalModelRepairJobs(force: Bool = false) {
+        let now = Date()
+        if rustLocalModelRepairJobsRefreshing { return }
+        if !force && now.timeIntervalSince(rustLocalModelRepairJobsLastRefreshAt) < 5.0 { return }
+        rustLocalModelRepairJobsRefreshing = true
+        Task {
+            let snapshot = await RustHubRuntimeSupport.loadLocalModelRepairJobs()
+            await MainActor.run {
+                rustLocalModelRepairJobsSnapshot = snapshot
+                rustLocalModelRepairJobsLastRefreshAt = Date()
+                rustLocalModelRepairJobsRefreshing = false
+            }
+        }
+    }
+
+    private func presentRustLocalModelRepairApplyDialog() {
+        guard !rustLocalModelRepairApplyInFlight,
+              let plan = rustLocalModelRepairPlan,
+              plan.isActionableRepair else {
+            return
+        }
+        rustLocalModelRepairApplyPendingPlan = plan
+        rustLocalModelRepairApplyErrorText = ""
+        rustLocalModelRepairApplyDialogPresented = true
+    }
+
+    private func applyRustLocalModelRepair(_ plan: RustLocalModelRepairPlan) {
+        guard !rustLocalModelRepairApplyInFlight else { return }
+        rustLocalModelRepairApplyInFlight = true
+        rustLocalModelRepairApplyErrorText = ""
+        rustLocalModelRepairApplyResult = nil
+        rustLocalModelRepairExecutorResult = nil
+        rustLocalModelRepairApplyDialogPresented = false
+        Task {
+            let result = await RustHubRuntimeSupport.applyLocalModelRepair(plan: plan)
+            await MainActor.run {
+                rustLocalModelRepairApplyInFlight = false
+                rustLocalModelRepairApplyPendingPlan = nil
+                if let result {
+                    rustLocalModelRepairApplyResult = result
+                    if result.accepted {
+                        refreshRustLocalModelRepairPlan(force: true)
+                        refreshRustLocalModelRepairJobs(force: true)
+                        refreshRustHubRuntimeSnapshot(force: true)
+                        startRustLocalModelRepairExecutor()
+                    }
+                } else {
+                    rustLocalModelRepairApplyErrorText = HubUIStrings.Models.Runtime.LocalServiceRecovery.rustRepairApplyFailed
+                }
+            }
+        }
+    }
+
+    private func startRustLocalModelRepairExecutor() {
+        guard !rustLocalModelRepairExecutorInFlight else { return }
+        rustLocalModelRepairExecutorInFlight = true
+        Task {
+            let result = await RustHubRuntimeSupport.runLocalModelRepairExecutor()
+            await MainActor.run {
+                rustLocalModelRepairExecutorInFlight = false
+                if let result {
+                    rustLocalModelRepairExecutorResult = result
+                } else {
+                    rustLocalModelRepairApplyErrorText = HubUIStrings.Models.Runtime.LocalServiceRecovery.rustRepairExecutorFailed
+                }
+                refreshRustLocalModelRepairPlan(force: true)
+                refreshRustLocalModelRepairJobs(force: true)
+                refreshRustHubRuntimeSnapshot(force: true)
             }
         }
     }
@@ -6552,6 +6689,8 @@ struct SettingsSheetView: View {
                         help: nil
                     ) {
                         refreshRustHubRuntimeSnapshot(force: true)
+                        refreshRustLocalModelRepairPlan(force: true)
+                        refreshRustLocalModelRepairJobs(force: true)
                     }
                     Text(rustHubRuntimeSnapshot.updatedAtMs > 0 ? "更新 \(formatEpochMs(rustHubRuntimeSnapshot.updatedAtMs))" : "等待首次刷新")
                         .font(.caption)
@@ -6598,15 +6737,83 @@ struct SettingsSheetView: View {
         return "等待 embedded 或 active root"
     }
 
+    @ViewBuilder
+    private var rustLocalModelRepairApplyFeedback: some View {
+        let error = rustLocalModelRepairApplyErrorText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !error.isEmpty {
+            Label(error, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.red)
+        } else if rustLocalModelRepairExecutorInFlight {
+            Label(HubUIStrings.Models.Runtime.LocalServiceRecovery.rustRepairExecutorRunning, systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption)
+                .foregroundStyle(.blue)
+        } else if let job = rustLocalModelRepairJobsSnapshot.latestJob,
+                  ["queued_waiting_executor", "running_install_provider_pack"].contains(job.status) {
+            Label(
+                HubUIStrings.Models.Runtime.LocalServiceRecovery.rustRepairJobStatus(
+                    jobID: job.jobID,
+                    status: job.status
+                ),
+                systemImage: job.status == "running_install_provider_pack" ? "arrow.triangle.2.circlepath" : "clock"
+            )
+            .font(.caption)
+            .foregroundStyle(.blue)
+            .textSelection(.enabled)
+        } else if let result = rustLocalModelRepairExecutorResult {
+            Label(
+                HubUIStrings.Models.Runtime.LocalServiceRecovery.rustRepairExecutorFinished(
+                    status: result.status,
+                    ok: result.ok
+                ),
+                systemImage: result.ok ? "checkmark.seal" : "exclamationmark.triangle"
+            )
+            .font(.caption)
+            .foregroundStyle(result.ok ? .blue : .orange)
+            .textSelection(.enabled)
+        } else if let job = rustLocalModelRepairJobsSnapshot.latestJob {
+            Label(
+                HubUIStrings.Models.Runtime.LocalServiceRecovery.rustRepairJobStatus(
+                    jobID: job.jobID,
+                    status: job.status
+                ),
+                systemImage: job.status == "applied_pending_runtime_restart" ? "checkmark.seal" : "clock"
+            )
+            .font(.caption)
+            .foregroundStyle(job.status == "failed" ? .orange : .secondary)
+            .textSelection(.enabled)
+        } else if let result = rustLocalModelRepairApplyResult {
+            let text = result.accepted
+                ? HubUIStrings.Models.Runtime.LocalServiceRecovery.rustRepairApplyQueued(
+                    jobID: result.jobID,
+                    executorReady: result.jobPolicy.executorReady
+                )
+                : HubUIStrings.Models.Runtime.LocalServiceRecovery.rustRepairApplyRejected(status: result.status)
+            Label(text, systemImage: result.accepted ? "checkmark.seal" : "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(result.accepted ? .blue : .orange)
+                .textSelection(.enabled)
+        }
+    }
+
     private var runtimeMonitorSection: some View {
         Section(HubUIStrings.Settings.RuntimeMonitor.sectionTitle) {
-            if let summary = runtimeRepairSurfaceSummary {
+            if let summary = effectiveRuntimeRepairSurfaceSummary {
                 LocalRuntimeRepairEntryCard(
                     summary: summary,
                     onCopySummary: { copyLocalRuntimeRepairSummary(summary) },
-                    onOpenLog: { store.openAIRuntimeLog() }
+                    onOpenLog: { store.openAIRuntimeLog() },
+                    queueRepairTitle: (rustLocalModelRepairApplyInFlight || rustLocalModelRepairExecutorInFlight)
+                        ? HubUIStrings.Models.Runtime.LocalServiceRecovery.queueRustRepairInFlightAction
+                        : HubUIStrings.Models.Runtime.LocalServiceRecovery.queueRustRepairAction,
+                    onQueueRepair: rustLocalModelRepairPlan?.isActionableRepair == true
+                        && !rustLocalModelRepairExecutorInFlight
+                        ? { presentRustLocalModelRepairApplyDialog() }
+                        : nil
                 )
             }
+
+            rustLocalModelRepairApplyFeedback
 
             if let status = store.aiRuntimeStatusSnapshot,
                let monitor = status.monitorSnapshot {
@@ -9743,6 +9950,10 @@ struct SettingsSheetView: View {
         Divider()
 
         DisclosureGroup(HubUIStrings.Settings.GRPC.remoteAccessDisclosure) {
+            Text(HubUIStrings.Settings.GRPC.remoteAccessMethodsIntro)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
             Text(HubUIStrings.Settings.GRPC.remoteAccessHint)
                 .font(.caption2)
                 .foregroundStyle(.secondary)

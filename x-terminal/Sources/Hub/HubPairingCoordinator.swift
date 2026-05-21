@@ -421,6 +421,7 @@ struct HubRemoteProjectConversationPayload: Sendable {
     var createdAtMs: Int64
     var userText: String
     var assistantText: String
+    var messages: [XTProjectConversationMirrorMessage] = []
 }
 
 struct HubRemoteSupervisorConversationPayload: Sendable {
@@ -677,6 +678,7 @@ struct HubRemoteMemorySnapshotResult: Sendable {
     var source: String
     var canonicalEntries: [String]
     var workingEntries: [String]
+    var roleTurnMessages: [XTProjectConversationMirrorMessage] = []
     var reasonCode: String?
     var logLines: [String]
 
@@ -2173,7 +2175,10 @@ actor HubPairingCoordinator {
         switch selectedRoute {
         case .some(.stableNamedRemote):
             let host = nonEmpty(internetHost) ?? preferredHub
-            return "\(prefix) (stable remote first: \(host)) ..."
+            let label = HubRemoteHostPolicy.isFormalRemoteHost(host)
+                ? "formal remote first"
+                : "internet direct first"
+            return "\(prefix) (\(label): \(host)) ..."
         case .some(.managedTunnelFallback):
             let host = nonEmpty(internetHost) ?? preferredHub
             return "\(prefix) (managed tunnel first: \(host)) ..."
@@ -2407,11 +2412,13 @@ actor HubPairingCoordinator {
         preferredRoute: XTHubRouteCandidate?,
         internetHost: String
     ) -> [XTHubRouteCandidate] {
-        let hasStableNamedRemote = HubRemoteHostPolicy.isStableNamedRemoteHost(internetHost)
+        let hasFormalRemote = HubRemoteHostPolicy.isFormalRemoteHost(internetHost)
+        let hasDirectInternetRemote = HubRemoteHostPolicy.isDirectInternetRemoteHost(internetHost)
+        let canUseManagedTunnel = HubRemoteHostPolicy.isStableNamedRemoteHost(internetHost)
         var candidates = requestedCandidates
         if candidates.isEmpty {
             candidates = [.lanDirect]
-            if hasStableNamedRemote {
+            if hasDirectInternetRemote {
                 // Keep global connect/reconnect conservative. Tunnel is opt-in via
                 // explicit request-scoped handoff or an explicit preferred route.
                 candidates.append(.stableNamedRemote)
@@ -2421,21 +2428,31 @@ actor HubPairingCoordinator {
             switch preferredRoute {
             case .lanDirect:
                 candidates.append(.lanDirect)
-            case .stableNamedRemote, .managedTunnelFallback:
-                if hasStableNamedRemote {
+            case .stableNamedRemote:
+                if hasDirectInternetRemote {
+                    candidates.append(preferredRoute)
+                }
+            case .managedTunnelFallback:
+                if canUseManagedTunnel {
                     candidates.append(preferredRoute)
                 }
             }
         }
-        if !hasStableNamedRemote {
-            candidates.removeAll { $0 == .stableNamedRemote || $0 == .managedTunnelFallback }
+        if !hasDirectInternetRemote {
+            candidates.removeAll { $0 == .stableNamedRemote }
+        }
+        if !canUseManagedTunnel {
+            candidates.removeAll { $0 == .managedTunnelFallback }
         }
         if let preferredRoute, candidates.contains(preferredRoute) {
             candidates.removeAll { $0 == preferredRoute }
             candidates.insert(preferredRoute, at: 0)
         }
-        if !hasStableNamedRemote {
+        if !hasDirectInternetRemote {
             candidates.removeAll { $0 != .lanDirect }
+        }
+        if !hasFormalRemote {
+            candidates.removeAll { $0 == .managedTunnelFallback }
         }
 
         var ordered: [XTHubRouteCandidate] = []
@@ -3861,6 +3878,9 @@ actor HubPairingCoordinator {
         let requestId = payload.requestId.trimmingCharacters(in: .whitespacesAndNewlines)
         let userText = payload.userText.trimmingCharacters(in: .whitespacesAndNewlines)
         let assistantText = payload.assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let messages = payload.messages.filter {
+            !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
         guard !pid.isEmpty else {
             return HubRemoteMutationResult(ok: false, reasonCode: "project_id_empty", logLines: ["conversation project_id is empty"])
         }
@@ -3870,7 +3890,7 @@ actor HubPairingCoordinator {
         guard !requestId.isEmpty else {
             return HubRemoteMutationResult(ok: false, reasonCode: "request_id_empty", logLines: ["conversation request_id is empty"])
         }
-        guard !userText.isEmpty || !assistantText.isEmpty else {
+        guard !messages.isEmpty || !userText.isEmpty || !assistantText.isEmpty else {
             return HubRemoteMutationResult(ok: false, reasonCode: "turn_empty", logLines: ["conversation turn payload is empty"])
         }
 
@@ -3901,6 +3921,12 @@ actor HubPairingCoordinator {
         scriptEnv["XTERMINAL_CONV_CREATED_AT_MS"] = String(max(Int64(0), payload.createdAtMs))
         scriptEnv["XTERMINAL_CONV_USER_TEXT"] = userText
         scriptEnv["XTERMINAL_CONV_ASSISTANT_TEXT"] = assistantText
+        if let data = try? JSONEncoder().encode(messages),
+           let json = String(data: data, encoding: .utf8) {
+            scriptEnv["XTERMINAL_CONV_MESSAGES_JSON"] = json
+        } else {
+            scriptEnv["XTERMINAL_CONV_MESSAGES_JSON"] = "[]"
+        }
 
         let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
         func runScript() -> StepOutput {
@@ -6002,6 +6028,7 @@ actor HubPairingCoordinator {
             source: nonEmpty(decoded.source) ?? "hub_memory_v1_grpc",
             canonicalEntries: decoded.canonicalEntries ?? [],
             workingEntries: decoded.workingEntries ?? [],
+            roleTurnMessages: decoded.roleTurnMessages ?? [],
             reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
             logLines: logs
         )
@@ -10284,6 +10311,7 @@ actor HubPairingCoordinator {
         var source: String?
         var canonicalEntries: [String]?
         var workingEntries: [String]?
+        var roleTurnMessages: [XTProjectConversationMirrorMessage]?
         var reason: String?
         var errorCode: String?
         var errorMessage: String?
@@ -10293,6 +10321,7 @@ actor HubPairingCoordinator {
             case source
             case canonicalEntries = "canonical_entries"
             case workingEntries = "working_entries"
+            case roleTurnMessages = "role_turn_messages"
             case reason
             case errorCode = "error_code"
             case errorMessage = "error_message"
@@ -11480,7 +11509,7 @@ actor HubPairingCoordinator {
             switch classification.kind {
             case .lanOnly, .rawIP(scope: .privateLAN), .rawIP(scope: .loopback), .rawIP(scope: .linkLocal):
                 lines.append("[bootstrap] target \(host) is a LAN/private endpoint. If XT and Hub are on the same SSID but this still fails, check AP client isolation, guest-network policy, or VLAN segmentation.")
-            case .stableNamed, .rawIP(scope: .carrierGradeNat), .rawIP(scope: .publicInternet), .rawIP(scope: .unknown):
+            case .stableNamed, .rawIP(scope: .tailscale), .rawIP(scope: .carrierGradeNat), .rawIP(scope: .publicInternet), .rawIP(scope: .unknown):
                 lines.append("[bootstrap] target \(host) is not a same-LAN-only endpoint, but first pairing still requires one successful local-LAN approval before formal remote reconnect can work.")
             case .missing:
                 break
@@ -14928,10 +14957,31 @@ async function getOrCreateThread(memoryClient, md, client, threadKey) {
   return resp?.thread || null;
 }
 
-async function appendTurns(memoryClient, md, client, threadId, requestId, createdAtMs, userText, assistantText) {
+function parseMessagesJSON(raw, userText, assistantText) {
   const messages = [];
-  if (userText) messages.push({ role: 'user', content: userText });
-  if (assistantText) messages.push({ role: 'assistant', content: assistantText });
+  try {
+    const parsed = JSON.parse(String(raw || '[]'));
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) {
+        const role = safe(item?.role || '');
+        const content = safe(item?.content || '');
+        if (!role || !content) continue;
+        const message = { role, content };
+        if (item?.turn_metadata && typeof item.turn_metadata === 'object') {
+          message.turn_metadata = item.turn_metadata;
+        }
+        messages.push(message);
+      }
+    }
+  } catch {}
+  if (messages.length === 0) {
+    if (userText) messages.push({ role: 'user', content: userText });
+    if (assistantText) messages.push({ role: 'assistant', content: assistantText });
+  }
+  return messages;
+}
+
+async function appendTurns(memoryClient, md, client, threadId, requestId, createdAtMs, messages) {
   if (messages.length === 0) throw new Error('turn_empty');
 
   return await new Promise((resolve, reject) => {
@@ -14959,13 +15009,14 @@ async function main() {
   const requestId = safe(process.env.XTERMINAL_CONV_REQUEST_ID || '');
   const userText = safe(process.env.XTERMINAL_CONV_USER_TEXT || '');
   const assistantText = safe(process.env.XTERMINAL_CONV_ASSISTANT_TEXT || '');
+  const messages = parseMessagesJSON(process.env.XTERMINAL_CONV_MESSAGES_JSON || '[]', userText, assistantText);
   const createdAtMsRaw = Number.parseInt(safe(process.env.XTERMINAL_CONV_CREATED_AT_MS || `${Date.now()}`), 10);
   const createdAtMs = Number.isFinite(createdAtMsRaw) ? createdAtMsRaw : Date.now();
 
   if (!projectId) throw new Error('project_id_empty');
   if (!threadKey) throw new Error('thread_key_empty');
   if (!requestId) throw new Error('request_id_empty');
-  if (!userText && !assistantText) throw new Error('turn_empty');
+  if (messages.length === 0) throw new Error('turn_empty');
 
   const protoPath = await resolveProtoPath();
   const proto = loadProto(protoPath);
@@ -14984,7 +15035,7 @@ async function main() {
   const threadId = safe(th?.thread_id || '');
   if (!threadId) throw new Error('thread_missing');
 
-  await appendTurns(memoryClient, md, client, threadId, requestId, createdAtMs, userText, assistantText);
+  await appendTurns(memoryClient, md, client, threadId, requestId, createdAtMs, messages);
   out({ ok: true });
 }
 
@@ -15636,11 +15687,49 @@ async function getWorkingSet(memoryClient, md, client, threadId, limit) {
   return Array.isArray(resp?.messages) ? resp.messages : [];
 }
 
+async function getProjectRoleTranscriptProjection(memoryClient, md, client, projectId, threadKey, limit) {
+  if (typeof memoryClient.GetProjectRoleTranscriptProjection !== 'function') return null;
+  const resp = await new Promise((resolve, reject) => {
+    memoryClient.GetProjectRoleTranscriptProjection(
+      {
+        client,
+        project_id: projectId,
+        thread_key: threadKey,
+        limit,
+        include_content: true,
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+  return resp && typeof resp === 'object' ? resp : null;
+}
+
 function clipText(v, n = 360) {
   const s = safe(v);
   if (!s) return '';
   if (s.length <= n) return s;
   return `${s.slice(0, n)}…`;
+}
+
+function roleTurnMessagesFromProjection(projection) {
+  const lines = Array.isArray(projection?.recent_lines) ? projection.recent_lines : [];
+  return lines
+    .map((line) => {
+      const content = clipText(line?.content || '', 420);
+      if (!content) return null;
+      const metadata = line?.turn_metadata && typeof line.turn_metadata === 'object'
+        ? line.turn_metadata
+        : null;
+      const role = safe(line?.role || metadata?.source_role || 'assistant') || 'assistant';
+      const out = { role, content };
+      if (metadata) out.turn_metadata = metadata;
+      return out;
+    })
+    .filter(Boolean);
 }
 
 async function main() {
@@ -15686,6 +15775,21 @@ async function main() {
   const th = await getOrCreateThread(memoryClient, md, client, threadKey);
   const threadId = safe(th?.thread_id || '');
   let workingEntries = [];
+  let roleTurnMessages = [];
+  let projectionRoleTurnMessages = [];
+  if (scope === 'project') {
+    try {
+      const projection = await getProjectRoleTranscriptProjection(
+        memoryClient,
+        md,
+        client,
+        safe(client.project_id),
+        threadKey,
+        workingLimit
+      );
+      projectionRoleTurnMessages = roleTurnMessagesFromProjection(projection);
+    } catch {}
+  }
   if (threadId) {
     const ws = await getWorkingSet(memoryClient, md, client, threadId, workingLimit);
     workingEntries = ws
@@ -15693,9 +15797,18 @@ async function main() {
         const role = safe(m?.role || 'assistant');
         const content = clipText(m?.content || '', 420);
         if (!content) return '';
+        const roleTurn = { role, content };
+        if (m?.turn_metadata && typeof m.turn_metadata === 'object') {
+          roleTurn.turn_metadata = m.turn_metadata;
+        }
+        roleTurnMessages.push(roleTurn);
         return `${role}: ${content}`;
       })
       .filter(Boolean);
+  }
+  if (projectionRoleTurnMessages.length > 0) {
+    roleTurnMessages = projectionRoleTurnMessages;
+    workingEntries = projectionRoleTurnMessages.map((m) => `${safe(m?.role || 'assistant')}: ${clipText(m?.content || '', 420)}`);
   }
 
   out({
@@ -15703,6 +15816,7 @@ async function main() {
     source: 'hub_memory_v1_grpc',
     canonical_entries: canonicalEntries,
     working_entries: workingEntries,
+    role_turn_messages: roleTurnMessages,
   });
 }
 
@@ -15713,6 +15827,7 @@ main().catch((err) => {
     source: 'hub_memory_v1_grpc',
     canonical_entries: [],
     working_entries: [],
+    role_turn_messages: [],
     reason: msg || 'remote_memory_snapshot_failed',
     error_code: msg || 'remote_memory_snapshot_failed',
     error_message: msg || 'remote_memory_snapshot_failed',
@@ -19622,16 +19737,12 @@ main().catch((err) => {
             return true
         }
 
-        guard !hasAuthoritativeLocalProfile else { return false }
-        guard shouldRequireConfiguredHubHost(configuredInternetHost) else { return false }
-
         guard !inviteToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
 
         let classification = XTHubRemoteAccessHostClassification.classify(configuredInternetHost)
-        if case .stableNamed = classification.kind {
-            return true
-        }
-        return false
+        guard classification.isFormalRemoteEntry else { return false }
+        guard !hasAuthoritativeLocalProfile else { return false }
+        return true
     }
 
     private func hostMatchesConfiguredHost(discoveredHost: String?, options: HubRemoteConnectOptions) -> Bool {
@@ -21445,7 +21556,7 @@ main().catch((err) => {
                 directLocal.append(host)
                 return
             }
-            if HubRemoteHostPolicy.isStableNamedRemoteHost(host) {
+            if HubRemoteHostPolicy.isFormalRemoteHost(host) {
                 stableRemote.append(host)
                 return
             }
@@ -21737,11 +21848,11 @@ main().catch((err) => {
             return false
         }
 
-        // Stable named remote hosts are authoritative and should not fan out into
-        // LAN subnet sweeps. Raw/.local entries are allowed because same-Wi-Fi hubs
+        // Formal remote hosts are authoritative and should not fan out into LAN
+        // subnet sweeps. Raw/.local entries are allowed because same-Wi-Fi hubs
         // can legitimately move between nearby DHCP segments.
         if let configuredHost = normalizedTrimmed(configuredInternetHost),
-           HubRemoteHostPolicy.isStableNamedRemoteHost(configuredHost) {
+           HubRemoteHostPolicy.isFormalRemoteHost(configuredHost) {
             return false
         }
 
@@ -21768,7 +21879,7 @@ main().catch((err) => {
 
     private nonisolated static func shouldPinDiscoveredHostToConfiguredRemote(_ configuredHost: String) -> Bool {
         guard let configured = normalizedTrimmed(configuredHost) else { return false }
-        return HubRemoteHostPolicy.isStableNamedRemoteHost(configured)
+        return HubRemoteHostPolicy.isFormalRemoteHost(configured)
     }
 
     private nonisolated static func hasRecoverableCachedPairing(_ cachedPairing: HubCachedPairingInfo) -> Bool {

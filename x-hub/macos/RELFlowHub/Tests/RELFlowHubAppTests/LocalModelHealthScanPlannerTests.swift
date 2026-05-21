@@ -75,6 +75,20 @@ final class LocalModelHealthScanPlannerTests: XCTestCase {
         XCTAssertEqual(jobs.map(\.updatesTrialStatus), [false, false])
     }
 
+    func testExplicitPreflightCanPublishTrialStatusWithoutFullTrial() {
+        let jobs = LocalModelHealthScanPlanner.jobs(
+            for: [makeModel(id: "a")],
+            requestedMode: .preflightOnly,
+            explicitlyLimited: true,
+            healthByModelID: [:],
+            preferredModelIDByTask: [:],
+            requestedTrialStatusUpdates: true
+        )
+
+        XCTAssertEqual(jobs.map(\.mode), [.preflightOnly])
+        XCTAssertEqual(jobs.map(\.updatesTrialStatus), [true])
+    }
+
     private func jobMode(in jobs: [LocalModelHealthScanJob], modelID: String) -> LocalModelHealthScanMode? {
         jobs.first(where: { $0.model.id == modelID })?.mode
     }

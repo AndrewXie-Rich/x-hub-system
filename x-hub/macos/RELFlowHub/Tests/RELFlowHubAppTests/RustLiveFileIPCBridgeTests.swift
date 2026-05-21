@@ -56,6 +56,72 @@ final class RustLiveFileIPCBridgeTests: XCTestCase {
         XCTAssertEqual(object["baseDir"] as? String, liveBase.path)
     }
 
+    func testSkipsSwiftRuntimeAuthorityMirrorWhenRustSyncSucceeds() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let appBase = root.appendingPathComponent("container/RELFlowHub", isDirectory: true)
+        let liveBase = root.appendingPathComponent("RELFlowHub", isDirectory: true)
+        let now: TimeInterval = 1_778_900_075
+        try writeLiveStatus(baseDir: liveBase, now: now - 0.25)
+        try writeText(
+            #"{"schema_version":"xhub.models_state.v1","models":[{"id":"openai/gpt-5.5"}]}"#,
+            to: appBase.appendingPathComponent("models_state.json")
+        )
+        var syncCalls: [(URL, TimeInterval)] = []
+
+        let bridge = RustLiveFileIPCBridge(
+            appBaseDir: appBase,
+            appEventsDir: appBase.appendingPathComponent("ipc_events", isDirectory: true),
+            appResponsesDir: appBase.appendingPathComponent("ipc_responses", isDirectory: true),
+            appStatusFile: appBase.appendingPathComponent("hub_status.json"),
+            compatBaseDirs: [],
+            liveBaseDirCandidates: { [liveBase] },
+            httpLiveStatusOverride: { _ in nil },
+            runtimeAuthoritySyncOverride: { liveBase, now in
+                syncCalls.append((liveBase, now))
+                return true
+            },
+            useRustLiveStatusHTTP: true,
+            runCompatibilityWorkInline: true
+        )
+
+        XCTAssertTrue(bridge.publishAliasHeartbeat(fallbackStatus: makeFallbackStatus(baseDir: appBase, now: now), now: now))
+
+        XCTAssertEqual(syncCalls.count, 1)
+        XCTAssertEqual(syncCalls.first?.0.standardizedFileURL.path, liveBase.standardizedFileURL.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: liveBase.appendingPathComponent("models_state.json").path))
+    }
+
+    func testFallsBackToSwiftRuntimeAuthorityMirrorWhenRustSyncUnavailable() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let appBase = root.appendingPathComponent("container/RELFlowHub", isDirectory: true)
+        let liveBase = root.appendingPathComponent("RELFlowHub", isDirectory: true)
+        let now: TimeInterval = 1_778_900_080
+        try writeLiveStatus(baseDir: liveBase, now: now - 0.25)
+        let modelsState = #"{"schema_version":"xhub.models_state.v1","models":[{"id":"openai/gpt-5.5"}]}"#
+        try writeText(modelsState, to: appBase.appendingPathComponent("models_state.json"))
+
+        let bridge = RustLiveFileIPCBridge(
+            appBaseDir: appBase,
+            appEventsDir: appBase.appendingPathComponent("ipc_events", isDirectory: true),
+            appResponsesDir: appBase.appendingPathComponent("ipc_responses", isDirectory: true),
+            appStatusFile: appBase.appendingPathComponent("hub_status.json"),
+            compatBaseDirs: [],
+            liveBaseDirCandidates: { [liveBase] },
+            httpLiveStatusOverride: { _ in nil },
+            runtimeAuthoritySyncOverride: { _, _ in nil },
+            useRustLiveStatusHTTP: true,
+            runCompatibilityWorkInline: true
+        )
+
+        XCTAssertTrue(bridge.publishAliasHeartbeat(fallbackStatus: makeFallbackStatus(baseDir: appBase, now: now), now: now))
+
+        XCTAssertEqual(try String(contentsOf: liveBase.appendingPathComponent("models_state.json"), encoding: .utf8), modelsState)
+    }
+
     func testForwardsKernelEventAndMirrorsRustResponse() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -237,6 +303,37 @@ final class RustLiveFileIPCBridgeTests: XCTestCase {
         XCTAssertEqual((object["rustHub"] as? [String: Any])?["authority"] as? String, "swift_shell_http_health_fallback")
     }
 
+    func testUsesRecentStaleLiveStatusOnHotPathWhenRefreshIsDue() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let containerBase = root.appendingPathComponent("container/RELFlowHub", isDirectory: true)
+        let liveBase = root.appendingPathComponent("RELFlowHub", isDirectory: true)
+        let now: TimeInterval = 1_778_900_171
+        try writeLiveStatus(baseDir: liveBase, now: now)
+
+        let bridge = RustLiveFileIPCBridge(
+            appBaseDir: containerBase,
+            appEventsDir: containerBase.appendingPathComponent("ipc_events", isDirectory: true),
+            appResponsesDir: containerBase.appendingPathComponent("ipc_responses", isDirectory: true),
+            appStatusFile: containerBase.appendingPathComponent("hub_status.json"),
+            compatBaseDirs: [],
+            liveBaseDirCandidates: { [liveBase] },
+            httpLiveStatusOverride: { _ in nil },
+            useRustLiveStatusHTTP: false,
+            runCompatibilityWorkInline: true
+        )
+
+        XCTAssertTrue(bridge.publishAliasHeartbeat(fallbackStatus: makeFallbackStatus(baseDir: containerBase, now: now), now: now + 0.1))
+        try FileManager.default.removeItem(at: liveBase.appendingPathComponent("hub_status.json"))
+
+        XCTAssertTrue(bridge.publishAliasHeartbeat(fallbackStatus: makeFallbackStatus(baseDir: containerBase, now: now + 2.4), now: now + 2.4))
+
+        let object = try readJSONObject(containerBase.appendingPathComponent("hub_status.json"))
+        XCTAssertEqual(object["baseDir"] as? String, liveBase.path)
+        XCTAssertEqual(object["ipcPath"] as? String, liveBase.appendingPathComponent("ipc_events", isDirectory: true).path)
+    }
+
     func testCanPreferRustHTTPLiveStatusBeforeScanningCandidateFiles() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -339,6 +436,91 @@ final class RustLiveFileIPCBridgeTests: XCTestCase {
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: event.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: liveEvents.appendingPathComponent("event_notification.json").path))
+    }
+
+    func testEventDirectoryCacheInvalidatesWhenNewKernelEventArrives() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let appBase = root.appendingPathComponent("group.rel.flowhub", isDirectory: true)
+        let liveBase = root.appendingPathComponent("RELFlowHub", isDirectory: true)
+        let appEvents = appBase.appendingPathComponent("ipc_events", isDirectory: true)
+        let liveEvents = liveBase.appendingPathComponent("ipc_events", isDirectory: true)
+        let now: TimeInterval = 1_778_900_220
+        try writeLiveStatus(baseDir: liveBase, now: now)
+        try FileManager.default.createDirectory(at: appEvents, withIntermediateDirectories: true)
+
+        let bridge = makeBridge(appBase: appBase, liveBase: liveBase)
+        XCTAssertTrue(bridge.bridgeDropboxes(now: now + 0.1))
+
+        let event = appEvents.appendingPathComponent("event_memory_after_idle.json")
+        try #"{"type":"memory_retrieval","reqId":"req-after-idle","memory_retrieval":{"query":"later"}}"#
+            .write(to: event, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(bridge.bridgeDropboxes(now: now + 0.2))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: event.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: liveEvents.appendingPathComponent("event_memory_after_idle.json").path))
+    }
+
+    func testUnsupportedPrimaryEventBackoffDoesNotBlockNewKernelEvent() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let appBase = root.appendingPathComponent("group.rel.flowhub", isDirectory: true)
+        let liveBase = root.appendingPathComponent("RELFlowHub", isDirectory: true)
+        let appEvents = appBase.appendingPathComponent("ipc_events", isDirectory: true)
+        let liveEvents = liveBase.appendingPathComponent("ipc_events", isDirectory: true)
+        let now: TimeInterval = 1_778_900_240
+        try writeLiveStatus(baseDir: liveBase, now: now)
+        try FileManager.default.createDirectory(at: appEvents, withIntermediateDirectories: true)
+
+        let swiftEvent = appEvents.appendingPathComponent("event_notification.json")
+        try #"{"type":"push_notification","notification":{"title":"Hi"}}"#
+            .write(to: swiftEvent, atomically: true, encoding: .utf8)
+
+        let bridge = makeBridge(appBase: appBase, liveBase: liveBase)
+        XCTAssertTrue(bridge.bridgeDropboxes(now: now + 0.1))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: swiftEvent.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: liveEvents.appendingPathComponent("event_notification.json").path))
+
+        let kernelEvent = appEvents.appendingPathComponent("event_memory_after_swift.json")
+        try #"{"type":"memory_retrieval","reqId":"req-after-swift","memory_retrieval":{"query":"kernel"}}"#
+            .write(to: kernelEvent, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(bridge.bridgeDropboxes(now: now + 0.2))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: swiftEvent.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: kernelEvent.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: liveEvents.appendingPathComponent("event_memory_after_swift.json").path))
+    }
+
+    func testIgnoredEventBackoffAllowsReusedPathWithNewModificationTime() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let appBase = root.appendingPathComponent("group.rel.flowhub", isDirectory: true)
+        let liveBase = root.appendingPathComponent("RELFlowHub", isDirectory: true)
+        let appEvents = appBase.appendingPathComponent("ipc_events", isDirectory: true)
+        let liveEvents = liveBase.appendingPathComponent("ipc_events", isDirectory: true)
+        let now: TimeInterval = 1_778_900_260
+        try writeLiveStatus(baseDir: liveBase, now: now)
+        try FileManager.default.createDirectory(at: appEvents, withIntermediateDirectories: true)
+
+        let reusedEvent = appEvents.appendingPathComponent("event_reused.json")
+        try #"{"type":"push_notification","notification":{"title":"Hi"}}"#
+            .write(to: reusedEvent, atomically: true, encoding: .utf8)
+
+        let bridge = makeBridge(appBase: appBase, liveBase: liveBase)
+        XCTAssertTrue(bridge.bridgeDropboxes(now: now + 0.1))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: reusedEvent.path))
+
+        try FileManager.default.removeItem(at: reusedEvent)
+        try #"{"type":"memory_retrieval","reqId":"req-reused","memory_retrieval":{"query":"reused"}}"#
+            .write(to: reusedEvent, atomically: true, encoding: .utf8)
+        try setModificationDate(Date(timeIntervalSince1970: now + 1), for: reusedEvent)
+
+        XCTAssertTrue(bridge.bridgeDropboxes(now: now + 0.2))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: reusedEvent.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: liveEvents.appendingPathComponent("event_reused.json").path))
     }
 
     func testNoOpWhenLiveBaseMatchesAppBase() throws {

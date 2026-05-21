@@ -127,6 +127,25 @@ struct HubAIClientReconnectPolicyTests {
     }
 
     @Test
+    func reconnectPlanTreatsTailscaleIPAsFormalRemoteHost() {
+        let plan = HubAIClient.automaticRemoteReconnectPlan(
+            cachedProfile: HubAIClient.CachedRemoteProfile(
+                host: "100.122.237.57",
+                internetHost: "100.122.237.57",
+                pairingPort: 50052,
+                grpcPort: 50051,
+                hubInstanceID: "hub-1",
+                lanDiscoveryName: "Hub"
+            ),
+            internetHost: "100.122.237.57"
+        )
+
+        #expect(plan.preferredRoute == .stableNamedRemote)
+        #expect(plan.candidateRoutes == [.stableNamedRemote, .lanDirect])
+        #expect(plan.handoffReason == "remote_generate_reconnect_prefer_stable_remote")
+    }
+
+    @Test
     func reconnectPlanKeepsLanFirstWhenCurrentConnectionLooksLanLocal() {
         let plan = HubAIClient.automaticRemoteReconnectPlan(
             cachedProfile: HubAIClient.CachedRemoteProfile(
@@ -160,6 +179,23 @@ struct HubAIClientReconnectPolicyTests {
         )
 
         #expect(shouldRepair)
+    }
+
+    @Test
+    func preflightRepairSkipsTailscaleRemoteProfiles() {
+        let shouldRepair = HubAIClient.requiresRemoteRoutePreflightRepairForTesting(
+            cachedProfile: HubAIClient.CachedRemoteProfile(
+                host: "100.122.237.57",
+                internetHost: "100.122.237.57",
+                pairingPort: 50052,
+                grpcPort: 50051,
+                hubInstanceID: "hub-1",
+                lanDiscoveryName: "Hub"
+            ),
+            internetHost: "100.122.237.57"
+        )
+
+        #expect(shouldRepair == false)
     }
 
     @Test

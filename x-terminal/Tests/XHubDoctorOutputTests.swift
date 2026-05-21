@@ -1126,6 +1126,23 @@ struct XHubDoctorOutputTests {
     }
 
     @Test
+    func routeSnapshotClassifiesTailscaleIPAsFormalRemoteEntry() {
+        let snapshot = XHubDoctorOutputRouteSnapshot(
+            transportMode: "grpc",
+            routeLabel: "paired-remote",
+            pairingPort: 50059,
+            grpcPort: 50058,
+            internetHost: "100.122.237.57"
+        )
+
+        #expect(snapshot.internetHostKind == "raw_ip")
+        #expect(snapshot.internetHostScope == "tailscale")
+        #expect(snapshot.internetHostScopeLabel == "Tailscale IP")
+        #expect(snapshot.remoteEntryPosture == "tailscale_ip_entry")
+        #expect(snapshot.remoteEntrySummaryLine == "Tailscale 正式入口 · Tailscale IP · host=100.122.237.57")
+    }
+
+    @Test
     func preservesVoicePlaybackDoctorDetailsInGenericBundle() {
         var xtReport = sampleXTUnifiedDoctorReport(sourceReportPath: "/tmp/xt_unified_doctor_report.json")
         xtReport.sections.append(

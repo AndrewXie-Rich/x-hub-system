@@ -26,6 +26,8 @@ stop_running_target_app() {
     "$APP_SRC/Contents/MacOS/XHub"
     "$APP_SRC/Contents/MacOS/RELFlowHub"
     "$APP_SRC/Contents/Resources/relflowhub_node"
+    "RELFlowHub/ai_runtime/python_service/relflowhub_local_runtime.py"
+    "RELFlowHub/ai_runtime/python_service/relflowhub_mlx_runtime.py"
   )
 
   local ps_output=""
@@ -35,8 +37,9 @@ stop_running_target_app() {
   local pids=()
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    local pid="${line%% *}"
-    local cmd="${line#* }"
+    local pid=""
+    local cmd=""
+    read -r pid cmd <<< "$line"
     [ -n "$pid" ] || continue
     for target in "${targets[@]}"; do
       if [[ "$cmd" == *"$target"* ]]; then
@@ -70,6 +73,15 @@ stop_running_target_app() {
   fi
 }
 
+clear_launch_blocking_xattrs() {
+  local app_path="$1"
+  [ -d "$app_path" ] || return 0
+  # Ad-hoc signed local developer builds can be blocked by LaunchServices when
+  # provenance/quarantine xattrs are preserved during copy into /Applications.
+  xattr -dr com.apple.provenance "$app_path" 2>/dev/null || true
+  xattr -dr com.apple.quarantine "$app_path" 2>/dev/null || true
+}
+
 echo "[install] Installing X-Hub.app"
 echo "[install] Source: $APP_SRC"
 echo "[install] Target: $APP_DEST"
@@ -79,6 +91,7 @@ if [ -e "$APP_DEST" ]; then
   rm -rf "$APP_DEST"
 fi
 ditto --rsrc "$APP_SRC" "$APP_DEST"
+clear_launch_blocking_xattrs "$APP_DEST"
 
 if [ -e "$LEGACY_DEST" ]; then
   echo "[warn] Legacy app still exists and is not used by this installer: $LEGACY_DEST" >&2

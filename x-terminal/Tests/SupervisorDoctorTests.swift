@@ -319,6 +319,118 @@ struct SupervisorDoctorTests {
     }
 
     @Test
+    func rustMemoryGatewayShadowDriftBecomesMemoryAssemblyWarning() {
+        let snapshot = makeMemorySnapshot()
+        let compare = makeRustMemoryGatewayShadowCompare(
+            parityOk: false,
+            missingRustAnchors: ["rust canonical goal"]
+        )
+
+        let report = SupervisorDoctorChecker.run(
+            input: makeInput(snapshot: snapshot, rustGatewayShadowCompare: compare)
+        )
+
+        let finding = report.findings.first { $0.code == "memory_gateway_shadow_compare_drift" }
+        #expect(finding?.area == "memory_assembly")
+        #expect(finding?.severity == .warning)
+        #expect(finding?.priority == .p1)
+        #expect(finding?.detail.contains("missing_anchors=1") == true)
+        #expect(finding?.verifyHint?.contains("parity_ok=true") == true)
+        #expect(report.summary.memoryAssemblyWarningCount == 1)
+    }
+
+    @Test
+    func rustMemoryGatewayShadowAuthorityChangeIsBlockingFinding() {
+        let snapshot = makeMemorySnapshot()
+        let compare = makeRustMemoryGatewayShadowCompare(
+            parityOk: true,
+            productionAuthorityChange: true
+        )
+
+        let report = SupervisorDoctorChecker.run(
+            input: makeInput(snapshot: snapshot, rustGatewayShadowCompare: compare)
+        )
+
+        let finding = report.findings.first { $0.code == "memory_gateway_shadow_authority_violation" }
+        #expect(finding?.area == "memory_assembly")
+        #expect(finding?.severity == .blocking)
+        #expect(finding?.priority == .p0)
+        #expect(finding?.detail.contains("production_authority_change=true") == true)
+        #expect(report.summary.memoryAssemblyBlockingCount == 1)
+    }
+
+    @Test
+    func rustMemoryGatewayCutoverReadinessNotReadyBecomesMemoryAssemblyWarning() {
+        let snapshot = makeMemorySnapshot()
+        let readiness = makeRustMemoryGatewayCutoverReadiness(
+            ready: false,
+            issues: [
+                .init(
+                    code: "memory_gateway_cutover_insufficient_samples",
+                    blocking: true,
+                    detail: "Need 3 fresh matching parity samples; found 1."
+                )
+            ]
+        )
+
+        let report = SupervisorDoctorChecker.run(
+            input: makeInput(snapshot: snapshot, rustGatewayCutoverReadiness: readiness)
+        )
+
+        let finding = report.findings.first { $0.code == "memory_gateway_cutover_readiness_not_ready" }
+        #expect(finding?.area == "memory_assembly")
+        #expect(finding?.severity == .warning)
+        #expect(finding?.priority == .p1)
+        #expect(finding?.detail.contains("ready_for_require=false") == true)
+        #expect(finding?.detail.contains("memory_gateway_cutover_insufficient_samples") == true)
+        #expect(report.summary.memoryAssemblyWarningCount == 1)
+    }
+
+    @Test
+    func rustMemoryGatewayCutoverReadinessNotReadyBlocksWhenRequireGateIsEnabled() {
+        let snapshot = makeMemorySnapshot()
+        let readiness = makeRustMemoryGatewayCutoverReadiness(
+            ready: false,
+            issues: [
+                .init(
+                    code: "memory_gateway_cutover_evidence_stale",
+                    blocking: true,
+                    detail: "Matching shadow compare samples are stale."
+                )
+            ]
+        )
+
+        let report = SupervisorDoctorChecker.run(
+            input: makeInput(
+                snapshot: snapshot,
+                rustGatewayCutoverReadiness: readiness,
+                rustGatewayRequireEnabled: true
+            )
+        )
+
+        let finding = report.findings.first { $0.code == "memory_gateway_cutover_readiness_not_ready" }
+        #expect(finding?.area == "memory_assembly")
+        #expect(finding?.severity == .blocking)
+        #expect(finding?.priority == .p0)
+        #expect(finding?.detail.contains("require_env_enabled=true") == true)
+        #expect(report.summary.memoryAssemblyBlockingCount == 1)
+    }
+
+    @Test
+    func rustMemoryGatewayCutoverReadinessReadyDoesNotCreateMemoryAssemblyFinding() {
+        let snapshot = makeMemorySnapshot()
+        let readiness = makeRustMemoryGatewayCutoverReadiness(ready: true)
+
+        let report = SupervisorDoctorChecker.run(
+            input: makeInput(snapshot: snapshot, rustGatewayCutoverReadiness: readiness)
+        )
+
+        #expect(report.findings.contains(where: { $0.code.hasPrefix("memory_gateway_cutover_") }) == false)
+        #expect(report.summary.memoryAssemblyBlockingCount == 0)
+        #expect(report.summary.memoryAssemblyWarningCount == 0)
+    }
+
+    @Test
     func missingScopedHiddenProjectRecoveryBecomesBlockingFindingWithActionableSuggestion() {
         let snapshot = makeMemorySnapshot(
             selectedSections: ["l1_canonical", "l2_observations", "l3_working_set", "dialogue_window"],
@@ -680,7 +792,10 @@ struct SupervisorDoctorTests {
 
     private func makeInput(
         snapshot: SupervisorMemoryAssemblySnapshot?,
-        canonicalSyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot? = nil
+        canonicalSyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot? = nil,
+        rustGatewayShadowCompare: HubIPCClient.RustMemoryGatewayShadowCompareResult? = nil,
+        rustGatewayCutoverReadiness: HubIPCClient.RustMemoryGatewayCutoverReadinessReport? = nil,
+        rustGatewayRequireEnabled: Bool = false
     ) -> SupervisorDoctorInputBundle {
         let workspace = URL(fileURLWithPath: "/tmp/xterminal_doctor_memory_test", isDirectory: true)
         return SupervisorDoctorInputBundle(
@@ -695,7 +810,83 @@ struct SupervisorDoctorTests {
             secretsPlanSource: "unit_test",
             reportURL: workspace.appendingPathComponent("doctor_report.json"),
             memoryAssemblySnapshot: snapshot,
-            canonicalMemorySyncSnapshot: canonicalSyncSnapshot
+            canonicalMemorySyncSnapshot: canonicalSyncSnapshot,
+            rustMemoryGatewayShadowCompare: rustGatewayShadowCompare,
+            rustMemoryGatewayCutoverReadiness: rustGatewayCutoverReadiness,
+            rustMemoryGatewayRequireEnabled: rustGatewayRequireEnabled
+        )
+    }
+
+    private func makeRustMemoryGatewayShadowCompare(
+        parityOk: Bool,
+        productionAuthorityChange: Bool = false,
+        missingRustAnchors: [String] = []
+    ) -> HubIPCClient.RustMemoryGatewayShadowCompareResult {
+        HubIPCClient.RustMemoryGatewayShadowCompareResult(
+            ok: parityOk,
+            parityOk: parityOk,
+            source: "rust_memory_gateway_shadow_compare",
+            mode: "shadow_compare_no_product_cutover",
+            productionAuthorityChange: productionAuthorityChange,
+            requesterRole: "supervisor",
+            useMode: XTMemoryUseMode.supervisorOrchestration.rawValue,
+            projectId: "project-alpha",
+            productSource: "local_ipc",
+            rustSource: "rust_memory_gateway_prepare",
+            productTextChars: 512,
+            rustContextChars: 480,
+            productTextHash: "product",
+            rustContextHash: "rust",
+            rustObjectCount: 3,
+            rustEffectiveLayers: ["l1_canonical", "l2_observations", "l3_working_set"],
+            matchedRustAnchors: ["rust observation"],
+            missingRustAnchors: missingRustAnchors,
+            rustDenyCode: nil,
+            reasonCode: parityOk ? nil : "rust_memory_gateway_shadow_drift",
+            detail: nil,
+            recordedAtMs: 1_773_000_020_000
+        )
+    }
+
+    private func makeRustMemoryGatewayCutoverReadiness(
+        ready: Bool,
+        authorityViolationCount: Int = 0,
+        projectId: String? = "project-alpha",
+        issues: [HubIPCClient.RustMemoryGatewayCutoverReadinessIssue]? = nil
+    ) -> HubIPCClient.RustMemoryGatewayCutoverReadinessReport {
+        let resolvedIssues = issues ?? (ready ? [] : [
+            .init(
+                code: "memory_gateway_cutover_insufficient_samples",
+                blocking: true,
+                detail: "Need 3 fresh matching parity samples; found 1."
+            )
+        ])
+        return HubIPCClient.RustMemoryGatewayCutoverReadinessReport(
+            ok: ready,
+            readyForRequire: ready,
+            source: "rust_memory_gateway_shadow_compare_history",
+            generatedAtMs: 1_773_000_030_000,
+            requesterRole: "supervisor",
+            useMode: XTMemoryUseMode.supervisorOrchestration.rawValue,
+            projectId: projectId,
+            requiredSampleCount: 3,
+            maxAgeMs: 600_000,
+            totalSampleCount: ready ? 3 : 1,
+            matchingSampleCount: ready ? 3 : 1,
+            freshMatchingSampleCount: ready ? 3 : 1,
+            consideredSampleCount: ready ? 3 : 1,
+            passingSampleCount: ready ? 3 : 0,
+            staleMatchingSampleCount: 0,
+            authorityViolationCount: authorityViolationCount,
+            parityFailureCount: ready ? 0 : 1,
+            rustSourceMismatchCount: 0,
+            latestRecordedAtMs: 1_773_000_029_000,
+            oldestConsideredAtMs: 1_773_000_027_000,
+            requireEnvKey: "XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE",
+            statusPath: "/tmp/memory_gateway_shadow_compare_status.json",
+            historyPath: "/tmp/memory_gateway_shadow_compare_history.json",
+            reportPath: "/tmp/memory_gateway_cutover_readiness.json",
+            issues: resolvedIssues
         )
     }
 

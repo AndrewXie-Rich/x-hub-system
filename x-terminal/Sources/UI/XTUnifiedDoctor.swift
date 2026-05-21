@@ -4322,7 +4322,7 @@ enum XTUnifiedDoctorBuilder {
         let hostClassification = XTHubRemoteAccessHostClassification.classify(input.internetHost)
         let host = hostClassification.displayHost ?? "当前目标"
 
-        let headline: String
+        var headline: String
         let summary: String
         let nextStep: String
 
@@ -4334,7 +4334,7 @@ enum XTUnifiedDoctorBuilder {
             case .lanOnly, .rawIP(scope: .privateLAN), .rawIP(scope: .loopback), .rawIP(scope: .linkLocal):
                 summary = "当前不是 Hub 坏了，而是 Hub 明确判定这次首配不是“同一局域网来源”。即使你看到的是同一个 Wi‑Fi 名称，也可能因为 client isolation、访客网络或 VLAN 分段而被 Hub 识别成不同 LAN。"
                 nextStep = "确认 XT 与 Hub 真正在同一局域网内：若目标 \(host) 仍报这个错误，优先检查当前 Wi‑Fi / AP 是否开启了 client isolation、同 SSID 是否被切到不同 VLAN；修好后重新打开连接 Hub，并在 Hub 本机完成一次本地批准。"
-            case .stableNamed, .rawIP(scope: .carrierGradeNat), .rawIP(scope: .publicInternet), .rawIP(scope: .unknown):
+            case .stableNamed, .rawIP(scope: .tailscale), .rawIP(scope: .carrierGradeNat), .rawIP(scope: .publicInternet), .rawIP(scope: .unknown):
                 summary = "当前不是 Hub 坏了，而是 Hub 明确要求首次配对必须先在同一局域网内完成一次本地批准。正式异网入口、公网 raw IP 或 NAT 入口都不能直接替代这一步；即使你看到的是同一个 Wi‑Fi 名称，也仍可能因为 client isolation、访客网络或 VLAN 分段而不被 Hub 视为同一 LAN。"
                 nextStep = "先把 XT 和 Hub 放回同一局域网完成首配；如果你以为两端已经在同一个 Wi‑Fi 下却仍失败，优先检查当前 Wi‑Fi / AP 是否开启了 client isolation、同 SSID 是否被切到不同 VLAN。Hub 本机批准成功后，再回到异网环境使用正式远端入口。"
             case .missing:
@@ -4381,7 +4381,7 @@ enum XTUnifiedDoctorBuilder {
         hostClassification: XTHubRemoteAccessHostClassification,
         linkingStalled: Bool
     ) -> XTUnifiedDoctorSection {
-        let headline: String
+        var headline: String
         let summary: String
         let nextStep: String
         let host = hostClassification.displayHost ?? "未设置"
@@ -4409,10 +4409,16 @@ enum XTUnifiedDoctorBuilder {
                 nextStep = "先确认 XT 现在仍在能直达 \(host) 的同一局域网 / 同一 VPN；若要长期异网使用，改成稳定命名入口并重新导出正式接入包。"
             case .carrierGradeNat:
                 summary = "当前记录的是运营商 NAT 地址 \(host)。这类入口通常不能被另一台设备稳定反向访问，所以 XT 无法把它当作可靠的 Hub 远端入口。"
-                nextStep = "改成稳定命名入口、relay 或 VPN 地址后再重试，不要继续依赖运营商 NAT raw IP。"
+                nextStep = "改成 Tailscale IP、稳定域名、relay、Cloudflare Spectrum 或 VPS TCP 转发后再重试，不要继续依赖运营商 NAT raw IP。"
+            case .tailscale:
+                headline = linkingStalled
+                    ? "Hub 配对引导已停住，Tailscale 正式入口当前不可达"
+                    : "Hub 暂时不可达，但 Tailscale 正式入口已配置"
+                summary = "当前记录的是 Tailscale IP \(host)。这属于安全等级高的正式异网入口；如果不可达，通常是 XT 未加入同一个 tailnet、Hub 主机离线、Tailscale 状态异常，或 pairing / gRPC 端口没有监听。"
+                nextStep = "确认 XT 和 Hub 都登录同一个 Tailscale tailnet，再到 Hub 主机检查 app 在线、配对 / gRPC 端口监听和本机防火墙；修好后回 XT 重试。"
             case .publicInternet, .unknown:
                 summary = "当前记录的是 \(scope.doctorLabel) \(host)。它可以短时直连，但网络切换、休眠、NAT 或公网 IP 变化后很容易失效，所以 XT 现在无法确认这条入口仍指向 Hub。"
-                nextStep = "先确认这个 raw IP 现在仍能打到 Hub；若要长期异网使用，改成稳定命名入口并重新导出正式接入包，避免每次换网都手工修。"
+                nextStep = "先确认这个 raw IP 现在仍能打到 Hub；若要长期异网使用，改成 Tailscale IP、稳定域名、relay、Cloudflare Spectrum 或 VPS TCP 转发并重新导出正式接入包。"
             }
         case .stableNamed:
             headline = linkingStalled
@@ -5326,7 +5332,7 @@ enum XTUnifiedDoctorBuilder {
 
     private struct ModelRouteIssueOverride {
         let state: XTUISurfaceState
-        let headline: String
+        var headline: String
         let summary: String
         let nextStep: String
         let repairEntry: UITroubleshootDestination

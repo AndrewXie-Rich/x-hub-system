@@ -133,6 +133,7 @@ enum RustHubReadinessClient {
             request.timeoutInterval = timeout
             request.cachePolicy = .reloadIgnoringLocalCacheData
             request.setValue("application/json", forHTTPHeaderField: "Accept")
+            RustHubHTTPAccess.applyAccessKey(to: &request)
             let (data, response) = try await URLSession.shared.data(for: request)
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard (200..<300).contains(statusCode) else {

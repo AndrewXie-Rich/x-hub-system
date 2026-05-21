@@ -155,9 +155,37 @@ message RevokeGrantResponse {
 
 // -------------------- AI Generate (Streaming) --------------------
 
+message RoleTurnMetadata {
+  string schema_version = 1; // "xhub.role_turn_metadata.v1"
+
+  string client_message_id = 2;
+  string source_role = 3; // "user|supervisor|coder|reviewer|tool|hub|system"
+  string target_role = 4; // "user|supervisor|coder|reviewer|all|none"
+  string sender_role = 5; // compatibility alias, same as source_role when possible
+
+  string project_id = 6;
+  string root_project_id = 7;
+  string thread_key = 8;
+
+  string dispatch_id = 9;
+  string dispatch_kind = 10; // "supervisor_to_coder|coder_reply|reviewer_note|user_request|tool_approval|tool_approval_decision|tool_result|heartbeat"
+  string run_id = 11;
+  string launch_run_id = 12;
+  string tool_call_id = 13;
+  string reviewer_note_id = 14;
+
+  string status = 15; // "dispatched|running|awaiting_authorization|failed|completed|observed"
+  repeated string evidence_refs = 16;
+  repeated string audit_refs = 17;
+  repeated string tags = 18;
+
+  int64 observed_at_ms = 19;
+}
+
 message ChatMessage {
   string role = 1;    // "system|user|assistant|tool"
   string content = 2;
+  RoleTurnMetadata turn_metadata = 3; // optional; Hub MUST accept legacy role/content-only messages.
 }
 
 message GenerateRequest {
@@ -648,6 +676,36 @@ message GetWorkingSetRequest {
 message GetWorkingSetResponse {
   string thread_id = 1;
   repeated ChatMessage messages = 2; // chronological
+}
+
+message ProjectRoleTranscriptProjectionRequest {
+  ClientIdentity client = 1;
+  string project_id = 2;
+  string thread_key = 3;
+  int32 limit = 4;
+  bool include_content = 5;
+}
+
+message ProjectRoleTranscriptLine {
+  string turn_id = 1;
+  string role = 2;
+  string content = 3;
+  RoleTurnMetadata turn_metadata = 4;
+  int64 created_at_ms = 5;
+}
+
+message ProjectRoleTranscriptProjection {
+  string schema_version = 1; // "xhub.project_role_transcript_projection.v1"
+  string source = 2; // "hub_memory_turns"
+  string project_id = 3;
+  string thread_id = 4;
+  string thread_key = 5;
+  string status = 6;
+  ProjectRoleTranscriptLine latest_supervisor_dispatch = 7;
+  ProjectRoleTranscriptLine latest_coder_reply = 8;
+  ProjectRoleTranscriptLine latest_reviewer_note = 9;
+  repeated ProjectRoleTranscriptLine recent_lines = 10;
+  int64 generated_at_ms = 11;
 }
 
 message CanonicalMemoryItem {
@@ -3105,6 +3163,7 @@ service HubMemory {
   rpc GetOrCreateThread(GetOrCreateThreadRequest) returns (GetOrCreateThreadResponse);
   rpc AppendTurns(AppendTurnsRequest) returns (AppendTurnsResponse);
   rpc GetWorkingSet(GetWorkingSetRequest) returns (GetWorkingSetResponse);
+  rpc GetProjectRoleTranscriptProjection(ProjectRoleTranscriptProjectionRequest) returns (ProjectRoleTranscriptProjection);
   rpc UpsertCanonicalMemory(UpsertCanonicalMemoryRequest) returns (UpsertCanonicalMemoryResponse);
   rpc ListCanonicalMemory(ListCanonicalMemoryRequest) returns (ListCanonicalMemoryResponse);
   rpc RetrieveMemory(MemoryRetrievalRequest) returns (MemoryRetrievalResponse);

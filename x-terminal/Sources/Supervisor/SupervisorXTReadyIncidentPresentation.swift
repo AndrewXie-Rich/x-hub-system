@@ -651,7 +651,7 @@ enum SupervisorXTReadyIncidentPresentationMapper {
             return .neutral
         }
         switch posture {
-        case "stable_named_entry":
+        case "stable_named_entry", "tailscale_ip_entry":
             return .success
         case "missing_formal_remote_entry",
              "lan_only_entry",

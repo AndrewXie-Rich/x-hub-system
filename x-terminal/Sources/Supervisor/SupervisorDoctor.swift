@@ -281,6 +281,9 @@ struct SupervisorDoctorInputBundle {
     var reportURL: URL
     var memoryAssemblySnapshot: SupervisorMemoryAssemblySnapshot?
     var canonicalMemorySyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot? = nil
+    var rustMemoryGatewayShadowCompare: HubIPCClient.RustMemoryGatewayShadowCompareResult? = nil
+    var rustMemoryGatewayCutoverReadiness: HubIPCClient.RustMemoryGatewayCutoverReadinessReport? = nil
+    var rustMemoryGatewayRequireEnabled: Bool = false
 }
 
 struct SupervisorDoctorGateDecision {
@@ -352,7 +355,10 @@ enum SupervisorDoctorChecker {
         findings.append(
             contentsOf: checkMemoryAssembly(
                 snapshot: input.memoryAssemblySnapshot,
-                canonicalSyncSnapshot: input.canonicalMemorySyncSnapshot
+                canonicalSyncSnapshot: input.canonicalMemorySyncSnapshot,
+                rustGatewayShadowCompare: input.rustMemoryGatewayShadowCompare,
+                rustGatewayCutoverReadiness: input.rustMemoryGatewayCutoverReadiness,
+                rustGatewayRequireEnabled: input.rustMemoryGatewayRequireEnabled
             )
         )
 
@@ -424,7 +430,9 @@ enum SupervisorDoctorChecker {
         workspaceRoot: URL = defaultWorkspaceRoot(),
         env: [String: String] = ProcessInfo.processInfo.environment,
         memoryAssemblySnapshot: SupervisorMemoryAssemblySnapshot? = nil,
-        canonicalMemorySyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot? = nil
+        canonicalMemorySyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot? = nil,
+        rustMemoryGatewayShadowCompare: HubIPCClient.RustMemoryGatewayShadowCompareResult? = nil,
+        rustMemoryGatewayCutoverReadiness: HubIPCClient.RustMemoryGatewayCutoverReadinessReport? = nil
     ) -> SupervisorDoctorInputBundle {
         let configURL = URL(fileURLWithPath: env["XTERMINAL_SUPERVISOR_DOCTOR_CONFIG"] ?? "")
         let hasCustomConfigURL = !(env["XTERMINAL_SUPERVISOR_DOCTOR_CONFIG"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -463,6 +471,9 @@ enum SupervisorDoctorChecker {
             secretsPlan = nil
             secretsSource = "missing"
         }
+        let rustGatewayRequireEnabled = boolEnv(
+            env["XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE"]
+        )
 
         return SupervisorDoctorInputBundle(
             workspaceRoot: workspaceRoot,
@@ -473,7 +484,16 @@ enum SupervisorDoctorChecker {
             reportURL: resolvedReportURL,
             memoryAssemblySnapshot: memoryAssemblySnapshot,
             canonicalMemorySyncSnapshot: canonicalMemorySyncSnapshot
-                ?? HubIPCClient.canonicalMemorySyncStatusSnapshot(limit: 120)
+                ?? HubIPCClient.canonicalMemorySyncStatusSnapshot(limit: 120),
+            rustMemoryGatewayShadowCompare: rustMemoryGatewayShadowCompare
+                ?? HubIPCClient.rustMemoryGatewayShadowCompareStatus(),
+            rustMemoryGatewayCutoverReadiness: rustMemoryGatewayCutoverReadiness
+                ?? loadRustMemoryGatewayCutoverReadiness(
+                    env: env,
+                    memoryAssemblySnapshot: memoryAssemblySnapshot,
+                    requireEnabled: rustGatewayRequireEnabled
+                ),
+            rustMemoryGatewayRequireEnabled: rustGatewayRequireEnabled
         )
     }
 
@@ -1069,11 +1089,17 @@ enum SupervisorDoctorChecker {
 
     private static func checkMemoryAssembly(
         snapshot: SupervisorMemoryAssemblySnapshot?,
-        canonicalSyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot?
+        canonicalSyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot?,
+        rustGatewayShadowCompare: HubIPCClient.RustMemoryGatewayShadowCompareResult?,
+        rustGatewayCutoverReadiness: HubIPCClient.RustMemoryGatewayCutoverReadinessReport?,
+        rustGatewayRequireEnabled: Bool
     ) -> [SupervisorDoctorFinding] {
         SupervisorMemoryAssemblyDiagnostics.evaluate(
             snapshot: snapshot,
-            canonicalSyncSnapshot: canonicalSyncSnapshot
+            canonicalSyncSnapshot: canonicalSyncSnapshot,
+            rustGatewayShadowCompare: rustGatewayShadowCompare,
+            rustGatewayCutoverReadiness: rustGatewayCutoverReadiness,
+            rustGatewayRequireEnabled: rustGatewayRequireEnabled
         ).issues.map { issue in
             finding(
                 code: issue.code,
@@ -1132,6 +1158,16 @@ enum SupervisorDoctorChecker {
             return .p2
         case "memory_canonical_sync_delivery_failed":
             return issue.severity == .blocking ? .p0 : .p1
+        case "memory_gateway_shadow_authority_violation":
+            return .p0
+        case "memory_gateway_shadow_compare_drift":
+            return .p1
+        case "memory_gateway_cutover_authority_violation":
+            return .p0
+        case "memory_gateway_cutover_readiness_missing":
+            return .p0
+        case "memory_gateway_cutover_readiness_not_ready":
+            return issue.severity == .blocking ? .p0 : .p1
         case "memory_scoped_hidden_project_recovery_missing":
             return issue.severity == .blocking ? .p0 : .p1
         case "memory_review_floor_not_met":
@@ -1149,6 +1185,16 @@ enum SupervisorDoctorChecker {
             return "没有 snapshot 时，Doctor 无法判断 Supervisor 的 strategic review 是否拿到了足够背景。"
         case "memory_canonical_sync_delivery_failed":
             return "canonical memory 最近没有成功同步进 Hub 时，Supervisor 看到的项目背景和当前状态可能已经落后于真实进展。"
+        case "memory_gateway_shadow_authority_violation":
+            return "memory gateway 的 shadow compare 只能是诊断证据；如果它报告 production authority change，说明切换边界被破坏，必须先停住。"
+        case "memory_gateway_shadow_compare_drift":
+            return "Rust memory gateway 与当前 Memory V1 输出不一致时，直接切 Rust 会改变 Coder/Supervisor 实际看到的记忆上下文。"
+        case "memory_gateway_cutover_authority_violation":
+            return "cutover readiness 证据里出现 authority violation 时，说明 Rust memory gateway 仍不能作为 fail-closed require 路径。"
+        case "memory_gateway_cutover_readiness_missing":
+            return "require gate 已打开但 Doctor 没拿到 readiness 证据时，无法证明当前 Rust memory gateway 可以安全替代兼容路径。"
+        case "memory_gateway_cutover_readiness_not_ready":
+            return "没有持续、同 scope、fresh 的 parity 证据时，直接打开 require gate 可能让 Coder/Supervisor 看到不同的 memory context 或被错误阻断。"
         case "memory_scoped_hidden_project_recovery_missing":
             return "用户已经显式聚焦 hidden project，但 memory assembly 仍没补回该项目自己的工作集、recent events 或最近对话时，Supervisor 会在缺少项目真上下文的情况下做判断。"
         case "memory_review_floor_not_met":
@@ -1177,6 +1223,31 @@ enum SupervisorDoctorChecker {
             return [
                 "先修复 canonical memory 的投递链路，再重新同步当前项目 / Supervisor 的 canonical memory。",
                 "确认 `canonical_memory_sync_status.json` 中相关 scope 的最新状态变回 ok=true，再重新运行 doctor / incident export。"
+            ]
+        case "memory_gateway_shadow_authority_violation":
+            return [
+                "保持 `XHUB_RUST_MEMORY_CONTEXT_GATEWAY` / `XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE` 关闭，先检查 Rust gateway 返回体和调用路径。",
+                "确认 `memory_gateway_shadow_compare_status.json` 中 production_authority_change=false 后再继续 cutover。"
+            ]
+        case "memory_gateway_shadow_compare_drift":
+            return [
+                "先打开 shadow compare 收集同一项目的最新 `memory_gateway_shadow_compare_status.json`。",
+                "修复 Rust object selection / layer policy / context formatting，直到 parity_ok=true 后再考虑打开 Rust memory-context primary gate。"
+            ]
+        case "memory_gateway_cutover_authority_violation":
+            return [
+                "保持 `XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE` 关闭，先排查 `memory_gateway_cutover_readiness.json` 里的 authority violation 样本。",
+                "重新收集 fresh same-scope shadow parity history，确认所有样本 production_authority_change=false。"
+            ]
+        case "memory_gateway_cutover_readiness_missing":
+            return [
+                "先运行 Rust memory gateway shadow compare，生成 `memory_gateway_shadow_compare_status.json` / history。",
+                "生成 `memory_gateway_cutover_readiness.json`，确认 Doctor 能读取后再打开 require gate。"
+            ]
+        case "memory_gateway_cutover_readiness_not_ready":
+            return [
+                "继续收集同一 requester_role/use_mode/project_id 的 shadow parity history。",
+                "只有 `memory_gateway_cutover_readiness.json` 显示 ready_for_require=true 后，才把 require gate 作为生产切换开关。"
             ]
         case "memory_scoped_hidden_project_recovery_missing":
             return [
@@ -1218,6 +1289,16 @@ enum SupervisorDoctorChecker {
             return "doctor / incident export 不再出现 memory_assembly_snapshot_missing"
         case "memory_canonical_sync_delivery_failed":
             return "canonical_memory_sync_status 中相关 scope 的最新条目恢复为 ok=true"
+        case "memory_gateway_shadow_authority_violation":
+            return "memory_gateway_shadow_compare_status 中 production_authority_change=false"
+        case "memory_gateway_shadow_compare_drift":
+            return "memory_gateway_shadow_compare_status 中 ok=true 且 parity_ok=true"
+        case "memory_gateway_cutover_authority_violation":
+            return "memory_gateway_cutover_readiness.json 中 authority_violation_count=0"
+        case "memory_gateway_cutover_readiness_missing":
+            return "Doctor 能读取 memory_gateway_cutover_readiness.json"
+        case "memory_gateway_cutover_readiness_not_ready":
+            return "memory_gateway_cutover_readiness.json 中 ready_for_require=true"
         case "memory_scoped_hidden_project_recovery_missing":
             return "snapshot.scopedPromptRecoverySections 不再为空，并补回 focused project 的项目范围上下文"
         case "memory_review_floor_not_met":
@@ -1337,6 +1418,48 @@ enum SupervisorDoctorChecker {
         default:
             return ""
         }
+    }
+
+    private static func loadRustMemoryGatewayCutoverReadiness(
+        env: [String: String],
+        memoryAssemblySnapshot: SupervisorMemoryAssemblySnapshot?,
+        requireEnabled: Bool
+    ) -> HubIPCClient.RustMemoryGatewayCutoverReadinessReport? {
+        let baseDir = HubPaths.baseDir()
+        let statusURL = baseDir.appendingPathComponent("memory_gateway_shadow_compare_status.json")
+        let historyURL = baseDir.appendingPathComponent("memory_gateway_shadow_compare_history.json")
+        let reportURL = baseDir.appendingPathComponent("memory_gateway_cutover_readiness.json")
+        let fileManager = FileManager.default
+        let hasStatus = fileManager.fileExists(atPath: statusURL.path)
+        let hasHistory = fileManager.fileExists(atPath: historyURL.path)
+        let hasReport = fileManager.fileExists(atPath: reportURL.path)
+        let doctorReadinessRequested = boolEnv(
+            env["XHUB_RUST_MEMORY_CONTEXT_GATEWAY_READINESS_DOCTOR"]
+        )
+
+        if requireEnabled || doctorReadinessRequested || hasStatus || hasHistory {
+            let focusedProjectId = memoryAssemblySnapshot?.focusedProjectId?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return HubIPCClient.rustMemoryGatewayCutoverReadinessEvidence(
+                requesterRole: "supervisor",
+                useMode: XTMemoryUseMode.supervisorOrchestration.rawValue,
+                projectId: focusedProjectId.isEmpty ? nil : focusedProjectId,
+                recordReport: false
+            )
+        }
+
+        guard hasReport else { return nil }
+        return loadJSON(at: reportURL)
+    }
+
+    private static func boolEnv(_ raw: String?) -> Bool {
+        let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        return value == "1"
+            || value == "true"
+            || value == "yes"
+            || value == "y"
+            || value == "on"
+            || value == "enabled"
     }
 
     private static func loadJSON<T: Decodable>(at url: URL) -> T? {

@@ -3674,7 +3674,8 @@ extension XHubDoctorOutputRouteSnapshot {
         self.internetHostScope = resolvedScope
         self.remoteEntryPosture = Self.resolveRemoteEntryPosture(
             explicitPosture: remoteEntryPosture,
-            internetHostKind: resolvedKind
+            internetHostKind: resolvedKind,
+            classification: classification
         )
     }
 
@@ -3722,6 +3723,8 @@ extension XHubDoctorOutputRouteSnapshot {
             return "仅同网入口"
         case "temporary_raw_ip_entry":
             return "临时 raw IP 入口"
+        case "tailscale_ip_entry":
+            return "Tailscale 正式入口"
         case "stable_named_entry":
             return "正式异网入口"
         default:
@@ -3731,6 +3734,9 @@ extension XHubDoctorOutputRouteSnapshot {
             case "lan_only":
                 return "仅同网入口"
             case "raw_ip":
+                if internetHostScope?.trimmingCharacters(in: .whitespacesAndNewlines) == XTHubRemoteAccessHostClassification.IPScope.tailscale.rawValue {
+                    return "Tailscale 正式入口"
+                }
                 return "临时 raw IP 入口"
             case "stable_named":
                 return "正式异网入口"
@@ -3777,13 +3783,15 @@ extension XHubDoctorOutputRouteSnapshot {
 
     private static func resolveRemoteEntryPosture(
         explicitPosture: String?,
-        internetHostKind: String
+        internetHostKind: String,
+        classification: XTHubRemoteAccessHostClassification
     ) -> String {
         let trimmed = explicitPosture?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         switch trimmed {
         case "missing_formal_remote_entry",
              "lan_only_entry",
              "temporary_raw_ip_entry",
+             "tailscale_ip_entry",
              "stable_named_entry":
             return trimmed
         default:
@@ -3793,6 +3801,9 @@ extension XHubDoctorOutputRouteSnapshot {
             case "lan_only":
                 return "lan_only_entry"
             case "raw_ip":
+                if classification.ipScope?.isFormalRemoteEntry == true {
+                    return "tailscale_ip_entry"
+                }
                 return "temporary_raw_ip_entry"
             case "stable_named":
                 return "stable_named_entry"

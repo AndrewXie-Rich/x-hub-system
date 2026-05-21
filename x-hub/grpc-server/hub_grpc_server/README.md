@@ -268,6 +268,13 @@ HUB_CLIENT_TOKEN='replace-client-token' \
 npm run smoke
 ```
 
+Focused role-aware memory contract smoke:
+```bash
+npm run smoke:role-turn-metadata
+```
+
+This starts a temporary local Hub gRPC server with a temporary SQLite DB and verifies `AppendTurns` / `GetWorkingSet` / DB rows / audit evidence for supervisor, coder, and reviewer turn metadata without touching live data.
+
 ## Environment variables
 
 - `HUB_PORT` (default: `50051`)

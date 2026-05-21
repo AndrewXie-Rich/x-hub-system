@@ -802,7 +802,8 @@ final class HubGRPCServerSupport: ObservableObject {
         p.currentDirectoryURL = serverJS.deletingLastPathComponent().deletingLastPathComponent()
 
         var env = RustHubRuntimeSupport.nodeSidecarBaseEnvironment(ProcessInfo.processInfo.environment)
-        env["HUB_HOST"] = "0.0.0.0"
+        let serviceBindHost = "::"
+        env["HUB_HOST"] = serviceBindHost
         env["HUB_PORT"] = String(port)
         env["HUB_DB_PATH"] = dbURL.path
         env["HUB_CLIENT_TOKEN"] = clientToken
@@ -838,10 +839,13 @@ final class HubGRPCServerSupport: ObservableObject {
         // - private (RFC1918) + loopback
         // - AND the Hub's own detected IPv4 interface subnets (CIDRs)
         //
-        // For remote mode (VPN), clients typically fall under "private" (10.x/172.16/192.168).
+        // For remote Tailscale subnet-router mode, clients can still appear as private IPs.
         let lanAllowed = Self.defaultLANAllowedCidrs()
         let firstPairLANAllowed = Self.defaultFirstPairingLANAllowedCidrs()
-        env["HUB_ALLOWED_CIDRS"] = lanAllowed.joined(separator: ",")
+        // Roaming XT devices are authenticated by token + mTLS cert pin. Keep first pairing
+        // same-LAN, but do not bind an already-paired XT to the original LAN source IP.
+        env["HUB_ALLOWED_CIDRS"] = "any"
+        env["HUB_GRPC_PAIRED_CLIENT_ROAMING"] = "1"
         // Help the embedded Node server generate a server TLS cert whose SAN includes current LAN IPs.
         // (This is best-effort; clients still use authority override with HUB_GRPC_TLS_SERVER_NAME.)
         let sanIps: [String] = {
@@ -864,7 +868,7 @@ final class HubGRPCServerSupport: ObservableObject {
 
         // Pairing control plane (HTTP/JSON, unauthenticated request + admin approval).
         // Listens on gRPC port + 1 by default.
-        env["HUB_PAIRING_HOST"] = "0.0.0.0"
+        env["HUB_PAIRING_HOST"] = serviceBindHost
         env["HUB_PAIRING_PORT"] = String(max(1, min(65535, port + 1)))
         env["HUB_PAIRING_ALLOWED_CIDRS"] = lanAllowed.joined(separator: ",")
         env["HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS"] = firstPairLANAllowed.joined(separator: ",")
@@ -1054,8 +1058,8 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
 # Verify (LAN):
 "$AXHUBCTL" list-models
 
-# Remote (VPN/Tunnel) example:
-# "$AXHUBCTL" tunnel --hub <hub_vpn_or_tailnet_host> --grpc-port "$GRPC_PORT" --local-port "$GRPC_PORT" --install
+# Remote (Tailscale/relay) example:
+# "$AXHUBCTL" tunnel --hub <hub_tailscale_or_relay_host> --grpc-port "$GRPC_PORT" --local-port "$GRPC_PORT" --install
 # "$AXHUBCTL" tunnel --status
 # "$AXHUBCTL" remote list-models
 """
@@ -1749,8 +1753,7 @@ HUB_CLIENT_TOKEN='\(tok)'
 
         return candidates
             .filter { candidate in
-                isRemoteTunnelInterfaceName(candidate.ifname)
-                    && (isCarrierGradeNatIPv4(candidate.ip) || isPrivateIPv4(candidate.ip))
+                isCarrierGradeNatIPv4(candidate.ip)
             }
             .min { lhs, rhs in
                 noDomainRemoteHostScore(lhs) < noDomainRemoteHostScore(rhs)
@@ -1761,34 +1764,27 @@ HUB_CLIENT_TOKEN='\(tok)'
         if isCarrierGradeNatIPv4(candidate.ip) {
             return 0
         }
-        let ifname = candidate.ifname.lowercased()
-        if ifname.hasPrefix("wg") {
-            return 1
-        }
-        if ifname.hasPrefix("tun") || ifname.hasPrefix("tap") || ifname.hasPrefix("utun") {
-            return 2
-        }
-        return 3
+        return 1
     }
 
     private static func preferredXTTerminalInternetHostScore(_ candidate: (ifname: String, ip: String)) -> Int {
         let ifname = candidate.ifname.lowercased()
-        if isRemoteTunnelInterfaceName(ifname) {
+        if isCarrierGradeNatIPv4(candidate.ip) {
             return 0
         }
-        if isCarrierGradeNatIPv4(candidate.ip) {
+        if isPubliclyRoutedIPv4(candidate.ip) {
             return 1
         }
-        if isPubliclyRoutedIPv4(candidate.ip) {
+        if ifname.hasPrefix("en0") {
             return 2
         }
-        if ifname.hasPrefix("en0") {
+        if ifname.hasPrefix("en1") {
             return 3
         }
-        if ifname.hasPrefix("en1") {
+        if ifname.hasPrefix("en") {
             return 4
         }
-        if ifname.hasPrefix("en") {
+        if isRemoteTunnelInterfaceName(ifname) {
             return 5
         }
         return 6
@@ -1804,7 +1800,9 @@ HUB_CLIENT_TOKEN='\(tok)'
 
     private static func interfaceRowsContainRemoteTunnelIP(_ ip: String, rows: [String]) -> Bool {
         rows.compactMap(parseInterfaceIPv4Row(_:)).contains { candidate in
-            candidate.ip == ip && isRemoteTunnelInterfaceName(candidate.ifname)
+            candidate.ip == ip
+                && isCarrierGradeNatIPv4(candidate.ip)
+                && isRemoteTunnelInterfaceName(candidate.ifname)
         }
     }
 
@@ -2676,7 +2674,7 @@ private enum HubGRPCClientsStore {
 
     static func defaultAllowedCidrs() -> [String] {
         // Safe baseline: only allow LAN (RFC1918) and localhost access.
-        // For remote mode (VPN), admins typically set this to the VPN subnet (e.g. 10.7.0.0/24).
+        // For remote Tailscale mode, admins can narrow this to the tailnet range or exact XT IPs.
         ["private", "loopback"]
     }
 

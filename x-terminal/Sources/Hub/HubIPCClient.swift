@@ -48,6 +48,12 @@ enum HubIPCClient {
     private static var scopedRemoteMemoryRetrievalOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)] = [:]
     private static var remoteRuntimeSurfaceOverridesOverrideForTesting: (@Sendable (String?, Int, Double) async -> HubRemoteRuntimeSurfaceOverridesResult)?
     private static var scopedRemoteRuntimeSurfaceOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (String?, Int, Double) async -> HubRemoteRuntimeSurfaceOverridesResult)] = [:]
+    private static var projectCanonicalRustSyncOverrideForTesting: (@Sendable (ProjectCanonicalMemoryPayload) async -> ProjectCanonicalMemoryRustSyncOverrideResult?)?
+    private static var scopedProjectCanonicalRustSyncOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (ProjectCanonicalMemoryPayload) async -> ProjectCanonicalMemoryRustSyncOverrideResult?)] = [:]
+    private static var rustProjectCanonicalMemoryOverrideForTesting: (@Sendable (String, Int, Double) async -> RustProjectCanonicalMemorySnapshot?)?
+    private static var scopedRustProjectCanonicalMemoryOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (String, Int, Double) async -> RustProjectCanonicalMemorySnapshot?)] = [:]
+    private static var rustMemoryGatewayPrepareOverrideForTesting: (@Sendable (RustMemoryGatewayPrepareRequest, Double) async -> RustMemoryGatewayPrepareResult?)?
+    private static var scopedRustMemoryGatewayPrepareOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (RustMemoryGatewayPrepareRequest, Double) async -> RustMemoryGatewayPrepareResult?)] = [:]
     private static var supervisorRemoteContinuityOverrideForTesting: (@Sendable (Bool) async -> SupervisorRemoteContinuityResult)?
     private static var scopedSupervisorRemoteContinuityOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (Bool) async -> SupervisorRemoteContinuityResult)] = [:]
     private static var supervisorConversationAppendOverrideForTesting: (@Sendable (HubRemoteSupervisorConversationPayload) async -> Bool)?
@@ -795,6 +801,441 @@ enum HubIPCClient {
         }
     }
 
+    struct ProjectCanonicalMemoryRustSyncOverrideResult: Equatable, Sendable {
+        var ok: Bool
+        var source: String = "rust_http"
+        var deliveryState: String? = nil
+        var reasonCode: String? = nil
+        var detail: String? = nil
+    }
+
+    struct RustProjectCanonicalMemoryObject: Codable, Equatable, Sendable {
+        var memoryId: String
+        var scope: String?
+        var ownerId: String?
+        var projectId: String?
+        var sourceKind: String
+        var layer: String
+        var title: String
+        var text: String
+        var summary: String?
+        var status: String?
+        var updatedAtMs: Int64?
+
+        init(
+            memoryId: String,
+            scope: String? = "project",
+            ownerId: String? = nil,
+            projectId: String? = nil,
+            sourceKind: String,
+            layer: String,
+            title: String,
+            text: String,
+            summary: String? = nil,
+            status: String? = "active",
+            updatedAtMs: Int64? = nil
+        ) {
+            self.memoryId = memoryId
+            self.scope = scope
+            self.ownerId = ownerId
+            self.projectId = projectId
+            self.sourceKind = sourceKind
+            self.layer = layer
+            self.title = title
+            self.text = text
+            self.summary = summary
+            self.status = status
+            self.updatedAtMs = updatedAtMs
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case memoryId = "memory_id"
+            case scope
+            case ownerId = "owner_id"
+            case projectId = "project_id"
+            case sourceKind = "source_kind"
+            case layer
+            case title
+            case text
+            case summary
+            case status
+            case updatedAtMs = "updated_at_ms"
+        }
+    }
+
+    struct RustProjectCanonicalMemorySnapshot: Equatable, Sendable {
+        var source: String
+        var projectId: String
+        var objects: [RustProjectCanonicalMemoryObject]
+    }
+
+    struct ProjectCanonicalRustImportDiagnosticIssue: Codable, Equatable, Sendable {
+        var severity: String
+        var reasonCode: String
+        var key: String?
+        var memoryId: String?
+        var detail: String?
+
+        enum CodingKeys: String, CodingKey {
+            case severity
+            case reasonCode = "reason_code"
+            case key
+            case memoryId = "memory_id"
+            case detail
+        }
+    }
+
+    struct ProjectCanonicalRustImportDiagnostics: Codable, Equatable, Sendable {
+        static let schemaVersion = "xt.project_canonical_rust_import_diagnostics.v1"
+
+        var schemaVersion: String = ProjectCanonicalRustImportDiagnostics.schemaVersion
+        var ok: Bool
+        var source: String
+        var projectId: String
+        var displayName: String
+        var expectedItemCount: Int
+        var skippedMetadataCount: Int
+        var rustObjectCount: Int
+        var matchedCount: Int
+        var missingCount: Int
+        var staleCount: Int
+        var mismatchCount: Int
+        var extraCount: Int
+        var reasonCode: String?
+        var issues: [ProjectCanonicalRustImportDiagnosticIssue]
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case ok
+            case source
+            case projectId = "project_id"
+            case displayName = "display_name"
+            case expectedItemCount = "expected_item_count"
+            case skippedMetadataCount = "skipped_metadata_count"
+            case rustObjectCount = "rust_object_count"
+            case matchedCount = "matched_count"
+            case missingCount = "missing_count"
+            case staleCount = "stale_count"
+            case mismatchCount = "mismatch_count"
+            case extraCount = "extra_count"
+            case reasonCode = "reason_code"
+            case issues
+        }
+    }
+
+    struct RustMemoryGatewayPrepareRequest: Codable, Equatable, Sendable {
+        var requesterRole: String
+        var useMode: String
+        var scope: String
+        var projectId: String?
+        var agentId: String?
+        var latestUser: String
+        var remoteExportRequested: Bool
+        var requestedLayers: [String]
+        var requestedSourceKinds: [String]
+        var maxItems: Int
+        var maxSnippetChars: Int
+
+        enum CodingKeys: String, CodingKey {
+            case requesterRole = "requester_role"
+            case useMode = "use_mode"
+            case scope
+            case projectId = "project_id"
+            case agentId = "agent_id"
+            case latestUser = "latest_user"
+            case remoteExportRequested = "remote_export_requested"
+            case requestedLayers = "requested_layers"
+            case requestedSourceKinds = "requested_source_kinds"
+            case maxItems = "max_items"
+            case maxSnippetChars = "max_snippet_chars"
+        }
+    }
+
+    struct RustMemoryGatewayPrepareObject: Codable, Equatable, Sendable {
+        var memoryId: String
+        var scope: String?
+        var ownerId: String?
+        var projectId: String?
+        var agentId: String?
+        var sourceKind: String
+        var layer: String
+        var title: String
+        var text: String
+        var summary: String?
+        var sensitivity: String?
+        var visibility: String?
+        var updatedAtMs: Int64?
+        var version: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case memoryId = "memory_id"
+            case scope
+            case ownerId = "owner_id"
+            case projectId = "project_id"
+            case agentId = "agent_id"
+            case sourceKind = "source_kind"
+            case layer
+            case title
+            case text
+            case summary
+            case sensitivity
+            case visibility
+            case updatedAtMs = "updated_at_ms"
+            case version
+        }
+    }
+
+    struct RustMemoryGatewayPrepareSlot: Codable, Equatable, Sendable {
+        var layer: String
+        var count: Int
+        var objects: [RustMemoryGatewayPrepareObject]
+    }
+
+    struct RustMemoryGatewayPrepareSkipped: Codable, Equatable, Sendable {
+        var policyOrFilter: Int?
+        var remoteVisibility: Int?
+        var secret: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case policyOrFilter = "policy_or_filter"
+            case remoteVisibility = "remote_visibility"
+            case secret
+        }
+    }
+
+    struct RustMemoryGatewayPrepareResult: Codable, Equatable, Sendable {
+        var schemaVersion: String?
+        var ok: Bool
+        var status: String?
+        var source: String?
+        var mode: String?
+        var productionAuthorityChange: Bool?
+        var requesterRole: String?
+        var useMode: String?
+        var scope: String?
+        var projectId: String?
+        var remoteExportRequested: Bool?
+        var queryPresent: Bool?
+        var objectCount: Int?
+        var maxItems: Int?
+        var maxSnippetChars: Int?
+        var requestedLayers: [String]?
+        var effectiveLayers: [String]?
+        var requestedSourceKinds: [String]?
+        var slots: [RustMemoryGatewayPrepareSlot]?
+        var contextText: String?
+        var skipped: RustMemoryGatewayPrepareSkipped?
+        var denyCode: String?
+        var reasonCode: String?
+        var errorCode: String?
+        var message: String?
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case ok
+            case status
+            case source
+            case mode
+            case productionAuthorityChange = "production_authority_change"
+            case requesterRole = "requester_role"
+            case useMode = "use_mode"
+            case scope
+            case projectId = "project_id"
+            case remoteExportRequested = "remote_export_requested"
+            case queryPresent = "query_present"
+            case objectCount = "object_count"
+            case maxItems = "max_items"
+            case maxSnippetChars = "max_snippet_chars"
+            case requestedLayers = "requested_layers"
+            case effectiveLayers = "effective_layers"
+            case requestedSourceKinds = "requested_source_kinds"
+            case slots
+            case contextText = "context_text"
+            case skipped
+            case denyCode = "deny_code"
+            case reasonCode = "reason_code"
+            case errorCode = "error_code"
+            case message
+        }
+    }
+
+    struct RustMemoryGatewayShadowCompareResult: Codable, Equatable, Sendable {
+        static let schemaVersion = "xt.rust_memory_gateway_shadow_compare.v1"
+
+        var schemaVersion: String = RustMemoryGatewayShadowCompareResult.schemaVersion
+        var ok: Bool
+        var parityOk: Bool
+        var source: String
+        var mode: String
+        var productionAuthorityChange: Bool
+        var requesterRole: String
+        var useMode: String
+        var projectId: String?
+        var productSource: String?
+        var rustSource: String?
+        var productTextChars: Int
+        var rustContextChars: Int
+        var productTextHash: String
+        var rustContextHash: String
+        var rustObjectCount: Int
+        var rustEffectiveLayers: [String]
+        var matchedRustAnchors: [String]
+        var missingRustAnchors: [String]
+        var rustDenyCode: String?
+        var reasonCode: String?
+        var detail: String?
+        var recordedAtMs: Int64
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case ok
+            case parityOk = "parity_ok"
+            case source
+            case mode
+            case productionAuthorityChange = "production_authority_change"
+            case requesterRole = "requester_role"
+            case useMode = "use_mode"
+            case projectId = "project_id"
+            case productSource = "product_source"
+            case rustSource = "rust_source"
+            case productTextChars = "product_text_chars"
+            case rustContextChars = "rust_context_chars"
+            case productTextHash = "product_text_hash"
+            case rustContextHash = "rust_context_hash"
+            case rustObjectCount = "rust_object_count"
+            case rustEffectiveLayers = "rust_effective_layers"
+            case matchedRustAnchors = "matched_rust_anchors"
+            case missingRustAnchors = "missing_rust_anchors"
+            case rustDenyCode = "rust_deny_code"
+            case reasonCode = "reason_code"
+            case detail
+            case recordedAtMs = "recorded_at_ms"
+        }
+    }
+
+    struct RustMemoryGatewayShadowCompareHistory: Codable, Equatable, Sendable {
+        static let schemaVersion = "xt.rust_memory_gateway_shadow_compare_history.v1"
+
+        var schemaVersion: String = RustMemoryGatewayShadowCompareHistory.schemaVersion
+        var generatedAtMs: Int64
+        var itemLimit: Int
+        var items: [RustMemoryGatewayShadowCompareResult]
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case generatedAtMs = "generated_at_ms"
+            case itemLimit = "item_limit"
+            case items
+        }
+    }
+
+    struct RustMemoryGatewayCutoverReadinessIssue: Codable, Equatable, Sendable {
+        var code: String
+        var blocking: Bool
+        var detail: String
+    }
+
+    struct RustMemoryGatewayCutoverReadinessReport: Codable, Equatable, Sendable {
+        static let schemaVersion = "xt.rust_memory_gateway_cutover_readiness.v1"
+
+        var schemaVersion: String = RustMemoryGatewayCutoverReadinessReport.schemaVersion
+        var ok: Bool
+        var readyForRequire: Bool
+        var source: String
+        var generatedAtMs: Int64
+        var requesterRole: String?
+        var useMode: String?
+        var projectId: String?
+        var requiredSampleCount: Int
+        var maxAgeMs: Int64
+        var totalSampleCount: Int
+        var matchingSampleCount: Int
+        var freshMatchingSampleCount: Int
+        var consideredSampleCount: Int
+        var passingSampleCount: Int
+        var staleMatchingSampleCount: Int
+        var authorityViolationCount: Int
+        var parityFailureCount: Int
+        var rustSourceMismatchCount: Int
+        var latestRecordedAtMs: Int64?
+        var oldestConsideredAtMs: Int64?
+        var requireEnvKey: String
+        var statusPath: String
+        var historyPath: String
+        var reportPath: String?
+        var issues: [RustMemoryGatewayCutoverReadinessIssue]
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case ok
+            case readyForRequire = "ready_for_require"
+            case source
+            case generatedAtMs = "generated_at_ms"
+            case requesterRole = "requester_role"
+            case useMode = "use_mode"
+            case projectId = "project_id"
+            case requiredSampleCount = "required_sample_count"
+            case maxAgeMs = "max_age_ms"
+            case totalSampleCount = "total_sample_count"
+            case matchingSampleCount = "matching_sample_count"
+            case freshMatchingSampleCount = "fresh_matching_sample_count"
+            case consideredSampleCount = "considered_sample_count"
+            case passingSampleCount = "passing_sample_count"
+            case staleMatchingSampleCount = "stale_matching_sample_count"
+            case authorityViolationCount = "authority_violation_count"
+            case parityFailureCount = "parity_failure_count"
+            case rustSourceMismatchCount = "rust_source_mismatch_count"
+            case latestRecordedAtMs = "latest_recorded_at_ms"
+            case oldestConsideredAtMs = "oldest_considered_at_ms"
+            case requireEnvKey = "require_env_key"
+            case statusPath = "status_path"
+            case historyPath = "history_path"
+            case reportPath = "report_path"
+            case issues
+        }
+    }
+
+    struct ProjectCanonicalMemoryPendingRustSyncSnapshot: Codable {
+        static let schemaVersion = "xt.project_canonical_memory_pending_rust_sync.v1"
+
+        var schemaVersion: String
+        var projectId: String
+        var projectRoot: String
+        var displayName: String
+        var recordedAtMs: Int64
+        var memoryUpdatedAt: Double?
+        var source: String
+        var deliveryState: String
+        var reasonCode: String
+        var detail: String
+        var itemCount: Int
+        var payload: ProjectCanonicalMemoryPayload
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case projectId = "project_id"
+            case projectRoot = "project_root"
+            case displayName = "display_name"
+            case recordedAtMs = "recorded_at_ms"
+            case memoryUpdatedAt = "memory_updated_at"
+            case source
+            case deliveryState = "delivery_state"
+            case reasonCode = "reason_code"
+            case detail
+            case itemCount = "item_count"
+            case payload
+        }
+    }
+
+    struct ProjectCanonicalMemoryPendingRustSyncRetryResult: Equatable, Sendable {
+        var attempted: Bool
+        var ok: Bool
+        var source: String
+        var deliveryState: String? = nil
+        var reasonCode: String? = nil
+        var detail: String? = nil
+    }
+
     struct ProjectCanonicalMemoryIPCRequest: Codable {
         var type: String
         var reqId: String
@@ -1433,6 +1874,14 @@ enum HubIPCClient {
         var remoteSnapshotInvalidationReason: String?
         var denyCode: String?
         var downgradeCode: String?
+        var memoryGatewaySource: String?
+        var memoryGatewayPrimaryEnabled: Bool?
+        var memoryGatewayMode: String?
+        var memoryGatewaySafetyMode: String?
+        var memoryGatewayProductionAuthorityChange: Bool?
+        var memoryGatewayModelCall: Bool?
+        var memoryGatewayObjectCount: Int?
+        var memoryGatewayEffectiveLayers: [String]?
         var budgetTotalTokens: Int
         var usedTotalTokens: Int
         var layerUsage: [MemoryContextLayerUsage]
@@ -1461,6 +1910,14 @@ enum HubIPCClient {
             remoteSnapshotInvalidationReason: String? = nil,
             denyCode: String? = nil,
             downgradeCode: String? = nil,
+            memoryGatewaySource: String? = nil,
+            memoryGatewayPrimaryEnabled: Bool? = nil,
+            memoryGatewayMode: String? = nil,
+            memoryGatewaySafetyMode: String? = nil,
+            memoryGatewayProductionAuthorityChange: Bool? = nil,
+            memoryGatewayModelCall: Bool? = nil,
+            memoryGatewayObjectCount: Int? = nil,
+            memoryGatewayEffectiveLayers: [String]? = nil,
             budgetTotalTokens: Int,
             usedTotalTokens: Int,
             layerUsage: [MemoryContextLayerUsage],
@@ -1488,6 +1945,14 @@ enum HubIPCClient {
             self.remoteSnapshotInvalidationReason = remoteSnapshotInvalidationReason
             self.denyCode = denyCode
             self.downgradeCode = downgradeCode
+            self.memoryGatewaySource = memoryGatewaySource
+            self.memoryGatewayPrimaryEnabled = memoryGatewayPrimaryEnabled
+            self.memoryGatewayMode = memoryGatewayMode
+            self.memoryGatewaySafetyMode = memoryGatewaySafetyMode
+            self.memoryGatewayProductionAuthorityChange = memoryGatewayProductionAuthorityChange
+            self.memoryGatewayModelCall = memoryGatewayModelCall
+            self.memoryGatewayObjectCount = memoryGatewayObjectCount
+            self.memoryGatewayEffectiveLayers = memoryGatewayEffectiveLayers
             self.budgetTotalTokens = budgetTotalTokens
             self.usedTotalTokens = usedTotalTokens
             self.layerUsage = layerUsage
@@ -1517,6 +1982,14 @@ enum HubIPCClient {
             case remoteSnapshotInvalidationReason = "remote_snapshot_invalidation_reason"
             case denyCode = "deny_code"
             case downgradeCode = "downgrade_code"
+            case memoryGatewaySource = "memory_gateway_source"
+            case memoryGatewayPrimaryEnabled = "memory_gateway_primary_enabled"
+            case memoryGatewayMode = "memory_gateway_mode"
+            case memoryGatewaySafetyMode = "memory_gateway_safety_mode"
+            case memoryGatewayProductionAuthorityChange = "memory_gateway_production_authority_change"
+            case memoryGatewayModelCall = "memory_gateway_model_call"
+            case memoryGatewayObjectCount = "memory_gateway_object_count"
+            case memoryGatewayEffectiveLayers = "memory_gateway_effective_layers"
             case budgetTotalTokens = "budget_total_tokens"
             case usedTotalTokens = "used_total_tokens"
             case layerUsage = "layer_usage"
@@ -1618,6 +2091,38 @@ enum HubIPCClient {
         var downgradeCode: String?
         var reasonCode: String?
         var detail: String? = nil
+    }
+
+    static func isRustMemoryGatewayRequiredFailure(_ result: MemoryContextResolutionResult) -> Bool {
+        guard result.response == nil else { return false }
+        if result.source == "rust_memory_gateway_cutover_gate" {
+            return true
+        }
+        let reason = normalized(result.reasonCode) ?? ""
+        return reason.hasPrefix("memory_gateway_cutover_")
+            || reason.hasPrefix("rust_memory_gateway_required_")
+    }
+
+    static func rustMemoryGatewayRequiredFailureMemoryText(
+        _ result: MemoryContextResolutionResult
+    ) -> String {
+        let reason = normalized(result.reasonCode) ?? "rust_memory_gateway_required_failed"
+        let detail = rustMemoryGatewayDiagnosticLine(result.detail)
+        var lines = [
+            "[MEMORY_V1]",
+            "[RUST_MEMORY_GATEWAY_CUTOVER]",
+            "source=rust_memory_gateway_cutover_gate",
+            "required=true",
+            "fallback_disabled=true",
+            "reason_code=\(reason)",
+            "freshness=\(result.freshness)"
+        ]
+        if let detail {
+            lines.append("detail=\(detail)")
+        }
+        lines.append("[/RUST_MEMORY_GATEWAY_CUTOVER]")
+        lines.append("[/MEMORY_V1]")
+        return lines.joined(separator: "\n")
     }
 
     struct MemoryContextIPCResponse: Codable {
@@ -2808,6 +3313,21 @@ enum HubIPCClient {
         var detail: String?
     }
 
+    private struct RustProjectCanonicalMemoryListResponse: Decodable {
+        var ok: Bool
+        var objects: [RustProjectCanonicalMemoryObject]
+    }
+
+    private struct ProjectCanonicalRustExpectedObject: Equatable {
+        var key: String
+        var suffix: String
+        var memoryId: String
+        var sourceKind: String
+        var layer: String
+        var title: String
+        var text: String
+    }
+
     private struct NetworkIPCDispatchResult {
         var ticket: NetworkRequestTicket
         var ack: NetworkIPCResponse?
@@ -3097,27 +3617,57 @@ enum HubIPCClient {
         userText: String,
         assistantText: String,
         createdAt: Double,
+        config: AXProjectConfig?,
+        userSender: AXChatMessageSender? = nil,
+        userLineage: AXChatMessageLineageMetadata? = nil,
+        assistantLineage: AXChatMessageLineageMetadata? = nil
+    ) async -> Bool {
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let threadKey = XTProjectConversationMirror.projectThreadKey(projectId: projectId)
+        let mirroredMessages = XTProjectConversationMirror.roleAwareMessages(
+            projectId: projectId,
+            threadKey: threadKey,
+            userText: userText,
+            assistantText: assistantText,
+            createdAt: createdAt,
+            userSender: userSender,
+            userLineage: userLineage,
+            assistantLineage: assistantLineage
+        )
+        return await appendProjectConversationTurns(
+            ctx: ctx,
+            messages: mirroredMessages,
+            createdAt: createdAt,
+            config: config
+        )
+    }
+
+    static func appendProjectConversationTurns(
+        ctx: AXProjectContext,
+        messages: [XTProjectConversationMirrorMessage],
+        createdAt: Double,
         config: AXProjectConfig?
     ) async -> Bool {
         guard XTProjectMemoryGovernance.prefersHubMemory(config) else { return false }
 
-        let mirroredMessages = XTProjectConversationMirror.messages(
-            userText: userText,
-            assistantText: assistantText
-        )
+        let mirroredMessages = messages.filter { message in
+            !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
         guard !mirroredMessages.isEmpty else { return false }
 
         let routeDecision = await currentRouteDecision()
         guard routeDecision.preferRemote else { return false }
 
         let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let threadKey = XTProjectConversationMirror.projectThreadKey(projectId: projectId)
         let payload = HubRemoteProjectConversationPayload(
             projectId: projectId,
-            threadKey: XTProjectConversationMirror.projectThreadKey(projectId: projectId),
+            threadKey: threadKey,
             requestId: XTProjectConversationMirror.requestID(projectId: projectId, createdAt: createdAt),
             createdAtMs: XTProjectConversationMirror.createdAtMs(createdAt),
             userText: mirroredMessages.first(where: { $0.role == "user" })?.content ?? "",
-            assistantText: mirroredMessages.first(where: { $0.role == "assistant" })?.content ?? ""
+            assistantText: mirroredMessages.first(where: { $0.role == "assistant" })?.content ?? "",
+            messages: mirroredMessages
         )
 
         let remote = await HubPairingCoordinator.shared.appendRemoteProjectConversationTurn(
@@ -3293,6 +3843,116 @@ enum HubIPCClient {
                 }
             }
         }
+    }
+
+    static func diagnoseProjectCanonicalRustImport(
+        ctx: AXProjectContext,
+        memory: AXMemory,
+        config: AXProjectConfig?,
+        timeoutSec: Double = 0.75
+    ) async -> ProjectCanonicalRustImportDiagnostics {
+        let projectDisplayName = AXProjectRegistryStore.displayName(
+            forRoot: ctx.root,
+            preferredDisplayName: memory.projectName
+        )
+        let payload = ProjectCanonicalMemoryPayload(
+            projectId: AXProjectRegistryStore.projectId(forRoot: ctx.root),
+            projectRoot: ctx.root.path,
+            displayName: projectDisplayName,
+            updatedAt: memory.updatedAt,
+            items: XTProjectCanonicalMemorySync.items(
+                memory: memory,
+                preferredProjectName: projectDisplayName
+            ).map { item in
+                ProjectCanonicalMemoryItemPayload(key: item.key, value: item.value)
+            }
+        )
+
+        guard XTProjectMemoryGovernance.prefersHubMemory(config) else {
+            return ProjectCanonicalRustImportDiagnostics(
+                ok: true,
+                source: "local_config",
+                projectId: payload.projectId,
+                displayName: projectDisplayName,
+                expectedItemCount: 0,
+                skippedMetadataCount: payload.items.count,
+                rustObjectCount: 0,
+                matchedCount: 0,
+                missingCount: 0,
+                staleCount: 0,
+                mismatchCount: 0,
+                extraCount: 0,
+                reasonCode: "hub_memory_not_preferred",
+                issues: []
+            )
+        }
+
+        let (expected, skippedMetadataCount) = expectedRustProjectCanonicalObjects(payload: payload)
+        guard hasSuccessfulRustProjectCanonicalSync(projectId: payload.projectId) else {
+            return ProjectCanonicalRustImportDiagnostics(
+                ok: false,
+                source: "local_status",
+                projectId: payload.projectId,
+                displayName: projectDisplayName,
+                expectedItemCount: expected.count,
+                skippedMetadataCount: skippedMetadataCount,
+                rustObjectCount: 0,
+                matchedCount: 0,
+                missingCount: expected.count,
+                staleCount: 0,
+                mismatchCount: 0,
+                extraCount: 0,
+                reasonCode: "rust_project_canonical_sync_status_missing",
+                issues: [
+                    ProjectCanonicalRustImportDiagnosticIssue(
+                        severity: "warning",
+                        reasonCode: "rust_project_canonical_sync_status_missing",
+                        key: nil,
+                        memoryId: nil,
+                        detail: "canonical_memory_sync_status.json has no successful Rust delivery for project \(payload.projectId)"
+                    )
+                ]
+            )
+        }
+
+        guard let rustSnapshot = await fetchRustProjectCanonicalMemorySnapshot(
+            projectId: payload.projectId,
+            limit: 128,
+            timeoutSec: timeoutSec
+        ) else {
+            return ProjectCanonicalRustImportDiagnostics(
+                ok: false,
+                source: "rust_http",
+                projectId: payload.projectId,
+                displayName: projectDisplayName,
+                expectedItemCount: expected.count,
+                skippedMetadataCount: skippedMetadataCount,
+                rustObjectCount: 0,
+                matchedCount: 0,
+                missingCount: expected.count,
+                staleCount: 0,
+                mismatchCount: 0,
+                extraCount: 0,
+                reasonCode: "rust_project_canonical_objects_unavailable",
+                issues: [
+                    ProjectCanonicalRustImportDiagnosticIssue(
+                        severity: "error",
+                        reasonCode: "rust_project_canonical_objects_unavailable",
+                        key: nil,
+                        memoryId: nil,
+                        detail: "Rust memory object list unavailable for project \(payload.projectId)"
+                    )
+                ]
+            )
+        }
+
+        return projectCanonicalRustImportDiagnostics(
+            payload: payload,
+            displayName: projectDisplayName,
+            expected: expected,
+            skippedMetadataCount: skippedMetadataCount,
+            rustSnapshot: rustSnapshot
+        )
     }
 
     static func syncSupervisorProjectCapsule(_ capsule: SupervisorProjectCapsule) {
@@ -3492,6 +4152,7 @@ enum HubIPCClient {
                         projectId: payload.projectId,
                         reason: .projectCanonicalSave
                     )
+                    await appendSupervisorProjectHeartbeatRoleTurn(record)
                 }
             }
         case .auto:
@@ -3515,6 +4176,7 @@ enum HubIPCClient {
                         projectId: payload.projectId,
                         reason: .projectCanonicalSave
                     )
+                    await appendSupervisorProjectHeartbeatRoleTurn(record)
                 }
             }
         case .fileIPC:
@@ -3532,6 +4194,40 @@ enum HubIPCClient {
                     )
                 }
             }
+        }
+    }
+
+    private static func appendSupervisorProjectHeartbeatRoleTurn(
+        _ record: SupervisorProjectHeartbeatCanonicalRecord
+    ) async {
+        guard let message = SupervisorProjectHeartbeatCanonicalSync.roleTurnMessage(record: record) else {
+            return
+        }
+        let routeDecision = await currentRouteDecision()
+        guard routeDecision.preferRemote else { return }
+
+        let projectId = record.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !projectId.isEmpty else { return }
+        let createdAtMs = max(record.updatedAtMs, record.lastHeartbeatAtMs)
+        let createdAt = Double(max(Int64(0), createdAtMs)) / 1000.0
+        let payload = HubRemoteProjectConversationPayload(
+            projectId: projectId,
+            threadKey: XTProjectConversationMirror.projectThreadKey(projectId: projectId),
+            requestId: "\(XTProjectConversationMirror.requestID(projectId: projectId, createdAt: createdAt))_heartbeat",
+            createdAtMs: XTProjectConversationMirror.createdAtMs(createdAt),
+            userText: "",
+            assistantText: "",
+            messages: [message]
+        )
+        let remote = await HubPairingCoordinator.shared.appendRemoteProjectConversationTurn(
+            options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+            payload: payload
+        )
+        if remote.ok {
+            await invalidateProjectRemoteMemorySnapshotCache(
+                projectId: projectId,
+                reason: .newTurnAppend
+            )
         }
     }
 
@@ -3945,6 +4641,23 @@ enum HubIPCClient {
         payload: ProjectCanonicalMemoryPayload,
         allowFileFallback: Bool
     ) async -> CanonicalMemorySyncDispatchResult {
+        let rustResult = await syncProjectCanonicalMemoryViaRustHub(payload: payload)
+        if let rustResult, rustResult.ok {
+            await invalidateProjectRemoteMemorySnapshotCache(
+                projectId: payload.projectId,
+                reason: .projectCanonicalSave
+            )
+            clearPendingProjectCanonicalRustSync(payload: payload)
+            return rustResult
+        }
+        if let rustResult {
+            if shouldPersistPendingProjectCanonicalRustSync(result: rustResult) {
+                recordPendingProjectCanonicalRustSync(payload: payload, result: rustResult)
+            } else {
+                clearPendingProjectCanonicalRustSync(payload: payload)
+            }
+        }
+
         let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
         if hasRemote {
             let remote = await HubPairingCoordinator.shared.upsertRemoteProjectCanonicalMemory(
@@ -3987,6 +4700,9 @@ enum HubIPCClient {
                 )
             }
         } else if !allowFileFallback {
+            if let rustResult {
+                return rustResult
+            }
             return CanonicalMemorySyncDispatchResult(
                 ok: false,
                 source: "grpc",
@@ -3998,11 +4714,260 @@ enum HubIPCClient {
         let localResult = writeProjectCanonicalMemoryViaLocalIPC(payload)
         if localResult.ok {
             await invalidateProjectRemoteMemorySnapshotCache(
-                        projectId: payload.projectId,
-                        reason: .projectCanonicalSave
-                    )
+                projectId: payload.projectId,
+                reason: .projectCanonicalSave
+            )
         }
         return localResult
+    }
+
+    private static func syncProjectCanonicalMemoryViaRustHub(
+        payload: ProjectCanonicalMemoryPayload,
+        timeoutSec: Double = 1.0
+    ) async -> CanonicalMemorySyncDispatchResult? {
+        if let override = projectCanonicalRustSyncOverride() {
+            guard let result = await override(payload) else { return nil }
+            return CanonicalMemorySyncDispatchResult(
+                ok: result.ok,
+                source: normalized(result.source) ?? "rust_http",
+                deliveryState: normalized(result.deliveryState)
+                    ?? (result.ok ? "delivered_rust_memory_objects" : "rust_http_failed"),
+                reasonCode: normalizedReasonCode(
+                    result.reasonCode,
+                    fallback: result.ok ? nil : "project_canonical_memory_rust_http_failed"
+                ),
+                detail: normalized(result.detail)
+            )
+        }
+
+        let baseURL = RustHubReadinessClient.defaultBaseURL()
+        var components = URLComponents(
+            url: baseURL
+                .appendingPathComponent("memory")
+                .appendingPathComponent("project-canonical-sync"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [URLQueryItem(name: "apply", value: "1")]
+        guard let url = components?.url else {
+            return CanonicalMemorySyncDispatchResult(
+                ok: false,
+                source: "rust_http",
+                deliveryState: "rust_http_url_invalid",
+                reasonCode: "project_canonical_memory_rust_url_invalid",
+                detail: "invalid Rust Hub project canonical memory URL"
+            )
+        }
+
+        let reqId = "project_canonical_rust_\(UUID().uuidString.lowercased())"
+        let envelope = ProjectCanonicalMemoryIPCRequest(
+            type: "project_canonical_memory",
+            reqId: reqId,
+            projectCanonicalMemory: payload
+        )
+        guard let body = try? JSONEncoder().encode(envelope) else {
+            return CanonicalMemorySyncDispatchResult(
+                ok: false,
+                source: "rust_http",
+                deliveryState: "rust_http_encode_failed",
+                reasonCode: "project_canonical_memory_encode_failed",
+                detail: "project canonical memory Rust request encoding failed"
+            )
+        }
+
+        do {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = max(0.25, min(5.0, timeoutSec))
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            request.httpBody = body
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+            RustHubHTTPAccess.applyAccessKey(to: &request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            let ok = (parsed?["ok"] as? Bool) == true && (200..<300).contains(statusCode)
+            return CanonicalMemorySyncDispatchResult(
+                ok: ok,
+                source: "rust_http",
+                deliveryState: ok ? "delivered_rust_memory_objects" : "rust_http_rejected",
+                reasonCode: normalizedReasonCode(
+                    parsed?["error_code"] as? String
+                        ?? parsed?["reason_code"] as? String
+                        ?? (ok ? nil : "project_canonical_memory_rust_http_failed"),
+                    fallback: ok ? nil : "project_canonical_memory_rust_http_failed"
+                ),
+                detail: projectCanonicalRustSyncDetail(parsed: parsed, httpStatus: statusCode)
+            )
+        } catch {
+            return CanonicalMemorySyncDispatchResult(
+                ok: false,
+                source: "rust_http",
+                deliveryState: "rust_http_unavailable",
+                reasonCode: "project_canonical_memory_rust_http_unavailable",
+                detail: summarized(error)
+            )
+        }
+    }
+
+    static func retryPendingProjectCanonicalRustSync(
+        ctx: AXProjectContext
+    ) async -> ProjectCanonicalMemoryPendingRustSyncRetryResult {
+        let url = pendingProjectCanonicalRustSyncURL(projectRoot: ctx.root)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return ProjectCanonicalMemoryPendingRustSyncRetryResult(
+                attempted: false,
+                ok: true,
+                source: "local_file",
+                deliveryState: "no_pending_project_canonical_rust_sync"
+            )
+        }
+
+        guard let data = try? Data(contentsOf: url),
+              let snapshot = try? JSONDecoder().decode(
+                ProjectCanonicalMemoryPendingRustSyncSnapshot.self,
+                from: data
+              ) else {
+            return ProjectCanonicalMemoryPendingRustSyncRetryResult(
+                attempted: false,
+                ok: false,
+                source: "local_file",
+                deliveryState: "pending_snapshot_decode_failed",
+                reasonCode: "pending_project_canonical_rust_sync_decode_failed",
+                detail: url.path
+            )
+        }
+
+        guard snapshot.schemaVersion == ProjectCanonicalMemoryPendingRustSyncSnapshot.schemaVersion else {
+            return ProjectCanonicalMemoryPendingRustSyncRetryResult(
+                attempted: false,
+                ok: false,
+                source: "local_file",
+                deliveryState: "pending_snapshot_schema_mismatch",
+                reasonCode: "pending_project_canonical_rust_sync_schema_mismatch",
+                detail: snapshot.schemaVersion
+            )
+        }
+
+        let expectedProjectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        guard snapshot.projectId == expectedProjectId,
+              snapshot.payload.projectId == expectedProjectId else {
+            return ProjectCanonicalMemoryPendingRustSyncRetryResult(
+                attempted: false,
+                ok: false,
+                source: "local_file",
+                deliveryState: "pending_snapshot_project_mismatch",
+                reasonCode: "pending_project_canonical_rust_sync_project_mismatch",
+                detail: "expected=\(expectedProjectId) snapshot=\(snapshot.projectId) payload=\(snapshot.payload.projectId)"
+            )
+        }
+
+        let result = await syncProjectCanonicalMemoryViaRustHub(payload: snapshot.payload)
+            ?? CanonicalMemorySyncDispatchResult(
+                ok: false,
+                source: "rust_http",
+                deliveryState: "rust_http_unavailable",
+                reasonCode: "project_canonical_memory_rust_http_unavailable",
+                detail: "Rust project canonical sync route unavailable"
+            )
+
+        if result.ok {
+            await invalidateProjectRemoteMemorySnapshotCache(
+                projectId: snapshot.payload.projectId,
+                reason: .projectCanonicalSave
+            )
+            clearPendingProjectCanonicalRustSync(payload: snapshot.payload)
+        } else if shouldPersistPendingProjectCanonicalRustSync(result: result) {
+            recordPendingProjectCanonicalRustSync(payload: snapshot.payload, result: result)
+        } else {
+            clearPendingProjectCanonicalRustSync(payload: snapshot.payload)
+        }
+        recordCanonicalMemorySyncStatus(
+            scopeKind: "project",
+            scopeId: snapshot.payload.projectId,
+            displayName: snapshot.payload.displayName,
+            result: result
+        )
+
+        return ProjectCanonicalMemoryPendingRustSyncRetryResult(
+            attempted: true,
+            ok: result.ok,
+            source: normalized(result.source) ?? "rust_http",
+            deliveryState: normalized(result.deliveryState),
+            reasonCode: normalizedReasonCode(
+                result.reasonCode,
+                fallback: result.ok ? nil : "project_canonical_memory_rust_http_failed"
+            ),
+            detail: normalized(result.detail)
+        )
+    }
+
+    private static func shouldPersistPendingProjectCanonicalRustSync(
+        result: CanonicalMemorySyncDispatchResult
+    ) -> Bool {
+        guard !result.ok else { return false }
+        let deliveryState = normalized(result.deliveryState)?.lowercased()
+        let reasonCode = normalizedReasonCode(result.reasonCode, fallback: nil)
+        return deliveryState == "rust_http_unavailable"
+            || reasonCode == "project_canonical_memory_rust_http_unavailable"
+    }
+
+    @discardableResult
+    private static func recordPendingProjectCanonicalRustSync(
+        payload: ProjectCanonicalMemoryPayload,
+        result: CanonicalMemorySyncDispatchResult
+    ) -> Bool {
+        guard let url = pendingProjectCanonicalRustSyncURL(payload: payload) else {
+            return false
+        }
+        let snapshot = ProjectCanonicalMemoryPendingRustSyncSnapshot(
+            schemaVersion: ProjectCanonicalMemoryPendingRustSyncSnapshot.schemaVersion,
+            projectId: payload.projectId,
+            projectRoot: normalized(payload.projectRoot) ?? "",
+            displayName: normalized(payload.displayName) ?? "",
+            recordedAtMs: max(0, Int64((Date().timeIntervalSince1970 * 1_000.0).rounded())),
+            memoryUpdatedAt: payload.updatedAt,
+            source: normalized(result.source) ?? "rust_http",
+            deliveryState: normalized(result.deliveryState) ?? "rust_http_unavailable",
+            reasonCode: normalizedReasonCode(
+                result.reasonCode,
+                fallback: "project_canonical_memory_rust_http_unavailable"
+            ) ?? "project_canonical_memory_rust_http_unavailable",
+            detail: normalized(result.detail) ?? "",
+            itemCount: payload.items.count,
+            payload: payload
+        )
+        return writeLocalSnapshot(snapshot, to: url)
+    }
+
+    private static func clearPendingProjectCanonicalRustSync(
+        payload: ProjectCanonicalMemoryPayload
+    ) {
+        guard let url = pendingProjectCanonicalRustSyncURL(payload: payload),
+              FileManager.default.fileExists(atPath: url.path) else {
+            return
+        }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    private static func pendingProjectCanonicalRustSyncURL(
+        payload: ProjectCanonicalMemoryPayload
+    ) -> URL? {
+        guard let projectRoot = normalized(payload.projectRoot) else {
+            return nil
+        }
+        return pendingProjectCanonicalRustSyncURL(
+            projectRoot: URL(fileURLWithPath: projectRoot, isDirectory: true)
+        )
+    }
+
+    private static func pendingProjectCanonicalRustSyncURL(
+        projectRoot: URL
+    ) -> URL {
+        projectRoot
+            .appendingPathComponent(".xterminal", isDirectory: true)
+            .appendingPathComponent("memory_lifecycle", isDirectory: true)
+            .appendingPathComponent("pending_project_canonical_rust_sync.json")
     }
 
     private static func writeProjectSyncViaFileIPC(_ payload: ProjectSyncPayload) -> Bool {
@@ -4679,6 +5644,7 @@ enum HubIPCClient {
             )
             let single = await requestMemoryContextSingleDetailed(
                 useMode: useMode,
+                requesterRole: requesterRole,
                 route: stagedRoute,
                 timeoutSec: timeoutSec
             )
@@ -4715,8 +5681,779 @@ enum HubIPCClient {
         )
     }
 
+    private static func memoryContextPayloadByPreferringRustProjectCanonicalObjects(
+        _ payload: MemoryContextPayload,
+        routeDecision: HubRouteDecision,
+        timeoutSec: Double
+    ) async -> MemoryContextPayload {
+        guard routeDecision.mode != .fileIPC,
+              let projectId = normalized(payload.projectId),
+              hasSuccessfulRustProjectCanonicalSync(projectId: projectId),
+              let snapshot = await fetchRustProjectCanonicalMemorySnapshot(
+                projectId: projectId,
+                limit: 64,
+                timeoutSec: timeoutSec
+              ),
+              !snapshot.objects.isEmpty else {
+            return payload
+        }
+
+        let layers = rustProjectCanonicalMemoryLayerTexts(snapshot.objects)
+        var enriched = payload
+        if let canonical = mergedRustPrimaryMemoryLayer(
+            rustPrimary: layers.canonical,
+            localSecondary: payload.canonicalText
+        ) {
+            enriched.canonicalText = canonical
+        }
+        if let observations = mergedRustPrimaryMemoryLayer(
+            rustPrimary: layers.observations,
+            localSecondary: payload.observationsText
+        ) {
+            enriched.observationsText = observations
+        }
+        if let workingSet = mergedRustPrimaryMemoryLayer(
+            rustPrimary: layers.workingSet,
+            localSecondary: payload.workingSetText
+        ) {
+            enriched.workingSetText = workingSet
+        }
+        return enriched
+    }
+
+    private static func hasSuccessfulRustProjectCanonicalSync(projectId: String) -> Bool {
+        let normalizedProjectId = normalized(projectId) ?? ""
+        guard !normalizedProjectId.isEmpty,
+              let item = canonicalMemorySyncStatusSnapshot(limit: 500)?.items.first(where: {
+                $0.scopeKind.lowercased() == "project"
+                    && $0.scopeId == normalizedProjectId
+              }),
+              item.ok else {
+            return false
+        }
+        let source = normalized(item.source)?.lowercased()
+        let deliveryState = normalized(item.deliveryState)?.lowercased()
+        return source == "rust_http"
+            && (
+                deliveryState == nil
+                || deliveryState == "delivered_rust_memory_objects"
+                || deliveryState == "accepted_rust_memory_objects"
+            )
+    }
+
+    private static func expectedRustProjectCanonicalObjects(
+        payload: ProjectCanonicalMemoryPayload
+    ) -> (objects: [ProjectCanonicalRustExpectedObject], skippedMetadataCount: Int) {
+        var expected: [ProjectCanonicalRustExpectedObject] = []
+        var skipped = 0
+        for item in payload.items {
+            guard let mapping = rustProjectCanonicalMapping(forKey: item.key),
+                  let text = normalized(item.value) else {
+                skipped += 1
+                continue
+            }
+            expected.append(
+                ProjectCanonicalRustExpectedObject(
+                    key: item.key,
+                    suffix: mapping.suffix,
+                    memoryId: rustProjectCanonicalMemoryID(
+                        projectId: payload.projectId,
+                        suffix: mapping.suffix
+                    ),
+                    sourceKind: mapping.sourceKind,
+                    layer: mapping.layer,
+                    title: mapping.title,
+                    text: text
+                )
+            )
+        }
+        return (expected, skipped)
+    }
+
+    private static func projectCanonicalRustImportDiagnostics(
+        payload: ProjectCanonicalMemoryPayload,
+        displayName: String,
+        expected: [ProjectCanonicalRustExpectedObject],
+        skippedMetadataCount: Int,
+        rustSnapshot: RustProjectCanonicalMemorySnapshot
+    ) -> ProjectCanonicalRustImportDiagnostics {
+        let rustByMemoryID = Dictionary(
+            uniqueKeysWithValues: rustSnapshot.objects.map { ($0.memoryId, $0) }
+        )
+        let expectedIDs = Set(expected.map(\.memoryId))
+        var issues: [ProjectCanonicalRustImportDiagnosticIssue] = []
+        var matchedCount = 0
+        var missingCount = 0
+        var staleCount = 0
+        var mismatchCount = 0
+
+        for item in expected {
+            guard let object = rustByMemoryID[item.memoryId] else {
+                missingCount += 1
+                issues.append(
+                    ProjectCanonicalRustImportDiagnosticIssue(
+                        severity: "error",
+                        reasonCode: "rust_project_canonical_object_missing",
+                        key: item.key,
+                        memoryId: item.memoryId,
+                        detail: "missing active Rust memory object"
+                    )
+                )
+                continue
+            }
+
+            var itemHasIssue = false
+            if normalized(object.text) != normalized(item.text) {
+                staleCount += 1
+                itemHasIssue = true
+                issues.append(
+                    ProjectCanonicalRustImportDiagnosticIssue(
+                        severity: "warning",
+                        reasonCode: "rust_project_canonical_object_stale",
+                        key: item.key,
+                        memoryId: item.memoryId,
+                        detail: "Rust text differs from current AXMemory projection"
+                    )
+                )
+            }
+            if normalized(object.sourceKind)?.lowercased() != item.sourceKind
+                || normalized(object.layer)?.lowercased() != item.layer {
+                mismatchCount += 1
+                itemHasIssue = true
+                issues.append(
+                    ProjectCanonicalRustImportDiagnosticIssue(
+                        severity: "warning",
+                        reasonCode: "rust_project_canonical_object_metadata_mismatch",
+                        key: item.key,
+                        memoryId: item.memoryId,
+                        detail: "expected source_kind=\(item.sourceKind) layer=\(item.layer), got source_kind=\(object.sourceKind) layer=\(object.layer)"
+                    )
+                )
+            }
+            if !itemHasIssue {
+                matchedCount += 1
+            }
+        }
+
+        let projectPrefix = rustProjectCanonicalMemoryIDPrefix(projectId: payload.projectId)
+        let extraObjects = rustSnapshot.objects.filter { object in
+            object.memoryId.hasPrefix(projectPrefix) && !expectedIDs.contains(object.memoryId)
+        }
+        for object in extraObjects {
+            issues.append(
+                ProjectCanonicalRustImportDiagnosticIssue(
+                    severity: "info",
+                    reasonCode: "rust_project_canonical_object_extra",
+                    key: nil,
+                    memoryId: object.memoryId,
+                    detail: "active Rust object is not present in current AXMemory projection"
+                )
+            )
+        }
+
+        let ok = missingCount == 0 && staleCount == 0 && mismatchCount == 0
+        return ProjectCanonicalRustImportDiagnostics(
+            ok: ok,
+            source: "rust_memory_objects",
+            projectId: payload.projectId,
+            displayName: displayName,
+            expectedItemCount: expected.count,
+            skippedMetadataCount: skippedMetadataCount,
+            rustObjectCount: rustSnapshot.objects.count,
+            matchedCount: matchedCount,
+            missingCount: missingCount,
+            staleCount: staleCount,
+            mismatchCount: mismatchCount,
+            extraCount: extraObjects.count,
+            reasonCode: ok ? nil : "rust_project_canonical_import_drift",
+            issues: issues
+        )
+    }
+
+    static func compareMemoryContextWithRustGateway(
+        productResponse: MemoryContextResponsePayload?,
+        requesterRole: XTMemoryRequesterRole,
+        useMode: XTMemoryUseMode,
+        payload: MemoryContextPayload,
+        timeoutSec: Double = 0.5,
+        recordStatus: Bool = true
+    ) async -> RustMemoryGatewayShadowCompareResult {
+        let request = rustMemoryGatewayPrepareRequest(
+            requesterRole: requesterRole,
+            useMode: useMode,
+            payload: payload
+        )
+        let rust = await fetchRustMemoryGatewayPrepare(
+            request: request,
+            timeoutSec: timeoutSec
+        )
+        let productText = productResponse?.text ?? ""
+        let productTextHash = stableTextHash(productText)
+        let productTextChars = productText.count
+        let recordedAtMs = Int64(Date().timeIntervalSince1970 * 1000.0)
+
+        guard let rust else {
+            let result = RustMemoryGatewayShadowCompareResult(
+                ok: false,
+                parityOk: false,
+                source: "rust_memory_gateway_shadow_compare",
+                mode: "shadow_compare_no_product_cutover",
+                productionAuthorityChange: false,
+                requesterRole: request.requesterRole,
+                useMode: request.useMode,
+                projectId: request.projectId,
+                productSource: productResponse?.source,
+                rustSource: nil,
+                productTextChars: productTextChars,
+                rustContextChars: 0,
+                productTextHash: productTextHash,
+                rustContextHash: stableTextHash(""),
+                rustObjectCount: 0,
+                rustEffectiveLayers: [],
+                matchedRustAnchors: [],
+                missingRustAnchors: [],
+                rustDenyCode: nil,
+                reasonCode: "rust_memory_gateway_unavailable",
+                detail: "Rust /memory/gateway/prepare did not return a decodable response",
+                recordedAtMs: recordedAtMs
+            )
+            if recordStatus { recordRustMemoryGatewayShadowCompare(result) }
+            return result
+        }
+
+        let rustContext = normalized(rust.contextText) ?? ""
+        let rustAnchors = rustMemoryGatewayAnchorTexts(rust)
+        let productSearchText = collapsedSearchText(productText)
+        let matchedAnchors = rustAnchors.filter { productSearchText.contains(collapsedSearchText($0)) }
+        let missingAnchors = rustAnchors.filter { !productSearchText.contains(collapsedSearchText($0)) }
+        let rustDenyCode = normalized(rust.denyCode)
+            ?? normalized(rust.reasonCode)
+            ?? normalized(rust.errorCode)
+        let productMissing = productResponse == nil
+        let rustOk = rust.ok
+        let parityOk = rustOk && !productMissing && missingAnchors.isEmpty
+        let reasonCode: String?
+        if !rustOk {
+            reasonCode = rustDenyCode ?? "rust_memory_gateway_denied"
+        } else if productMissing {
+            reasonCode = "product_memory_context_missing"
+        } else if !missingAnchors.isEmpty {
+            reasonCode = "rust_memory_gateway_shadow_drift"
+        } else {
+            reasonCode = nil
+        }
+        let result = RustMemoryGatewayShadowCompareResult(
+            ok: rustOk && !productMissing,
+            parityOk: parityOk,
+            source: "rust_memory_gateway_shadow_compare",
+            mode: "shadow_compare_no_product_cutover",
+            productionAuthorityChange: false,
+            requesterRole: request.requesterRole,
+            useMode: request.useMode,
+            projectId: request.projectId,
+            productSource: productResponse?.source,
+            rustSource: rust.source,
+            productTextChars: productTextChars,
+            rustContextChars: rustContext.count,
+            productTextHash: productTextHash,
+            rustContextHash: stableTextHash(rustContext),
+            rustObjectCount: rust.objectCount ?? rust.slots?.reduce(0) { $0 + $1.count } ?? 0,
+            rustEffectiveLayers: rust.effectiveLayers ?? [],
+            matchedRustAnchors: matchedAnchors,
+            missingRustAnchors: missingAnchors,
+            rustDenyCode: rustDenyCode,
+            reasonCode: reasonCode,
+            detail: normalized(rust.message),
+            recordedAtMs: recordedAtMs
+        )
+        if recordStatus { recordRustMemoryGatewayShadowCompare(result) }
+        return result
+    }
+
+    private static func scheduleRustMemoryGatewayShadowCompareIfEnabled(
+        productResponse: MemoryContextResponsePayload,
+        payload: MemoryContextPayload,
+        requesterRole: XTMemoryRequesterRole,
+        useMode: XTMemoryUseMode,
+        timeoutSec: Double
+    ) {
+        guard rustMemoryGatewayShadowCompareEnabled() else { return }
+        let boundedTimeout = max(0.05, min(0.5, timeoutSec))
+        Task {
+            _ = await compareMemoryContextWithRustGateway(
+                productResponse: productResponse,
+                requesterRole: requesterRole,
+                useMode: useMode,
+                payload: payload,
+                timeoutSec: boundedTimeout,
+                recordStatus: true
+            )
+        }
+    }
+
+    private static func rustMemoryGatewayPrepareRequest(
+        requesterRole: XTMemoryRequesterRole,
+        useMode: XTMemoryUseMode,
+        payload: MemoryContextPayload
+    ) -> RustMemoryGatewayPrepareRequest {
+        let projectId = normalized(payload.projectId)
+        return RustMemoryGatewayPrepareRequest(
+            requesterRole: rustMemoryRequesterRole(requesterRole),
+            useMode: useMode.rawValue,
+            scope: projectId == nil ? "device" : "project",
+            projectId: projectId,
+            agentId: nil,
+            latestUser: payload.latestUser,
+            remoteExportRequested: requesterRole == .remoteExport || useMode == .remotePromptBundle,
+            requestedLayers: ["l1_canonical", "l2_observations", "l3_working_set"],
+            requestedSourceKinds: [],
+            maxItems: 24,
+            maxSnippetChars: 420
+        )
+    }
+
+    private static func fetchRustMemoryGatewayPrepare(
+        request: RustMemoryGatewayPrepareRequest,
+        timeoutSec: Double
+    ) async -> RustMemoryGatewayPrepareResult? {
+        if let override = rustMemoryGatewayPrepareOverride() {
+            return await override(request, timeoutSec)
+        }
+
+        let baseURL = RustHubReadinessClient.defaultBaseURL()
+        let url = baseURL
+            .appendingPathComponent("memory")
+            .appendingPathComponent("gateway")
+            .appendingPathComponent("prepare")
+        do {
+            var urlRequest = URLRequest(url: url)
+            urlRequest.httpMethod = "POST"
+            urlRequest.timeoutInterval = max(0.05, min(0.75, timeoutSec))
+            urlRequest.cachePolicy = .reloadIgnoringLocalCacheData
+            urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+            urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            RustHubHTTPAccess.applyAccessKey(to: &urlRequest)
+            urlRequest.httpBody = try JSONEncoder().encode(request)
+            let (data, _) = try await URLSession.shared.data(for: urlRequest)
+            return try JSONDecoder().decode(RustMemoryGatewayPrepareResult.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func rustMemoryGatewayAnchorTexts(
+        _ result: RustMemoryGatewayPrepareResult
+    ) -> [String] {
+        let objects = result.slots?.flatMap(\.objects) ?? []
+        var seen = Set<String>()
+        var anchors: [String] = []
+        for object in objects {
+            guard let anchor = rustMemoryGatewayAnchorText(object.text),
+                  seen.insert(anchor).inserted else {
+                continue
+            }
+            anchors.append(anchor)
+        }
+        return anchors
+    }
+
+    private static func rustMemoryGatewayAnchorText(_ raw: String) -> String? {
+        let collapsed = collapsedSearchText(raw)
+        guard !collapsed.isEmpty else { return nil }
+        return String(collapsed.prefix(160))
+    }
+
+    private static func collapsedSearchText(_ raw: String) -> String {
+        raw
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private static func rustMemoryRequesterRole(_ role: XTMemoryRequesterRole) -> String {
+        switch role {
+        case .remoteExport:
+            return "remote_export"
+        default:
+            return role.rawValue
+        }
+    }
+
+    private static func rustMemoryGatewayShadowCompareEnabled(
+        environment: [String: String]? = nil
+    ) -> Bool {
+        environmentFlagEnabled(
+            "XHUB_RUST_MEMORY_CONTEXT_GATEWAY_SHADOW",
+            environment: environment
+        )
+    }
+
+    private static func rustMemoryGatewayPrimaryEnabled(
+        environment: [String: String]? = nil
+    ) -> Bool {
+        environmentFlagEnabled(
+            "XHUB_RUST_MEMORY_CONTEXT_GATEWAY",
+            environment: environment
+        )
+    }
+
+    private static func rustMemoryGatewayRequireEnabled(
+        environment: [String: String]? = nil
+    ) -> Bool {
+        environmentFlagEnabled(
+            "XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE",
+            environment: environment
+        )
+    }
+
+    private static func rustMemoryGatewayParityMaxAgeMs(
+        environment: [String: String]? = nil
+    ) -> Int64 {
+        let key = "XHUB_RUST_MEMORY_CONTEXT_GATEWAY_PARITY_MAX_AGE_MS"
+        let raw: String?
+        if let environment {
+            raw = environment[key]
+        } else if let value = getenv(key) {
+            raw = String(cString: value)
+        } else {
+            raw = nil
+        }
+        guard let raw,
+              let parsed = Int64(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              parsed >= 0 else {
+            return 10 * 60 * 1000
+        }
+        return parsed
+    }
+
+    private static func environmentFlagEnabled(
+        _ key: String,
+        environment: [String: String]?
+    ) -> Bool {
+        let raw: String?
+        if let environment {
+            raw = environment[key]
+        } else if let value = getenv(key) {
+            raw = String(cString: value)
+        } else {
+            raw = nil
+        }
+        let value = (raw ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return ["1", "true", "yes", "on"].contains(value)
+    }
+
+    private static func recordRustMemoryGatewayShadowCompare(
+        _ result: RustMemoryGatewayShadowCompareResult
+    ) {
+        let baseDir = HubPaths.baseDir()
+        let url = baseDir.appendingPathComponent("memory_gateway_shadow_compare_status.json")
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(result)
+            try data.write(to: url, options: .atomic)
+            recordRustMemoryGatewayShadowCompareHistory(result, baseDir: baseDir)
+        } catch {
+            return
+        }
+    }
+
+    private static func recordRustMemoryGatewayShadowCompareHistory(
+        _ result: RustMemoryGatewayShadowCompareResult,
+        baseDir: URL,
+        itemLimit: Int = 64
+    ) {
+        let boundedLimit = max(1, min(256, itemLimit))
+        let url = baseDir.appendingPathComponent("memory_gateway_shadow_compare_history.json")
+        do {
+            let decoder = JSONDecoder()
+            let existing: RustMemoryGatewayShadowCompareHistory?
+            if let data = try? Data(contentsOf: url) {
+                existing = try? decoder.decode(RustMemoryGatewayShadowCompareHistory.self, from: data)
+            } else {
+                existing = nil
+            }
+            var items = [result] + (existing?.items ?? [])
+            var seen = Set<String>()
+            items = items.filter { item in
+                let key = [
+                    item.requesterRole,
+                    item.useMode,
+                    item.projectId ?? "",
+                    "\(item.recordedAtMs)",
+                    item.productTextHash,
+                    item.rustContextHash
+                ].joined(separator: "|")
+                return seen.insert(key).inserted
+            }
+            items = Array(items.prefix(boundedLimit))
+            let history = RustMemoryGatewayShadowCompareHistory(
+                generatedAtMs: Int64(Date().timeIntervalSince1970 * 1000.0),
+                itemLimit: boundedLimit,
+                items: items
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(history).write(to: url, options: .atomic)
+        } catch {
+            return
+        }
+    }
+
+    private static func stableTextHash(_ text: String) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in text.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        return String(format: "%016llx", hash)
+    }
+
+    private static func fetchRustProjectCanonicalMemorySnapshot(
+        projectId: String,
+        limit: Int,
+        timeoutSec: Double
+    ) async -> RustProjectCanonicalMemorySnapshot? {
+        let boundedLimit = max(1, min(128, limit))
+        if let override = rustProjectCanonicalMemoryOverride() {
+            return await override(projectId, boundedLimit, timeoutSec)
+        }
+
+        let baseURL = RustHubReadinessClient.defaultBaseURL()
+        var components = URLComponents(
+            url: baseURL
+                .appendingPathComponent("memory")
+                .appendingPathComponent("objects"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [
+            URLQueryItem(name: "scope", value: "project"),
+            URLQueryItem(name: "project_id", value: projectId),
+            URLQueryItem(name: "status", value: "active"),
+            URLQueryItem(name: "limit", value: "\(boundedLimit)")
+        ]
+        guard let url = components?.url else {
+            return nil
+        }
+
+        do {
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.timeoutInterval = max(0.05, min(0.75, timeoutSec))
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            RustHubHTTPAccess.applyAccessKey(to: &request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(statusCode) else {
+                return nil
+            }
+            let decoded = try JSONDecoder().decode(RustProjectCanonicalMemoryListResponse.self, from: data)
+            guard decoded.ok else {
+                return nil
+            }
+            let activeObjects = decoded.objects.filter { object in
+                let objectProjectId = normalized(object.projectId) ?? normalized(object.ownerId) ?? ""
+                let status = normalized(object.status)?.lowercased() ?? "active"
+                let scope = normalized(object.scope)?.lowercased()
+                let layer = normalized(object.layer)?.lowercased() ?? ""
+                return objectProjectId == projectId
+                    && (scope == nil || scope == "project")
+                    && status == "active"
+                    && ["l1_canonical", "l2_observations", "l3_working_set"].contains(layer)
+            }
+            return RustProjectCanonicalMemorySnapshot(
+                source: "rust_http",
+                projectId: projectId,
+                objects: activeObjects
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    private static func rustProjectCanonicalMemoryLayerTexts(
+        _ objects: [RustProjectCanonicalMemoryObject]
+    ) -> (canonical: String, observations: String, workingSet: String) {
+        let sorted = objects.sorted { lhs, rhs in
+            let lhsLayerRank = rustProjectCanonicalMemoryLayerRank(lhs.layer)
+            let rhsLayerRank = rustProjectCanonicalMemoryLayerRank(rhs.layer)
+            if lhsLayerRank != rhsLayerRank { return lhsLayerRank < rhsLayerRank }
+            let lhsSourceRank = rustProjectCanonicalMemorySourceRank(lhs.sourceKind)
+            let rhsSourceRank = rustProjectCanonicalMemorySourceRank(rhs.sourceKind)
+            if lhsSourceRank != rhsSourceRank { return lhsSourceRank < rhsSourceRank }
+            let lhsTitle = normalized(lhs.title) ?? lhs.memoryId
+            let rhsTitle = normalized(rhs.title) ?? rhs.memoryId
+            return lhsTitle.localizedCaseInsensitiveCompare(rhsTitle) == .orderedAscending
+        }
+
+        var canonical: [String] = []
+        var observations: [String] = []
+        var workingSet: [String] = []
+        for object in sorted {
+            guard let block = rustProjectCanonicalMemoryBlock(object) else { continue }
+            switch normalized(object.layer)?.lowercased() {
+            case "l1_canonical":
+                canonical.append(block)
+            case "l2_observations":
+                observations.append(block)
+            case "l3_working_set":
+                workingSet.append(block)
+            default:
+                continue
+            }
+        }
+
+        return (
+            XTMemorySanitizer.sanitizeText(canonical.joined(separator: "\n\n"), maxChars: 3_200, lineCap: 36) ?? "",
+            XTMemorySanitizer.sanitizeText(observations.joined(separator: "\n\n"), maxChars: 1_800, lineCap: 24) ?? "",
+            XTMemorySanitizer.sanitizeText(workingSet.joined(separator: "\n\n"), maxChars: 2_600, lineCap: 28) ?? ""
+        )
+    }
+
+    private static func rustProjectCanonicalMemoryBlock(
+        _ object: RustProjectCanonicalMemoryObject
+    ) -> String? {
+        guard let text = normalized(object.text) else { return nil }
+        guard let title = normalized(object.title) else { return text }
+        return """
+\(title):
+\(text)
+"""
+    }
+
+    private static func mergedRustPrimaryMemoryLayer(
+        rustPrimary: String,
+        localSecondary: String?
+    ) -> String? {
+        guard let rust = normalized(rustPrimary) else {
+            return normalized(localSecondary)
+        }
+        guard let local = normalized(localSecondary),
+              local != rust else {
+            return rust
+        }
+        return """
+\(rust)
+
+[local_projection]
+\(local)
+[/local_projection]
+"""
+    }
+
+    private static func rustProjectCanonicalMemoryLayerRank(_ layer: String) -> Int {
+        switch normalized(layer)?.lowercased() {
+        case "l1_canonical":
+            return 1
+        case "l2_observations":
+            return 2
+        case "l3_working_set":
+            return 3
+        default:
+            return 99
+        }
+    }
+
+    private static func rustProjectCanonicalMemorySourceRank(_ sourceKind: String) -> Int {
+        switch normalized(sourceKind)?.lowercased() {
+        case "project_goal":
+            return 1
+        case "project_requirement":
+            return 2
+        case "decision_track":
+            return 3
+        case "open_question":
+            return 4
+        case "risk":
+            return 5
+        case "recommendation":
+            return 6
+        case "current_state":
+            return 7
+        case "next_step":
+            return 8
+        default:
+            return 99
+        }
+    }
+
+    private static func rustProjectCanonicalMapping(
+        forKey rawKey: String
+    ) -> (suffix: String, title: String, sourceKind: String, layer: String)? {
+        let prefix = "\(XTProjectCanonicalMemorySync.keyPrefix)."
+        let suffix = rawKey
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: prefix, with: "")
+        switch suffix {
+        case "goal":
+            return ("goal", "Project goal", "project_goal", "l1_canonical")
+        case "requirements":
+            return ("requirements", "Project requirements", "project_requirement", "l1_canonical")
+        case "current_state":
+            return ("current_state", "Current state", "current_state", "l3_working_set")
+        case "decisions":
+            return ("decisions", "Decisions", "decision_track", "l1_canonical")
+        case "next_steps":
+            return ("next_steps", "Next steps", "next_step", "l3_working_set")
+        case "open_questions":
+            return ("open_questions", "Open questions", "open_question", "l2_observations")
+        case "risks":
+            return ("risks", "Risks", "risk", "l2_observations")
+        case "recommendations":
+            return ("recommendations", "Recommendations", "recommendation", "l2_observations")
+        default:
+            return nil
+        }
+    }
+
+    private static func rustProjectCanonicalMemoryID(
+        projectId: String,
+        suffix: String
+    ) -> String {
+        "\(rustProjectCanonicalMemoryIDPrefix(projectId: projectId))\(rustProjectCanonicalIDSegment(suffix, maxChars: 64))"
+    }
+
+    private static func rustProjectCanonicalMemoryIDPrefix(projectId: String) -> String {
+        "mem_xt_project_\(rustProjectCanonicalIDSegment(projectId, maxChars: 80))_"
+    }
+
+    private static func rustProjectCanonicalIDSegment(
+        _ raw: String,
+        maxChars: Int
+    ) -> String {
+        var value = ""
+        for scalar in raw.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars {
+            let v = scalar.value
+            if (65...90).contains(v), let lower = UnicodeScalar(v + 32) {
+                value.append(Character(lower))
+            } else if (97...122).contains(v)
+                || (48...57).contains(v)
+                || v == 95
+                || v == 45
+                || v == 46 {
+                value.append(Character(scalar))
+            } else {
+                value.append("_")
+            }
+            if value.count >= max(1, maxChars) {
+                break
+            }
+        }
+        let text = value.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        return text.isEmpty ? "unknown" : text
+    }
+
     private static func requestMemoryContextSingleDetailed(
         useMode: XTMemoryUseMode,
+        requesterRole: XTMemoryRequesterRole,
         route: XTMemoryRouteDecision,
         timeoutSec: Double
     ) async -> MemoryContextResolutionResult {
@@ -4724,8 +6461,24 @@ enum HubIPCClient {
             return await override(route, useMode, timeoutSec)
         }
 
-        let payload = route.payload
+        var payload = route.payload
         let routeDecision = await currentRouteDecision()
+        payload = await memoryContextPayloadByPreferringRustProjectCanonicalObjects(
+            payload,
+            routeDecision: routeDecision,
+            timeoutSec: timeoutSec
+        )
+
+        if let rustGateway = await requestMemoryContextViaRustGatewayIfEnabled(
+            payload: payload,
+            route: route,
+            routeDecision: routeDecision,
+            requesterRole: requesterRole,
+            useMode: useMode,
+            timeoutSec: timeoutSec
+        ) {
+            return rustGateway
+        }
 
         if routeDecision.preferRemote {
             let remote = await fetchRemoteMemorySnapshot(
@@ -4759,6 +6512,13 @@ enum HubIPCClient {
                 response.remoteSnapshotInvalidationReason = remote.cacheMetadata?.invalidationReason?.rawValue
                 response.denyCode = nil
                 response.downgradeCode = route.downgradeCode?.rawValue
+                scheduleRustMemoryGatewayShadowCompareIfEnabled(
+                    productResponse: response,
+                    payload: payload,
+                    requesterRole: requesterRole,
+                    useMode: useMode,
+                    timeoutSec: timeoutSec
+                )
                 return MemoryContextResolutionResult(
                     response: response,
                     source: response.source,
@@ -4859,6 +6619,13 @@ enum HubIPCClient {
         response.cacheHit = false
         response.denyCode = nil
         response.downgradeCode = route.downgradeCode?.rawValue
+        scheduleRustMemoryGatewayShadowCompareIfEnabled(
+            productResponse: response,
+            payload: payload,
+            requesterRole: requesterRole,
+            useMode: useMode,
+            timeoutSec: timeoutSec
+        )
         return MemoryContextResolutionResult(
             response: response,
             source: response.source,
@@ -4872,6 +6639,294 @@ enum HubIPCClient {
             reasonCode: nil,
             detail: nil
         )
+    }
+
+    private static func requestMemoryContextViaRustGatewayIfEnabled(
+        payload: MemoryContextPayload,
+        route: XTMemoryRouteDecision,
+        routeDecision: HubRouteDecision,
+        requesterRole: XTMemoryRequesterRole,
+        useMode: XTMemoryUseMode,
+        timeoutSec: Double
+    ) async -> MemoryContextResolutionResult? {
+        let requireGateway = rustMemoryGatewayRequireEnabled()
+        guard rustMemoryGatewayPrimaryEnabled() || requireGateway else { return nil }
+        guard routeDecision.mode != .fileIPC else { return nil }
+
+        let request = rustMemoryGatewayPrepareRequest(
+            requesterRole: requesterRole,
+            useMode: useMode,
+            payload: payload
+        )
+        if requireGateway,
+           let evidenceFailure = rustMemoryGatewayCutoverEvidenceFailure(
+                request: request,
+                status: rustMemoryGatewayShadowCompareStatus()
+           ) {
+            return rustMemoryGatewayRequiredFailureResult(
+                useMode: useMode,
+                route: route,
+                reasonCode: evidenceFailure.reasonCode,
+                detail: evidenceFailure.detail
+            )
+        }
+        guard let rust = await fetchRustMemoryGatewayPrepare(
+            request: request,
+            timeoutSec: timeoutSec
+        ) else {
+            guard requireGateway else { return nil }
+            return rustMemoryGatewayRequiredFailureResult(
+                useMode: useMode,
+                route: route,
+                reasonCode: "rust_memory_gateway_required_unavailable",
+                detail: "Rust /memory/gateway/prepare is required for this caller but did not return a decodable response."
+            )
+        }
+        guard rust.productionAuthorityChange != true else {
+            guard requireGateway else { return nil }
+            return rustMemoryGatewayRequiredFailureResult(
+                useMode: useMode,
+                route: route,
+                reasonCode: "rust_memory_gateway_required_authority_violation",
+                detail: "Rust memory gateway reported production_authority_change=true during required cutover."
+            )
+        }
+        guard rust.ok else {
+            guard requireGateway else { return nil }
+            return rustMemoryGatewayRequiredFailureResult(
+                useMode: useMode,
+                route: route,
+                reasonCode: normalized(rust.denyCode)
+                    ?? normalized(rust.reasonCode)
+                    ?? normalized(rust.errorCode)
+                    ?? "rust_memory_gateway_required_denied",
+                detail: normalized(rust.message)
+            )
+        }
+        guard var response = rustMemoryGatewayMemoryContextResponse(
+            rust,
+            payload: payload,
+            route: route,
+            useMode: useMode,
+            requireGateway: requireGateway
+        ) else {
+            guard requireGateway else { return nil }
+            return rustMemoryGatewayRequiredFailureResult(
+                useMode: useMode,
+                route: route,
+                reasonCode: "rust_memory_gateway_required_empty_context",
+                detail: "Rust memory gateway is required but returned no usable context text."
+            )
+        }
+
+        let disclosure = resolveMemoryLongtermDisclosure(
+            useMode: useMode,
+            retrievalAvailable: defaultRetrievalAvailability(for: useMode),
+            overrideLongtermMode: response.longtermMode,
+            overrideRetrievalAvailable: response.retrievalAvailable,
+            overrideFulltextNotLoaded: response.fulltextNotLoaded
+        )
+        response.longtermMode = disclosure.longtermMode
+        response.retrievalAvailable = disclosure.retrievalAvailable
+        response.fulltextNotLoaded = disclosure.fulltextNotLoaded
+        response.text = ensureMemoryLongtermDisclosureText(response.text, disclosure: disclosure)
+
+        return MemoryContextResolutionResult(
+            response: response,
+            source: response.source,
+            resolvedMode: useMode,
+            requestedProfile: route.servingProfile.rawValue,
+            attemptedProfiles: [route.servingProfile.rawValue],
+            freshness: response.freshness ?? "fresh_rust_gateway",
+            cacheHit: false,
+            denyCode: nil,
+            downgradeCode: route.downgradeCode?.rawValue,
+            reasonCode: nil,
+            detail: nil
+        )
+    }
+
+    private static func rustMemoryGatewayMemoryContextResponse(
+        _ rust: RustMemoryGatewayPrepareResult,
+        payload: MemoryContextPayload,
+        route: XTMemoryRouteDecision,
+        useMode: XTMemoryUseMode,
+        requireGateway: Bool = false
+    ) -> MemoryContextResponsePayload? {
+        let context = normalized(rust.contextText)
+            ?? normalized(rustMemoryGatewayFallbackContextText(rust))
+        guard let context else { return nil }
+        let layerUsage = rustMemoryGatewayLayerUsage(rust)
+        let usedTotal = max(1, TokenEstimator.estimateTokens(context))
+        let configuredBudget = memoryContextBudgetTotal(payload.budgets)
+        return MemoryContextResponsePayload(
+            text: context,
+            source: normalized(rust.source) ?? "rust_memory_gateway_prepare",
+            resolvedMode: useMode.rawValue,
+            requestedProfile: route.servingProfile.rawValue,
+            resolvedProfile: route.servingProfile.rawValue,
+            attemptedProfiles: [route.servingProfile.rawValue],
+            progressiveUpgradeCount: 0,
+            longtermMode: nil,
+            retrievalAvailable: nil,
+            fulltextNotLoaded: nil,
+            freshness: "fresh_rust_gateway",
+            cacheHit: false,
+            denyCode: nil,
+            downgradeCode: route.downgradeCode?.rawValue,
+            memoryGatewaySource: normalized(rust.source) ?? "rust_memory_gateway_prepare",
+            memoryGatewayPrimaryEnabled: true,
+            memoryGatewayMode: normalized(rust.mode) ?? "prepare_only_no_model_call",
+            memoryGatewaySafetyMode: requireGateway
+                ? "fail_closed_required_after_shadow_parity"
+                : "compatibility_fallback_on_unavailable",
+            memoryGatewayProductionAuthorityChange: rust.productionAuthorityChange ?? false,
+            memoryGatewayModelCall: false,
+            memoryGatewayObjectCount: rust.objectCount ?? rust.slots?.reduce(0) { $0 + $1.count } ?? 0,
+            memoryGatewayEffectiveLayers: rust.effectiveLayers ?? [],
+            budgetTotalTokens: max(usedTotal, configuredBudget),
+            usedTotalTokens: usedTotal,
+            layerUsage: layerUsage,
+            truncatedLayers: [],
+            redactedItems: 0,
+            privateDrops: rust.skipped?.remoteVisibility ?? 0
+        )
+    }
+
+    private static func rustMemoryGatewayCutoverEvidenceFailure(
+        request: RustMemoryGatewayPrepareRequest,
+        status: RustMemoryGatewayShadowCompareResult?,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000.0)
+    ) -> (reasonCode: String, detail: String)? {
+        guard let status else {
+            return (
+                "memory_gateway_cutover_evidence_missing",
+                "Required Rust memory gateway cutover needs memory_gateway_shadow_compare_status.json with ok=true and parity_ok=true."
+            )
+        }
+        if status.productionAuthorityChange {
+            return (
+                "memory_gateway_cutover_authority_violation",
+                "Required Rust memory gateway cutover is blocked because shadow evidence reported production_authority_change=true."
+            )
+        }
+        guard status.ok && status.parityOk else {
+            let reason = normalized(status.reasonCode) ?? "memory_gateway_cutover_evidence_not_parity"
+            return (
+                "memory_gateway_cutover_evidence_not_parity",
+                "Required Rust memory gateway cutover is blocked because latest shadow evidence is not parity_ok. reason=\(reason)"
+            )
+        }
+        guard normalized(status.rustSource) == "rust_memory_gateway_prepare" else {
+            return (
+                "memory_gateway_cutover_evidence_source_mismatch",
+                "Required Rust memory gateway cutover needs shadow evidence from rust_memory_gateway_prepare."
+            )
+        }
+        guard status.requesterRole == request.requesterRole,
+              status.useMode == request.useMode,
+              (status.projectId ?? "") == (request.projectId ?? "") else {
+            return (
+                "memory_gateway_cutover_evidence_scope_mismatch",
+                "Required Rust memory gateway cutover needs shadow evidence for the same requester_role/use_mode/project_id."
+            )
+        }
+        let maxAgeMs = rustMemoryGatewayParityMaxAgeMs()
+        if maxAgeMs > 0 {
+            let ageMs = nowMs - status.recordedAtMs
+            guard ageMs >= 0, ageMs <= maxAgeMs else {
+                return (
+                    "memory_gateway_cutover_evidence_stale",
+                    "Required Rust memory gateway cutover needs fresh shadow parity evidence. age_ms=\(ageMs) max_age_ms=\(maxAgeMs)"
+                )
+            }
+        }
+        return nil
+    }
+
+    private static func rustMemoryGatewayRequiredFailureResult(
+        useMode: XTMemoryUseMode,
+        route: XTMemoryRouteDecision,
+        reasonCode: String,
+        detail: String?
+    ) -> MemoryContextResolutionResult {
+        MemoryContextResolutionResult(
+            response: nil,
+            source: "rust_memory_gateway_cutover_gate",
+            resolvedMode: useMode,
+            requestedProfile: route.servingProfile.rawValue,
+            attemptedProfiles: [route.servingProfile.rawValue],
+            freshness: "unavailable",
+            cacheHit: false,
+            denyCode: reasonCode,
+            downgradeCode: route.downgradeCode?.rawValue,
+            reasonCode: reasonCode,
+            detail: detail
+        )
+    }
+
+    private static func rustMemoryGatewayFallbackContextText(
+        _ rust: RustMemoryGatewayPrepareResult
+    ) -> String? {
+        let slots = rust.slots ?? []
+        var lines: [String] = ["[MEMORY_V1]"]
+        for slot in slots {
+            guard !slot.objects.isEmpty else { continue }
+            lines.append("[\(slot.layer)]")
+            for object in slot.objects {
+                let title = normalized(object.title)
+                let text = normalized(object.text)
+                guard title != nil || text != nil else { continue }
+                if let title, let text {
+                    lines.append("- \(title): \(text)")
+                } else if let title {
+                    lines.append("- \(title)")
+                } else if let text {
+                    lines.append("- \(text)")
+                }
+            }
+            lines.append("[/\(slot.layer)]")
+        }
+        lines.append("[/MEMORY_V1]")
+        return lines.count > 2 ? lines.joined(separator: "\n") : nil
+    }
+
+    private static func rustMemoryGatewayLayerUsage(
+        _ rust: RustMemoryGatewayPrepareResult
+    ) -> [MemoryContextLayerUsage] {
+        let slots = rust.slots ?? []
+        let usage = slots.map { slot -> MemoryContextLayerUsage in
+            let text = slot.objects.map(\.text).joined(separator: "\n\n")
+            let used = max(1, TokenEstimator.estimateTokens(text))
+            return MemoryContextLayerUsage(
+                layer: slot.layer,
+                usedTokens: used,
+                budgetTokens: max(used, used + 64)
+            )
+        }
+        if !usage.isEmpty {
+            return usage
+        }
+        let context = rust.contextText ?? ""
+        let used = max(1, TokenEstimator.estimateTokens(context))
+        return [
+            MemoryContextLayerUsage(
+                layer: "rust_memory_gateway",
+                usedTokens: used,
+                budgetTokens: max(used, used + 64)
+            )
+        ]
+    }
+
+    private static func memoryContextBudgetTotal(_ budgets: MemoryContextBudgets?) -> Int {
+        guard let budgets else { return 1600 }
+        return [
+            budgets.l0Tokens,
+            budgets.l1Tokens,
+            budgets.l2Tokens,
+            budgets.l3Tokens,
+            budgets.l4Tokens
+        ].compactMap { $0 }.reduce(0, +)
     }
 
     private static func progressiveDisclosureProfiles(
@@ -5045,6 +7100,33 @@ enum HubIPCClient {
         }
     }
 
+    private static func projectCanonicalRustSyncOverride() -> (@Sendable (ProjectCanonicalMemoryPayload) async -> ProjectCanonicalMemoryRustSyncOverrideResult?)? {
+        withTestingOverrideLock {
+            testingOverride(
+                fallback: projectCanonicalRustSyncOverrideForTesting,
+                scoped: scopedProjectCanonicalRustSyncOverridesForTesting
+            )
+        }
+    }
+
+    private static func rustProjectCanonicalMemoryOverride() -> (@Sendable (String, Int, Double) async -> RustProjectCanonicalMemorySnapshot?)? {
+        withTestingOverrideLock {
+            testingOverride(
+                fallback: rustProjectCanonicalMemoryOverrideForTesting,
+                scoped: scopedRustProjectCanonicalMemoryOverridesForTesting
+            )
+        }
+    }
+
+    private static func rustMemoryGatewayPrepareOverride() -> (@Sendable (RustMemoryGatewayPrepareRequest, Double) async -> RustMemoryGatewayPrepareResult?)? {
+        withTestingOverrideLock {
+            testingOverride(
+                fallback: rustMemoryGatewayPrepareOverrideForTesting,
+                scoped: scopedRustMemoryGatewayPrepareOverridesForTesting
+            )
+        }
+    }
+
     private static func remoteMemorySnapshotOverride() -> (@Sendable (XTMemoryUseMode, String?, Bool, Double) async -> HubRemoteMemorySnapshotResult)? {
         withTestingOverrideLock {
             testingOverride(
@@ -5212,6 +7294,183 @@ enum HubIPCClient {
         return response
     }
 
+    private static func requestMemoryRetrievalViaRustProjectCanonicalObjects(
+        payload: MemoryRetrievalPayload,
+        routeDecision: HubRouteDecision,
+        timeoutSec: Double
+    ) async -> MemoryRetrievalResponsePayload? {
+        guard routeDecision.mode != .fileIPC,
+              let useMode = XTMemoryUseMode.parse(payload.mode),
+              rustProjectCanonicalMemoryRetrievalAllowed(for: useMode),
+              let projectId = normalized(payload.projectId),
+              hasSuccessfulRustProjectCanonicalSync(projectId: projectId),
+              let snapshot = await fetchRustProjectCanonicalMemorySnapshot(
+                projectId: projectId,
+                limit: max(16, min(128, payload.maxResults * 8)),
+                timeoutSec: timeoutSec
+              ) else {
+            return nil
+        }
+
+        let ranked = snapshot.objects.compactMap { object -> (RustProjectCanonicalMemoryObject, Double)? in
+            guard rustProjectCanonicalMemoryRetrievalObjectAllowed(object, payload: payload),
+                  let score = rustProjectCanonicalMemoryRetrievalScore(object, payload: payload) else {
+                return nil
+            }
+            return (object, score)
+        }
+        .sorted { lhs, rhs in
+            if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+            let lhsRank = rustProjectCanonicalMemorySourceRank(lhs.0.sourceKind)
+            let rhsRank = rustProjectCanonicalMemorySourceRank(rhs.0.sourceKind)
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            return lhs.0.memoryId.localizedCaseInsensitiveCompare(rhs.0.memoryId) == .orderedAscending
+        }
+
+        let selected = Array(ranked.prefix(max(1, min(6, payload.maxResults))))
+        guard !selected.isEmpty else { return nil }
+
+        let snippets = selected.enumerated().map { index, rankedObject in
+            let object = rankedObject.0
+            let score = rankedObject.1
+            let snippet = clippedMemorySnippetText(
+                object.text,
+                maxChars: payload.maxSnippetChars
+            )
+            return MemoryRetrievalSnippet(
+                snippetId: "rust_object_\(index + 1)",
+                sourceKind: object.sourceKind,
+                title: normalized(object.title) ?? normalized(object.summary) ?? object.memoryId,
+                ref: rustProjectCanonicalMemoryRef(object),
+                text: snippet.text,
+                score: Int((max(0.0, min(1.0, score)) * 100.0).rounded()),
+                truncated: snippet.truncated
+            )
+        }
+        let results = zip(selected, snippets).map { rankedObject, snippet in
+            MemoryRetrievalResultItem(
+                ref: snippet.ref,
+                sourceKind: snippet.sourceKind,
+                summary: snippet.title,
+                snippet: snippet.text,
+                score: max(0.0, min(1.0, rankedObject.1)),
+                redacted: snippet.text.lowercased().contains("redacted by rust memory policy")
+            )
+        }
+        let truncatedItems = max(0, ranked.count - selected.count)
+        return MemoryRetrievalResponsePayload(
+            schemaVersion: "xt.memory_retrieval_result.v1",
+            requestId: payload.requestId,
+            status: "ok",
+            resolvedScope: payload.scope,
+            source: "rust_memory_objects",
+            scope: payload.scope,
+            auditRef: payload.auditRef,
+            results: results,
+            snippets: snippets,
+            truncated: truncatedItems > 0,
+            budgetUsedChars: estimatedMemoryRetrievalBudgetUsedChars(snippets: snippets),
+            truncatedItems: truncatedItems,
+            redactedItems: results.filter(\.redacted).count
+        )
+    }
+
+    private static func rustProjectCanonicalMemoryRetrievalAllowed(
+        for useMode: XTMemoryUseMode
+    ) -> Bool {
+        switch useMode {
+        case .projectChat, .supervisorOrchestration, .toolPlan:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func rustProjectCanonicalMemoryRetrievalObjectAllowed(
+        _ object: RustProjectCanonicalMemoryObject,
+        payload: MemoryRetrievalPayload
+    ) -> Bool {
+        let layer = normalized(object.layer)?.lowercased() ?? ""
+        let sourceKind = normalized(object.sourceKind)?.lowercased() ?? ""
+        let allowedLayers = Set(payload.allowedLayers.compactMap { normalized($0)?.lowercased() })
+        let requestedKinds = Set(payload.requestedKinds.compactMap { normalized($0)?.lowercased() })
+        guard allowedLayers.isEmpty || allowedLayers.contains(layer) else { return false }
+        guard requestedKinds.isEmpty || requestedKinds.contains(sourceKind) else { return false }
+
+        let explicitRefs = payload.explicitRefs.compactMap { normalized($0)?.lowercased() }
+        guard !explicitRefs.isEmpty else { return true }
+        let memoryId = object.memoryId.lowercased()
+        let objectRef = rustProjectCanonicalMemoryRef(object).lowercased()
+        return explicitRefs.contains { ref in
+            ref == memoryId || ref == objectRef || ref.hasSuffix("/\(memoryId)")
+        }
+    }
+
+    private static func rustProjectCanonicalMemoryRetrievalScore(
+        _ object: RustProjectCanonicalMemoryObject,
+        payload: MemoryRetrievalPayload
+    ) -> Double? {
+        let sourceKind = normalized(object.sourceKind)?.lowercased() ?? ""
+        let requestedKinds = Set(payload.requestedKinds.compactMap { normalized($0)?.lowercased() })
+        let explicitRefs = payload.explicitRefs.compactMap { normalized($0)?.lowercased() }
+        if !explicitRefs.isEmpty {
+            return 1.0
+        }
+
+        let queryTokens = memoryRetrievalQueryTokens(payload.query)
+        let haystack = [
+            object.title,
+            object.summary ?? "",
+            object.sourceKind,
+            object.text
+        ]
+        .joined(separator: " ")
+        .lowercased()
+        let hitCount = queryTokens.filter { haystack.contains($0) }.count
+        if !queryTokens.isEmpty, hitCount == 0, requestedKinds.isEmpty {
+            return nil
+        }
+
+        var score = 0.70
+        if requestedKinds.contains(sourceKind) {
+            score += 0.10
+        }
+        if !queryTokens.isEmpty {
+            score += min(0.18, (Double(hitCount) / Double(queryTokens.count)) * 0.18)
+        }
+        score += max(0.0, 0.02 - (Double(rustProjectCanonicalMemorySourceRank(object.sourceKind)) * 0.001))
+        return max(0.0, min(1.0, score))
+    }
+
+    private static func memoryRetrievalQueryTokens(_ query: String) -> [String] {
+        let separators = CharacterSet.alphanumerics.inverted
+        return query
+            .lowercased()
+            .components(separatedBy: separators)
+            .compactMap { token in
+                let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.count >= 2 ? trimmed : nil
+            }
+    }
+
+    private static func clippedMemorySnippetText(
+        _ text: String,
+        maxChars: Int
+    ) -> (text: String, truncated: Bool) {
+        let normalizedText = normalized(text) ?? ""
+        let boundedMax = max(80, min(1_200, maxChars))
+        guard normalizedText.count > boundedMax else {
+            return (normalizedText, false)
+        }
+        return (String(normalizedText.prefix(boundedMax)), true)
+    }
+
+    private static func rustProjectCanonicalMemoryRef(
+        _ object: RustProjectCanonicalMemoryObject
+    ) -> String {
+        "memory://rust/\(object.memoryId)"
+    }
+
     private static func requestMemoryRetrievalViaPreferredRemote(
         payload: MemoryRetrievalPayload,
         timeoutSec: Double
@@ -5304,6 +7563,13 @@ enum HubIPCClient {
             return normalizedMemoryRetrievalResponse(response, request: payload)
         }
         let routeDecision = await currentRouteDecision()
+        if let rust = await requestMemoryRetrievalViaRustProjectCanonicalObjects(
+            payload: payload,
+            routeDecision: routeDecision,
+            timeoutSec: timeoutSec
+        ) {
+            return normalizedMemoryRetrievalResponse(rust, request: payload)
+        }
         if routeDecision.preferRemote {
             let remote = await requestMemoryRetrievalViaPreferredRemote(
                 payload: payload,
@@ -9178,7 +11444,15 @@ enum HubIPCClient {
             ?? "真实透明、最小化外发；仅在高风险或不可逆动作时先解释后执行；普通编程/创作请求直接给出可执行答案。"
 
         let remoteCanonical = XTMemorySanitizer.sanitizeText(snapshot.canonicalEntries.joined(separator: "\n"), maxChars: 3_200, lineCap: 36) ?? ""
-        let remoteWorking = XTMemorySanitizer.sanitizeText(snapshot.workingEntries.joined(separator: "\n"), maxChars: 2_400, lineCap: 24) ?? ""
+        let remoteRoleProjection = XTProjectTranscriptProjection.build(
+            projectId: payload.projectId ?? "",
+            projectName: payload.displayName ?? payload.projectId ?? "",
+            hubMessages: snapshot.roleTurnMessages
+        ).promptBlock(maxRecentLines: 8, maxLineChars: 220)
+        let remoteWorkingSource = remoteRoleProjection.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? snapshot.workingEntries.joined(separator: "\n")
+            : remoteRoleProjection
+        let remoteWorking = XTMemorySanitizer.sanitizeText(remoteWorkingSource, maxChars: 2_400, lineCap: 24) ?? ""
 
         let mergedCanonical = mergedMemoryLayer(localPrimary: localCanonical, remoteSecondary: remoteCanonical)
         let mergedWorking = mergedMemoryLayer(localPrimary: localWorking, remoteSecondary: remoteWorking)
@@ -11073,6 +13347,202 @@ compression_policy: \(compressionPolicy)
         return boundedCanonicalMemorySyncStatusSnapshot(snapshot, limit: boundedLimit)
     }
 
+    static func rustMemoryGatewayShadowCompareStatus() -> RustMemoryGatewayShadowCompareResult? {
+        let url = HubPaths.baseDir().appendingPathComponent("memory_gateway_shadow_compare_status.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(RustMemoryGatewayShadowCompareResult.self, from: data)
+    }
+
+    static func rustMemoryGatewayShadowCompareHistory(
+        limit: Int = 64
+    ) -> RustMemoryGatewayShadowCompareHistory? {
+        let boundedLimit = max(1, min(256, limit))
+        let url = HubPaths.baseDir().appendingPathComponent("memory_gateway_shadow_compare_history.json")
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode(RustMemoryGatewayShadowCompareHistory.self, from: data) else {
+            return nil
+        }
+        return RustMemoryGatewayShadowCompareHistory(
+            generatedAtMs: decoded.generatedAtMs,
+            itemLimit: min(decoded.itemLimit, boundedLimit),
+            items: Array(decoded.items.prefix(boundedLimit))
+        )
+    }
+
+    static func rustMemoryGatewayCutoverReadinessEvidence(
+        requesterRole: String?,
+        useMode: String?,
+        projectId: String?,
+        requiredSamples: Int = 3,
+        maxAgeMs: Int64? = nil,
+        recordReport: Bool = false,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000.0)
+    ) -> RustMemoryGatewayCutoverReadinessReport {
+        let baseDir = HubPaths.baseDir()
+        let statusURL = baseDir.appendingPathComponent("memory_gateway_shadow_compare_status.json")
+        let historyURL = baseDir.appendingPathComponent("memory_gateway_shadow_compare_history.json")
+        let reportURL = baseDir.appendingPathComponent("memory_gateway_cutover_readiness.json")
+        let required = max(1, min(16, requiredSamples))
+        let ageLimit = maxAgeMs ?? rustMemoryGatewayParityMaxAgeMs()
+        let expectedRole = normalized(requesterRole)
+        let expectedUseMode = normalized(useMode)
+        let expectedProjectId = normalized(projectId)
+
+        var samples = rustMemoryGatewayShadowCompareHistory(limit: 256)?.items ?? []
+        if samples.isEmpty, let latest = rustMemoryGatewayShadowCompareStatus() {
+            samples = [latest]
+        }
+        samples.sort { $0.recordedAtMs > $1.recordedAtMs }
+
+        let matching = samples.filter { sample in
+            if let expectedRole, sample.requesterRole != expectedRole { return false }
+            if let expectedUseMode, sample.useMode != expectedUseMode { return false }
+            if let expectedProjectId {
+                return (normalized(sample.projectId) ?? "") == expectedProjectId
+            }
+            return true
+        }
+        let freshMatching = matching.filter { sample in
+            guard ageLimit > 0 else { return true }
+            let ageMs = nowMs - sample.recordedAtMs
+            return ageMs >= 0 && ageMs <= ageLimit
+        }
+        let considered = Array(freshMatching.prefix(required))
+        let passing = considered.filter { rustMemoryGatewayCutoverSamplePasses($0) }
+        let authorityViolationCount = considered.filter(\.productionAuthorityChange).count
+        let parityFailureCount = considered.filter { !$0.ok || !$0.parityOk }.count
+        let rustSourceMismatchCount = considered.filter {
+            normalized($0.rustSource) != "rust_memory_gateway_prepare"
+        }.count
+        let staleMatchingCount = matching.count - freshMatching.count
+        var issues: [RustMemoryGatewayCutoverReadinessIssue] = []
+        if samples.isEmpty {
+            issues.append(
+                RustMemoryGatewayCutoverReadinessIssue(
+                    code: "memory_gateway_cutover_evidence_missing",
+                    blocking: true,
+                    detail: "No memory gateway shadow compare status or history has been recorded."
+                )
+            )
+        }
+        if matching.isEmpty && !samples.isEmpty {
+            issues.append(
+                RustMemoryGatewayCutoverReadinessIssue(
+                    code: "memory_gateway_cutover_scope_missing",
+                    blocking: true,
+                    detail: "No shadow compare samples matched requester_role/use_mode/project_id."
+                )
+            )
+        }
+        if staleMatchingCount > 0, freshMatching.isEmpty {
+            issues.append(
+                RustMemoryGatewayCutoverReadinessIssue(
+                    code: "memory_gateway_cutover_evidence_stale",
+                    blocking: true,
+                    detail: "Matching shadow compare samples exist but are older than max_age_ms=\(ageLimit)."
+                )
+            )
+        }
+        if freshMatching.count < required {
+            issues.append(
+                RustMemoryGatewayCutoverReadinessIssue(
+                    code: "memory_gateway_cutover_insufficient_samples",
+                    blocking: true,
+                    detail: "Need \(required) fresh matching parity samples; found \(freshMatching.count)."
+                )
+            )
+        }
+        if authorityViolationCount > 0 {
+            issues.append(
+                RustMemoryGatewayCutoverReadinessIssue(
+                    code: "memory_gateway_cutover_authority_violation",
+                    blocking: true,
+                    detail: "At least one considered sample reported production_authority_change=true."
+                )
+            )
+        }
+        if parityFailureCount > 0 {
+            issues.append(
+                RustMemoryGatewayCutoverReadinessIssue(
+                    code: "memory_gateway_cutover_parity_failure",
+                    blocking: true,
+                    detail: "At least one considered sample was not ok/parity_ok."
+                )
+            )
+        }
+        if rustSourceMismatchCount > 0 {
+            issues.append(
+                RustMemoryGatewayCutoverReadinessIssue(
+                    code: "memory_gateway_cutover_source_mismatch",
+                    blocking: true,
+                    detail: "At least one considered sample did not come from rust_memory_gateway_prepare."
+                )
+            )
+        }
+
+        let ready = issues.allSatisfy { !$0.blocking }
+            && considered.count == required
+            && passing.count == required
+        var report = RustMemoryGatewayCutoverReadinessReport(
+            ok: ready,
+            readyForRequire: ready,
+            source: "rust_memory_gateway_shadow_compare_history",
+            generatedAtMs: nowMs,
+            requesterRole: expectedRole,
+            useMode: expectedUseMode,
+            projectId: expectedProjectId,
+            requiredSampleCount: required,
+            maxAgeMs: ageLimit,
+            totalSampleCount: samples.count,
+            matchingSampleCount: matching.count,
+            freshMatchingSampleCount: freshMatching.count,
+            consideredSampleCount: considered.count,
+            passingSampleCount: passing.count,
+            staleMatchingSampleCount: staleMatchingCount,
+            authorityViolationCount: authorityViolationCount,
+            parityFailureCount: parityFailureCount,
+            rustSourceMismatchCount: rustSourceMismatchCount,
+            latestRecordedAtMs: matching.first?.recordedAtMs,
+            oldestConsideredAtMs: considered.last?.recordedAtMs,
+            requireEnvKey: "XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE",
+            statusPath: statusURL.path,
+            historyPath: historyURL.path,
+            reportPath: recordReport ? reportURL.path : nil,
+            issues: issues
+        )
+        if recordReport {
+            recordRustMemoryGatewayCutoverReadinessReport(report, url: reportURL)
+            report.reportPath = reportURL.path
+        }
+        return report
+    }
+
+    private static func rustMemoryGatewayCutoverSamplePasses(
+        _ sample: RustMemoryGatewayShadowCompareResult
+    ) -> Bool {
+        sample.ok
+            && sample.parityOk
+            && !sample.productionAuthorityChange
+            && normalized(sample.rustSource) == "rust_memory_gateway_prepare"
+    }
+
+    private static func recordRustMemoryGatewayCutoverReadinessReport(
+        _ report: RustMemoryGatewayCutoverReadinessReport,
+        url: URL
+    ) {
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(report).write(to: url, options: .atomic)
+        } catch {
+            return
+        }
+    }
+
     private static func recordCanonicalMemorySyncStatus(
         scopeKind: String,
         scopeId: String,
@@ -11305,6 +13775,42 @@ compression_policy: \(compressionPolicy)
         guard let text else { return nil }
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return t.isEmpty ? nil : t
+    }
+
+    private static func rustMemoryGatewayDiagnosticLine(_ text: String?) -> String? {
+        guard let normalized = normalized(text) else { return nil }
+        let collapsed = normalized
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        return String(collapsed.prefix(500))
+    }
+
+    private static func projectCanonicalRustSyncDetail(
+        parsed: [String: Any]?,
+        httpStatus: Int
+    ) -> String {
+        guard let parsed else {
+            return "http_status=\(httpStatus)"
+        }
+        var parts = ["http_status=\(httpStatus)"]
+        for key in [
+            "planned_count",
+            "created_count",
+            "updated_count",
+            "unchanged_count",
+            "skipped_count",
+            "blocking_count"
+        ] {
+            if let value = parsed[key] as? NSNumber {
+                parts.append("\(key)=\(value.intValue)")
+            } else if let value = parsed[key] as? Int {
+                parts.append("\(key)=\(value)")
+            }
+        }
+        if let status = normalized(parsed["status"] as? String) {
+            parts.append("status=\(status)")
+        }
+        return parts.joined(separator: " ")
     }
 
     private static func normalizedReviewLevelHint(_ raw: String?) -> String? {
@@ -11560,6 +14066,50 @@ compression_policy: \(compressionPolicy)
         }
     }
 
+    static func installProjectCanonicalRustSyncOverrideForTesting(
+        _ override: (@Sendable (ProjectCanonicalMemoryPayload) async -> ProjectCanonicalMemoryRustSyncOverrideResult?)?
+    ) {
+        withTestingOverrideLock {
+            setTestingOverride(
+                override,
+                fallback: &projectCanonicalRustSyncOverrideForTesting,
+                scoped: &scopedProjectCanonicalRustSyncOverridesForTesting
+            )
+        }
+    }
+
+    static func installRustProjectCanonicalMemoryOverrideForTesting(
+        _ override: (@Sendable (String, Int, Double) async -> RustProjectCanonicalMemorySnapshot?)?
+    ) {
+        withTestingOverrideLock {
+            setTestingOverride(
+                override,
+                fallback: &rustProjectCanonicalMemoryOverrideForTesting,
+                scoped: &scopedRustProjectCanonicalMemoryOverridesForTesting
+            )
+        }
+    }
+
+    static func installRustMemoryGatewayPrepareOverrideForTesting(
+        _ override: (@Sendable (RustMemoryGatewayPrepareRequest, Double) async -> RustMemoryGatewayPrepareResult?)?
+    ) {
+        withTestingOverrideLock {
+            setTestingOverride(
+                override,
+                fallback: &rustMemoryGatewayPrepareOverrideForTesting,
+                scoped: &scopedRustMemoryGatewayPrepareOverridesForTesting
+            )
+        }
+    }
+
+    static func installProjectCanonicalRustSyncUnscopedOverrideForTesting(
+        _ override: (@Sendable (ProjectCanonicalMemoryPayload) async -> ProjectCanonicalMemoryRustSyncOverrideResult?)?
+    ) {
+        withTestingOverrideLock {
+            projectCanonicalRustSyncOverrideForTesting = override
+        }
+    }
+
     static func installRemoteMemoryRetrievalOverrideForTesting(
         _ override: (@Sendable (MemoryRetrievalPayload) async -> MemoryRetrievalResponsePayload?)?
     ) {
@@ -11642,6 +14192,14 @@ compression_policy: \(compressionPolicy)
                 scoped: &scopedRemoteRuntimeSurfaceOverridesForTesting
             )
             resetTestingOverride(
+                fallback: &rustProjectCanonicalMemoryOverrideForTesting,
+                scoped: &scopedRustProjectCanonicalMemoryOverridesForTesting
+            )
+            resetTestingOverride(
+                fallback: &rustMemoryGatewayPrepareOverrideForTesting,
+                scoped: &scopedRustMemoryGatewayPrepareOverridesForTesting
+            )
+            resetTestingOverride(
                 fallback: &supervisorRemoteContinuityOverrideForTesting,
                 scoped: &scopedSupervisorRemoteContinuityOverridesForTesting
             )
@@ -11660,6 +14218,39 @@ compression_policy: \(compressionPolicy)
     static func resetIPCEventWriteOverrideForTesting() {
         withTestingOverrideLock {
             eventWriteOverrideForTesting = nil
+        }
+    }
+
+    static func resetProjectCanonicalRustSyncOverrideForTesting() {
+        withTestingOverrideLock {
+            resetTestingOverride(
+                fallback: &projectCanonicalRustSyncOverrideForTesting,
+                scoped: &scopedProjectCanonicalRustSyncOverridesForTesting
+            )
+        }
+    }
+
+    static func resetRustProjectCanonicalMemoryOverrideForTesting() {
+        withTestingOverrideLock {
+            resetTestingOverride(
+                fallback: &rustProjectCanonicalMemoryOverrideForTesting,
+                scoped: &scopedRustProjectCanonicalMemoryOverridesForTesting
+            )
+        }
+    }
+
+    static func resetRustMemoryGatewayPrepareOverrideForTesting() {
+        withTestingOverrideLock {
+            resetTestingOverride(
+                fallback: &rustMemoryGatewayPrepareOverrideForTesting,
+                scoped: &scopedRustMemoryGatewayPrepareOverridesForTesting
+            )
+        }
+    }
+
+    static func resetProjectCanonicalRustSyncUnscopedOverrideForTesting() {
+        withTestingOverrideLock {
+            projectCanonicalRustSyncOverrideForTesting = nil
         }
     }
 

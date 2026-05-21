@@ -387,12 +387,12 @@ final class HubUIStringsTests: XCTestCase {
         XCTAssertEqual(HubUIStrings.Settings.GRPC.sectionTitle, "局域网（gRPC）")
         XCTAssertEqual(HubUIStrings.Settings.GRPC.enableLAN, "启用局域网 gRPC")
         XCTAssertEqual(HubUIStrings.Settings.GRPC.noReachableHost, "未检测到可访问主机")
-        XCTAssertEqual(HubUIStrings.Settings.GRPC.setupHint, "把这些值填到 X-Terminal 的 Hub Setup 页面。外部地址应该是 Terminal 设备能通过局域网、VPN 或隧道访问到的地址。")
-        XCTAssertEqual(HubUIStrings.Settings.GRPC.transportHint, "建议在局域网或 VPN 下使用 mTLS。不加密只适合开发或兼容场景。启用 mTLS 后，请重新配对设备，让 Hub 下发客户端证书。")
+        XCTAssertEqual(HubUIStrings.Settings.GRPC.setupHint, "把这些值填到 X-Terminal 的 Hub Setup 页面。外部地址应该是 XT 能通过同网、Tailscale、DNS-only 域名、公网 IP 或 relay/Spectrum 访问到的地址。")
+        XCTAssertEqual(HubUIStrings.Settings.GRPC.transportHint, "建议在同网、Tailscale、relay 或 Spectrum 入口下使用 mTLS。不加密只适合开发或兼容场景。启用 mTLS 后，请重新配对设备，让 Hub 下发客户端证书。")
         XCTAssertEqual(HubUIStrings.Settings.GRPC.externalInviteTitle, "外部访问邀请")
         XCTAssertEqual(HubUIStrings.Settings.GRPC.externalHubAlias, "Hub Alias")
         XCTAssertEqual(HubUIStrings.Settings.GRPC.copyInviteLink, "复制邀请链接")
-        XCTAssertEqual(HubUIStrings.Settings.GRPC.inviteLinkNeedsStableHost, "邀请链接需要当前可达的 Hub 地址。可填写同 Wi-Fi / 局域网地址，或 tailnet / relay / DNS 主机名。")
+        XCTAssertEqual(HubUIStrings.Settings.GRPC.inviteLinkNeedsStableHost, "邀请链接需要当前可达的 Hub 地址。可填写同 Wi-Fi / 局域网地址，或 Tailscale / relay / DNS 主机名。")
         XCTAssertEqual(HubUIStrings.Settings.GRPC.tls, "TLS")
         XCTAssertEqual(HubUIStrings.Settings.GRPC.mtls, "mTLS")
         XCTAssertEqual(HubUIStrings.Settings.GRPC.Runtime.statusUnknown, "gRPC：未知")
@@ -603,7 +603,10 @@ final class HubUIStringsTests: XCTestCase {
         XCTAssertEqual(HubUIStrings.Settings.Diagnostics.FixNow.skippedProcesses("14,15"), "已跳过进程=14,15")
         XCTAssertTrue(HubUIStrings.Settings.Diagnostics.FixNow.stopRequestedButLockBusy(lockPath: "/tmp/ai_runtime.lock", command: "kill 1", pidHint: 42).contains("锁文件：/tmp/ai_runtime.lock"))
         XCTAssertEqual(HubUIStrings.Settings.Troubleshoot.threeSteps, "3 步")
-        XCTAssertTrue(HubUIStrings.Settings.GRPC.remoteAccessGuideChecklist.contains("远程接入（VPN / Tunnel）检查清单"))
+        XCTAssertTrue(HubUIStrings.Settings.GRPC.remoteAccessGuideChecklist.contains("连接方式与安全等级"))
+        XCTAssertTrue(HubUIStrings.Settings.GRPC.remoteAccessGuideChecklist.contains("公网 IP 直连"))
+        XCTAssertTrue(HubUIStrings.Settings.GRPC.remoteAccessGuideChecklist.contains("Cloudflare Spectrum raw TCP"))
+        XCTAssertTrue(HubUIStrings.Settings.GRPC.remoteAccessGuideChecklist.contains("WireGuard / ZeroTier / Headscale 等其它 VPN IP 自动路线"))
     }
 
     func testSettingsTroubleshootLatestDeniedMessageReadsNaturally() {

@@ -619,12 +619,23 @@ enum UITroubleshootKnowledgeBase {
                 ]
             )
         case .rawIP(let scope):
+            if scope.isFormalRemoteEntry {
+                return UITroubleshootGuide(
+                    issue: issue,
+                    summary: "Hub 当前不可达，但 XT 记录的是 Tailscale IP \(host)。这属于安全等级高的正式异网入口；问题更可能在 tailnet 登录状态、Hub 主机在线状态、端口监听或本机防火墙。",
+                    steps: [
+                        UITroubleshootStep(index: 1, instruction: "先回 XT 设置 → 连接 Hub 确认 Internet Host \(host)、配对端口和 gRPC 端口与 Hub 导出的 Tailscale 接入包一致。", destination: .xtPairHub),
+                        UITroubleshootStep(index: 2, instruction: "再确认 XT 和 Hub 都登录同一个 Tailscale tailnet；到 REL Flow Hub → 网络连接 检查 app 没休眠、pairing / gRPC 端口正在监听。", destination: .hubLAN),
+                        UITroubleshootStep(index: 3, instruction: "修好后重跑 XT 重连自检；必要时到 REL Flow Hub → 诊断与恢复 核对 Tailscale 入口状态。", destination: .hubDiagnostics)
+                    ]
+                )
+            }
             return UITroubleshootGuide(
                 issue: issue,
-                summary: "Hub 当前不可达，而且 XT 记录的是\(scope.doctorLabel) \(host) 这类临时 raw IP。它在换网、休眠、NAT 或公网 IP 变化后很容易失效，不适合作为长期稳定入口。",
+                summary: "Hub 当前不可达，而且 XT 记录的是\(scope.doctorLabel) \(host) 这类临时 raw IP。公网 IP 可以临时直连，但在换网、休眠、NAT 或公网 IP 变化后很容易失效，不适合作为长期稳定入口。",
                 steps: [
                     UITroubleshootStep(index: 1, instruction: "先回 XT 设置 → 连接 Hub 确认 raw IP \(host) 仍指向当前目标 Hub，且配对端口和 gRPC 端口没有抄错。", destination: .xtPairHub),
-                    UITroubleshootStep(index: 2, instruction: "再到 REL Flow Hub → 网络连接 把入口改成稳定命名入口，例如 tailnet、relay 或 DNS 主机名；不要继续依赖\(scope.doctorLabel) raw IP。", destination: .hubLAN),
+                    UITroubleshootStep(index: 2, instruction: "再到 REL Flow Hub → 网络连接 把入口改成 Tailscale IP、稳定命名入口/域名、relay、Cloudflare Spectrum 或 VPS TCP 转发；不要长期依赖\(scope.doctorLabel) raw IP。", destination: .hubLAN),
                     UITroubleshootStep(index: 3, instruction: "更新 XT 的正式接入包后重跑重连自检；必要时到 REL Flow Hub → 诊断与恢复 核对新的命名入口和转发状态。", destination: .hubDiagnostics)
                 ]
             )

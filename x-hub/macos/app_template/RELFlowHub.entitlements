@@ -31,6 +31,16 @@
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
 
+	<!-- X-Hub shell must read the Rust kernel access-key file it installed. -->
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+	<array>
+		<string>Library/Application Support/AX/rust-hub</string>
+		<string>Library/Application Support/AX/rust-hub/</string>
+		<string>/Library/Application Support/AX/rust-hub/</string>
+		<string>Library/Application Support/AX/rust-hub/domain/secrets/xhubd_domain_access_key</string>
+		<string>/Library/Application Support/AX/rust-hub/domain/secrets/xhubd_domain_access_key</string>
+	</array>
+
 	<!-- Keep IPC + widget summary in ~/RELFlowHub for now; this exception keeps it working under sandbox. -->
 	<key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
 	<array>

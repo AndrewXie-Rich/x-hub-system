@@ -795,6 +795,16 @@ private struct SupervisorProjectDrillDownPanel: View {
                     .foregroundStyle(.secondary)
             }
 
+            if let transcriptInput = projectTranscriptObservationInput {
+                Divider()
+                XTProjectTranscriptObservationPanel(
+                    input: transcriptInput,
+                    style: .inline,
+                    loadLimit: 120,
+                    showsEmptyState: false
+                )
+            }
+
             if let latestUIReview = presentation.latestUIReview {
                 VStack(alignment: .leading, spacing: 6) {
                     latestUIReviewHeader
@@ -881,6 +891,19 @@ private struct SupervisorProjectDrillDownPanel: View {
 
     private var projectContext: AXProjectContext? {
         appModel.projectContext(for: presentation.projectId)
+    }
+
+    private var projectTranscriptObservationInput: XTProjectTranscriptObservationInput? {
+        guard let projectContext,
+              let project = appModel.registry.project(for: presentation.projectId) else {
+            return nil
+        }
+        return XTProjectTranscriptObservationInput(
+            projectId: project.projectId,
+            projectName: project.displayName,
+            context: projectContext,
+            session: appModel.session(for: projectContext)
+        )
     }
 
     private var appModel: AppModel {
