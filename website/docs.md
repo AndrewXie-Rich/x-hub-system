@@ -15,27 +15,48 @@ every internal workstream.
 ## Start Here
 
 1. Why X-Hub
-2. Why not just use an agent?
-3. Platform architecture
-4. Trust model
-5. Governance model
-6. Runtime and surfaces
+2. Use cases
+3. Trust model
+4. X-Constitution
+5. Memory control plane
+6. X-Terminal
+7. Coding runtime
+8. Platform architecture
+9. Governance model
+10. Status & roadmap
+11. Get started
 
 ## Public Reading Tracks
 
 ### Product Story
 
 - Why X-Hub
+- Use cases
 - Why not just use an agent?
 - Platform architecture
 - Trust model
 
+### Safety and Memory
+
+- X-Constitution
+- Memory control plane
+- Governed skills
+
 ### Operating Model
 
+- X-Terminal
+- Coding runtime
 - Governance
 - Surfaces and channels
 - Local runtime
 - Capabilities
+
+### Developer Path
+
+- Get started
+- Status & roadmap
+- GitHub Releases
+- Build from source
 
 ### Repository Context
 

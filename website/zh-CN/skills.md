@@ -42,7 +42,7 @@ X-Hub 往上提了一层：
 | 安装往往就等于信任 | 信任可以和本地启用解耦 |
 | 工具调用最后溶进聊天记录里 | 能力活动可以保留结构化记录 |
 | retry 本质上是“再让模型想一遍” | retry 可以重放同一条受控调度链路 |
-| 本地客户端经常变成最终 authority | Hub 可以固定、审计、撤销和路由能力包 |
+| 本地客户端经常变成最终控制中心 | Hub 可以固定、审计、撤销和路由能力包 |
 
 ## 信任链方向
 
@@ -67,6 +67,6 @@ X-Hub 往上提了一层：
 - 它更容易审计和恢复
 - 它更容易挂接到记忆、review 和项目连续性上
 
-但这不意味着 skill runtime 会变成 memory authority：执行 memory jobs 的 AI 仍由用户在 X-Hub 中选择，`Memory-Core` 仍是受治理规则层，而 durable memory writes 仍只经 `Writer + Gate` 落库。
+但这不意味着 skill runtime 会变成记忆控制中心：执行 memory jobs 的 AI 仍由用户在 X-Hub 中选择，`Memory-Core` 仍是受治理规则层，而 durable memory writes 仍只经 `Writer + Gate` 落库。
 
 结果不是“能力更多”这么简单，而是你得到了一层更可治理的执行基底。

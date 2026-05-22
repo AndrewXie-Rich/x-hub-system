@@ -22,6 +22,8 @@ The active product direction separates several things that most agent products b
 In practice, that means X-Hub is moving away from one generic autonomy slider and toward a governed model with distinct
 execution and supervision tiers, plus explicit review and guidance behavior.
 
+For the fuller explanation of A0..A4, S0..S4, Heartbeat / Review, and the Coder / Supervisor / Hub / User split, see [X-Terminal](/x-terminal).
+
 ## What Changes Compared With Typical Agent Autonomy
 
 The important point is not the existence of tiers by itself. The important point is the separation of concerns:

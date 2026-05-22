@@ -10,68 +10,76 @@ const prefix = computed(() => (isZh.value ? '/zh-CN' : ''))
 const copy = computed(() => {
   if (isZh.value) {
     return {
-      eyebrow: 'X-Hub 预览版',
-      title: '为需要真实执行能力的 AI 系统提供操作者自有的控制权。',
+      eyebrow: 'X-Hub 安全预览版',
+      title: '把 AI 执行能力放进用户自有、可审计、可撤销的 Hub 边界。',
       body:
-        '这个网站是 X-Hub 的精选公开介绍。产品打磨、引导体验和更完整的技术公开仍在推进中，因此这里会刻意聚焦在架构主张、信任模型和运行方向。',
+        'X-Hub 的重点不是又做一个聊天入口，而是让模型、记忆、技能、额度、授权、通道和终端执行进入同一个安全控制面。产品仍在打磨，公开内容会优先解释安全边界、治理链路和可贡献方向。',
       columns: [
         {
           title: '平台',
           links: [
+            { text: '使用场景', href: `${prefix.value}/scenarios` },
             { text: '平台架构', href: `${prefix.value}/architecture` },
             { text: '信任模型', href: `${prefix.value}/security` },
-            { text: '治理模型', href: `${prefix.value}/governed-autonomy` }
+            { text: 'X 宪章', href: `${prefix.value}/constitution` }
           ]
         },
         {
           title: '运行',
           links: [
+            { text: 'X-Terminal', href: `${prefix.value}/x-terminal` },
+            { text: 'Coding Runtime', href: `${prefix.value}/coding-runtime` },
+            { text: '记忆控制面', href: `${prefix.value}/memory` },
             { text: '交互表面与通道', href: `${prefix.value}/channels-and-voice` },
-            { text: '本地运行', href: `${prefix.value}/local-first` },
             { text: '能力体系', href: `${prefix.value}/skills` }
           ]
         },
         {
-          title: '阅读',
+          title: '开发者',
           links: [
-            { text: '为什么是 X-Hub', href: `${prefix.value || '/'}` },
+            { text: '开始使用', href: `${prefix.value}/get-started` },
+            { text: '状态与路线图', href: `${prefix.value}/status-roadmap` },
             { text: '阅读路径', href: `${prefix.value}/docs` }
           ]
         },
         {
           title: '预览状态',
-          notes: ['公开内容为精选版本', 'UI 与引导体验仍在演进', '更多技术细节会分阶段公开']
+          notes: ['公开内容为精选版本', 'Swift UI + Rust kernel 正在产品化', '更多技术细节会分阶段公开']
         }
       ]
     }
   }
 
   return {
-    eyebrow: 'X-Hub Preview',
-    title: 'Operator-owned control for AI systems that need to execute in the real world.',
+    eyebrow: 'X-Hub Security Preview',
+    title: 'Put AI execution inside a user-owned, auditable, and revocable Hub boundary.',
     body:
-      'This website is a selective public overview of X-Hub. Product polish, onboarding, and broader technical publishing are still in progress, so the material here stays intentionally focused on the architecture thesis, trust model, and operating direction.',
+      'X-Hub is not another chat surface. It is a safety-first control plane for models, memory, skills, quotas, grants, channels, and terminal execution. Product polish is still in progress, so the public site focuses on the trust boundary, governance chain, and contribution path.',
     columns: [
       {
         title: 'Platform',
         links: [
+          { text: 'Use cases', href: `${prefix.value}/scenarios` },
           { text: 'Architecture', href: `${prefix.value}/architecture` },
           { text: 'Trust model', href: `${prefix.value}/security` },
-          { text: 'Governance', href: `${prefix.value}/governed-autonomy` }
+          { text: 'X-Constitution', href: `${prefix.value}/constitution` }
         ]
       },
       {
         title: 'Runtime',
         links: [
+          { text: 'X-Terminal', href: `${prefix.value}/x-terminal` },
+          { text: 'Coding runtime', href: `${prefix.value}/coding-runtime` },
+          { text: 'Memory control plane', href: `${prefix.value}/memory` },
           { text: 'Surfaces and channels', href: `${prefix.value}/channels-and-voice` },
-          { text: 'Local runtime', href: `${prefix.value}/local-first` },
           { text: 'Capabilities', href: `${prefix.value}/skills` }
         ]
       },
       {
-        title: 'Reading',
+        title: 'Developers',
         links: [
-          { text: 'Why X-Hub', href: `${prefix.value || '/'}` },
+          { text: 'Get started', href: `${prefix.value}/get-started` },
+          { text: 'Status & roadmap', href: `${prefix.value}/status-roadmap` },
           { text: 'Reading path', href: `${prefix.value}/docs` }
         ]
       },
@@ -79,7 +87,7 @@ const copy = computed(() => {
         title: 'Preview posture',
         notes: [
           'Selective public material',
-          'UI and onboarding still evolving',
+          'Swift UI + Rust kernel productization',
           'Broader technical detail staged over time'
         ]
       }

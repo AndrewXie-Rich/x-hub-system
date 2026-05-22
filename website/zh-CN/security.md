@@ -1,82 +1,182 @@
 # 信任模型
 
 <p class="lead">
-X-Hub 强调的是结构性安全优势，而不是安全表演。它不声称风险会消失，而是强调一个恶意文件、一次提示词注入、一个被接管的终端或一个导入能力，不应该直接演变成整个系统的完全失控。
+X-Hub 强调的是结构性安全优势，而不是安全表演。核心主张不是“风险消失”，而是一个被攻破的终端、一个恶意网页、一个导入 skill 或一个暴露 runtime，不应该自动演变成整个系统失控。
 </p>
 
 <div class="preview-note">
   <strong>公开安全立场</strong>
-  这一页描述的是系统安全姿态和公开设计方向，不是完整控制项清单。更细的实现细节、边缘处理和仍在演进的防线不会全部公开在这里。
+  这一页描述公开信任模型和产品方向。它会讲清楚安全链路，但不会把每个内部实现边界和仍在演进的控制细节全部公开。
 </div>
 
-## 核心安全立场
+## 简短版本
 
-X-Hub 从几条结构性前提出发：
+X-Hub 把安全当作第一产品优势：
 
-- 终端不应成为信任根
-- 高风险动作不应在授权含糊或状态不完整时继续执行
-- 准备状态不足时应 fail-closed
-- 安全边界应由策略、授权、审计和运行时真相共同构成，而不是只靠提示词
+- **首次配对保持本地**：新的高信任终端应在同一个 Wi-Fi 下建立信任，而不是从任意远程表面直接绑定
+- **Hub 是信任根**：终端可以执行，但不拥有策略、授权、记忆真相、路由真相或最终控制权
+- **缺失信任就 fail-closed**：无 readiness、配对过期、授权目标含糊、签名无效、授权过期，都应该阻断而不是猜测
+- **高风险动作必须可验证**：不可逆或外部副作用路径应走 Hub-generated manifest、Hub signature、SAS、grant 和 audit
+- **记忆与技能受治理**：长期记忆、X-Constitution、skill package、pin、vetting、grant 和 revoke 都在 Hub 治理下
+- **本地模型和付费模型共享策略平面**：local runtime 与 provider API 都受 route truth、quota posture 和 capability grant 约束
 
-## 这套设计想改善什么
+## 安全链路
 
-| 常见风险模式 | X-Hub 的设计方向 |
+| 阶段 | X-Hub 尝试强制的事情 |
 | --- | --- |
-| 一个客户端被攻破就演变成全系统被接管 | 信任、授权和高风险执行继续锚定在 Hub |
-| 读取恶意内容直接演变成泄密或破坏性动作 | 策略、受控执行和系统级控制比 prompt-only 防护更可靠 |
-| 一旦安装能力就悄悄扩大权限 | 能力被当作受控单元处理，而不是 install-equals-trust |
-| 操作者最后看不清系统到底做了什么 | 审计、运行时真相和显式系统姿态是产品方向的一部分 |
+| 配对 | 新高信任客户端从同 Wi-Fi 本地配对、设备身份、token 状态和显式撤销路径开始 |
+| 认证 | device UUID、token 状态、可选证书、allowed network posture 和来源限制都是安全输入 |
+| 治理 | 策略、授权、额度、路由真相、记忆真相、readiness 和能力范围在 Hub 检查 |
+| 执行 | 终端、本地 runtime、付费 API、skills、channels 和 connectors 只在 Hub 允许的范围内行动 |
+| 验证 | 签名 manifest、SAS、拒绝原因、证据引用和审计引用让执行可解释 |
+| 恢复 | revoke、grant expiry、provider disable、device freeze 和 kill switch 给操作者回收路径 |
 
-## Fail-Closed 而不是假象恢复
+## 为什么首配必须同 Wi-Fi 很重要
 
-公开设计立场很明确：当链路不可信时，系统应该倾向于阻断，而不是假装一切正常。
+配对是分布式 Agent 系统里风险最高的时刻之一。如果远程配对过于便利，攻击者只需要诱导操作者一次，就可能让未知客户端变成可信入口。
 
-- 没有有效授权，就不应继续高风险执行
-- 没有 readiness，就不应静默继续
-- 目标不明确的授权，不应靠猜测补齐
-- 配对损坏或信任状态过期时，应阻断而不是掩盖
+X-Hub 的姿态更严格：
 
-## 为什么这比 prompt-only 更强
+- 首次信任应该从本地网络建立，操作者可以对设备和环境有物理层面的判断
+- 配对设备拿到的是有边界的身份和 token 状态，而不是宽泛的隐式控制权
+- 后续远程访问可以存在，但必须建立在显式设备绑定之上，并且可撤销
+- denied source IP、allowed networks、token rotation 和 device freeze 都是运行模型的一部分
 
-提示词可以影响行为，但它不是信任边界。
+这不等于“局域网天然安全”。它降低的是：公开 URL、隧道、聊天通道或复制出来的设置链接成为第一信任根的概率。
 
-X-Hub 依赖的是多层控制：
+## Hub-First 控制权
 
-- 控制平面上的策略与授权
-- 对操作者可见的运行时姿态
-- 仍然挂在系统记录面上的记忆与指导
-- 继续留在 Hub 侧治理的 memory 维护权：用户选择哪个 AI 执行 memory jobs，而 durable 写入仍只经 `Writer + Gate`
-- 能帮助解释“到底发生了什么”的审计链
-- 一条更适合掌控隐私和依赖关系的本地优先路径
+终端不是最终控制中心。
 
-这样做的意义在于，系统边界由持久控制项决定，而不是由当下哪个 prompt 或客户端恰好处于激活状态决定。
+这个设计选择支撑了后面的整套系统：
 
-## 为什么用户自有姿态重要
+- 被攻破的终端不应该能改写 durable memory truth
+- plugin 或 skill 不应因为被导入就继承高权限
+- 远程通道不应变成影子控制平面
+- 本地 UI 状态不应成为高风险执行的数据真相
+- 云 provider 默认配置不应静默持有策略、路由真相或运行证据
 
-如果 Hub 跑在用户自有硬件上，并把核心路径尽量留在本地，你需要额外信任的外部系统就会更少。
+Hub 是长期控制权汇聚的地方：配对、授权、模型路由、模型准备状态、记忆治理、技能信任、额度状态、审计和应急控制。
 
-这能改善：
+## X-Constitution 作为安全层
 
-- 隐私姿态
-- 密钥处理方式
-- 对外部模型供应方的依赖
-- 发布时间与变更控制
+X-Constitution 是系统的价值与行为约束层。它被设计为高于任何单个任务目标：
 
-这不等于“风险消失”。本地入侵、恶意文件、实现缺陷和操作失误仍然存在。重点不是神奇安全，而是更可辩护的信任边界。
+- 作为 durable governed memory 被 pinned
+- 只通过授权路径更新
+- 在高风险、价值冲突或策略敏感场景触发式注入
+- 与 policy、grant、audit、least privilege 和 fail-closed 一起生效
 
-## 云端默认与用户自有控制
+它的目标很实际，不是装饰性口号。它让系统在活跃模型临场发挥之前，就把 prompt injection、破坏性误操作、凭证外泄、恶意 skill 和静默越权当作高风险路径处理。
 
-| 典型云端 agent 默认形态 | X-Hub 立场 |
+如果想看隐藏网页指令、恶意 skill、假完成、远程诱导配对、支付或外发 payload 篡改这类更具体的例子，请看单独的 [X 宪章页面](/zh-CN/constitution)。
+
+## 记忆安全
+
+记忆不只是上下文。在 Agent 系统里，记忆会影响系统后续相信什么、复述什么、检索什么、基于什么行动。
+
+X-Hub 的记忆方向基于五层：
+
+- Raw Vault：原始证据
+- Observations：结构化事实和事件
+- Longterm：长期文档与约束
+- Canonical：紧凑注入真相
+- Working Set：短期活动上下文
+
+安全姿态是：
+
+- durable writes 终止在受治理的 Hub 侧路径，而不是任意 terminal-local 状态
+- memory maintenance 仍挂在用户选择和 Hub-side gates 上
+- evidence-first 和 fail-closed 减少假完成与不可追溯篡改
+- X-Constitution 作为 pinned long-term constraint，不会沉入一次性聊天历史
+
+更重要的是，memory read、memory export 和 memory writeback 本身也是安全边界。X-Hub 不把“相关”直接等同于“可见”，不把“抽取到了”直接等同于“可以写入长期真相”，也不把“能进入上下文”直接等同于“能发给远端模型”。
+
+更完整的记忆控制面、五层记忆、角色分层、candidate writeback 和项目恢复解释在 [Governed Memory Control Plane](/zh-CN/memory)。
+
+## Skill 安全
+
+Skill 被当作受治理能力单元，而不是 install-equals-trust 插件。
+
+预期链路包括：
+
+- package manifest
+- publisher trust root
+- official catalog 和 package pin
+- compatibility check 与 package doctor
+- 风险执行前 vetting
+- grant、deny code、revoke 和 audit
+
+这样 skill 可以成为可复用执行单元，但每个 package 不会自动成为新的信任根。
+
+## 本地模型、付费 Provider 和额度
+
+Local-first 不只是“运行本地模型”。它意味着可信控制平面可以留在用户自己手里。
+
+X-Hub 把本地和付费路线放进同一治理平面：
+
+- 配置模型和实际模型都应可见
+- fallback 与 downgrade 应显式展示，而不是静默发生
+- provider accounts、OAuth/key 状态和 quota pressure 应对操作者可见
+- paid capability 应该可授权、可撤销、可审计，并受 policy 约束
+- 敏感工作可以优先走本地模型，同时继续使用同一套 memory、skill 和 audit 姿态
+
+这比把 local models 和 paid APIs 拆成两个互不相干的操作世界更强。
+
+## 高风险动作
+
+对不可逆或外部可见动作，X-Hub 的方向是：
+
+- Hub 创建 `ActionManifest` 或 `TxManifest`
+- 终端渲染或执行签名 intent，而不是本地拼接可信 payload
+- 确认表面验证 Hub signature 并显示 SAS 类校验
+- grant 带 scope、TTL 和 policy constraints
+- 执行返回 evidence 和 audit references
+
+这个模式适用于支付、外发消息、connector 写入、代码合并、远程命令和其他高后果动作。
+
+## 风险模式到控制链路
+
+| 风险模式 | X-Hub 用什么拦 |
 | --- | --- |
-| 厂商托管控制平面 | 用户自有 Hub 主机 |
-| 厂商默认持有更多运行时真相 | 记忆真相、路由与审计锚定在 Hub |
-| 密钥处理与策略隐藏在 SaaS 默认配置后面 | 授权、readiness、姿态和发布时间由操作者决定 |
-| 本地模式弱或只是附属 | 本地与付费模型都可以进入同一受控平面 |
+| 全量文件、邮箱、数据库或记忆读取 | capability scope、project binding、role-aware memory、least privilege、audit |
+| 敏感数据外发、上传、Webhook、外部 API | outbound grant、destination allowlist、signed intent、TTL、audit |
+| 长期记忆泄露或记忆污染 | five-layer memory、durable write gate、X-Constitution pinned、memory export grant |
+| 批量删除、覆盖、系统配置修改 | destructive action preflight、A-Tier、tool policy、manifest、safe-point review |
+| shell/root 命令执行和装依赖 | command allow/deny policy、working-directory scope、runtime readiness、evidence refs |
+| 插件/Skill 供应链攻击 | manifest、publisher trust、package pin、compat doctor、vetting、revoke |
+| 公网暴露、弱认证、错误配对 | same-Wi-Fi first trust、device identity、token rotation、allowed source、device freeze |
+| 横向移动和提权 | scoped grants、connector boundary、secret policy、audit trail、kill-switch |
+| 目标漂移、过度执行、成本爆炸 | execution budget、quota posture、TTL、heartbeat anomaly、Supervisor review、clamp |
+| 假完成、编造日志、弱证据收口 | evidence-first memory、pre-done review、audit refs、done-candidate state |
+| 身份冒充、越权签批、转账或外发 | actor binding、grant target、SAS、approval surface、signed manifest |
+| 审计缺失和事后不可追溯 | Hub-side audit、deny reason、evidence refs、grant history、doctor/explainability |
 
-## 安全敏感团队能得到什么
+这些控制不会把所有风险消灭，但会把风险从“一个活跃 Agent 私下决定”变成“Hub 可解释地放行、拒绝、降级、等待确认或停止”。
 
-- 通过结构设计降低 blast radius
-- 当路径降级或阻断时，更清楚地看到运行时真相
-- 对隐私、密钥和执行 authority 的更可信控制
-- 一条更安全的外部 ingress 与能力治理路径
-- 一套比 install-equals-trust 生态更稳的基础
+## 它改善了什么
+
+| 常见默认形态 | X-Hub 立场 |
+| --- | --- |
+| 活跃客户端成为信任根 | Hub 继续是信任根 |
+| 远程配对被当成便利功能 | 首次信任保持本地且显式 |
+| 插件安装等于能力信任 | Skill 是带 vetting 和 revoke 的受治理 package |
+| 记忆在客户端和 prompt 之间漂移 | Durable memory truth 留在 Hub 治理下 |
+| 本地与付费模型分裂治理 | 两条路线进入同一个模型和额度平面 |
+| Auto mode 隐藏风险 | Autonomy、review、heartbeat、grant 和 clamp 保持显式 |
+| 失败被平滑掩盖 | 缺失信任 fail-closed，并产生运行时真相 |
+
+## 剩余风险
+
+X-Hub 不声称绝对安全。本地入侵、恶意文件、实现缺陷、凭证泄露、操作者误操作和 provider 侧事故仍然可能存在。
+
+这套架构的价值在于把风险约束在：
+
+- 更小的风险扩散范围
+- 更清楚的控制权边界
+- 可撤销的 device 与 grant 状态
+- 更可见的 runtime truth
+- 更强的 audit 与 recovery 路径
+- 更少依赖“当前哪个 prompt 或终端处于激活状态”
+
+这就是安全主张：不是“AI 永不失败”，而是“AI 执行应该在受治理边界内失败”。

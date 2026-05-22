@@ -1,0 +1,148 @@
+# Get Started
+
+<p class="lead">
+This page is the shortest action path for people who want to download, try, build, or contribute to X-Hub-System. Normal users should start with the combined macOS DMG from GitHub Releases. Developers can build the Hub, X-Terminal, and Rust runtime from source.
+</p>
+
+<div class="preview-note">
+  <strong>Public technical preview</strong>
+  X-Hub-System is still a public tech preview. Release packages, source-build commands, and contribution boundaries will continue to evolve. Use GitHub Release notes, README, and this page as the public entry points.
+</div>
+
+## Download The Preview
+
+Normal users should use GitHub Releases:
+
+```text
+https://github.com/AndrewXie-Rich/x-hub-system/releases
+```
+
+Recommended package:
+
+```text
+XHub-System-<version>-macos-arm64.dmg
+```
+
+The combined package should contain:
+
+- `X-Hub.app`: native macOS Hub UI shell with the Rust kernel/runtime embedded
+- `X-Terminal.app`: paired terminal and Supervisor workspace
+- Rust `xtd` sidecar for the X-Terminal runtime path
+
+Install flow:
+
+1. Open the combined DMG.
+2. Drag `X-Hub.app` and `X-Terminal.app` to Applications.
+3. Launch `X-Hub.app` first.
+4. Launch `X-Terminal.app` and pair it with X-Hub.
+5. Confirm model route, bridge, Rust runtime readiness, and pairing status before relying on automation.
+
+If the Release notes say the apps are unsigned or not notarized, macOS may require manual approval in System Settings. That is part of preview status, not a production-quality release claim.
+
+## Build From Source
+
+Recommended environment:
+
+- macOS 13+
+- Apple silicon Mac
+- Xcode Command Line Tools
+- Git
+- Node.js
+- Swift toolchain
+- Rust toolchain
+
+Clone with HTTPS:
+
+```bash
+git clone https://github.com/AndrewXie-Rich/x-hub-system.git
+cd x-hub-system
+git status --short
+```
+
+If you already have a GitHub SSH key, SSH is also fine:
+
+```bash
+git clone git@github.com:AndrewXie-Rich/x-hub-system.git
+cd x-hub-system
+```
+
+Build the Hub app:
+
+```bash
+bash x-hub/tools/build_hub_app.command
+```
+
+Build the X-Terminal app and Rust `xtd` sidecar:
+
+```bash
+bash x-terminal/tools/build_xt_with_rust_sidecar.command
+```
+
+Maintainers or diagnostic workflows can build the Rust Hub kernel/runtime separately:
+
+```bash
+bash rust/xhubd/tools/build_rust_hub.command --release
+```
+
+Source-run entry points:
+
+```bash
+bash rust/xhubd/tools/run_rust_hub.command serve
+bash x-hub/tools/run_xhub_from_source.command
+bash x-terminal/tools/run_xterminal_from_source.command
+```
+
+Run the source doctor:
+
+```bash
+bash scripts/run_xhub_doctor_from_source.command all --workspace-root /path/to/workspace --out-dir /tmp/xhub_doctor_bundle
+```
+
+## Repository Layout
+
+| Path | Contents |
+| --- | --- |
+| `x-hub/` | macOS Hub app, Node-backed service layer, Hub tools |
+| `x-terminal/` | X-Terminal, Supervisor, project workspace, XT runtime sidecar integration |
+| `rust/xhubd/` | Rust Hub kernel/runtime migration and diagnostic path |
+| `rust/xtd/` | X-Terminal Rust sidecar direction |
+| `official-agent-skills/` | official skill packages, manifests, trust roots, distribution index |
+| `docs/` | protocols, working index, governance designs, public material |
+| `website/` | VitePress source for this site |
+
+## Read Before Contributing
+
+Recommended starting points:
+
+- `README.md`
+- `RELEASE.md`
+- `docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md`
+- `docs/WORKING_INDEX.md`
+- `x-hub/README.md`
+- `x-terminal/README.md`
+
+Contribution boundaries:
+
+- Do not commit `build/`, `.app`, `.dmg`, runtime databases, secrets, tokens, or local-path artifacts.
+- Do not present Rust daemon-only output as the full Hub product. The public Hub product should be `X-Hub.app`: Swift UI shell with embedded Rust runtime.
+- Do not describe preview, shadow, candidate, or diagnostics-only paths as production authority.
+- Any change touching trust, memory, skills, grants, audit, or runtime readiness should read the relevant contracts and tests first.
+
+## Release Assets
+
+Git should contain source, scripts, docs, and tests. Generated DMG, ZIP, and `.app` artifacts should be uploaded to GitHub Releases, not committed.
+
+Maintainer package command:
+
+```bash
+XHUB_RELEASE_VERSION=v1.2.10 scripts/package_macos_release.command
+```
+
+Output directory:
+
+```text
+build/release/<version>/
+```
+
+Continue with:
+[Status & Roadmap](/status-roadmap), [Coding Runtime](/coding-runtime), and [Trust Model](/security).

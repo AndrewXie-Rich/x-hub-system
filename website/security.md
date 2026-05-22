@@ -1,86 +1,182 @@
 # Security Model
 
 <p class="lead">
-X-Hub is designed around structural security advantages, not safety theater. The claim is not that risk disappears. The claim is that one prompt injection, one terminal compromise, one imported skill, or one exposed runtime should not automatically become full-system compromise.
+X-Hub is designed around structural security advantages, not safety theater. The core claim is not that risk disappears. The core claim is that one compromised terminal, one hostile webpage, one imported skill, or one exposed runtime should not automatically become full-system compromise.
 </p>
 
 <div class="preview-note">
   <strong>Public security position</strong>
-  This page describes the security posture and design direction, not a complete public control catalog. Exact
-  implementation details, edge-case handling, and still-evolving defenses are intentionally not all exposed here.
+  This page describes the public trust model and product direction. It intentionally explains the safety chain without publishing every internal implementation edge or still-evolving control detail.
 </div>
 
-## The Core Security Position
+## The Short Version
 
-X-Hub starts from a few structural assumptions:
+X-Hub treats security as the first product advantage:
 
-- the terminal should not be the trust root
-- high-risk actions should not proceed on ambiguous or incomplete authorization
-- missing readiness should fail closed
-- safety should be reinforced by policy, grants, audit, and runtime truth, not by prompts alone
+- **first pairing is local**: a new trusted terminal should be established on the same Wi-Fi, not from an arbitrary remote surface
+- **the Hub is the trust root**: terminals can execute, but they do not own policy, grants, memory truth, route truth, or final authority
+- **missing trust fails closed**: no readiness, stale pairing, ambiguous grant target, invalid signature, or expired authorization should block instead of guessing
+- **high-risk actions are signed**: irreversible or external side-effect paths should use Hub-generated manifests, Hub signatures, SAS checks, grants, and audit
+- **memory and skills are governed**: long-term memory, X-Constitution, skill packages, pins, vetting, grants, and revocation live under Hub governance
+- **local and paid models share one policy plane**: local runtimes and provider APIs are both governed by route truth, quota posture, and capability grants
 
-## What This Design Is Trying To Improve
+## The Safety Chain
 
-| Common risk pattern | X-Hub design direction |
+| Stage | What X-Hub tries to enforce |
 | --- | --- |
-| One client compromise becomes whole-system compromise | Trust, authorization, and higher-risk execution stay anchored in the Hub |
-| Reading hostile content turns into exfiltration or destructive action | Policy, governed execution, and system-side controls provide more than prompt-only protection |
-| Installed capabilities quietly expand privilege | Capabilities are treated as governed units rather than install-equals-trust shortcuts |
-| Operators lose sight of what actually happened | Audit, runtime truth, and explicit system posture stay part of the product direction |
+| Pair | New high-trust clients begin with a same-Wi-Fi pairing ceremony, device identity, token state, and explicit revocation path |
+| Authenticate | Device UUID, token state, optional certificates, allowed network posture, and source restrictions are treated as security inputs |
+| Govern | Policy, grants, quota, route truth, memory truth, readiness, and capability scope are checked in the Hub |
+| Execute | Terminals, local runtimes, paid APIs, skills, channels, and connectors act only inside the scope the Hub allowed |
+| Verify | Signed manifests, SAS checks, deny reasons, evidence refs, and audit refs make execution explainable |
+| Recover | Revocation, grant expiry, provider disablement, device freeze, and kill switches give the operator a way back |
 
-## Fail-Closed Over False Confidence
+## Why Same-Wi-Fi First Pairing Matters
 
-The public design stance is explicit: when the path is not trustworthy, the system should prefer blocking over pretending
-everything is fine.
+Pairing is one of the highest-risk moments in any distributed agent system. If remote pairing is too easy, an attacker only needs to trick the operator once before an unknown client becomes a trusted doorway.
 
-- no valid grant means no high-risk execution
-- no readiness means no silent continuation
-- ambiguous grant targeting should not be guessed
-- broken pairing or stale trust state should block, not mask
+X-Hub's posture is stricter:
 
-## Why This Goes Beyond Prompt-Only Safety
+- first trust should be established from the local network where the operator can physically reason about the device
+- the paired device should receive bounded identity and token state, not broad implicit authority
+- later remote access can exist, but it should build on an explicit device binding and remain revocable
+- denied source IPs, allowed networks, token rotation, and device freeze are part of the operating model
 
-Prompt wording can help shape behavior, but it is not a trust boundary.
+This does not make local networks magical. It reduces the chance that a public URL, tunnel, chat channel, or copied setup link becomes the first root of trust.
 
-X-Hub is built around layered controls:
+## Hub-First Authority
 
-- policy and authorization in the control plane
-- runtime posture that stays visible to the operator
-- memory and guidance that remain attached to the system of record
-- memory maintenance authority that stays governed on the Hub side: the user chooses which AI executes memory jobs, while durable writes still terminate through `Writer + Gate`
-- audit trails that help explain what happened
-- a local-first operating path for teams that want tighter control over privacy and dependencies
+The terminal is not the authority boundary.
 
-This matters because behavior stays bounded by persistent system controls instead of whichever prompt or client surface happened to be active.
+That design choice is the foundation for the rest of the system:
 
-## Why User-Owned Posture Matters
+- a compromised terminal should not be able to rewrite durable memory truth
+- a plugin or skill should not inherit high privilege just because it was imported
+- a remote channel should not become a shadow control plane
+- local UI state should not become the source of truth for high-risk execution
+- cloud provider defaults should not silently own policy, route truth, or runtime evidence
 
-If you run the Hub on user-owned hardware and keep the core path local, you reduce the number of outside systems that
-need to be trusted for day-to-day execution.
+The Hub is where durable authority should converge: pairing, grants, route truth, model readiness, memory governance, skill trust, quota posture, audit, and emergency controls.
 
-That can improve control over:
+## X-Constitution As A Safety Layer
 
-- privacy posture
-- secret handling
-- provider dependency
-- release timing and change control
+X-Constitution is the value and behavior constraint layer for the system. It is designed to sit above any single task objective:
 
-It does not remove risk. Local compromise, hostile files, bugs, and operator mistakes can still exist. The point is not
-magic safety. The point is a more defensible trust boundary.
+- pinned as durable governed memory
+- updated only through authorized paths
+- injected when high-risk, value-conflict, or policy-sensitive situations require it
+- reinforced by policy, grants, audit, least privilege, and fail-closed behavior
 
-## Cloud Versus User-Owned Control
+The goal is practical, not decorative. It gives the system a persistent way to treat prompt injection, destructive misoperation, credential exfiltration, malicious skills, and silent privilege escalation as high-risk paths before the active model improvises a response.
 
-| Typical cloud-agent default | X-Hub position |
+For concrete examples such as hidden web prompts, hostile skills, fake completion, remote pairing inducement, and payment or outbound payload tampering, see the dedicated [X-Constitution page](/constitution).
+
+## Memory Security
+
+Memory is not just context. In an agent system, memory becomes operational authority: what the system believes, repeats, retrieves, and acts on later.
+
+X-Hub's memory direction is built around five layers:
+
+- Raw Vault for evidence
+- Observations for structured facts and events
+- Longterm for durable documents and constraints
+- Canonical for compact injection truth
+- Working Set for short-term active context
+
+The security posture is:
+
+- durable writes terminate through governed Hub-side paths, not arbitrary terminal-local state
+- memory maintenance stays attached to user choice and Hub-side gates
+- evidence-first and fail-closed rules reduce false completion and untraceable mutation
+- X-Constitution remains a pinned long-term constraint instead of sinking into disposable chat history
+
+More importantly, memory read, memory export, and memory writeback are security boundaries. X-Hub does not treat "relevant" as automatically visible, "extracted" as automatically durable, or "assembled into context" as automatically exportable to a remote model.
+
+For the full memory control plane, five-layer memory model, role-aware serving, candidate writeback, and project recovery posture, see [Governed Memory Control Plane](/memory).
+
+## Skill Security
+
+Skills are treated as governed capability units, not install-equals-trust plugins.
+
+The intended chain includes:
+
+- package manifests
+- publisher trust roots
+- official catalog and package pins
+- compatibility checks and package doctor surfaces
+- vetting before risky execution
+- grants, deny codes, revocation, and audit
+
+This lets skills become reusable execution units without letting every package become a new trust root.
+
+## Local Models, Paid Providers, And Quota
+
+Local-first does not only mean "run a local model." It means the trusted control plane can remain user-owned.
+
+X-Hub puts local and paid routes under the same governed plane:
+
+- configured model and actual model should both be visible
+- fallback and downgrade should be explicit, not hidden
+- provider accounts, OAuth/key state, and quota pressure should be operator-visible
+- paid capability should be grantable, revocable, auditable, and bounded by policy
+- sensitive workloads can prefer local models while still using the same memory, skill, and audit posture
+
+That is a stronger design than splitting local models and paid APIs into unrelated operational worlds.
+
+## High-Risk Actions
+
+For irreversible or externally visible actions, X-Hub's direction is:
+
+- Hub creates the `ActionManifest` or `TxManifest`
+- terminals render or execute signed intent instead of assembling trusted payloads locally
+- confirmation surfaces verify Hub signatures and display SAS-style checks
+- grants carry scope, TTL, and policy constraints
+- execution returns evidence and audit references
+
+This pattern is relevant for payments, outbound messages, connector writes, code merges, remote commands, and other high-consequence actions.
+
+## Risk Pattern To Control Chain
+
+| Risk pattern | What X-Hub uses to bound it |
 | --- | --- |
-| Vendor-hosted control plane | User-owned Hub host |
-| Vendor holds more runtime truth by default | Memory truth, routing, and audit stay anchored to the Hub |
-| Secret handling and policy are abstracted behind SaaS defaults | Grants, readiness, posture, and release timing remain user decisions |
-| Local-only mode is weak or secondary | Local and paid models can sit under the same governed plane |
+| Full filesystem, mailbox, database, or memory reads | capability scope, project binding, role-aware memory, least privilege, audit |
+| Sensitive-data sending, uploads, webhooks, external APIs | outbound grants, destination allowlists, signed intent, TTL, audit |
+| Durable memory leakage or memory pollution | five-layer memory, durable write gate, pinned X-Constitution, memory export grants |
+| Bulk delete, overwrite, or system configuration changes | destructive-action preflight, A-Tier, tool policy, manifests, safe-point review |
+| shell/root commands and dependency installation | command allow/deny policy, working-directory scope, runtime readiness, evidence refs |
+| Plugin or skill supply-chain attacks | manifests, publisher trust, package pins, compatibility doctor, vetting, revocation |
+| Public exposure, weak auth, mistaken pairing | same-Wi-Fi first trust, device identity, token rotation, allowed source, device freeze |
+| Lateral movement and privilege escalation | scoped grants, connector boundaries, secret policy, audit trail, kill switch |
+| Goal drift, over-execution, cost runaway | execution budgets, quota posture, TTL, heartbeat anomaly, Supervisor review, clamps |
+| Fake completion, fabricated logs, weak evidence | evidence-first memory, pre-done review, audit refs, done-candidate state |
+| Impersonation, unauthorized approvals, transfers, sends | actor binding, grant target, SAS, approval surface, signed manifest |
+| Missing audit and untraceable incidents | Hub-side audit, denial reasons, evidence refs, grant history, doctor/explainability |
 
-## What Security-Conscious Teams Gain
+These controls do not erase all risk. They move risk away from "one active agent silently decided" and toward "the Hub visibly allowed, denied, downgraded, held for confirmation, or stopped it."
 
-- reduced blast radius by design
-- clearer runtime truth when something downgrades or blocks
-- more credible user control over privacy, keys, and execution authority
-- a safer path for external ingress and governed capabilities
-- a stronger foundation than install-equals-trust ecosystems
+## What This Improves
+
+| Common default | X-Hub position |
+| --- | --- |
+| Active client becomes the trust root | Hub remains the trust root |
+| Remote pairing is treated as convenience | First trust is local and explicit |
+| Plugin install implies capability trust | Skills are governed packages with vetting and revocation |
+| Memory drifts across clients and prompts | Durable memory truth stays Hub-governed |
+| Local and paid models have separate governance | Both routes sit under one model and quota plane |
+| Auto mode hides risk | Autonomy, review, heartbeat, grants, and clamps remain explicit |
+| Failures are smoothed over | Missing trust fails closed and produces runtime truth |
+
+## Residual Risk
+
+X-Hub is not a claim of perfect safety. Local compromise, malicious files, implementation bugs, leaked credentials, operator mistakes, and provider-side incidents can still exist.
+
+The value of the architecture is that these risks should be bounded by:
+
+- smaller blast radius
+- clearer authority boundaries
+- revocable device and grant state
+- more visible runtime truth
+- stronger audit and recovery paths
+- less reliance on whichever prompt or terminal happened to be active
+
+That is the security thesis: not "AI will never fail," but "AI execution should fail inside governed boundaries."
