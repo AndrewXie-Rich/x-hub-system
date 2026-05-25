@@ -50,13 +50,22 @@ Provider-pack truth is aimed at making that visible:
 - what can be benchmarked now
 - what should be blocked fail-closed
 
-## Recommended Operator Posture
+## Recommended Deployment Shape
 
-For many deployments, the clean model is:
+For many individuals, teams, and studios, the clean model is to treat the Hub as a user-owned control plane that can stay online, not as a temporary process opened inside a project terminal.
+
+Recommended hardware can start with:
+
+- Mac mini: a good always-on Hub for personal use, small teams, lightweight local models, and remote pairing
+- Mac Studio: a stronger Hub for heavier local models, multimodal runtimes, more parallel projects, and longer Supervisor runs
+- your own MacBook: useful for development, demos, and solo trials, but not always the best long-running Hub location
+
+Recommended runtime shape:
 
 - Hub runs on user-owned Apple silicon hardware
-- local runtime is enabled where it is actually ready
+- local runtime is enabled only where it is actually ready
 - paid providers are allowed selectively, not by default
-- runtime truth stays visible
+- X-Terminal, remote entry points, and skills go through Hub authorization instead of becoming the final control plane
+- runtime truth, model status, quota state, memory, and audit stay visible to the user
 
 That gives you local-first control without pretending every remote path has disappeared forever.

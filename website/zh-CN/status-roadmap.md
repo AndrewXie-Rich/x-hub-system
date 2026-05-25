@@ -1,12 +1,12 @@
 # 状态与路线图
 
 <p class="lead">
-X-Hub-System 已经有可运行的产品路径，但仍是公开技术预览。这个页面用来说明哪些能力已经成立，哪些正在产品化，以及哪些说法目前不应该被当成公开承诺。
+X-Hub-System 已经有可运行的产品路径，并正在从预览版走向更完整的产品化。这个页面用来说明哪些能力已经成立、哪些正在收口，以及公开版本目前覆盖到哪里。
 </p>
 
 <div class="preview-note">
-  <strong>状态口径</strong>
-  这不是营销式路线图。公开页面应区分 production authority、preview-working、shadow、candidate、diagnostics-only 和 roadmap，避免把实现进度误写成已验证产品能力。
+  <strong>公开预览版</strong>
+  当前 release 重点展示 Hub-first trust、受治理记忆、模型路由、X-Terminal 执行面和 Rust kernel 迁移方向。更深的执行面、Memory Inspector、签名 / notarization 和企业级 SLA 会按证据逐步扩大公开范围。
 </div>
 
 ## 当前产品形态
@@ -19,7 +19,7 @@ X-Hub-System 当前应理解为：
 - Rust Hub / `xhubd`：效率、稳定性和 deterministic kernel 的迁移路径，部分能力是 shadow、candidate 或 diagnostics-only
 - 官方 skill 包：受治理 skill 分发、manifest、trust root 和 pinning 的产品化路径
 
-关键边界：Rust 代码存在不等于 Rust 已经拥有所有生产权威。某条 Rust 路径成为 release-claimed authority，需要 readiness evidence、rollback、compatibility 和 release-scope approval。
+当前产品形态可以概括为：用户启动 `X-Hub.app`，由 Hub 收敛模型、记忆、技能、授权、审计和终止权；`X-Terminal.app` 作为配对的项目工作台和 Supervisor 操作面；Rust kernel/runtime 按能力成熟度逐步承接更确定、更高效率的底层路径。
 
 ## 已经成立
 
@@ -68,20 +68,19 @@ X-Hub-System 当前应理解为：
 | Release packaging | 组合 DMG、Hub-only / XT-only 资产、SHA256、签名和 notarization 说明 |
 | low-friction mode | 给小任务保留快速原型模式，不让所有任务都走重治理流程 |
 
-## 不应该过度承诺
+## 当前发布范围
 
-当前公开叙事不应声称：
+公开预览版的重点不是宣称“所有自动化都已经完成”，而是展示一条更安全的 AI 执行路线：Hub 是控制平面，终端和远程入口只是受治理的执行面；记忆、模型、技能、额度、授权和审计都回到同一套边界里。
 
-- 这是完整无人值守 AGI。
-- A4 已经等于所有 browser / device / connector / extension 执行面完全成熟。
-- Rust 已经拥有所有 Hub 生产权威。
-- Memory Control Plane 已经完成全部 semantic retrieval、temporal graph 和 Memory Inspector。
-- 预览版已经达到生产安全认证或企业生产 SLA。
-- 所有 release assets 都已签名和 notarized，除非 Release notes 明确说明。
+已经适合公开展示的部分：
 
-更准确的说法是：
+- Swift Hub UI + Rust kernel/runtime 的产品形态
+- X-Terminal 配对、项目工作台和 Supervisor 治理模型
+- Hub-first trust、同网首配、grant、policy、audit 和 kill-switch 方向
+- Governed Memory Control Plane 的核心机制和路线
+- 受治理 skill、模型路由、本地优先和付费模型接入的统一控制面
 
-> X-Hub-System 是一个已可运行、正在产品化的 Hub-governed AI execution system。它的核心安全和治理方向已经成立，但公开 release scope 应按证据逐步扩大。
+仍在继续产品化的部分会在 Release notes 和路线图里逐步扩大说明，尤其是更完整的 A4 execution surface、Memory Inspector、semantic retrieval、temporal graph、签名 / notarization 和更高等级的发布保障。
 
 ## 路线优先级
 

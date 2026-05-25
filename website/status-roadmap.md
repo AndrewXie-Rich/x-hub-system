@@ -1,12 +1,12 @@
 # Status & Roadmap
 
 <p class="lead">
-X-Hub-System already has a runnable product path, but it remains a public technical preview. This page explains what is already established, what is still being productized, and what should not be treated as a public claim yet.
+X-Hub-System already has a runnable product path and is moving from public preview toward a fuller productized release. This page explains what is established, what is still being productized, and what the current public release scope covers.
 </p>
 
 <div class="preview-note">
-  <strong>Status language</strong>
-  This is not a marketing roadmap. Public wording should distinguish production authority, preview-working, shadow, candidate, diagnostics-only, and roadmap paths so implementation progress is not confused with validated product authority.
+  <strong>Public preview</strong>
+  The current release focuses on Hub-first trust, governed memory, model routing, X-Terminal execution surfaces, and the Rust kernel migration path. Deeper execution surfaces, Memory Inspector, signing / notarization, and enterprise-grade SLA commitments will expand as evidence and release scope mature.
 </div>
 
 ## Current Product Shape
@@ -19,7 +19,7 @@ X-Hub-System should currently be read as:
 - Rust Hub / `xhubd`: migration lane for efficiency, stability, and deterministic kernel work; some paths are shadow, candidate, or diagnostics-only
 - official skill packages: productization path for governed skill distribution, manifests, trust roots, and pinning
 
-Key boundary: Rust implementation does not automatically mean Rust production authority. A Rust path becomes release-claimed authority only after readiness evidence, rollback, compatibility, and release-scope approval.
+The current product shape is: users launch `X-Hub.app`; the Hub anchors models, memory, skills, grants, audit, and shutdown authority; `X-Terminal.app` acts as the paired project workspace and Supervisor surface; the Rust kernel/runtime takes over more deterministic and performance-sensitive paths as they mature.
 
 ## Established
 
@@ -68,20 +68,19 @@ Key boundary: Rust implementation does not automatically mean Rust production au
 | Release packaging | combined DMG, Hub-only / XT-only assets, SHA256, signing, notarization notes |
 | low-friction mode | fast prototype mode for small work so not every task pays the cost of heavy governance |
 
-## What Not To Overclaim
+## Current Release Scope
 
-The public story should not claim:
+The public preview is not a claim that every automation surface is complete. It is a working product direction for safer AI execution: the Hub is the control plane, while terminals and remote entry points remain governed execution surfaces. Memory, models, skills, quotas, grants, and audit converge into one boundary.
 
-- this is complete unattended AGI
-- A4 already means every browser / device / connector / extension surface is mature
-- Rust already owns all Hub production authority
-- Memory Control Plane already has complete semantic retrieval, temporal graph, and Memory Inspector UX
-- the preview has production security certification or enterprise production SLA
-- all release assets are signed and notarized unless Release notes say so
+The parts that are ready to show publicly:
 
-More accurate wording:
+- Swift Hub UI + Rust kernel/runtime product shape
+- X-Terminal pairing, project workspace, and Supervisor governance model
+- Hub-first trust, first pairing on the same network, grants, policy, audit, and kill-switch direction
+- Governed Memory Control Plane core mechanisms and roadmap
+- governed skills, model routing, local-first operation, and paid-provider access under one control plane
 
-> X-Hub-System is a runnable, actively productizing Hub-governed AI execution system. The core security and governance direction is established, while public release scope should expand only with evidence.
+Release notes and this roadmap will expand the public scope as more surfaces mature, especially the full A4 execution surface, Memory Inspector, semantic retrieval, temporal graph, signing / notarization, and higher release guarantees.
 
 ## Roadmap Priority
 
