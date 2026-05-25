@@ -22,7 +22,7 @@
     "bench-paid-matrix": "bash scripts/benchmark_paid_ai_queue_matrix.sh"
   },
   "dependencies": {
-    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/grpc-js": "^1.14.4",
     "@grpc/proto-loader": "^0.8.0",
     "js-yaml": "^4.1.1"
   }
