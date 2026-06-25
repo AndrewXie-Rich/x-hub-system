@@ -1,0 +1,17 @@
+{
+  "schema": "mcp-trust/receipt/v0.1",
+  "session_id": "rcpt-7a2e3f4d",
+  "server_name": "browser-tools",
+  "manifest_hash": "sha256:1c2fb07a8e4d6b9a7f3c5e8d2a6b9f1c4e7a3b6d9c2f5e8a1d4b7c0f3e6a9d2c",
+  "artifact_hash": "sha256:9f3cab2e7d1f5c4e8a2b6d9f3c4e1a7b2d5f8c9e3a6b1d4f7c2e5a8b9d0c1f3a",
+  "started_at": "2026-06-22T14:23:00Z",
+  "ended_at": "2026-06-22T14:31:42Z",
+  "verifier_key_id": "ed25519:verifier4node7example2host3pair6key7andrew2macbook3a",
+  "tool_calls": 47,
+  "capability_denials": 1,
+  "policy_hash": "sha256:e0f23a4b7c8d1e2f5a8b9c0d3e6f1a4b7c0d3e6f9a2b5c8d1e4f7a0b3c6d9e2f",
+  "signature": "ed25519:VerifierReceiptSignatureExamplePlaceholderNotForProductionVerifyDevTestOnlyData54321MNB==",
+  "denial_summary": [
+    {"capability": "shell:exec", "count": 1}
+  ]
+}

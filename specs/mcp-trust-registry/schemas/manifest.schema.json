@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcp-trust.org/spec/v0.1/manifest.schema.json",
+  "title": "MCP Trust Registry — Manifest",
+  "description": "Schema for an MCP server manifest as defined in protocol v0.1 §4. A manifest is the canonical declaration of a specific server version's identity, capabilities, and signing metadata. Canonicalization rules for hashing live in §4.4.",
+  "type": "object",
+  "required": ["schema", "name", "version", "publisher", "artifact", "mcp", "capabilities"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "mcp-trust/manifest/v0.1",
+      "description": "Schema identifier. Implementations MUST refuse manifests with any other value."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "description": "Lowercase, dash-separated server identifier. Globally unique within a registry namespace."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$",
+      "description": "Semantic version 2.0.0 string."
+    },
+    "publisher": {
+      "type": "object",
+      "required": ["key_id"],
+      "additionalProperties": false,
+      "properties": {
+        "key_id": { "$ref": "#/$defs/ed25519_key_id" },
+        "oidc_subject": {
+          "type": "string",
+          "format": "uri",
+          "description": "If keyless, the OIDC subject URI (e.g., a GitHub identity)."
+        },
+        "oidc_issuer": {
+          "type": "string",
+          "format": "uri",
+          "description": "If keyless, the OIDC issuer URI (e.g., GitHub's actions OIDC issuer)."
+        }
+      },
+      "dependentRequired": {
+        "oidc_subject": ["oidc_issuer"],
+        "oidc_issuer": ["oidc_subject"]
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["type", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": ["npm", "dir-tar", "binary"],
+          "description": "Artifact packaging convention; controls how sha256 is computed (see §4.5)."
+        },
+        "name": {
+          "type": "string",
+          "description": "For type=npm, the package name."
+        },
+        "version": {
+          "type": "string",
+          "description": "For type=npm, the package version (may differ from the manifest version)."
+        },
+        "sha256": { "$ref": "#/$defs/sha256_hex" },
+        "fetch_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Origin URL from which the artifact can be fetched."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "npm" } } },
+          "then": { "required": ["name", "fetch_url"] }
+        }
+      ]
+    },
+    "mcp": {
+      "type": "object",
+      "required": ["transport"],
+      "additionalProperties": false,
+      "properties": {
+        "transport": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Subset of MCP-defined transports (stdio, http, etc.)."
+        },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "resources": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "prompts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "required": ["required", "optional"],
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/capability_token" },
+          "uniqueItems": true,
+          "description": "Capabilities the server cannot function without. Verifier MUST refuse if any are denied at install time."
+        },
+        "optional": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/capability_token" },
+          "uniqueItems": true,
+          "description": "Capabilities the server uses if granted but can operate without. Default to deny under strict policy."
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Informational. Verifiers MUST NOT use these fields for trust decisions.",
+      "properties": {
+        "homepage": { "type": "string", "format": "uri" },
+        "source_repo": { "type": "string", "format": "uri" },
+        "license": {
+          "type": "string",
+          "description": "SPDX identifier recommended."
+        },
+        "released_at": { "type": "string", "format": "date-time" },
+        "description": { "type": "string", "maxLength": 1024 },
+        "slsa_provenance": { "type": "string", "format": "uri" }
+      }
+    }
+  },
+  "$defs": {
+    "ed25519_key_id": {
+      "type": "string",
+      "pattern": "^ed25519:[a-z2-7]{52}$",
+      "description": "ed25519 public key encoded as 'ed25519:' + lowercase base32 (no padding) of the 32-byte key."
+    },
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Lowercase hexadecimal SHA-256 digest, no prefix."
+    },
+    "capability_token": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*:[a-z][a-z0-9_]*(:[^\\s]+)?$",
+      "description": "Capability token of form 'category:action[:scope]' per §5. Examples: 'fs:read:/tmp/**', 'net:fetch:api.github.com', 'shell:exec', 'secret:read:GITHUB_TOKEN', 'mcp:call:other.tool'. Future categories (gpu:*, usb:*) are accepted syntactically; verifier behaviour for unknown categories is policy-dependent."
+    }
+  }
+}

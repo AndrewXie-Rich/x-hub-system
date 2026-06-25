@@ -1,0 +1,14 @@
+{
+  "schema": "agent-2fa/challenge/v0.1",
+  "challenge_id": "chg-3a7f12bc",
+  "action": {
+    "command": "DROP TABLE prod_logs",
+    "redacted_fields": []
+  },
+  "risk_level": "confirm",
+  "agent_id": "agent-cli-1",
+  "agent_pubkey": "ed25519:abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst",
+  "requested_at": "2026-06-25T12:00:00Z",
+  "expires_at": "2026-06-25T12:00:30Z",
+  "signature": "ed25519:MEUCIQDexampleAgentSignaturePayload64BytesEncodedAsBase64Padding=="
+}

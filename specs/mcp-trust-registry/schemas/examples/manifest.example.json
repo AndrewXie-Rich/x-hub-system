@@ -1,0 +1,40 @@
+{
+  "schema": "mcp-trust/manifest/v0.1",
+  "name": "browser-tools",
+  "version": "1.4.2",
+  "publisher": {
+    "key_id": "ed25519:jane2acme4abcdef2ghijkl3mnopqr4stuvwx5yzabcd6efghij7",
+    "oidc_subject": "https://github.com/jane-doe",
+    "oidc_issuer": "https://token.actions.githubusercontent.com"
+  },
+  "artifact": {
+    "type": "npm",
+    "name": "@acme/browser-tools",
+    "version": "1.4.2",
+    "sha256": "9f3cab2e7d1f5c4e8a2b6d9f3c4e1a7b2d5f8c9e3a6b1d4f7c2e5a8b9d0c1f3a",
+    "fetch_url": "https://registry.npmjs.org/@acme/browser-tools/-/browser-tools-1.4.2.tgz"
+  },
+  "mcp": {
+    "transport": ["stdio"],
+    "tools": ["screenshot", "navigate", "extract_text"],
+    "resources": [],
+    "prompts": []
+  },
+  "capabilities": {
+    "required": [
+      "fs:read:/tmp/**",
+      "net:fetch:*"
+    ],
+    "optional": [
+      "shell:exec",
+      "secret:read:GITHUB_TOKEN"
+    ]
+  },
+  "metadata": {
+    "homepage": "https://github.com/acme/browser-tools",
+    "source_repo": "https://github.com/acme/browser-tools",
+    "license": "MIT",
+    "released_at": "2026-06-12T10:14:00Z",
+    "description": "Browser automation MCP server — screenshot, navigate, text extraction."
+  }
+}

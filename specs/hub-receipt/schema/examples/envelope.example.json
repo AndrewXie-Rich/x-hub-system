@@ -1,0 +1,14 @@
+{
+  "schema": "hub-receipt/envelope/v0.1",
+  "receipt_id": "rcpt-abc123def456",
+  "issued_at": "2026-06-25T12:00:00Z",
+  "issuer_key_id": "ed25519:abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst",
+  "subject": {
+    "domain": "hub-receipt-test",
+    "name": "example"
+  },
+  "claims": {
+    "hello": "world"
+  },
+  "signature": "ed25519:MEUCIQDexampleSignaturePayload64BytesEncodedAsBase64WithPaddingMEUCIQDexampleAB=="
+}

@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcp-trust.org/spec/agent-2fa/v0.1/receipt-claims.schema.json",
+  "title": "agent-2fa — Receipt Claims",
+  "description": "Schema for the agent-2fa-specific 'claims' object embedded inside a Hub Receipt v0.1 envelope. This schema covers ONLY the claims; the envelope itself (receipt_id, issued_at, issuer_key_id, subject, signature) is defined by hub-receipt/v0.1.",
+  "type": "object",
+  "required": [
+    "risk_level",
+    "decision",
+    "authorizers",
+    "modalities_used",
+    "bypass_active",
+    "action_summary",
+    "granted_at",
+    "expires_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "risk_level": {
+      "type": "string",
+      "enum": ["notify", "confirm", "dual_confirm"]
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["allow", "deny"],
+      "description": "Final decision from the Verifier. 'escalate' is not a terminal state and never appears here."
+    },
+    "authorizers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["authorizer_id", "authorizer_pubkey", "modality_used", "decided_at", "decision"],
+        "additionalProperties": false,
+        "properties": {
+          "authorizer_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "authorizer_pubkey": {
+            "type": "string",
+            "pattern": "^ed25519:[a-z2-7]{52}$"
+          },
+          "modality_used": {
+            "type": "string",
+            "enum": ["touch_id", "face_id", "voice_phrase", "passphrase", "yubikey", "apple_watch"]
+          },
+          "decided_at": { "type": "string", "format": "date-time" },
+          "decision": {
+            "type": "string",
+            "enum": ["allow", "deny", "escalate"]
+          }
+        }
+      },
+      "description": "Per-Authorizer record. Includes deniers and escalators, not only allowers, so the receipt records the full quorum response."
+    },
+    "modalities_used": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["touch_id", "face_id", "voice_phrase", "passphrase", "yubikey", "apple_watch"]
+      },
+      "uniqueItems": true,
+      "description": "Deduplicated union of modality_used across authorizers."
+    },
+    "bypass_active": {
+      "type": "boolean",
+      "description": "True if a signed Bypass entry shortcut Challenge issuance for this Action."
+    },
+    "bypass_entry_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Required when bypass_active is true. Hash of the signed Bypass entry that applied."
+    },
+    "action_summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "Human-meaningful redacted summary of the Action; sensitive fields per redacted_fields are omitted."
+    },
+    "granted_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the Verifier reached the final decision (last allowing Authorization for allow; quorum-failure or timeout for deny)."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this authorization stops being valid for reuse (replay defense). Verifiers MUST NOT reuse this decision past expires_at."
+    }
+  }
+}

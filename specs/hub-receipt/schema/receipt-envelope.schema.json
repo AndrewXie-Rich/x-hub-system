@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hub-receipt.org/spec/v0.1/receipt-envelope.schema.json",
+  "title": "Hub Receipt — Unified Envelope",
+  "description": "Schema for the signed envelope defined by Hub Receipt v0.1. Consumer specifications (mcp-trust-registry session receipts, agent-2fa authorization receipts, and others) extend the envelope by populating subject.domain and claims; this schema constrains only the envelope itself.",
+  "type": "object",
+  "required": [
+    "schema",
+    "receipt_id",
+    "issued_at",
+    "issuer_key_id",
+    "subject",
+    "claims",
+    "signature"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "hub-receipt/envelope/v0.1"
+    },
+    "receipt_id": {
+      "type": "string",
+      "pattern": "^rcpt-[a-f0-9]{6,32}$",
+      "description": "Receipt identifier assigned by the issuer. Receipt-unique within an issuer."
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 date-time of issuance. UTC suffix recommended."
+    },
+    "issuer_key_id": {
+      "type": "string",
+      "pattern": "^ed25519:[a-z2-7]{52}$",
+      "description": "Identifier of the ed25519 public key that signed this envelope. Resolution to a key is consumer-spec-defined."
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$",
+          "description": "Consumer-spec namespace. Each consumer spec registers one domain (e.g. 'mcp-trust', 'agent-2fa')."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Human-readable subject identifier (e.g. an MCP server name). Mutually exclusive with 'identifier'."
+        },
+        "identifier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Opaque subject identifier (e.g. an action_id). Mutually exclusive with 'name'."
+        }
+      },
+      "required": ["domain"],
+      "oneOf": [
+        { "required": ["name"], "not": { "required": ["identifier"] } },
+        { "required": ["identifier"], "not": { "required": ["name"] } }
+      ],
+      "description": "Identifies what the receipt is about. 'domain' is required; exactly one of 'name' or 'identifier' is required."
+    },
+    "claims": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "Domain-specific claim set. Schema is owned by the consumer specification matched by subject.domain. Envelope verifiers MUST NOT interpret claims."
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^ed25519:[A-Za-z0-9+/]+={0,2}$",
+      "description": "ed25519 signature over the canonical bytes of this envelope with the 'signature' field removed."
+    }
+  }
+}

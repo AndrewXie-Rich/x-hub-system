@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcp-trust.org/spec/agent-2fa/v0.1/authorization.schema.json",
+  "title": "agent-2fa — Authorization",
+  "description": "Schema for an Authorization envelope returned by an Authorizer Device, per agent-2fa protocol v0.1 §7.",
+  "type": "object",
+  "required": [
+    "schema",
+    "challenge_id",
+    "decision",
+    "authorizer_id",
+    "authorizer_pubkey",
+    "modality_used",
+    "decided_at",
+    "signature"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "agent-2fa/authorization/v0.1"
+    },
+    "challenge_id": {
+      "type": "string",
+      "pattern": "^chg-[a-f0-9]{6,32}$",
+      "description": "Echoes the corresponding Challenge.challenge_id verbatim."
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["allow", "deny", "escalate"],
+      "description": "Decision conveyed by the Authorizer. An 'escalate' decision requests the Verifier upgrade the Risk Level and re-issue the Challenge."
+    },
+    "authorizer_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "authorizer_pubkey": {
+      "type": "string",
+      "pattern": "^ed25519:[a-z2-7]{52}$"
+    },
+    "modality_used": {
+      "type": "string",
+      "enum": ["touch_id", "face_id", "voice_phrase", "passphrase", "yubikey", "apple_watch"]
+    },
+    "decided_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "MUST be no later than the Challenge.expires_at; Verifiers reject Authorizations past the Challenge window."
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^ed25519:[A-Za-z0-9+/]+={0,2}$",
+      "description": "ed25519 signature by authorizer_pubkey over the canonical Authorization minus 'signature'."
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "schema": "mcp-trust/policy/v0.1",
+  "registries": [
+    {
+      "url": "https://registry.mcp-trust.org",
+      "name": "mcp-trust public registry"
+    }
+  ],
+  "trusted_publishers": [
+    {
+      "key_id": "ed25519:jane2acme4abcdef2ghijkl3mnopqr4stuvwx5yzabcd6efghij7",
+      "name": "jane@acme.com",
+      "notes": "Pilot publisher for browser-tools and related browser-automation servers."
+    }
+  ],
+  "require_keyless": false,
+  "require_co_attestations": 0,
+  "default_capability_decision": {
+    "fs:read": "grant_if_required",
+    "fs:write": "grant_explicit",
+    "net:fetch": "grant_if_required",
+    "shell:exec": "grant_explicit",
+    "secret:read": "deny",
+    "secret:write": "deny",
+    "proc:spawn": "deny"
+  },
+  "on_unsigned_server": "warn",
+  "on_revoked_publisher": "block",
+  "on_expired_attestation": "warn",
+  "revocation_check_interval": "1h",
+  "template": "personal"
+}

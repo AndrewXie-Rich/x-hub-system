@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcp-trust.org/spec/v0.1/attestation.schema.json",
+  "title": "MCP Trust Registry — Attestation",
+  "description": "Schema for a signed attestation binding a manifest hash to an artifact hash, per protocol v0.1 §6. Signature is over the canonical form with the signature and sigstore_bundle fields removed (§6.2). Either 'signature' or 'sigstore_bundle' MUST be non-null; keyless attestations populate the bundle (§6.3).",
+  "type": "object",
+  "required": ["schema", "manifest_hash", "artifact_hash", "publisher_key_id", "issued_at", "expires_at", "signature", "sigstore_bundle"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "mcp-trust/attestation/v0.1",
+      "description": "Schema identifier."
+    },
+    "manifest_hash": {
+      "$ref": "#/$defs/prefixed_sha256",
+      "description": "Canonical hash of the manifest this attestation binds. Format: 'sha256:<hex>'."
+    },
+    "artifact_hash": {
+      "$ref": "#/$defs/prefixed_sha256",
+      "description": "Hash of the on-disk artifact. Format: 'sha256:<hex>'. Hashing convention per manifest.artifact.type (§4.5)."
+    },
+    "publisher_key_id": {
+      "$ref": "#/$defs/ed25519_key_id"
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "anyOf": [
+        { "type": "string", "format": "date-time" },
+        { "type": "null" }
+      ],
+      "description": "Expiry timestamp. MUST be no more than 18 months after issued_at for non-keyless attestations. Keyless attestations MAY set this to null."
+    },
+    "signature": {
+      "anyOf": [
+        { "$ref": "#/$defs/ed25519_signature" },
+        { "type": "null" }
+      ],
+      "description": "ed25519 signature over the canonical form of this document with 'signature' and 'sigstore_bundle' removed. Set to null only when keyless (sigstore_bundle MUST then be non-null)."
+    },
+    "sigstore_bundle": {
+      "anyOf": [
+        { "$ref": "#/$defs/sigstore_bundle" },
+        { "type": "null" }
+      ],
+      "description": "Sigstore bundle for keyless signing. When non-null, the bundle MUST chain to the manifest's publisher.oidc_subject and publisher.oidc_issuer."
+    }
+  },
+  "oneOf": [
+    {
+      "description": "Standard ed25519 signing",
+      "required": ["signature"],
+      "properties": {
+        "signature": { "$ref": "#/$defs/ed25519_signature" },
+        "sigstore_bundle": { "type": "null" }
+      }
+    },
+    {
+      "description": "Keyless Sigstore signing",
+      "required": ["sigstore_bundle"],
+      "properties": {
+        "signature": { "type": "null" },
+        "sigstore_bundle": { "$ref": "#/$defs/sigstore_bundle" }
+      }
+    }
+  ],
+  "$defs": {
+    "ed25519_key_id": {
+      "type": "string",
+      "pattern": "^ed25519:[a-z2-7]{52}$"
+    },
+    "ed25519_signature": {
+      "type": "string",
+      "pattern": "^ed25519:[A-Za-z0-9+/]+={0,2}$",
+      "description": "ed25519 signature encoded as 'ed25519:' + standard base64 (with padding) of the 64-byte signature."
+    },
+    "prefixed_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "sigstore_bundle": {
+      "type": "object",
+      "description": "Sigstore protobuf bundle, JSON-serialized. Schema follows the Sigstore project; verifier uses Sigstore tooling for validation rather than re-validating here."
+    }
+  }
+}

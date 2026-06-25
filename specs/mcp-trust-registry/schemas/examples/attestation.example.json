@@ -1,0 +1,10 @@
+{
+  "schema": "mcp-trust/attestation/v0.1",
+  "manifest_hash": "sha256:1c2fb07a8e4d6b9a7f3c5e8d2a6b9f1c4e7a3b6d9c2f5e8a1d4b7c0f3e6a9d2c",
+  "artifact_hash": "sha256:9f3cab2e7d1f5c4e8a2b6d9f3c4e1a7b2d5f8c9e3a6b1d4f7c2e5a8b9d0c1f3a",
+  "publisher_key_id": "ed25519:jane2acme4abcdef2ghijkl3mnopqr4stuvwx5yzabcd6efghij7",
+  "issued_at": "2026-06-12T10:14:32Z",
+  "expires_at": "2027-06-12T10:14:32Z",
+  "signature": "ed25519:BrowserToolsExampleSignaturePlaceholderNotForProductionUseOnlyDevTestData1234567890ABCDEFG==",
+  "sigstore_bundle": null
+}

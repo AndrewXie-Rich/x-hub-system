@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcp-trust.org/spec/v0.1/policy.schema.json",
+  "title": "MCP Trust Registry — Trust Policy",
+  "description": "Schema for a consumer-side trust policy file per protocol v0.1 §9. Stored locally (typically in YAML or JSON; this schema describes the canonical JSON form). Drives verifier decisions on attestation acceptance, capability grant, and revocation handling.",
+  "type": "object",
+  "required": ["schema", "registries", "trusted_publishers", "default_capability_decision", "on_unsigned_server", "on_revoked_publisher", "on_expired_attestation"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "mcp-trust/policy/v0.1"
+    },
+    "registries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["url"],
+        "additionalProperties": false,
+        "properties": {
+          "url": { "type": "string", "format": "uri" },
+          "name": { "type": "string", "maxLength": 128 },
+          "weight": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Higher = consulted earlier. Default 0 (consultation order matches array order)."
+          }
+        }
+      },
+      "minItems": 1,
+      "description": "Registries consulted in array order (or weight-adjusted). Registries themselves are NOT trust roots (§7.5)."
+    },
+    "trusted_publishers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key_id": {
+            "type": "string",
+            "pattern": "^ed25519:[a-z2-7]{52}$"
+          },
+          "oidc_subject": { "type": "string", "format": "uri" },
+          "oidc_issuer": { "type": "string", "format": "uri" },
+          "name": { "type": "string", "maxLength": 128 },
+          "notes": { "type": "string", "maxLength": 512 }
+        },
+        "anyOf": [
+          { "required": ["key_id"] },
+          { "required": ["oidc_subject", "oidc_issuer"] }
+        ]
+      },
+      "description": "Publishers whose attestations are accepted. Each entry identifies via ed25519 key OR OIDC subject+issuer (or both)."
+    },
+    "require_keyless": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, only keyless (Sigstore-anchored) attestations are accepted."
+    },
+    "require_co_attestations": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Number of additional independent attestations required beyond the publisher's own. 0 = single attestation suffices."
+    },
+    "default_capability_decision": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z][a-z0-9]*(:[a-z*][a-z0-9_*]*)*$": {
+          "enum": ["grant_if_required", "grant_explicit", "deny"]
+        }
+      },
+      "additionalProperties": false,
+      "description": "Maps capability prefixes (e.g. 'fs:read', 'shell:*', 'secret:*') to default decisions. Most specific prefix wins. 'grant_if_required' = auto-grant when declared as required; 'grant_explicit' = always prompt; 'deny' = refuse."
+    },
+    "on_unsigned_server": {
+      "enum": ["quarantine", "block", "warn"],
+      "description": "Behaviour when the server lacks any valid attestation. 'quarantine' = run with empty capability set (§9.1)."
+    },
+    "on_revoked_publisher": {
+      "enum": ["block", "warn"]
+    },
+    "on_expired_attestation": {
+      "enum": ["warn", "block"]
+    },
+    "revocation_check_interval": {
+      "type": "string",
+      "pattern": "^[0-9]+(ns|us|ms|s|m|h|d)$",
+      "default": "1h",
+      "description": "Polling interval for revocation refresh. Go-style duration string."
+    },
+    "audit_log_dir": {
+      "type": "string",
+      "description": "Local filesystem path for the verifier's audit log (§11.2). Default is platform-specific."
+    },
+    "template": {
+      "enum": ["personal", "team", "strict", "custom"],
+      "description": "Marks which reference template (§9.2) this policy derives from. Informational; verifier MUST NOT change behaviour based on this field."
+    }
+  }
+}

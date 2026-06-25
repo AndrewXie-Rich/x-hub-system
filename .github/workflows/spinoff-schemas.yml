@@ -1,0 +1,32 @@
+name: spinoff specs — schemas
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'specs/mcp-trust-registry/**'
+      - 'specs/hub-receipt/**'
+      - 'specs/agent-2fa/**'
+      - 'scripts/check_spinoff_schemas.sh'
+      - '.github/workflows/spinoff-schemas.yml'
+  pull_request:
+    paths:
+      - 'specs/mcp-trust-registry/**'
+      - 'specs/hub-receipt/**'
+      - 'specs/agent-2fa/**'
+      - 'scripts/check_spinoff_schemas.sh'
+      - '.github/workflows/spinoff-schemas.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Validate standalone spinoff schemas and examples
+        run: ./scripts/check_spinoff_schemas.sh

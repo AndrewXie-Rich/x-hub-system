@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcp-trust.org/spec/agent-2fa/v0.1/challenge.schema.json",
+  "title": "agent-2fa — Challenge",
+  "description": "Schema for a Challenge envelope sent from an Agent to one or more Authorizer Devices, per agent-2fa protocol v0.1 §6.",
+  "type": "object",
+  "required": [
+    "schema",
+    "challenge_id",
+    "action",
+    "risk_level",
+    "agent_id",
+    "agent_pubkey",
+    "requested_at",
+    "expires_at",
+    "signature"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "agent-2fa/challenge/v0.1"
+    },
+    "challenge_id": {
+      "type": "string",
+      "pattern": "^chg-[a-f0-9]{6,32}$",
+      "description": "Agent-assigned identifier, prefixed 'chg-' followed by 6-32 lowercase hex chars. Globally unique per (Agent, requested_at)."
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Textual command form of the Action (e.g. 'rm -rf /var/cache'). Mutually exclusive with 'tool'."
+        },
+        "tool": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+          "description": "Structured tool identifier (e.g. 'filesystem.delete'). Mutually exclusive with 'command'."
+        },
+        "args": {
+          "type": "object",
+          "description": "Arguments passed to the structured tool. Schema is tool-specific; envelope does not constrain."
+        },
+        "redacted_fields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Field names within 'args' (or 'command' tokens) whose values MUST be omitted from human display."
+        }
+      },
+      "oneOf": [
+        { "required": ["command"], "not": { "required": ["tool"] } },
+        { "required": ["tool"], "not": { "required": ["command"] } }
+      ]
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": ["notify", "confirm", "dual_confirm"]
+    },
+    "agent_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$",
+      "description": "Human-readable Agent identifier."
+    },
+    "agent_pubkey": {
+      "type": "string",
+      "pattern": "^ed25519:[a-z2-7]{52}$"
+    },
+    "requested_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "signature": {
+      "type": "string",
+      "pattern": "^ed25519:[A-Za-z0-9+/]+={0,2}$",
+      "description": "ed25519 signature by agent_pubkey over the canonical Challenge minus the 'signature' field."
+    }
+  }
+}

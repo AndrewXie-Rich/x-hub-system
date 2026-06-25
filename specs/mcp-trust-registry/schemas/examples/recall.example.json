@@ -1,0 +1,15 @@
+{
+  "schema": "mcp-trust/recall/v0.1",
+  "publisher_key_id": "ed25519:jane2acme4abcdef2ghijkl3mnopqr4stuvwx5yzabcd6efghij7",
+  "recalls": [
+    {
+      "manifest_hash": "sha256:1c2fb07a8e4d6b9a7f3c5e8d2a6b9f1c4e7a3b6d9c2f5e8a1d4b7c0f3e6a9d2c",
+      "reason": "Sandbox escape via screenshot tool path traversal; see CVE-2026-1234.",
+      "recalled_at": "2026-06-22T08:00:00Z",
+      "severity": "high",
+      "advisory_url": "https://github.com/acme/browser-tools/security/advisories/GHSA-example-1234",
+      "supersedes_with": "sha256:2b4e9c1f7a3d5e8b2c6f0a4d7e1b5c8f2a6d9e3b7c0f4a1d5e8b2c6f9a3d7e0b",
+      "signature": "ed25519:RecallEntrySignaturePlaceholderNotForProductionUseOnlyExampleTestDataDev9876543210AAAB=="
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcp-trust.org/spec/agent-2fa/v0.1/policy.schema.json",
+  "title": "agent-2fa — Policy",
+  "description": "Schema for the action-classification Policy DSL, per agent-2fa protocol v0.1 §5 and §11. A Policy maps Actions to Risk Levels via ordered match rules, with an optional bypass section for signed, time-bounded windows.",
+  "type": "object",
+  "required": ["schema", "rules", "default"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "agent-2fa/policy/v0.1"
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 0,
+      "items": { "$ref": "#/$defs/rule" },
+      "description": "Ordered list of match rules. First match wins; unmatched actions fall through to 'default'."
+    },
+    "default": {
+      "type": "string",
+      "enum": ["notify", "confirm", "dual_confirm"],
+      "description": "Risk Level applied to actions that match no rule. MUST be specified."
+    },
+    "bypass": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/bypass_entry" },
+      "description": "Optional list of signed, time-boxed bypass entries that shortcut Challenge issuance for matching actions. Each entry MUST be signed by an Authorizer."
+    }
+  },
+  "$defs": {
+    "match": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Regex matched against the Action's textual command. Anchors are at the policy author's discretion."
+        },
+        "tool": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{0,127}$",
+          "description": "Exact-match tool identifier for structured tool calls."
+        },
+        "args": {
+          "type": "object",
+          "description": "Optional args subset to match against the tool call. Substring or recursive equality."
+        }
+      },
+      "oneOf": [
+        { "required": ["command"], "not": { "required": ["tool"] } },
+        { "required": ["tool"], "not": { "required": ["command"] } }
+      ]
+    },
+    "rule": {
+      "type": "object",
+      "required": ["match", "risk"],
+      "additionalProperties": false,
+      "properties": {
+        "match": { "$ref": "#/$defs/match" },
+        "risk": {
+          "type": "string",
+          "enum": ["notify", "confirm", "dual_confirm"]
+        }
+      }
+    },
+    "bypass_entry": {
+      "type": "object",
+      "required": ["match", "risk_during_bypass", "bypass_until", "authorized_by", "bypass_signature"],
+      "additionalProperties": false,
+      "properties": {
+        "match": { "$ref": "#/$defs/match" },
+        "risk_during_bypass": {
+          "type": "string",
+          "enum": ["notify", "confirm"],
+          "description": "Risk Level applied while the bypass is active. MUST NOT be 'dual_confirm' (bypass into dual_confirm is meaningless)."
+        },
+        "bypass_until": {
+          "type": "string",
+          "format": "date-time",
+          "description": "End of the bypass window. After this time, normal rules apply."
+        },
+        "authorized_by": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$",
+          "description": "The Authorizer who signed this bypass entry."
+        },
+        "bypass_signature": {
+          "type": "string",
+          "pattern": "^ed25519:[A-Za-z0-9+/]+={0,2}$",
+          "description": "ed25519 signature by the authorized_by Authorizer over canonical {match, risk_during_bypass, bypass_until, authorized_by}."
+        }
+      }
+    }
+  }
+}

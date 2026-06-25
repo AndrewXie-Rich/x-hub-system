@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcp-trust.org/spec/v0.1/recall.schema.json",
+  "title": "MCP Trust Registry — Publisher Recall List",
+  "description": "Schema for a publisher-side recall list per protocol v0.1 §10.1. Stored at publishers/<key_id>/revocations.json in the registry tree. Each recall entry is individually signed.",
+  "type": "object",
+  "required": ["schema", "publisher_key_id", "recalls"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "mcp-trust/recall/v0.1"
+    },
+    "publisher_key_id": {
+      "type": "string",
+      "pattern": "^ed25519:[a-z2-7]{52}$"
+    },
+    "recalls": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/recall_entry" },
+      "description": "List of recalled manifests. Append-only; entries SHOULD NOT be removed once published."
+    }
+  },
+  "$defs": {
+    "recall_entry": {
+      "type": "object",
+      "required": ["manifest_hash", "reason", "recalled_at", "signature"],
+      "additionalProperties": false,
+      "properties": {
+        "manifest_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Human-readable reason. Free text. SHOULD reference a CVE or security advisory if applicable."
+        },
+        "recalled_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "severity": {
+          "enum": ["critical", "high", "medium", "low", "informational"],
+          "description": "Optional severity classification. Verifiers MAY use this to gate the recall response."
+        },
+        "advisory_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "supersedes_with": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "Optional: hash of a fixed manifest that supersedes this one. Lets verifiers offer an automatic upgrade path."
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "^ed25519:[A-Za-z0-9+/]+={0,2}$",
+          "description": "ed25519 signature over the canonical form of this entry with the 'signature' field removed. Signed by publisher_key_id of the enclosing document."
+        }
+      }
+    }
+  }
+}

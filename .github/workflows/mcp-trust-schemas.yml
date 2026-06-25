@@ -1,0 +1,28 @@
+name: mcp-trust-registry — schemas
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'specs/mcp-trust-registry/**'
+      - 'scripts/check_mcp_trust_schemas.sh'
+      - '.github/workflows/mcp-trust-schemas.yml'
+  pull_request:
+    paths:
+      - 'specs/mcp-trust-registry/**'
+      - 'scripts/check_mcp_trust_schemas.sh'
+      - '.github/workflows/mcp-trust-schemas.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Validate mcp-trust-registry schemas and examples
+        run: ./scripts/check_mcp_trust_schemas.sh

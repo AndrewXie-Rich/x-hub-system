@@ -1,0 +1,10 @@
+{
+  "schema": "agent-2fa/authorization/v0.1",
+  "challenge_id": "chg-3a7f12bc",
+  "decision": "allow",
+  "authorizer_id": "alice-iphone",
+  "authorizer_pubkey": "ed25519:zyxwvutsrqponmlkjihgfedcba765432zyxwvutsrqponmlkjihg",
+  "modality_used": "touch_id",
+  "decided_at": "2026-06-25T12:00:08Z",
+  "signature": "ed25519:MEUCIQDexampleAuthorizerSignaturePayload64BytesBase64Padding=="
+}

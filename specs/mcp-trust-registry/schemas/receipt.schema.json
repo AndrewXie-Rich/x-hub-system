@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcp-trust.org/spec/v0.1/receipt.schema.json",
+  "title": "MCP Trust Registry — Session Receipt",
+  "description": "Schema for a verifier-signed receipt emitted at MCP session end, per protocol v0.1 §11.3. Provides downstream-auditable evidence that 'this client, against this policy, ran this server under this enforcement'. Receipt format is interoperable with X-Hub Hub Receipt; the two MAY be the same artifact in practice.",
+  "type": "object",
+  "required": ["schema", "session_id", "server_name", "manifest_hash", "artifact_hash", "started_at", "ended_at", "verifier_key_id", "tool_calls", "capability_denials", "policy_hash", "signature"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "mcp-trust/receipt/v0.1"
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^rcpt-[a-f0-9]{6,32}$",
+      "description": "Verifier-assigned session identifier, prefixed 'rcpt-' followed by 6-32 lowercase hex chars."
+    },
+    "server_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "manifest_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "artifact_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "started_at": { "type": "string", "format": "date-time" },
+    "ended_at": { "type": "string", "format": "date-time" },
+    "verifier_key_id": {
+      "type": "string",
+      "pattern": "^ed25519:[a-z2-7]{52}$",
+      "description": "Key id of the verifier that produced this receipt (NOT the publisher's key)."
+    },
+    "tool_calls": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "capability_denials": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Count of host-resource accesses blocked by capability enforcement during this session."
+    },
+    "policy_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Hash of the policy active during this session."
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^ed25519:[A-Za-z0-9+/]+={0,2}$",
+      "description": "ed25519 signature over the canonical form of this document with the 'signature' field removed."
+    },
+    "denial_summary": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["capability", "count"],
+        "additionalProperties": false,
+        "properties": {
+          "capability": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*:[a-z][a-z0-9_]*(:[^\\s]+)?$"
+          },
+          "count": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "description": "Optional per-capability denial counts. Aggregate only; per-event detail lives in the audit log (§11.2)."
+    }
+  }
+}

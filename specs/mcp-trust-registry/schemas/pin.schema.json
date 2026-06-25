@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcp-trust.org/spec/v0.1/pin.schema.json",
+  "title": "MCP Trust Registry — Pin",
+  "description": "Schema for a consumer-side pin per protocol v0.1 §8. A pin commits the consumer to a specific (manifest, artifact, granted capabilities) tuple. Capability expansion in a newer version requires explicit re-grant.",
+  "type": "object",
+  "required": ["schema", "server_name", "manifest_hash", "artifact_hash", "granted_capabilities", "pinned_at"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "mcp-trust/pin/v0.1"
+    },
+    "server_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "manifest_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "artifact_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "granted_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9]*:[a-z][a-z0-9_]*(:[^\\s]+)?$"
+      },
+      "uniqueItems": true,
+      "description": "Capabilities the user explicitly granted at pin time. Subset of the manifest's required ∪ optional."
+    },
+    "pinned_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "pinned_by": {
+      "type": "string",
+      "maxLength": 128,
+      "description": "Optional human-readable identifier (username, agent id, etc.). Not used for trust decisions."
+    },
+    "policy_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Hash of the policy in effect when the pin was created. Lets verifiers detect when a pin was made under different policy assumptions."
+    }
+  }
+}

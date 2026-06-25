@@ -1,0 +1,34 @@
+{
+  "schema": "agent-2fa/policy/v0.1",
+  "rules": [
+    {
+      "match": { "command": "^rm -rf\\s+/" },
+      "risk": "dual_confirm"
+    },
+    {
+      "match": { "command": "^git push.*--force" },
+      "risk": "dual_confirm"
+    },
+    {
+      "match": { "command": "^kubectl delete\\s+namespace" },
+      "risk": "dual_confirm"
+    },
+    {
+      "match": { "command": "^(DROP|TRUNCATE)\\s+" },
+      "risk": "confirm"
+    },
+    {
+      "match": { "tool": "filesystem.delete", "args": { "recursive": true } },
+      "risk": "confirm"
+    },
+    {
+      "match": { "command": "^git commit" },
+      "risk": "notify"
+    },
+    {
+      "match": { "command": "^git push(?!.*--force)" },
+      "risk": "notify"
+    }
+  ],
+  "default": "confirm"
+}
