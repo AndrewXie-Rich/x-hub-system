@@ -240,6 +240,51 @@ reset_swift_build_state() {
   prepare_swift_build_dirs
 }
 
+summarize_swift_build_attempt() {
+  local attempt_log="$1"
+  [ "${XHUB_SWIFT_BUILD_SUMMARY:-1}" = "1" ] || return 0
+  [ -f "$attempt_log" ] || return 0
+
+  local compile_count=""
+  local emit_count=""
+  local link_count=""
+  compile_count="$(grep -Ec '^\[[0-9]+/[0-9]+\] Compiling ' "$attempt_log" || true)"
+  emit_count="$(grep -Ec '^\[[0-9]+/[0-9]+\] Emitting module ' "$attempt_log" || true)"
+  link_count="$(grep -Ec '^\[[0-9]+/[0-9]+\] Linking ' "$attempt_log" || true)"
+
+  if [ "${compile_count:-0}" = "0" ] && [ "${emit_count:-0}" = "0" ] && [ "${link_count:-0}" = "0" ]; then
+    echo "[1a/4] Swift build summary: cache hit; no Swift compile/link work reported."
+    return 0
+  fi
+
+  echo "[1a/4] Swift build summary: compiled ${compile_count:-0} files, emitted ${emit_count:-0} modules, linked ${link_count:-0} products."
+
+  local target_counts=""
+  target_counts="$(awk '/^\[[0-9]+\/[0-9]+\] Compiling / { print $3 }' "$attempt_log" | sort | uniq -c | sort -nr | awk '{ if (out != "") out = out ", "; out = out $2 "=" $1 } END { print out }')"
+  if [ -n "$target_counts" ]; then
+    echo "[1a/4] Swift compile targets: $target_counts"
+  fi
+
+  local watched=(
+    "SettingsSheetView.swift"
+    "HubStore.swift"
+    "ModelStore.swift"
+    "MainPanelView.swift"
+    "ModelsDrawerView.swift"
+    "ModelsDrawerComponents.swift"
+  )
+  local rebuilt=()
+  local file=""
+  for file in "${watched[@]}"; do
+    if grep -Eq "^\[[0-9]+/[0-9]+\] Compiling RELFlowHub $file$" "$attempt_log"; then
+      rebuilt+=("$file")
+    fi
+  done
+  if [ "${#rebuilt[@]}" -gt 0 ]; then
+    echo "[1a/4] Swift watched files rebuilt: ${rebuilt[*]}"
+  fi
+}
+
 run_swift_build_once() {
   local attempt_log="$1"
   local build_rc=0
@@ -255,6 +300,7 @@ run_swift_build_once() {
   build_rc=${PIPESTATUS[0]}
   set -e
 
+  summarize_swift_build_attempt "$attempt_log"
   return "$build_rc"
 }
 
@@ -619,6 +665,9 @@ embed_rust_hub_package() {
   mkdir -p "$dest"
   rsync -a --delete \
     --exclude '.DS_Store' \
+    --exclude 'reports/' \
+    --exclude 'logs/' \
+    --exclude 'run/' \
     "$package_dir/" \
     "$dest/"
 

@@ -1107,6 +1107,7 @@ struct XTResolvedSkillsCacheSnapshot: Codable, Equatable, Sendable {
     var officialChannelSnapshotID: String
     var runtimeSurfaceHash: String
     var remoteStateDirPath: String?
+    var hubProfileID: String?
     var items: [XTResolvedSkillCacheItem]
 
     enum CodingKeys: String, CodingKey {
@@ -1126,6 +1127,7 @@ struct XTResolvedSkillsCacheSnapshot: Codable, Equatable, Sendable {
         case officialChannelSnapshotID = "official_channel_snapshot_id"
         case runtimeSurfaceHash = "runtime_surface_hash"
         case remoteStateDirPath = "remote_state_dir_path"
+        case hubProfileID = "hub_profile_id"
         case items
     }
 }
@@ -2598,7 +2600,7 @@ extension AXSkillsLibrary {
         hubBaseDir: URL? = nil
     ) -> SupervisorSkillRegistrySnapshot? {
         let context = AXProjectContext(root: projectRoot)
-        if let activeCache = XTResolvedSkillsCacheStore.activeSnapshot(for: context) {
+        if let activeCache = XTResolvedSkillsCacheStore.activeSnapshot(for: context, hubBaseDir: hubBaseDir) {
             return supervisorSkillRegistrySnapshot(
                 fromResolvedCache: activeCache
             )
@@ -2622,7 +2624,7 @@ extension AXSkillsLibrary {
         guard !normalizedProjectId.isEmpty else { return nil }
 
         let context = AXProjectContext(root: projectRoot)
-        guard XTResolvedSkillsCacheStore.activeSnapshot(for: context) == nil,
+        guard XTResolvedSkillsCacheStore.activeSnapshot(for: context, hubBaseDir: hubBaseDir) == nil,
               let snapshot = XTResolvedSkillsCacheStore.load(for: context) else {
             return nil
         }
@@ -2630,6 +2632,14 @@ extension AXSkillsLibrary {
             return nil
         }
         guard snapshot.remoteStateDirPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            return nil
+        }
+        let snapshotHubProfileID = snapshot.hubProfileID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let snapshotHubProfileID, !snapshotHubProfileID.isEmpty {
+            guard snapshotHubProfileID == XTHubProfilesStorage.activeCacheScopeID() else {
+                return nil
+            }
+        } else if XTHubProfilesStorage.hasMultipleProfiles() {
             return nil
         }
         let effectiveNowMs = nowMs ?? Int64(Date().timeIntervalSince1970 * 1000.0)
@@ -2669,6 +2679,7 @@ extension AXSkillsLibrary {
             officialChannelSnapshotID: snapshot.officialChannelSnapshotID,
             runtimeSurfaceHash: snapshot.runtimeSurfaceHash,
             remoteStateDirPath: snapshot.remoteStateDirPath,
+            hubProfileID: snapshot.hubProfileID,
             items: snapshot.items
         )
     }
@@ -2847,6 +2858,7 @@ extension AXSkillsLibrary {
             officialChannelSnapshotID: epochState.officialChannelSnapshotID,
             runtimeSurfaceHash: epochState.runtimeSurfaceHash,
             remoteStateDirPath: nil,
+            hubProfileID: XTHubProfilesStorage.activeCacheScopeID(),
             items: items
         )
     }
@@ -2977,6 +2989,7 @@ extension AXSkillsLibrary {
             officialChannelSnapshotID: epochState.officialChannelSnapshotID,
             runtimeSurfaceHash: epochState.runtimeSurfaceHash,
             remoteStateDirPath: normalizedRemoteStateDirPath,
+            hubProfileID: XTHubProfilesStorage.activeCacheScopeID(),
             items: items
         )
     }
@@ -3004,7 +3017,10 @@ extension AXSkillsLibrary {
         let hubIndex = loadHubSkillsIndex(url: indexURL)
         let revocations = loadSkillRevocations(url: revocationsURL)
         let context = AXProjectContext(root: projectRoot)
-        let activeResolvedSnapshot = XTResolvedSkillsCacheStore.activeSnapshot(for: context)
+        let activeResolvedSnapshot = XTResolvedSkillsCacheStore.activeSnapshot(
+            for: context,
+            hubBaseDir: resolvedHubBaseDir
+        )
             ?? persistedRemoteResolvedSkillsCacheSnapshot(
                 projectId: normalizedProjectId,
                 projectName: projectName,
@@ -3219,7 +3235,10 @@ extension AXSkillsLibrary {
             hubBaseDir: resolvedHubBaseDir
         )
         let context = AXProjectContext(root: projectRoot)
-        let resolvedSnapshot = XTResolvedSkillsCacheStore.activeSnapshot(for: context)
+        let resolvedSnapshot = XTResolvedSkillsCacheStore.activeSnapshot(
+            for: context,
+            hubBaseDir: resolvedHubBaseDir
+        )
             ?? persistedRemoteResolvedSkillsCacheSnapshot(
                 projectId: normalizedProjectId,
                 projectName: projectName,

@@ -325,7 +325,7 @@ enum HubUIStrings {
     enum Menu {
         static let title = "REL Flow Hub"
         static let displaySection = "显示"
-        static let floatingMode = "悬浮模式"
+        static let floatingMode = "关闭主窗口后显示"
         static let calendarMigrated = "日历已迁移到 X-Terminal"
         static let showModels = "显示模型"
         static let hideModels = "收起模型"
@@ -1262,6 +1262,7 @@ enum HubUIStrings {
             static let reviewDetail = "预检通过，但建议先复检，再让 XT 默认命中它。"
             static let staleDetail = "上次扫描结果已过期，建议重新扫描确认当前运行链路。"
             static let discouragedDetail = "当前仍可手动使用，但默认不优先，避免 XT 命中不稳定本地模型。"
+            static let runtimeRevalidatedDetail = "本地运行时已经更新，旧的不可用结果已失效；请重新扫描，通过后再交给 XT 默认调用。"
 
             static func smokePassedDetail(_ detail: String) -> String {
                 "轻量扫描通过。\(detail)"
@@ -3038,19 +3039,30 @@ enum HubUIStrings {
             enum Lifecycle {
                 static let downloaded = "已下载"
                 static let imported = "已导入"
+                static let pendingVerification = "待验证"
+                static let needsReview = "待复检"
                 static let runtimeUnavailable = "运行时不可用"
                 static let ready = "就绪"
                 static let importToLibrary = "导入到模型库"
+                static let verifyAction = "复检"
                 static let download = "下载"
                 static let featured = "精选"
                 static let recommendedForMac = "适合这台 Mac"
                 static let localFormat = "本地"
                 static let downloadedCacheOnly = "已下载到本地市场缓存。导入到模型库后，Hub 才会正式登记它。"
                 static let importedCheckingRuntime = "已导入模型库。Hub 正在完成这个模型的运行时检查。"
+                static let importedVerificationPending = "已导入模型库。Hub 正在验证模型文件、能力和运行时支持。"
+                static let importedVerificationScanning = "已导入模型库。Hub 正在运行本地验证。"
+                static let importedNeedsReviewNoDetail = "已导入模型库，但当前结果需要复检；通过后才会给 XT 默认路由。"
                 static let importedRuntimeUnavailableNoDetail = "已导入模型库，但本地运行时当前不可用。"
 
                 static func importedReady(_ detail: String) -> String {
-                    "已导入模型库。\(detail)"
+                    let trimmedDetail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return trimmedDetail.isEmpty ? "已导入模型库，当前可用于 Hub 本地执行。" : "已导入模型库。\(trimmedDetail)"
+                }
+
+                static func importedNeedsReview(_ detail: String) -> String {
+                    "已导入模型库，但当前结果需要复检。\(detail)"
                 }
 
                 static func importedRuntimeUnavailable(_ detail: String) -> String {
@@ -5598,11 +5610,27 @@ enum HubUIStrings {
         }
 
         enum FloatingMode {
-            static let sectionTitle = "悬浮模式"
-            static let mode = "模式"
+            static let sectionTitle = "关闭主窗口后显示"
+            static let mode = "显示方式"
+            static let hidden = "隐藏"
             static let orb = "Orb"
-            static let card = "Card"
-            static let reminderHint = "会议提醒节奏现在归 X-Terminal Supervisor 管，不再由 X-Hub 负责。"
+            static let card = "卡片"
+            static let particleDensity = "Orb 粒子密度"
+            static let particleSize = "Orb 粒子大小"
+            static let displayHint = "关闭主窗口后可以不显示悬浮层，也可以保留 Orb 或卡片作为 Hub 状态入口。"
+            static let reminderHint = displayHint
+
+            enum Density {
+                static let low = "低"
+                static let medium = "中"
+                static let high = "高"
+            }
+
+            enum Size {
+                static let small = "小"
+                static let standard = "标准"
+                static let large = "大"
+            }
         }
 
         enum Doctor {
@@ -5677,21 +5705,21 @@ enum HubUIStrings {
                 static let noReachableHost = "未检测到可访问主机"
                 static let pairingPort = "配对端口"
                 static let grpcPort = "gRPC 端口"
-            static let setupHint = "把这些值填到 X-Terminal 的 Hub Setup 页面。外部地址应该是 XT 能通过同网、Tailscale、DNS-only 域名、公网 IP 或 relay/Spectrum 访问到的地址。"
+            static let setupHint = "把这些值填到 X-Terminal 的 Hub Setup 页面。外部地址应该是 XT 能通过同网、稳定域名、relay/Spectrum/VPS TCP、公网 IP/DDNS 或 Tailscale 访问到的地址。"
             static let copyConnectionVars = "复制连接变量"
             static let advancedSettings = "高级设置"
             static let externalHostOverride = "外部地址覆盖"
-            static let externalHostPlaceholder = "Tailscale IP、DNS 主机名或公网 IP"
-            static let externalHostHint = "可选。长期异网优先填 Tailscale IP/MagicDNS、DNS-only 域名、Cloudflare Spectrum 或 VPS relay。公网 IP 只用于临时直连；留空是同 Wi-Fi 自动发现。"
-            static let noDomainAccessTitle = "没有域名？使用 Tailscale 入口"
+            static let externalHostPlaceholder = "稳定域名、VPS relay、Spectrum、DDNS 或公网 IP"
+            static let externalHostHint = "可选。安全长期路线填稳定域名、Cloudflare Spectrum 或 VPS raw TCP relay；便捷路线可填公网 IP/DDNS 并做好端口转发和防火墙限制。留空是同 Wi-Fi 首配/发现。"
+            static let noDomainAccessTitle = "异网入口选择"
             static let useNoDomainPrivateHost = "使用检测到的私有入口"
             static let noDomainPrivateHostApplied = "已使用这个私有入口"
-            static let noDomainAccessMTLSHint = "会把 Hub 外部地址固定到这个 Tailscale 地址，并切换到 mTLS。"
+            static let noDomainAccessMTLSHint = "会把 Hub 外部地址固定到这个私有入口，并切换到 mTLS。"
             static let noDomainRustCoreSource = "来源：Rust 内核推荐"
             static let noDomainSwiftFallbackSource = "来源：Swift 本机兜底"
-            static let noDomainAccessMissing = "当前没有检测到 Tailscale 100.x 入口。没有域名时，最简单的长期方案是 Hub 和 XT 加入同一个 Tailscale；不装 Tailscale 则选择 DNS-only 域名、公网 IP 临时直连、Cloudflare Spectrum 或 VPS relay。"
+            static let noDomainAccessMissing = "未检测到私有入口。无需 Tailscale 的方案：安全路线用稳定域名 + Cloudflare Spectrum/VPS raw TCP relay；便捷路线用公网 IP/DDNS + 端口转发。公网直连安全等级较低，建议只暴露 50051/50052 并启用 mTLS。"
             static func noDomainAccessDetected(_ host: String) -> String {
-                "检测到可用于无域名远程连接的 Tailscale 入口：\(host)。XT 加入同一个 Tailscale tailnet 后，可通过邀请链接稳定连接 Hub。"
+                "检测到可用于无域名远程连接的私有入口：\(host)。如果这是你选择的私有网络入口，XT 通过同一网络即可稳定连接 Hub。"
             }
             static let externalInviteTitle = "外部访问邀请"
             static let externalHubAlias = "Hub Alias"
@@ -5699,16 +5727,18 @@ enum HubUIStrings {
             static let externalHubAliasHint = "可选。邀请链接里展示给 XT 的 Hub 别名；留空时会回退到当前 Hub 的稳定标识。"
             static let externalInviteToken = "邀请令牌"
             static let inviteTokenNotIssued = "尚未生成"
-            static let externalInviteTokenHint = "正式异网接入会在配对入口校验 invite token。局域网 / 同 Wi‑Fi 可留空；外网建议直接用邀请链接自动带入。"
+            static let externalInviteTokenHint = "使用同 Wi-Fi 配对码或正式邀请链接时，Hub 会校验 invite token。便捷路线也可手填 IP/端口首配；安全路线建议复制配对码。"
             static let issueInviteToken = "生成邀请令牌"
             static let rotateInviteToken = "轮换邀请令牌"
             static let clearInviteToken = "停用邀请令牌"
+            static let copyLocalPairingLink = "复制同 Wi-Fi 配对码"
             static let copyInviteLink = "复制邀请链接"
             static let copySecureRemoteSetupPack = "复制正式接入包"
-            static let secureRemoteSetupPackHint = "推荐异网 XT 直接使用这份正式接入包。它会固定使用稳定 Tailscale/DNS/relay/Spectrum 入口，并附带 invite token，不再继续扩散公网 raw IP 配对方式。"
-            static let inviteLinkAutoGeneratesToken = "当前外部地址可生成邀请链接；点击“复制邀请链接”会自动生成 invite token。正式长期接入建议使用稳定 Tailscale/DNS/relay/Spectrum 入口。"
+            static let localPairingLinkHint = "同 Wi-Fi 首配优先复制这条配对码。它只带 Hub 身份和 invite token，不带 Hub IP；XT 会用 Bonjour 精确找这台 Hub，失败时不会自动扩大全网段扫描。"
+            static let secureRemoteSetupPackHint = "异网可选两类入口：安全路线用稳定域名 + raw TCP relay/Spectrum/VPS TCP 并配合 mTLS；便捷路线用公网 IP/DDNS + 端口转发，只适合临时或低风险环境。"
+            static let inviteLinkAutoGeneratesToken = "当前外部地址可生成邀请链接；点击“复制邀请链接”会自动生成 invite token。正式长期接入建议使用稳定域名、relay/Spectrum 或 VPS TCP；公网 IP/DDNS 是便捷但安全等级较低的直连路线。"
             static let inviteQRCodeHint = "另一台已装 XT 的设备可直接扫码打开这条邀请链接。"
-            static let inviteLinkNeedsStableHost = "邀请链接需要当前可达的 Hub 地址。可填写同 Wi-Fi / 局域网地址，或 Tailscale / relay / DNS 主机名。"
+            static let inviteLinkNeedsStableHost = "邀请链接需要当前可达的 Hub 地址。可填写同 Wi-Fi / 局域网地址，或稳定域名 / relay / Spectrum / VPS TCP / 公网 IP。"
             static let inviteLinkRejectsRawIP = "正式接入包要求稳定 Tailscale/DNS/relay/Spectrum 入口；公网 raw IP 邀请只适用于临时验证。"
             static let transportSecurity = "传输安全"
             static let transportMode = "传输模式"

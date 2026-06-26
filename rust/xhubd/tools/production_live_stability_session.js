@@ -80,6 +80,102 @@ function firstNumber(fallback, ...values) {
   return fallback;
 }
 
+function productProcessLabel(command) {
+  const text = String(command || '');
+  if (text.includes('/Applications/X-Hub.app/Contents/MacOS/XHub')) return 'x_hub_app';
+  if (isXHubNodeBridgeProcess(text)) return 'x_hub_node_bridge';
+  if (text.includes('/Applications/X-Terminal.app/Contents/MacOS/XTerminal')) return 'x_terminal_app';
+  if (text.includes('/bin/xhubd serve') || /(^|\s)xhubd\s+serve(\s|$)/.test(text)) return 'xhubd';
+  return '';
+}
+
+function isExternalRelFlowHubProcess(command) {
+  const text = String(command || '');
+  return !text.includes('/X-Hub.app/')
+    && (text.includes('/RELFlowHub.app/') || text.includes('/Volumes/RELFlowHub'));
+}
+
+function isXHubScopedProcess(command) {
+  const text = String(command || '');
+  return text.includes('/X-Hub.app/')
+    || /\/x-hub-system(?:-github-clean)?\/x-hub\//.test(text);
+}
+
+function isXHubNodeBridgeProcess(command) {
+  const text = String(command || '');
+  return isXHubScopedProcess(text)
+    && !isExternalRelFlowHubProcess(text)
+    && (text.includes('/relflowhub_node') || text.includes('hub_grpc_server/src/server.js'));
+}
+
+function productProcessCpuSnapshot() {
+  let rows = [];
+  try {
+    rows = execFileSync('ps', ['ax', '-o', 'pid=,%cpu=,command='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 3000,
+      maxBuffer: 8 * 1024 * 1024,
+    }).split('\n').map((line) => line.trim()).filter(Boolean);
+  } catch (error) {
+    return {
+      ok: false,
+      error: String(error?.message || error),
+      product_process_count: 0,
+      total_cpu_percent: 0,
+      max_cpu_percent: 0,
+      processes: [],
+    };
+  }
+  const processes = rows.map((line) => {
+    const match = line.match(/^(\d+)\s+([0-9.]+)\s+([\s\S]*)$/);
+    if (!match) return null;
+    const command = match[3];
+    const label = productProcessLabel(command);
+    if (!label) return null;
+    return {
+      pid: Number(match[1]),
+      label,
+      cpu_percent: Number(match[2] || 0),
+      command,
+    };
+  }).filter(Boolean);
+  const totalCpu = processes.reduce((sum, item) => sum + Number(item.cpu_percent || 0), 0);
+  const maxCpu = processes.reduce((max, item) => Math.max(max, Number(item.cpu_percent || 0)), 0);
+  return {
+    ok: true,
+    product_process_count: processes.length,
+    total_cpu_percent: Number(totalCpu.toFixed(2)),
+    max_cpu_percent: Number(maxCpu.toFixed(2)),
+    processes,
+  };
+}
+
+function checkpointLowImpactDecision(config) {
+  const threshold = Number(config?.checkpointMaxProductCpuPercent || 0);
+  if (!Number.isFinite(threshold) || threshold <= 0) {
+    return { enabled: false, defer: false, reason: 'checkpoint_low_impact_disabled' };
+  }
+  const snapshot = productProcessCpuSnapshot();
+  if (snapshot.ok !== true) {
+    return {
+      enabled: true,
+      defer: false,
+      reason: 'product_cpu_snapshot_unavailable',
+      threshold_cpu_percent: threshold,
+      ...snapshot,
+    };
+  }
+  const defer = snapshot.total_cpu_percent > threshold || snapshot.max_cpu_percent > threshold;
+  return {
+    enabled: true,
+    defer,
+    reason: defer ? 'product_cpu_over_budget' : 'product_cpu_within_budget',
+    threshold_cpu_percent: threshold,
+    ...snapshot,
+  };
+}
+
 function utcStamp() {
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 }
@@ -96,11 +192,16 @@ function parseArgs(argv) {
     maxSlowRequests: 0,
     checkpointDurationMs: 10000,
     checkpointLoopIntervalMs: 15 * 60 * 1000,
+    checkpointInitialDelayMs: 0,
+    checkpointMaxProductCpuPercent: 0,
     maxCheckpoints: 0,
     allowMemorySkillsProduction: false,
     requireMemorySkillsProduction: false,
+    requireMemoryGatewayCutoverReady: false,
+    requireMemoryGatewayModelCallPlanShadow: false,
     reportPath: '',
     logPath: '',
+    seedCheckpointLoopReportPath: '',
     replace: false,
     durationProvided: false,
   };
@@ -178,6 +279,14 @@ function parseArgs(argv) {
         out.checkpointLoopIntervalMs = parseIntInRange(next, out.checkpointLoopIntervalMs, 1000, 24 * 60 * 60 * 1000);
         i += 1;
         break;
+      case '--checkpoint-initial-delay-ms':
+        out.checkpointInitialDelayMs = parseIntInRange(next, out.checkpointInitialDelayMs, 0, 24 * 60 * 60 * 1000);
+        i += 1;
+        break;
+      case '--checkpoint-max-product-cpu-percent':
+        out.checkpointMaxProductCpuPercent = parseIntInRange(next, out.checkpointMaxProductCpuPercent, 0, 1000);
+        i += 1;
+        break;
       case '--max-checkpoints':
         out.maxCheckpoints = parseIntInRange(next, out.maxCheckpoints, 0, 100000);
         i += 1;
@@ -189,12 +298,22 @@ function parseArgs(argv) {
         out.allowMemorySkillsProduction = true;
         out.requireMemorySkillsProduction = true;
         break;
+      case '--require-memory-gateway-cutover-ready':
+        out.requireMemoryGatewayCutoverReady = true;
+        break;
+      case '--require-memory-gateway-model-call-plan-shadow':
+        out.requireMemoryGatewayModelCallPlanShadow = true;
+        break;
       case '--report-path':
         out.reportPath = path.resolve(String(next || '').trim());
         i += 1;
         break;
       case '--log-path':
         out.logPath = path.resolve(String(next || '').trim());
+        i += 1;
+        break;
+      case '--seed-checkpoint-loop-report':
+        out.seedCheckpointLoopReportPath = path.resolve(String(next || '').trim());
         i += 1;
         break;
       case '--replace':
@@ -233,13 +352,18 @@ function usage() {
     '  --max-slow-requests <n>        Default 0',
     '  --checkpoint-duration-ms <ms>  Rolling sidecar checkpoint duration, default 10000',
     '  --checkpoint-interval-ms <ms>  Rolling sidecar interval, default 900000',
+    '  --checkpoint-initial-delay-ms <ms> Delay first rolling checkpoint after sidecar start, default 0',
+    '  --checkpoint-max-product-cpu-percent <n> Defer rolling checkpoints while product CPU exceeds n, default 0 disabled',
     '  --max-checkpoints <n>          Optional sidecar checkpoint count cap, default 0',
     '  --allow-memory-skills-production Permit explicit Rust memory writer and skills execution authority',
     '  --require-memory-skills-production Require both Rust memory writer and skills execution authority',
+    '  --require-memory-gateway-cutover-ready Require memory gateway cutover readiness in nested gate',
+    '  --require-memory-gateway-model-call-plan-shadow Require XT model-call shadow evidence in nested gate',
     '  --http-base-url <u>            Default http://127.0.0.1:50151',
     '  --live-base-dir <p>            Default ~/Library/Group Containers/group.rel.flowhub',
     '  --report-path <p>              Override top-level gate report path',
     '  --log-path <p>                 Override session stdout/stderr log path',
+    '  --seed-checkpoint-loop-report <p> Seed rolling sidecar with previous checkpoint loop evidence',
     '  --replace                      Stop an existing active session before start',
   ].join('\n');
 }
@@ -248,6 +372,13 @@ function memorySkillsGateArgs(config) {
   if (config.requireMemorySkillsProduction) return ['--require-memory-skills-production'];
   if (config.allowMemorySkillsProduction) return ['--allow-memory-skills-production'];
   return [];
+}
+
+function memoryGatewayGateArgs(config) {
+  const args = [];
+  if (config.requireMemoryGatewayCutoverReady) args.push('--require-memory-gateway-cutover-ready');
+  if (config.requireMemoryGatewayModelCallPlanShadow) args.push('--require-memory-gateway-model-call-plan-shadow');
+  return args;
 }
 
 function parseJsonObject(stdout) {
@@ -389,6 +520,10 @@ function discoverRunningGateProcess() {
     max_status_age_ms: Number(extractFlagValue(chosen.command, '--max-status-age-ms') || 0),
     status_read_timeout_ms: Number(extractFlagValue(chosen.command, '--status-read-timeout-ms') || 0),
     max_slow_requests: Number(extractFlagValue(chosen.command, '--max-slow-requests') || 0),
+    memory_skills_production_allowed: chosen.command.includes('--allow-memory-skills-production'),
+    memory_skills_production_required: chosen.command.includes('--require-memory-skills-production'),
+    memory_gateway_cutover_ready_required: chosen.command.includes('--require-memory-gateway-cutover-ready'),
+    memory_gateway_model_call_plan_shadow_required: chosen.command.includes('--require-memory-gateway-model-call-plan-shadow'),
   };
 }
 
@@ -478,6 +613,7 @@ function discoverRunningCheckpointLoopProcess() {
     expected_end_at_iso: expectedEndAtIso,
     report_path: extractFlagValue(chosen.command, '--report-path'),
     log_path: extractFlagValue(chosen.command, '--log-path'),
+    seed_checkpoint_loop_report_path: extractFlagValue(chosen.command, '--seed-checkpoint-loop-report'),
     http_base_url: extractFlagValue(chosen.command, '--http-base-url'),
     live_base_dir: extractFlagValue(chosen.command, '--live-base-dir'),
     duration_ms: durationMs,
@@ -487,7 +623,13 @@ function discoverRunningCheckpointLoopProcess() {
     max_slow_requests: Number(extractFlagValue(chosen.command, '--max-slow-requests') || 0),
     checkpoint_duration_ms: Number(extractFlagValue(chosen.command, '--checkpoint-duration-ms') || 0),
     checkpoint_interval_ms: Number(extractFlagValue(chosen.command, '--checkpoint-interval-ms') || 0),
+    checkpoint_initial_delay_ms: Number(extractFlagValue(chosen.command, '--checkpoint-initial-delay-ms') || 0),
+    checkpoint_max_product_cpu_percent: Number(extractFlagValue(chosen.command, '--checkpoint-max-product-cpu-percent') || 0),
     max_checkpoints: Number(extractFlagValue(chosen.command, '--max-checkpoints') || 0),
+    memory_skills_production_allowed: chosen.command.includes('--allow-memory-skills-production'),
+    memory_skills_production_required: chosen.command.includes('--require-memory-skills-production'),
+    memory_gateway_cutover_ready_required: chosen.command.includes('--require-memory-gateway-cutover-ready'),
+    memory_gateway_model_call_plan_shadow_required: chosen.command.includes('--require-memory-gateway-model-call-plan-shadow'),
   };
 }
 
@@ -569,6 +711,22 @@ function summarizeReport(report) {
     xt_file_ipc_production_surface_ready: report.xt_file_ipc_production_surface_ready === true,
     memory_skills_production_allowed: report.memory_skills_production_allowed === true,
     memory_skills_production_required: report.memory_skills_production_required === true,
+    memory_gateway_cutover_ready_required: report.memory_gateway_cutover_ready_required === true,
+    memory_gateway_cutover_ready: report.memory_gateway_cutover_ready === true,
+    memory_gateway_cutover_readiness_ok: report.memory_gateway_cutover_readiness_ok === true,
+    memory_gateway_model_call_plan_shadow_required: report.memory_gateway_model_call_plan_shadow_required === true,
+    memory_gateway_model_call_plan_shadow_found: report.memory_gateway_model_call_plan_shadow_found === true,
+    memory_gateway_model_call_plan_shadow_ok: report.memory_gateway_model_call_plan_shadow_ok === true,
+    memory_gateway_model_call_plan_shadow_evidence_ok: report.memory_gateway_model_call_plan_shadow_evidence_ok === true,
+    memory_gateway_model_call_plan_shadow_execution_safe: report.memory_gateway_model_call_plan_shadow_execution_safe === true,
+    memory_gateway_model_call_plan_shadow_text_safe: report.memory_gateway_model_call_plan_shadow_text_safe === true,
+    memory_gateway_model_call_plan_shadow_selected_chunk_count: Number(report.memory_gateway_model_call_plan_shadow_selected_chunk_count || 0),
+    memory_gateway_model_call_plan_shadow_selected_chunk_ref_count: Number(report.memory_gateway_model_call_plan_shadow_selected_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_ref_count: Number(report.memory_gateway_model_call_plan_shadow_omitted_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count: Number(report.memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_index_granularity: String(report.memory_gateway_model_call_plan_shadow_index_granularity || ''),
+    memory_gateway_model_call_plan_shadow_chunk_identity_schema: String(report.memory_gateway_model_call_plan_shadow_chunk_identity_schema || ''),
+    memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref: report.memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref === true,
     memory_writer_authority_in_rust: report.memory_writer_authority_in_rust === true,
     skills_execution_authority_in_rust: report.skills_execution_authority_in_rust === true,
     ui_product_change: report.ui_product_change === true,
@@ -585,8 +743,14 @@ function summarizeReport(report) {
       ok: report.checks.process_sanity.ok === true,
       xhubd_process_count: Array.isArray(report.checks.process_sanity.xhubd_processes) ? report.checks.process_sanity.xhubd_processes.length : 0,
       target_xhubd_process_count: Array.isArray(report.checks.process_sanity.target_xhubd_processes) ? report.checks.process_sanity.target_xhubd_processes.length : 0,
-      relflowhub_process_count: Array.isArray(report.checks.process_sanity.relflowhub_processes) ? report.checks.process_sanity.relflowhub_processes.length : 0,
+      x_hub_node_bridge_process_count: Array.isArray(report.checks.process_sanity.x_hub_node_bridge_processes) ? report.checks.process_sanity.x_hub_node_bridge_processes.length : 0,
+      mounted_xhub_process_count: Array.isArray(report.checks.process_sanity.mounted_xhub_processes) ? report.checks.process_sanity.mounted_xhub_processes.length : 0,
+      external_relflowhub_process_count: Number(report.checks.process_sanity.external_relflowhub_process_count || 0),
       python_runtime_process_count: Array.isArray(report.checks.process_sanity.python_runtime_processes) ? report.checks.process_sanity.python_runtime_processes.length : 0,
+      product_process_count: Number(report.checks.process_sanity.product_process_count || 0),
+      product_total_cpu_percent: Number(report.checks.process_sanity.product_total_cpu_percent || 0),
+      product_max_cpu_percent: Number(report.checks.process_sanity.product_max_cpu_percent || 0),
+      high_cpu_product_process_count: Array.isArray(report.checks.process_sanity.high_cpu_product_processes) ? report.checks.process_sanity.high_cpu_product_processes.length : 0,
     } : null,
   };
 }
@@ -595,6 +759,8 @@ function summarizeLoopReport(report) {
   if (!report || typeof report !== 'object') return null;
   const checkpoints = Array.isArray(report.checkpoints) ? report.checkpoints : [];
   const latest = checkpoints.length > 0 ? checkpoints[checkpoints.length - 1] : null;
+  const latestSummary = latest?.report_summary || {};
+  const boolFromLatest = (key) => report[key] === true || latest?.[key] === true || latestSummary?.[key] === true;
   return {
     ok: report.ok === true,
     generated_at_iso: String(report.generated_at_iso || ''),
@@ -605,6 +771,11 @@ function summarizeLoopReport(report) {
     next_checkpoint_remaining_ms: Number(report.next_checkpoint_remaining_ms || 0),
     checkpoint_count: checkpoints.length,
     failed_checkpoint_count: checkpoints.filter((item) => item?.ok !== true).length,
+    checkpoint_defer_count: Number(report.checkpoint_defer_count || (Array.isArray(report.checkpoint_deferrals) ? report.checkpoint_deferrals.length : 0)),
+    latest_checkpoint_defer: report.latest_checkpoint_defer || (Array.isArray(report.checkpoint_deferrals) && report.checkpoint_deferrals.length > 0
+      ? report.checkpoint_deferrals[report.checkpoint_deferrals.length - 1]
+      : null),
+    checkpoint_max_product_cpu_percent: Number(report.checkpoint_max_product_cpu_percent || 0),
     latest_checkpoint: latest,
     memory_writer_authority_in_rust: report.memory_writer_authority_in_rust === true,
     skills_execution_authority_in_rust: report.skills_execution_authority_in_rust === true,
@@ -612,6 +783,22 @@ function summarizeLoopReport(report) {
     secret_leak: report.secret_leak === true,
     memory_skills_production_allowed: report.memory_skills_production_allowed === true,
     memory_skills_production_required: report.memory_skills_production_required === true,
+    memory_gateway_cutover_ready_required: boolFromLatest('memory_gateway_cutover_ready_required'),
+    memory_gateway_cutover_ready: boolFromLatest('memory_gateway_cutover_ready'),
+    memory_gateway_cutover_readiness_ok: boolFromLatest('memory_gateway_cutover_readiness_ok'),
+    memory_gateway_model_call_plan_shadow_required: boolFromLatest('memory_gateway_model_call_plan_shadow_required'),
+    memory_gateway_model_call_plan_shadow_found: boolFromLatest('memory_gateway_model_call_plan_shadow_found'),
+    memory_gateway_model_call_plan_shadow_ok: boolFromLatest('memory_gateway_model_call_plan_shadow_ok'),
+    memory_gateway_model_call_plan_shadow_evidence_ok: boolFromLatest('memory_gateway_model_call_plan_shadow_evidence_ok'),
+    memory_gateway_model_call_plan_shadow_execution_safe: boolFromLatest('memory_gateway_model_call_plan_shadow_execution_safe'),
+    memory_gateway_model_call_plan_shadow_text_safe: boolFromLatest('memory_gateway_model_call_plan_shadow_text_safe'),
+    memory_gateway_model_call_plan_shadow_selected_chunk_count: Number(latest?.memory_gateway_model_call_plan_shadow_selected_chunk_count || 0),
+    memory_gateway_model_call_plan_shadow_selected_chunk_ref_count: Number(latest?.memory_gateway_model_call_plan_shadow_selected_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_ref_count: Number(latest?.memory_gateway_model_call_plan_shadow_omitted_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count: Number(latest?.memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_index_granularity: String(latest?.memory_gateway_model_call_plan_shadow_index_granularity || ''),
+    memory_gateway_model_call_plan_shadow_chunk_identity_schema: String(latest?.memory_gateway_model_call_plan_shadow_chunk_identity_schema || ''),
+    memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref: latest?.memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref === true,
     issue_count: Array.isArray(report.issues) ? report.issues.length : 0,
   };
 }
@@ -700,10 +887,34 @@ function statusPayload(extra = {}) {
     production_authority_change: false,
     memory_skills_production_allowed: reportSummary?.memory_skills_production_allowed === true
       || state?.memory_skills_production_allowed === true
+      || discovered?.memory_skills_production_allowed === true
       || activeConfig.allowMemorySkillsProduction === true,
     memory_skills_production_required: reportSummary?.memory_skills_production_required === true
       || state?.memory_skills_production_required === true
+      || discovered?.memory_skills_production_required === true
       || activeConfig.requireMemorySkillsProduction === true,
+    memory_gateway_cutover_ready_required: reportSummary?.memory_gateway_cutover_ready_required === true
+      || state?.memory_gateway_cutover_ready_required === true
+      || discovered?.memory_gateway_cutover_ready_required === true
+      || activeConfig.requireMemoryGatewayCutoverReady === true,
+    memory_gateway_cutover_ready: reportSummary?.memory_gateway_cutover_ready === true,
+    memory_gateway_cutover_readiness_ok: reportSummary?.memory_gateway_cutover_readiness_ok === true,
+    memory_gateway_model_call_plan_shadow_required: reportSummary?.memory_gateway_model_call_plan_shadow_required === true
+      || state?.memory_gateway_model_call_plan_shadow_required === true
+      || discovered?.memory_gateway_model_call_plan_shadow_required === true
+      || activeConfig.requireMemoryGatewayModelCallPlanShadow === true,
+    memory_gateway_model_call_plan_shadow_found: reportSummary?.memory_gateway_model_call_plan_shadow_found === true,
+    memory_gateway_model_call_plan_shadow_ok: reportSummary?.memory_gateway_model_call_plan_shadow_ok === true,
+    memory_gateway_model_call_plan_shadow_evidence_ok: reportSummary?.memory_gateway_model_call_plan_shadow_evidence_ok === true,
+    memory_gateway_model_call_plan_shadow_execution_safe: reportSummary?.memory_gateway_model_call_plan_shadow_execution_safe === true,
+    memory_gateway_model_call_plan_shadow_text_safe: reportSummary?.memory_gateway_model_call_plan_shadow_text_safe === true,
+    memory_gateway_model_call_plan_shadow_selected_chunk_count: Number(reportSummary?.memory_gateway_model_call_plan_shadow_selected_chunk_count || 0),
+    memory_gateway_model_call_plan_shadow_selected_chunk_ref_count: Number(reportSummary?.memory_gateway_model_call_plan_shadow_selected_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_ref_count: Number(reportSummary?.memory_gateway_model_call_plan_shadow_omitted_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count: Number(reportSummary?.memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_index_granularity: String(reportSummary?.memory_gateway_model_call_plan_shadow_index_granularity || ''),
+    memory_gateway_model_call_plan_shadow_chunk_identity_schema: String(reportSummary?.memory_gateway_model_call_plan_shadow_chunk_identity_schema || ''),
+    memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref: reportSummary?.memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref === true,
     memory_writer_authority_in_rust: reportSummary?.memory_writer_authority_in_rust === true,
     skills_execution_authority_in_rust: reportSummary?.skills_execution_authority_in_rust === true,
     ui_product_change: reportSummary?.ui_product_change === true,
@@ -731,6 +942,10 @@ function stateFromDiscovered(discovered, reason = 'adopted_from_process_scan') {
     max_status_age_ms: Number(discovered?.max_status_age_ms || 0),
     status_read_timeout_ms: Number(discovered?.status_read_timeout_ms || 0),
     max_slow_requests: Number(discovered?.max_slow_requests || 0),
+    memory_skills_production_allowed: discovered?.memory_skills_production_allowed === true,
+    memory_skills_production_required: discovered?.memory_skills_production_required === true,
+    memory_gateway_cutover_ready_required: discovered?.memory_gateway_cutover_ready_required === true,
+    memory_gateway_model_call_plan_shadow_required: discovered?.memory_gateway_model_call_plan_shadow_required === true,
     command: 'discovered-process',
     args: [],
     discovered_command: String(discovered?.command || ''),
@@ -787,6 +1002,22 @@ function supervisionStatusPayload(extra = {}) {
     || checkpointLoop.memory_skills_production_allowed === true;
   const memorySkillsRequired = session.memory_skills_production_required === true
     || checkpointLoop.memory_skills_production_required === true;
+  const memoryGatewayCutoverRequired = session.memory_gateway_cutover_ready_required === true
+    || checkpointLoop.memory_gateway_cutover_ready_required === true;
+  const memoryGatewayCutoverReady = session.memory_gateway_cutover_ready === true
+    || checkpointLoop.memory_gateway_cutover_ready === true;
+  const memoryGatewayCutoverReadinessOk = session.memory_gateway_cutover_readiness_ok === true
+    || checkpointLoop.memory_gateway_cutover_readiness_ok === true;
+  const memoryGatewayModelCallPlanShadowRequired = session.memory_gateway_model_call_plan_shadow_required === true
+    || checkpointLoop.memory_gateway_model_call_plan_shadow_required === true;
+  const memoryGatewayModelCallPlanShadowOk = session.memory_gateway_model_call_plan_shadow_ok === true
+    || checkpointLoop.memory_gateway_model_call_plan_shadow_ok === true;
+  const memoryGatewayModelCallPlanShadowEvidenceOk = session.memory_gateway_model_call_plan_shadow_evidence_ok === true
+    || checkpointLoop.memory_gateway_model_call_plan_shadow_evidence_ok === true;
+  const memoryGatewayModelCallPlanShadowExecutionSafe = session.memory_gateway_model_call_plan_shadow_execution_safe === true
+    || checkpointLoop.memory_gateway_model_call_plan_shadow_execution_safe === true;
+  const memoryGatewayModelCallPlanShadowTextSafe = session.memory_gateway_model_call_plan_shadow_text_safe === true
+    || checkpointLoop.memory_gateway_model_call_plan_shadow_text_safe === true;
   const memoryWriterAuthority = session.memory_writer_authority_in_rust === true || checkpointLoop.memory_writer_authority_in_rust === true;
   const skillsExecutionAuthority = session.skills_execution_authority_in_rust === true || checkpointLoop.skills_execution_authority_in_rust === true;
   if (memoryWriterAuthority && !memorySkillsAllowed) {
@@ -797,6 +1028,21 @@ function supervisionStatusPayload(extra = {}) {
   }
   if (memorySkillsRequired && !memoryWriterAuthority) issues.push('memory_writer_authority_not_active');
   if (memorySkillsRequired && !skillsExecutionAuthority) issues.push('skills_execution_authority_not_active');
+  if (memoryGatewayCutoverRequired && (!memoryGatewayCutoverReady || !memoryGatewayCutoverReadinessOk)) {
+    issues.push('memory_gateway_cutover_not_ready');
+  }
+  if (memoryGatewayModelCallPlanShadowRequired && !memoryGatewayModelCallPlanShadowOk) {
+    issues.push('memory_gateway_model_call_plan_shadow_not_ok');
+  }
+  if (memoryGatewayModelCallPlanShadowRequired && !memoryGatewayModelCallPlanShadowEvidenceOk) {
+    issues.push('memory_gateway_model_call_plan_shadow_evidence_not_ok');
+  }
+  if (memoryGatewayModelCallPlanShadowRequired && !memoryGatewayModelCallPlanShadowExecutionSafe) {
+    issues.push('memory_gateway_model_call_plan_shadow_execution_not_safe');
+  }
+  if (memoryGatewayModelCallPlanShadowRequired && !memoryGatewayModelCallPlanShadowTextSafe) {
+    issues.push('memory_gateway_model_call_plan_shadow_text_not_safe');
+  }
   if (session.ui_product_change === true || checkpointLoop.ui_product_change === true) issues.push('ui_product_change');
   if (session.secret_leak === true || checkpointLoop.secret_leak === true) issues.push('secret_leak');
 
@@ -824,6 +1070,22 @@ function supervisionStatusPayload(extra = {}) {
     production_authority_change: false,
     memory_skills_production_allowed: memorySkillsAllowed,
     memory_skills_production_required: memorySkillsRequired,
+    memory_gateway_cutover_ready_required: memoryGatewayCutoverRequired,
+    memory_gateway_cutover_ready: memoryGatewayCutoverReady,
+    memory_gateway_cutover_readiness_ok: memoryGatewayCutoverReadinessOk,
+    memory_gateway_model_call_plan_shadow_required: memoryGatewayModelCallPlanShadowRequired,
+    memory_gateway_model_call_plan_shadow_ok: memoryGatewayModelCallPlanShadowOk,
+    memory_gateway_model_call_plan_shadow_evidence_ok: memoryGatewayModelCallPlanShadowEvidenceOk,
+    memory_gateway_model_call_plan_shadow_execution_safe: memoryGatewayModelCallPlanShadowExecutionSafe,
+    memory_gateway_model_call_plan_shadow_text_safe: memoryGatewayModelCallPlanShadowTextSafe,
+    memory_gateway_model_call_plan_shadow_selected_chunk_count: Number(session.memory_gateway_model_call_plan_shadow_selected_chunk_count || checkpointLoop.memory_gateway_model_call_plan_shadow_selected_chunk_count || 0),
+    memory_gateway_model_call_plan_shadow_selected_chunk_ref_count: Number(session.memory_gateway_model_call_plan_shadow_selected_chunk_ref_count || checkpointLoop.memory_gateway_model_call_plan_shadow_selected_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_ref_count: Number(session.memory_gateway_model_call_plan_shadow_omitted_ref_count || checkpointLoop.memory_gateway_model_call_plan_shadow_omitted_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count: Number(session.memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count || checkpointLoop.memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_index_granularity: String(session.memory_gateway_model_call_plan_shadow_index_granularity || checkpointLoop.memory_gateway_model_call_plan_shadow_index_granularity || ''),
+    memory_gateway_model_call_plan_shadow_chunk_identity_schema: String(session.memory_gateway_model_call_plan_shadow_chunk_identity_schema || checkpointLoop.memory_gateway_model_call_plan_shadow_chunk_identity_schema || ''),
+    memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref: session.memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref === true
+      || checkpointLoop.memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref === true,
     memory_writer_authority_in_rust: memoryWriterAuthority,
     skills_execution_authority_in_rust: skillsExecutionAuthority,
     ui_product_change: session.ui_product_change === true || checkpointLoop.ui_product_change === true,
@@ -905,6 +1167,7 @@ function startSession(config) {
     '--max-slow-requests', String(config.maxSlowRequests),
     '--report-path', reportPath,
     ...memorySkillsGateArgs(config),
+    ...memoryGatewayGateArgs(config),
   ];
   const fd = fs.openSync(logPath, 'a');
   const child = spawn(process.execPath, args, {
@@ -934,6 +1197,8 @@ function startSession(config) {
     max_slow_requests: config.maxSlowRequests,
     memory_skills_production_allowed: config.allowMemorySkillsProduction === true,
     memory_skills_production_required: config.requireMemorySkillsProduction === true,
+    memory_gateway_cutover_ready_required: config.requireMemoryGatewayCutoverReady === true,
+    memory_gateway_model_call_plan_shadow_required: config.requireMemoryGatewayModelCallPlanShadow === true,
     command: process.execPath,
     args,
     production_authority_change: false,
@@ -962,6 +1227,7 @@ function runCheckpoint(config) {
     '--max-slow-requests', String(config.maxSlowRequests),
     '--report-path', reportPath,
     ...memorySkillsGateArgs(config),
+    ...memoryGatewayGateArgs(config),
   ];
   const startedAtMs = Date.now();
   const result = spawnSync(process.execPath, args, {
@@ -1006,6 +1272,22 @@ function runCheckpoint(config) {
     production_authority_change: false,
     memory_skills_production_allowed: summary?.memory_skills_production_allowed === true,
     memory_skills_production_required: summary?.memory_skills_production_required === true,
+    memory_gateway_cutover_ready_required: summary?.memory_gateway_cutover_ready_required === true,
+    memory_gateway_cutover_ready: summary?.memory_gateway_cutover_ready === true,
+    memory_gateway_cutover_readiness_ok: summary?.memory_gateway_cutover_readiness_ok === true,
+    memory_gateway_model_call_plan_shadow_required: summary?.memory_gateway_model_call_plan_shadow_required === true,
+    memory_gateway_model_call_plan_shadow_found: summary?.memory_gateway_model_call_plan_shadow_found === true,
+    memory_gateway_model_call_plan_shadow_ok: summary?.memory_gateway_model_call_plan_shadow_ok === true,
+    memory_gateway_model_call_plan_shadow_evidence_ok: summary?.memory_gateway_model_call_plan_shadow_evidence_ok === true,
+    memory_gateway_model_call_plan_shadow_execution_safe: summary?.memory_gateway_model_call_plan_shadow_execution_safe === true,
+    memory_gateway_model_call_plan_shadow_text_safe: summary?.memory_gateway_model_call_plan_shadow_text_safe === true,
+    memory_gateway_model_call_plan_shadow_selected_chunk_count: Number(summary?.memory_gateway_model_call_plan_shadow_selected_chunk_count || 0),
+    memory_gateway_model_call_plan_shadow_selected_chunk_ref_count: Number(summary?.memory_gateway_model_call_plan_shadow_selected_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_ref_count: Number(summary?.memory_gateway_model_call_plan_shadow_omitted_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count: Number(summary?.memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_index_granularity: String(summary?.memory_gateway_model_call_plan_shadow_index_granularity || ''),
+    memory_gateway_model_call_plan_shadow_chunk_identity_schema: String(summary?.memory_gateway_model_call_plan_shadow_chunk_identity_schema || ''),
+    memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref: summary?.memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref === true,
     memory_writer_authority_in_rust: summary?.memory_writer_authority_in_rust === true,
     skills_execution_authority_in_rust: summary?.skills_execution_authority_in_rust === true,
     ui_product_change: summary?.ui_product_change === true,
@@ -1076,6 +1358,8 @@ function checkpointLoopStatusPayload(extra = {}) {
     max_slow_requests: firstNumber(0, stateRunning ? state?.max_slow_requests : discovered?.max_slow_requests, state?.max_slow_requests),
     checkpoint_duration_ms: firstNumber(0, stateRunning ? state?.checkpoint_duration_ms : discovered?.checkpoint_duration_ms, state?.checkpoint_duration_ms),
     checkpoint_interval_ms: firstNumber(0, stateRunning ? state?.checkpoint_interval_ms : discovered?.checkpoint_interval_ms, state?.checkpoint_interval_ms),
+    checkpoint_initial_delay_ms: firstNumber(0, stateRunning ? state?.checkpoint_initial_delay_ms : discovered?.checkpoint_initial_delay_ms, state?.checkpoint_initial_delay_ms, ACTIVE_CONFIG?.checkpointInitialDelayMs),
+    checkpoint_max_product_cpu_percent: firstNumber(0, stateRunning ? state?.checkpoint_max_product_cpu_percent : discovered?.checkpoint_max_product_cpu_percent, state?.checkpoint_max_product_cpu_percent, ACTIVE_CONFIG?.checkpointMaxProductCpuPercent),
     max_checkpoints: firstNumber(0, stateRunning ? state?.max_checkpoints : discovered?.max_checkpoints, state?.max_checkpoints),
     current_root_dir: ROOT_DIR,
     active_root_dir: activeRootDir,
@@ -1089,13 +1373,38 @@ function checkpointLoopStatusPayload(extra = {}) {
     report_summary: reportSummary,
     log_path: String(state?.log_path || ''),
     log_exists: state?.log_path ? fs.existsSync(state.log_path) : false,
+    seed_checkpoint_loop_report_path: String(state?.seed_checkpoint_loop_report_path || discovered?.seed_checkpoint_loop_report_path || ''),
     production_authority_change: false,
     memory_skills_production_allowed: reportSummary?.memory_skills_production_allowed === true
       || state?.memory_skills_production_allowed === true
+      || discovered?.memory_skills_production_allowed === true
       || ACTIVE_CONFIG?.allowMemorySkillsProduction === true,
     memory_skills_production_required: reportSummary?.memory_skills_production_required === true
       || state?.memory_skills_production_required === true
+      || discovered?.memory_skills_production_required === true
       || ACTIVE_CONFIG?.requireMemorySkillsProduction === true,
+    memory_gateway_cutover_ready_required: reportSummary?.memory_gateway_cutover_ready_required === true
+      || state?.memory_gateway_cutover_ready_required === true
+      || discovered?.memory_gateway_cutover_ready_required === true
+      || ACTIVE_CONFIG?.requireMemoryGatewayCutoverReady === true,
+    memory_gateway_cutover_ready: reportSummary?.memory_gateway_cutover_ready === true,
+    memory_gateway_cutover_readiness_ok: reportSummary?.memory_gateway_cutover_readiness_ok === true,
+    memory_gateway_model_call_plan_shadow_required: reportSummary?.memory_gateway_model_call_plan_shadow_required === true
+      || state?.memory_gateway_model_call_plan_shadow_required === true
+      || discovered?.memory_gateway_model_call_plan_shadow_required === true
+      || ACTIVE_CONFIG?.requireMemoryGatewayModelCallPlanShadow === true,
+    memory_gateway_model_call_plan_shadow_found: reportSummary?.memory_gateway_model_call_plan_shadow_found === true,
+    memory_gateway_model_call_plan_shadow_ok: reportSummary?.memory_gateway_model_call_plan_shadow_ok === true,
+    memory_gateway_model_call_plan_shadow_evidence_ok: reportSummary?.memory_gateway_model_call_plan_shadow_evidence_ok === true,
+    memory_gateway_model_call_plan_shadow_execution_safe: reportSummary?.memory_gateway_model_call_plan_shadow_execution_safe === true,
+    memory_gateway_model_call_plan_shadow_text_safe: reportSummary?.memory_gateway_model_call_plan_shadow_text_safe === true,
+    memory_gateway_model_call_plan_shadow_selected_chunk_count: Number(reportSummary?.memory_gateway_model_call_plan_shadow_selected_chunk_count || 0),
+    memory_gateway_model_call_plan_shadow_selected_chunk_ref_count: Number(reportSummary?.memory_gateway_model_call_plan_shadow_selected_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_ref_count: Number(reportSummary?.memory_gateway_model_call_plan_shadow_omitted_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count: Number(reportSummary?.memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_index_granularity: String(reportSummary?.memory_gateway_model_call_plan_shadow_index_granularity || ''),
+    memory_gateway_model_call_plan_shadow_chunk_identity_schema: String(reportSummary?.memory_gateway_model_call_plan_shadow_chunk_identity_schema || ''),
+    memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref: reportSummary?.memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref === true,
     memory_writer_authority_in_rust: reportSummary?.memory_writer_authority_in_rust === true,
     skills_execution_authority_in_rust: reportSummary?.skills_execution_authority_in_rust === true,
     ui_product_change: reportSummary?.ui_product_change === true,
@@ -1116,6 +1425,7 @@ function checkpointLoopStateFromDiscovered(discovered, reason = 'adopted_from_pr
     adopt_reason: reason,
     report_path: String(discovered?.report_path || ''),
     log_path: String(discovered?.log_path || ''),
+    seed_checkpoint_loop_report_path: String(discovered?.seed_checkpoint_loop_report_path || ''),
     http_base_url: String(discovered?.http_base_url || DEFAULT_HTTP_BASE_URL),
     live_base_dir: String(discovered?.live_base_dir || DEFAULT_LIVE_BASE_DIR),
     duration_ms: Number(discovered?.duration_ms || 0),
@@ -1125,7 +1435,13 @@ function checkpointLoopStateFromDiscovered(discovered, reason = 'adopted_from_pr
     max_slow_requests: Number(discovered?.max_slow_requests || 0),
     checkpoint_duration_ms: Number(discovered?.checkpoint_duration_ms || 0),
     checkpoint_interval_ms: Number(discovered?.checkpoint_interval_ms || 0),
+    checkpoint_initial_delay_ms: Number(discovered?.checkpoint_initial_delay_ms || 0),
+    checkpoint_max_product_cpu_percent: Number(discovered?.checkpoint_max_product_cpu_percent || 0),
     max_checkpoints: Number(discovered?.max_checkpoints || 0),
+    memory_skills_production_allowed: discovered?.memory_skills_production_allowed === true,
+    memory_skills_production_required: discovered?.memory_skills_production_required === true,
+    memory_gateway_cutover_ready_required: discovered?.memory_gateway_cutover_ready_required === true,
+    memory_gateway_model_call_plan_shadow_required: discovered?.memory_gateway_model_call_plan_shadow_required === true,
     command: 'discovered-process',
     args: [],
     discovered_command: String(discovered?.command || ''),
@@ -1183,6 +1499,8 @@ function stopCheckpointLoop(reason = 'stop_requested') {
 
 function startCheckpointLoop(config) {
   const existing = readJsonFile(CHECKPOINT_LOOP_STATE_FILE);
+  let seedReportPath = String(config.seedCheckpointLoopReportPath || '');
+  if (!seedReportPath && config.replace && existing?.report_path) seedReportPath = String(existing.report_path);
   if (existing?.pid && isPidRunning(existing.pid)) {
     if (!config.replace) {
       return {
@@ -1196,6 +1514,7 @@ function startCheckpointLoop(config) {
     stopCheckpointLoop('replace_requested');
   }
   const discovered = discoverRunningCheckpointLoopProcess();
+  if (!seedReportPath && config.replace && discovered?.report_path) seedReportPath = String(discovered.report_path);
   if (discovered?.pid && isPidRunning(discovered.pid)) {
     if (!config.replace) {
       return {
@@ -1233,10 +1552,14 @@ function startCheckpointLoop(config) {
     '--max-slow-requests', String(config.maxSlowRequests),
     '--checkpoint-duration-ms', String(config.checkpointDurationMs),
     '--checkpoint-interval-ms', String(config.checkpointLoopIntervalMs),
+    ...(config.checkpointInitialDelayMs > 0 ? ['--checkpoint-initial-delay-ms', String(config.checkpointInitialDelayMs)] : []),
+    ...(config.checkpointMaxProductCpuPercent > 0 ? ['--checkpoint-max-product-cpu-percent', String(config.checkpointMaxProductCpuPercent)] : []),
     '--max-checkpoints', String(config.maxCheckpoints),
     '--report-path', reportPath,
     '--log-path', logPath,
+    ...(seedReportPath ? ['--seed-checkpoint-loop-report', seedReportPath] : []),
     ...memorySkillsGateArgs(config),
+    ...memoryGatewayGateArgs(config),
   ];
   const fd = fs.openSync(logPath, 'a');
   const child = spawn(process.execPath, args, {
@@ -1257,6 +1580,7 @@ function startCheckpointLoop(config) {
     root_dir: ROOT_DIR,
     report_path: reportPath,
     log_path: logPath,
+    seed_checkpoint_loop_report_path: seedReportPath,
     http_base_url: config.httpBaseUrl,
     live_base_dir: config.liveBaseDir,
     duration_ms: config.durationMs,
@@ -1266,9 +1590,13 @@ function startCheckpointLoop(config) {
     max_slow_requests: config.maxSlowRequests,
     checkpoint_duration_ms: config.checkpointDurationMs,
     checkpoint_interval_ms: config.checkpointLoopIntervalMs,
+    checkpoint_initial_delay_ms: config.checkpointInitialDelayMs,
+    checkpoint_max_product_cpu_percent: config.checkpointMaxProductCpuPercent,
     max_checkpoints: config.maxCheckpoints,
     memory_skills_production_allowed: config.allowMemorySkillsProduction === true,
     memory_skills_production_required: config.requireMemorySkillsProduction === true,
+    memory_gateway_cutover_ready_required: config.requireMemoryGatewayCutoverReady === true,
+    memory_gateway_model_call_plan_shadow_required: config.requireMemoryGatewayModelCallPlanShadow === true,
     command: process.execPath,
     args,
     production_authority_change: false,
@@ -1297,6 +1625,8 @@ function checkpointLoopReportBase(config, startedAtMs, checkpoints, issues, comp
     loop_duration_ms: config.durationMs,
     checkpoint_duration_ms: config.checkpointDurationMs,
     checkpoint_interval_ms: config.checkpointLoopIntervalMs,
+    checkpoint_initial_delay_ms: config.checkpointInitialDelayMs,
+    checkpoint_max_product_cpu_percent: config.checkpointMaxProductCpuPercent,
     max_status_age_ms: config.maxStatusAgeMs,
     status_read_timeout_ms: config.statusReadTimeoutMs,
     max_slow_requests: config.maxSlowRequests,
@@ -1306,13 +1636,34 @@ function checkpointLoopReportBase(config, startedAtMs, checkpoints, issues, comp
     next_checkpoint_at_iso: !completed && !stopRequested && nextCheckpointAtMs > 0 ? new Date(nextCheckpointAtMs).toISOString() : '',
     next_checkpoint_remaining_ms: !completed && !stopRequested && nextCheckpointAtMs > 0 ? Math.max(0, nextCheckpointAtMs - Date.now()) : 0,
     checkpoint_count: checkpoints.length,
+    checkpoint_defer_count: Array.isArray(extra.checkpoint_deferrals) ? extra.checkpoint_deferrals.length : 0,
+    latest_checkpoint_defer: Array.isArray(extra.checkpoint_deferrals) && extra.checkpoint_deferrals.length > 0
+      ? extra.checkpoint_deferrals[extra.checkpoint_deferrals.length - 1]
+      : null,
     latest_checkpoint: latest,
     checkpoints,
+    checkpoint_deferrals: Array.isArray(extra.checkpoint_deferrals) ? extra.checkpoint_deferrals : [],
     production_authority_change: false,
     memory_skills_production_allowed: config.allowMemorySkillsProduction === true,
     memory_skills_production_required: config.requireMemorySkillsProduction === true,
-    memory_writer_authority_in_rust: checkpoints.some((item) => item.memory_writer_authority_in_rust === true),
-    skills_execution_authority_in_rust: checkpoints.some((item) => item.skills_execution_authority_in_rust === true),
+    memory_writer_authority_in_rust: latest?.memory_writer_authority_in_rust === true,
+    skills_execution_authority_in_rust: latest?.skills_execution_authority_in_rust === true,
+    memory_gateway_cutover_ready_required: config.requireMemoryGatewayCutoverReady === true,
+    memory_gateway_cutover_ready: latest?.memory_gateway_cutover_ready === true,
+    memory_gateway_cutover_readiness_ok: latest?.memory_gateway_cutover_readiness_ok === true,
+    memory_gateway_model_call_plan_shadow_required: config.requireMemoryGatewayModelCallPlanShadow === true,
+    memory_gateway_model_call_plan_shadow_found: latest?.memory_gateway_model_call_plan_shadow_found === true,
+    memory_gateway_model_call_plan_shadow_ok: latest?.memory_gateway_model_call_plan_shadow_ok === true,
+    memory_gateway_model_call_plan_shadow_evidence_ok: latest?.memory_gateway_model_call_plan_shadow_evidence_ok === true,
+    memory_gateway_model_call_plan_shadow_execution_safe: latest?.memory_gateway_model_call_plan_shadow_execution_safe === true,
+    memory_gateway_model_call_plan_shadow_text_safe: latest?.memory_gateway_model_call_plan_shadow_text_safe === true,
+    memory_gateway_model_call_plan_shadow_selected_chunk_count: Number(latest?.memory_gateway_model_call_plan_shadow_selected_chunk_count || 0),
+    memory_gateway_model_call_plan_shadow_selected_chunk_ref_count: Number(latest?.memory_gateway_model_call_plan_shadow_selected_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_ref_count: Number(latest?.memory_gateway_model_call_plan_shadow_omitted_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count: Number(latest?.memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_index_granularity: String(latest?.memory_gateway_model_call_plan_shadow_index_granularity || ''),
+    memory_gateway_model_call_plan_shadow_chunk_identity_schema: String(latest?.memory_gateway_model_call_plan_shadow_chunk_identity_schema || ''),
+    memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref: latest?.memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref === true,
     ui_product_change: checkpoints.some((item) => item.ui_product_change === true),
     secret_leak: checkpoints.some((item) => item.secret_leak === true),
     issues,
@@ -1351,6 +1702,7 @@ async function runCheckpointLoop(config) {
     root_dir: ROOT_DIR,
     report_path: config.reportPath,
     log_path: config.logPath,
+    seed_checkpoint_loop_report_path: config.seedCheckpointLoopReportPath,
     http_base_url: config.httpBaseUrl,
     live_base_dir: config.liveBaseDir,
     duration_ms: config.durationMs,
@@ -1360,18 +1712,27 @@ async function runCheckpointLoop(config) {
     max_slow_requests: config.maxSlowRequests,
     checkpoint_duration_ms: config.checkpointDurationMs,
     checkpoint_interval_ms: config.checkpointLoopIntervalMs,
+    checkpoint_initial_delay_ms: config.checkpointInitialDelayMs,
+    checkpoint_max_product_cpu_percent: config.checkpointMaxProductCpuPercent,
     max_checkpoints: config.maxCheckpoints,
+    memory_skills_production_allowed: config.allowMemorySkillsProduction === true,
+    memory_skills_production_required: config.requireMemorySkillsProduction === true,
+    memory_gateway_cutover_ready_required: config.requireMemoryGatewayCutoverReady === true,
+    memory_gateway_model_call_plan_shadow_required: config.requireMemoryGatewayModelCallPlanShadow === true,
     production_authority_change: false,
   };
   writeCheckpointLoopState(state);
 
-  const checkpoints = [];
+  const seedReport = readJsonFile(config.seedCheckpointLoopReportPath);
+  const checkpoints = seedReport?.ok === true && Array.isArray(seedReport.checkpoints) ? [...seedReport.checkpoints] : [];
+  const checkpointDeferrals = seedReport?.ok === true && Array.isArray(seedReport.checkpoint_deferrals) ? [...seedReport.checkpoint_deferrals] : [];
   const issues = [];
-  let nextCheckpointAtMs = startedAtMs;
+  let nextCheckpointAtMs = startedAtMs + config.checkpointInitialDelayMs;
   writeCheckpointLoopState({ ...state, next_checkpoint_at_iso: new Date(nextCheckpointAtMs).toISOString() });
   writeCheckpointLoopReport(config, startedAtMs, checkpoints, issues, false, {
     expected_end_at_iso: expectedEndAtIso,
     next_checkpoint_at_ms: nextCheckpointAtMs,
+    checkpoint_deferrals: checkpointDeferrals,
   });
   let checkpointFailed = false;
   while (Date.now() < expectedEndAtMs && !stopRequested) {
@@ -1380,6 +1741,32 @@ async function runCheckpointLoop(config) {
     if (stopRequested || Date.now() >= expectedEndAtMs) break;
 
     const cycle = checkpoints.length + 1;
+    const lowImpactDecision = checkpointLowImpactDecision(config);
+    if (lowImpactDecision.defer === true) {
+      const deferredAtMs = Date.now();
+      checkpointDeferrals.push({
+        cycle,
+        ok: true,
+        skipped: true,
+        reason: lowImpactDecision.reason,
+        generated_at_iso: new Date(deferredAtMs).toISOString(),
+        checkpoint_max_product_cpu_percent: lowImpactDecision.threshold_cpu_percent,
+        product_total_cpu_percent: lowImpactDecision.total_cpu_percent,
+        product_max_cpu_percent: lowImpactDecision.max_cpu_percent,
+        product_process_count: lowImpactDecision.product_process_count,
+        processes: lowImpactDecision.processes,
+      });
+      nextCheckpointAtMs = deferredAtMs + config.checkpointLoopIntervalMs;
+      writeCheckpointLoopState({ ...state, next_checkpoint_at_iso: new Date(nextCheckpointAtMs).toISOString() });
+      writeCheckpointLoopReport(config, startedAtMs, checkpoints, issues, false, {
+        expected_end_at_iso: expectedEndAtIso,
+        next_checkpoint_at_ms: nextCheckpointAtMs,
+        stop_requested: stopRequested,
+        stop_signal: stopSignal,
+        checkpoint_deferrals: checkpointDeferrals,
+      });
+      continue;
+    }
     const checkpointStartedAtMs = Date.now();
     const checkpointReportPath = path.join(SESSION_DIR, `production_live_stability_checkpoint_loop_${utcStamp()}_cycle_${String(cycle).padStart(4, '0')}.json`);
     const checkpointPayload = runCheckpoint({
@@ -1402,6 +1789,24 @@ async function runCheckpointLoop(config) {
       slow_request_delta: checkpointPayload.report_summary?.slow_request_delta || null,
       memory_writer_authority_in_rust: checkpointPayload.memory_writer_authority_in_rust === true,
       skills_execution_authority_in_rust: checkpointPayload.skills_execution_authority_in_rust === true,
+      memory_skills_production_allowed: checkpointPayload.memory_skills_production_allowed === true,
+      memory_skills_production_required: checkpointPayload.memory_skills_production_required === true,
+      memory_gateway_cutover_ready_required: checkpointPayload.memory_gateway_cutover_ready_required === true,
+      memory_gateway_cutover_ready: checkpointPayload.memory_gateway_cutover_ready === true,
+      memory_gateway_cutover_readiness_ok: checkpointPayload.memory_gateway_cutover_readiness_ok === true,
+      memory_gateway_model_call_plan_shadow_required: checkpointPayload.memory_gateway_model_call_plan_shadow_required === true,
+      memory_gateway_model_call_plan_shadow_found: checkpointPayload.memory_gateway_model_call_plan_shadow_found === true,
+      memory_gateway_model_call_plan_shadow_ok: checkpointPayload.memory_gateway_model_call_plan_shadow_ok === true,
+      memory_gateway_model_call_plan_shadow_evidence_ok: checkpointPayload.memory_gateway_model_call_plan_shadow_evidence_ok === true,
+      memory_gateway_model_call_plan_shadow_execution_safe: checkpointPayload.memory_gateway_model_call_plan_shadow_execution_safe === true,
+      memory_gateway_model_call_plan_shadow_text_safe: checkpointPayload.memory_gateway_model_call_plan_shadow_text_safe === true,
+      memory_gateway_model_call_plan_shadow_selected_chunk_count: Number(checkpointPayload.memory_gateway_model_call_plan_shadow_selected_chunk_count || 0),
+      memory_gateway_model_call_plan_shadow_selected_chunk_ref_count: Number(checkpointPayload.memory_gateway_model_call_plan_shadow_selected_chunk_ref_count || 0),
+      memory_gateway_model_call_plan_shadow_omitted_ref_count: Number(checkpointPayload.memory_gateway_model_call_plan_shadow_omitted_ref_count || 0),
+      memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count: Number(checkpointPayload.memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count || 0),
+      memory_gateway_model_call_plan_shadow_index_granularity: String(checkpointPayload.memory_gateway_model_call_plan_shadow_index_granularity || ''),
+      memory_gateway_model_call_plan_shadow_chunk_identity_schema: String(checkpointPayload.memory_gateway_model_call_plan_shadow_chunk_identity_schema || ''),
+      memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref: checkpointPayload.memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref === true,
       ui_product_change: checkpointPayload.ui_product_change === true,
       secret_leak: checkpointPayload.secret_leak === true,
       issue_count: Number(checkpointPayload.report_summary?.issue_count || 0),
@@ -1421,6 +1826,7 @@ async function runCheckpointLoop(config) {
         expected_end_at_iso: expectedEndAtIso,
         stop_requested: stopRequested,
         stop_signal: stopSignal,
+        checkpoint_deferrals: checkpointDeferrals,
       });
       break;
     }
@@ -1431,6 +1837,7 @@ async function runCheckpointLoop(config) {
       next_checkpoint_at_ms: nextCheckpointAtMs,
       stop_requested: stopRequested,
       stop_signal: stopSignal,
+      checkpoint_deferrals: checkpointDeferrals,
     });
   }
 
@@ -1445,6 +1852,7 @@ async function runCheckpointLoop(config) {
     expected_end_at_iso: expectedEndAtIso,
     stop_requested: stopRequested,
     stop_signal: stopSignal,
+    checkpoint_deferrals: checkpointDeferrals,
   });
   writeCheckpointLoopState({
     ...state,

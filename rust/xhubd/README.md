@@ -22,6 +22,11 @@ Current slice:
   read-only HTTP paths.
 - `xhubd serve` read-only role-aware project transcript projection over Hub
   SQLite turns for XT Supervisor/Coder/Reviewer continuity.
+- `xhubd serve` Memory Gateway model-call execution gate at
+  `/memory/gateway/model-call-execution-gate`: a non-executing Rust admission
+  surface that proves execute intent remains blocked, redacts prompt/context
+  text, and keeps provider/model execution untouched until a later explicit
+  authority cutover.
 - `xhubd serve` global HTTP in-flight backpressure guard for business routes.
 - `xhubd serve` bounded HTTP socket read/write timeouts for slow or half-open
   client connections.
@@ -607,7 +612,21 @@ does not restart or stop the daemon.
 require `/health`, `/ready`, and `/runtime/http-metrics`, enforce the
 slow-request budget, include maintenance dry-run evidence, and verify UI plus
 authority boundaries. They write `reports/daemon_ops_gate_*.json` and never
-apply maintenance or restart the daemon.
+apply maintenance or restart the daemon. Post-cutover, the default boundary
+requires Rust memory writer and skills execution authority; use
+`--no-require-memory-skills-production` only for explicit pre-cutover rehearsal.
+
+`product_process_sanity.command` is the lightweight performance hygiene gate.
+It takes one `ps` snapshot, detects stale mounted `/Volumes/X-Hub...` app
+sidecars, flags ad-hoc `target/debug|release/xhubd` processes, and can enforce a product CPU budget with
+`--max-product-cpu-percent`. It writes `reports/product_process_sanity_*.json`
+and is report-only: no kill, restart, UI change, or authority change. A separate
+`RELFlowHub.app` is reported as external diagnostics only; it is not part of the
+X-Hub product shell, CPU budget, or stale-mounted failure condition. `ops-gate`
+and `watchdog` run it by default; pass `--skip-product-process-sanity` only when
+process inspection is unavailable. The Rust daemon also exposes the same
+diagnostic surface at authenticated `GET /runtime/product-process-sanity` for XT
+Doctor and report projections.
 
 `watchdog` and `daemon_watchdog.command` are the long-running daemon guard. They
 check launchd load/running state, `/health`, `/ready`, HTTP recent-window slow
@@ -728,6 +747,8 @@ bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" m
 bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/memory_retrieval_shadow_smoke.command"
 bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/memory_retrieval_http_smoke.command"
 bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/memory_hybrid_quality_bench.command"
+bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/memory_hybrid_quality_bench.command" --profile large
+bash "/Users/andrew.xie/Documents/AX/x-hub-system/scripts/ci/rust_memory_hybrid_quality_gate.sh"
 ```
 
 Rust memory retrieval is read-only and shadow-only. It scans supported local
@@ -747,11 +768,61 @@ table without enabling semantic search or writer authority. The derived index is
 not memory truth; `memory object-index-rebuild` and `POST /memory/reindex`
 rebuild it from canonical Rust memory objects, and `/memory/readiness` reports
 row count, stale count, and latest index generation evidence.
+W6 retrieval uses a Rust BM25-style scorer over the policy-filtered derived
+index (`retrieval_engine.fts=derived_index_bm25_rust`), so SQLite FTS5 is not a
+runtime portability dependency.
 When `explain=true`, object retrieval also returns
 `xhub.memory.retrieval_trace.v1` with selected/omitted refs and redacted reason
 codes for UI diagnostics. `memory_hybrid_quality_bench.command` runs a temporary
 daemon fixture covering project chat, supervisor next-step, remote sanitized
-visibility, raw evidence opt-in, and private sensitivity filter cases.
+visibility, raw evidence opt-in, and private sensitivity filter cases. Its
+default `quick` profile is for daily validation; `--profile large` adds
+deterministic distractors plus Chinese/domain/reviewer cases and reports
+`precision_at_1`, `recall_at_k`, `filter_pass_rate`, and `trace_coverage`.
+`scripts/ci/rust_memory_hybrid_quality_gate.sh` is the CI-facing quick gate: it
+runs `node --check` for the bench script plus the default quick profile, writes
+`build/reports/rust_memory_hybrid_quality_gate_summary.v1.json`, and leaves the
+large profile as a manual/nightly validation target.
+
+Governed memory writeback starts as a candidate queue, not direct durable
+mutation. `POST /memory/writeback/candidates` creates `status=candidate` memory
+objects, `GET /memory/writeback/candidates` lists pending candidates, and
+`POST /memory/writeback/candidates/extract` deterministically maps AXMemory
+delta fields into candidate objects without activating them. The extractor
+supports `dry_run=1`, stable duplicate collapse, and secret fail-closed batch
+blocking. CLI access is available through `xhubd memory candidate-extract
+--payload-json ...`.
+`POST /memory/writeback/candidates/{memory_id}/approve|reject` transitions only
+candidate records to `active` or `rejected` with memory events. The same
+transition is available through `/memory/objects/{memory_id}/approve|reject`.
+Secret-like candidates fail closed, invalid transitions return conflict, and
+`/memory/readiness` reports `writeback_candidates` evidence.
+Candidate creation also records same scope/source_kind/layer active conflicts in
+policy/provenance metadata. Approval of a conflicting candidate requires an
+explicit `conflict_resolution_reason`; newer same-key pending candidates archive
+older pending candidates with `superseded_by` without resurrecting rejected rows.
+`GET /memory/writeback/candidates` also returns
+`candidate_diagnostics` (`xhub.memory.writeback_candidate_diagnostics.v1`), and
+`/memory/readiness` exposes the same bounded summary at
+`object_store.writeback_candidates.diagnostics`. The diagnostics include
+candidate/conflict/stale/stale-review/supersession counts, planned archive and
+review counts, queue pressure, noise score, bounded IDs, and
+`production_authority_change=false`. The Swift shell consumes this as read-only
+evidence in the candidate queue and Unified Doctor; Rust still enforces conflict
+approval reasons and remains the memory authority.
+`POST /memory/writeback/candidates/maintenance` is the Rust stale queue hygiene
+surface. It is dry-run by default; `apply=1` is required to mutate. Low-risk
+stale working-set/observation candidates are archived with memory events, while
+canonical/high-value candidates stay pending and get `stale_review_required`
+metadata for explicit review. CLI access is available through `xhubd memory
+candidate-maintenance --project-id ... --max-age-ms ... --apply`.
+`tools/memory_writeback_candidate_smoke.command` runs an isolated temp daemon and
+verifies the full candidate lifecycle without touching the live Hub database.
+XT now calls this extractor from `AXMemoryPipeline` after model/fallback
+`AXMemoryDelta` creation through `HubIPCClient.extractMemoryWritebackCandidatesViaRust`.
+That caller is short-timeout, candidate-only, skips removal-only deltas, and logs
+`active_write=false` / `production_authority_change=false` evidence while local
+AXMemory files remain compatibility projection/fallback.
 
 Role-aware project transcript projection:
 
@@ -1406,8 +1477,9 @@ retrieval, execution, secret denial, and no `detail_json` leakage.
 `RHM-126` makes that migration live-cutover ready. The launchd manager now
 passes explicit memory/skills authority keys into the Rust daemon, syncs the
 built-in `rust-authority-healthcheck` skill, and ops/watchdog/stability gates
-accept the change only with `--allow-memory-skills-production` or require it
-with `--require-memory-skills-production`.
+now default to requiring Rust memory writer plus skills execution authority.
+Use `--no-require-memory-skills-production` only for explicit pre-cutover
+rehearsal.
 
 `RHM-127` converges the live active root to the final package-store Rust Hub
 root after memory/skills cutover. Both launchctl `XHUB_RUST_HUB_ROOT` and the

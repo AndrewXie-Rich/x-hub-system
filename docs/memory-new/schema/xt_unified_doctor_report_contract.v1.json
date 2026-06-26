@@ -19,6 +19,9 @@
     "memory_route_truth_projection_must_directly_reuse_frozen_upstream_route_diagnostics",
     "durable_candidate_mirror_projection_is_explainability_only_not_durable_promotion_or_read_cutover_truth",
     "local_store_write_projection_is_xt_local_provenance_only_not_durable_writer_truth",
+    "rust_memory_object_mutation_gate_projection_is_readiness_explainability_not_mutation_authority",
+    "rust_memory_user_reveal_grant_projection_is_readiness_explainability_not_user_memory_authority",
+    "rust_memory_selection_evidence_projection_is_selection_explainability_not_memory_authority",
     "remote_snapshot_cache_projection_is_cache_provenance_only_not_memory_source_of_truth"
   ],
   "section_kind_enum": [
@@ -111,6 +114,9 @@
         "memoryRouteTruthProjection",
         "durableCandidateMirrorProjection",
         "localStoreWriteProjection",
+        "rustMemorySelectionEvidenceProjection",
+        "rustMemoryObjectMutationGateProjection",
+        "rustMemoryUserRevealGrantProjection",
         "skillDoctorTruthProjection"
       ],
       "enum_refs": {
@@ -134,6 +140,9 @@
         "memoryRouteTruthProjection is currently expected on modelRouteReadiness when XT can project upstream memory route diagnostics.",
         "durableCandidateMirrorProjection is currently expected on sessionRuntimeReadiness when XT has supervisor durable-candidate mirror evidence to surface.",
         "localStoreWriteProjection is currently expected on sessionRuntimeReadiness when XT has local cache/fallback/edit-buffer write provenance to surface.",
+        "rustMemorySelectionEvidenceProjection is currently expected on sessionRuntimeReadiness when XT can expose cached Rust memory-gateway selected/omitted evidence without recomputing selection or exporting refs/content.",
+        "rustMemoryObjectMutationGateProjection is currently expected on sessionRuntimeReadiness when XT can expose Rust-owned object mutation gate readiness from /memory/readiness without scanning objects or becoming mutation authority.",
+        "rustMemoryUserRevealGrantProjection is currently expected on sessionRuntimeReadiness when XT can expose Rust-owned Assistant/User reveal grant readiness from /memory/readiness without scanning user memory or becoming memory authority.",
         "Structured section projections should be preferred over reparsing detailLines when both are available.",
         "detailLines remain migration-friendly context and operator-readable breadcrumbs; they are not a second authority surface."
       ]
@@ -638,6 +647,108 @@
       "rules": [
         "This object is an XT-local provenance snapshot showing which local cache/fallback/edit-buffer write path most recently touched each store surface.",
         "It must not be treated as durable writer authority, canonical Hub save success, or proof that XT local storage is the long-term source of truth."
+      ]
+    },
+    "xt.unified_doctor_rust_memory_object_mutation_gate_projection.v1": {
+      "required_fields": [
+        "schemaVersion",
+        "ready",
+        "authority",
+        "archiveHTTP",
+        "deleteHTTP",
+        "pinHTTP",
+        "unpinHTTP",
+        "confirmationRequired",
+        "confirmationRequiredFor",
+        "immutableFailClosed",
+        "deleteMode",
+        "activeMemoryMutation",
+        "productionAuthorityChange"
+      ],
+      "rules": [
+        "This object is a content-free XT projection of Rust /memory/readiness.object_store.mutation_gate.",
+        "It exposes mutation-control availability, confirmation posture, tombstone delete mode, immutable fail-closed behavior, and production-authority-change posture without listing memory IDs, event IDs, project IDs, prompt text, context text, or object content.",
+        "It must not be treated as permission to mutate memory; actual archive/delete/pin/unpin authority remains the Rust mutation gate and its confirmation/policy checks."
+      ]
+    },
+    "xt.unified_doctor_rust_memory_user_reveal_grant_projection.v1": {
+      "required_fields": [
+        "schemaVersion",
+        "ready",
+        "authority",
+        "scope",
+        "surface",
+        "issueHTTP",
+        "evaluateHTTP",
+        "revokeHTTP",
+        "defaultTTLMS",
+        "maxTTLMS",
+        "contentIncluded",
+        "memoryIDsIncluded",
+        "projectCoderAllowed",
+        "modelContextAuthority",
+        "memoryServingAuthorityChange",
+        "productionAuthorityChange"
+      ],
+      "rules": [
+        "This object is a content-free XT projection of Rust /memory/readiness.object_store.user_reveal_grant.",
+        "It exposes Assistant/User reveal grant availability, TTL bounds, user-only scope, surface label, and authority-change posture without listing memory IDs, event IDs, project IDs, prompt text, context text, or user memory content.",
+        "It must not be treated as permission to reveal memory; actual issue/evaluate/revoke authority remains the Rust user-reveal grant gate, and Project Coder/model-context serving remains disallowed by default."
+      ]
+    },
+    "xt.unified_doctor_rust_memory_selection_evidence_projection.v1": {
+      "required_fields": [
+        "schemaVersion",
+        "source",
+        "statusFound",
+        "historyFound",
+        "historySampleCount",
+        "droppedCrossScopeSampleCount",
+        "ok",
+        "requestId",
+        "requesterRole",
+        "useMode",
+        "scope",
+        "projectIdPresent",
+        "selectedCount",
+        "selectedRefCount",
+        "omittedCount",
+        "deniedCount",
+        "skippedPolicyOrFilter",
+        "skippedRemoteVisibility",
+        "skippedSecret",
+        "skippedBudget",
+        "omittedReasonCounts",
+        "selectedLayerCounts",
+        "selectedSourceKindCounts",
+        "selectedSensitivityCounts",
+        "selectedVisibilityCounts",
+        "selectedRefSamples",
+        "contextTextIncluded",
+        "promptTextIncluded",
+        "wouldCallModel",
+        "modelCallExecuted",
+        "productionAuthorityChange",
+        "recordedAtMs"
+      ],
+      "optional_fields": [
+        "servingProfileId",
+        "planStatus",
+        "planSource",
+        "planAuthority",
+        "selectedChunkCount",
+        "selectedChunkRefCount",
+        "omittedRefCount",
+        "omittedChunkRefCount",
+        "indexSource",
+        "indexGranularity",
+        "chunkIdentitySchema",
+        "chunkExpandViaGetRef"
+      ],
+      "rules": [
+        "This object is a content-free XT projection of cached Rust memory-gateway model-call-plan selection evidence.",
+        "It may expose counts, reason buckets, layer/source aggregates, safety booleans, and bounded chunk-shape samples, but it must not export full memory IDs, chunk refs, project IDs, prompt text, context text, policy/provenance blobs, or object content.",
+        "It must not recompute memory selection and must not be treated as durable memory truth, model-serving authority, export approval, or Swift memory authority."
       ]
     },
     "xt.unified_doctor_route_snapshot.v1": {

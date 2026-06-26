@@ -22,6 +22,7 @@ struct HubInviteOnboardingFlowTests {
 
         try withHubRemoteDefaultsCleared {
             let appModel = AppModel()
+            appModel.hubInternetHost = ""
             appModel.applyHubPairingInvitePrefill(prefill)
 
             let options = HubAIClient.remoteConnectOptionsFromDefaults(stateDir: tempDir)
@@ -32,6 +33,38 @@ struct HubInviteOnboardingFlowTests {
             #expect(options.grpcPort == 50053)
             #expect(options.inviteToken == "axhub_invite_test_123")
             #expect(options.inviteAlias == "ops-main")
+            #expect(options.inviteInstanceID == "hub_deadbeefcafefeed00")
+        }
+    }
+
+    @Test
+    func localPairingInviteRouteFeedsIdentityWithoutInternetHost() throws {
+        let url = try #require(
+            URL(string: "xterminal://pair-hub?pairing_port=50054&grpc_port=50053&invite_token=axhub_invite_test_123&hub_alias=axhub-deadbeef&hub_instance_id=hub_deadbeefcafefeed00")
+        )
+        let route = try #require(XTDeepLinkParser.parse(url))
+        guard case let .hubSetup(hubSetupRoute) = route else {
+            Issue.record("expected hub setup route")
+            return
+        }
+        let prefill = try #require(hubSetupRoute.pairingPrefill)
+
+        let tempDir = try makeTempStateDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try withHubRemoteDefaultsCleared {
+            let appModel = AppModel()
+            appModel.applyHubPairingInvitePrefill(prefill)
+
+            let options = HubAIClient.remoteConnectOptionsFromDefaults(stateDir: tempDir)
+            #expect(appModel.hubInternetHost == "")
+            #expect(appModel.hubInviteAlias == "axhub-deadbeef")
+            #expect(appModel.hubInviteInstanceID == "hub_deadbeefcafefeed00")
+            #expect(options.internetHost == "")
+            #expect(options.pairingPort == 50054)
+            #expect(options.grpcPort == 50053)
+            #expect(options.inviteToken == "axhub_invite_test_123")
+            #expect(options.inviteAlias == "axhub-deadbeef")
             #expect(options.inviteInstanceID == "hub_deadbeefcafefeed00")
         }
     }

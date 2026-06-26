@@ -16,6 +16,9 @@
     "supervisor_safe_point_timeline_snapshot_is_delivery_timing_explainability_not_scheduler_or_interrupt_authority",
     "skill_doctor_truth_snapshot_is_read_only_capability_and_readiness_projection",
     "hub_memory_prompt_projection_is_hub_prompt_assembly_explainability_not_local_prompt_authority",
+    "rust_memory_object_mutation_gate_snapshot_is_readiness_explainability_not_mutation_authority",
+    "rust_memory_user_reveal_grant_snapshot_is_readiness_explainability_not_user_memory_authority",
+    "rust_memory_selection_evidence_snapshot_is_selection_explainability_not_memory_authority",
     "doctor_output_must_not_upgrade_release_scope_or_validated_status_by_itself",
     "remote_snapshot_cache_snapshots_are_cache_provenance_not_memory_source_truth"
   ],
@@ -155,6 +158,9 @@
         "memory_route_truth_snapshot",
         "durable_candidate_mirror_snapshot",
         "local_store_write_snapshot",
+        "rust_memory_selection_evidence_snapshot",
+        "rust_memory_object_mutation_gate_snapshot",
+        "rust_memory_user_reveal_grant_snapshot",
         "skill_doctor_truth_snapshot"
       ],
       "enum_refs": {
@@ -163,7 +169,7 @@
       },
       "rules": [
         "Blocking failed checks should include either a concrete next_step or a corresponding top-level next_steps entry.",
-        "detail_lines, repair_destination_ref, project_context_summary, hub_memory_prompt_projection, project_governance_runtime_readiness, project_memory_policy, project_memory_readiness, project_memory_assembly_resolution, supervisor_memory_policy, supervisor_memory_assembly_resolution, supervisor_review_trigger_snapshot, project_remote_snapshot_cache_snapshot, supervisor_remote_snapshot_cache_snapshot, heartbeat_governance_snapshot, provider_key_selection_snapshot, provider_key_route_context_snapshot, memory_route_truth_snapshot, durable_candidate_mirror_snapshot, local_store_write_snapshot, and skill_doctor_truth_snapshot are optional producer context and do not change the normalized check semantics.",
+        "detail_lines, repair_destination_ref, project_context_summary, hub_memory_prompt_projection, project_governance_runtime_readiness, project_memory_policy, project_memory_readiness, project_memory_assembly_resolution, supervisor_memory_policy, supervisor_memory_assembly_resolution, supervisor_review_trigger_snapshot, project_remote_snapshot_cache_snapshot, supervisor_remote_snapshot_cache_snapshot, heartbeat_governance_snapshot, provider_key_selection_snapshot, provider_key_route_context_snapshot, memory_route_truth_snapshot, durable_candidate_mirror_snapshot, local_store_write_snapshot, rust_memory_selection_evidence_snapshot, rust_memory_object_mutation_gate_snapshot, rust_memory_user_reveal_grant_snapshot, and skill_doctor_truth_snapshot are optional producer context and do not change the normalized check semantics.",
         "project_context_summary is currently used by XT session runtime readiness to expose a human-readable projection of project context assembly truth alongside the raw detail lines.",
         "hub_memory_prompt_projection is currently used by XT session runtime readiness to expose Hub-provided prompt assembly counts/source kinds as first-class machine-readable explainability without reparsing detail_lines or locally inferring prompt content.",
         "project_governance_runtime_readiness is currently used by XT session runtime readiness to expose the A-tier configured-vs-runtime-ready split as first-class machine-readable diagnostics.",
@@ -183,6 +189,9 @@
         "memory_route_truth_snapshot is a read-only projection of upstream memory route diagnostics and must not be treated as a second route resolver.",
         "durable_candidate_mirror_snapshot is a read-only XT projection of supervisor durable-candidate mirror state and must not be treated as durable promotion, canonical save success, or read cutover truth.",
         "local_store_write_snapshot is a read-only XT projection of local cache/fallback/edit-buffer write provenance and must not be treated as durable writer authority.",
+        "rust_memory_selection_evidence_snapshot is a read-only XT projection of cached Rust memory-gateway selected/omitted evidence and must not be treated as memory authority, model-serving authority, export approval, or permission to reveal refs/content.",
+        "rust_memory_object_mutation_gate_snapshot is a read-only XT projection of Rust memory object mutation gate readiness and must not be treated as permission to mutate memory or as a Swift-side mutation authority.",
+        "rust_memory_user_reveal_grant_snapshot is a read-only XT projection of Rust Assistant/User reveal grant readiness and must not be treated as permission to scan user memory, reveal memory content, or grant Project Coder/model-context access.",
         "Structured producer fields should be preferred over reparsing detail_lines when both are available."
       ]
     },
@@ -658,6 +667,108 @@
       "rules": [
         "This object is optional and producer-specific; it mirrors XT session-runtime evidence about which local cache/fallback/edit-buffer write path most recently touched each store surface.",
         "Its semantics are diagnostic only and must not be upgraded into durable writer truth, canonical Hub save success, or read-source authority."
+      ]
+    },
+    "xhub.doctor_rust_memory_object_mutation_gate_snapshot.v1": {
+      "required_fields": [
+        "schema_version",
+        "ready",
+        "authority",
+        "archive_http",
+        "delete_http",
+        "pin_http",
+        "unpin_http",
+        "confirmation_required",
+        "confirmation_required_for",
+        "immutable_fail_closed",
+        "delete_mode",
+        "active_memory_mutation",
+        "production_authority_change"
+      ],
+      "rules": [
+        "This object is a content-free generic doctor projection of Rust /memory/readiness.object_store.mutation_gate.",
+        "It exposes mutation-control availability and safety posture without memory IDs, event IDs, project IDs, prompt text, context text, or object content.",
+        "It must not be treated as permission to mutate memory; the Rust mutation gate remains the only authority for archive/delete/pin/unpin actions."
+      ]
+    },
+    "xhub.doctor_rust_memory_user_reveal_grant_snapshot.v1": {
+      "required_fields": [
+        "schema_version",
+        "ready",
+        "authority",
+        "scope",
+        "surface",
+        "issue_http",
+        "evaluate_http",
+        "revoke_http",
+        "default_ttl_ms",
+        "max_ttl_ms",
+        "content_included",
+        "memory_ids_included",
+        "project_coder_allowed",
+        "model_context_authority",
+        "memory_serving_authority_change",
+        "production_authority_change"
+      ],
+      "rules": [
+        "This object is a content-free generic doctor projection of Rust /memory/readiness.object_store.user_reveal_grant.",
+        "It exposes user reveal grant availability and safety posture without memory IDs, event IDs, project IDs, prompt text, context text, or user memory content.",
+        "It must not be treated as permission to reveal memory; the Rust user-reveal grant gate remains the only authority for issue/evaluate/revoke, and Project Coder/model-context access remains disallowed by default."
+      ]
+    },
+    "xhub.doctor_rust_memory_selection_evidence_snapshot.v1": {
+      "required_fields": [
+        "schema_version",
+        "source",
+        "status_found",
+        "history_found",
+        "history_sample_count",
+        "dropped_cross_scope_sample_count",
+        "ok",
+        "request_id",
+        "requester_role",
+        "use_mode",
+        "scope",
+        "project_id_present",
+        "selected_count",
+        "selected_ref_count",
+        "omitted_count",
+        "denied_count",
+        "skipped_policy_or_filter",
+        "skipped_remote_visibility",
+        "skipped_secret",
+        "skipped_budget",
+        "omitted_reason_counts",
+        "selected_layer_counts",
+        "selected_source_kind_counts",
+        "selected_sensitivity_counts",
+        "selected_visibility_counts",
+        "selected_ref_samples",
+        "context_text_included",
+        "prompt_text_included",
+        "would_call_model",
+        "model_call_executed",
+        "production_authority_change",
+        "recorded_at_ms"
+      ],
+      "optional_fields": [
+        "serving_profile_id",
+        "plan_status",
+        "plan_source",
+        "plan_authority",
+        "selected_chunk_count",
+        "selected_chunk_ref_count",
+        "omitted_ref_count",
+        "omitted_chunk_ref_count",
+        "index_source",
+        "index_granularity",
+        "chunk_identity_schema",
+        "chunk_expand_via_get_ref"
+      ],
+      "rules": [
+        "This object is a content-free generic doctor projection of cached Rust memory-gateway model-call-plan selection evidence.",
+        "It may expose counts, reason buckets, layer/source aggregates, safety booleans, and bounded chunk-shape samples, but it must not export full memory IDs, chunk refs, project IDs, prompt text, context text, policy/provenance blobs, or object content.",
+        "It must not recompute memory selection and must not be treated as durable memory truth, model-serving authority, export approval, or Swift memory authority."
       ]
     },
     "xhub.doctor_next_step.v1": {

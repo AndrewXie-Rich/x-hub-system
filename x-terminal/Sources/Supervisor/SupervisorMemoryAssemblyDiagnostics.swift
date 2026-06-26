@@ -49,7 +49,10 @@ enum SupervisorMemoryAssemblyDiagnostics {
         canonicalSyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot? = nil,
         rustGatewayShadowCompare: HubIPCClient.RustMemoryGatewayShadowCompareResult? = nil,
         rustGatewayCutoverReadiness: HubIPCClient.RustMemoryGatewayCutoverReadinessReport? = nil,
-        rustGatewayRequireEnabled: Bool = false
+        rustGatewayRequireEnabled: Bool = false,
+        rustGatewayModelCallPlanStatus: HubIPCClient.RustMemoryGatewayModelCallPlanEvidence? = nil,
+        rustGatewayModelCallPlanHistory: HubIPCClient.RustMemoryGatewayModelCallPlanHistory? = nil,
+        rustGatewayModelCallPlanShadowRequired: Bool = false
     ) -> SupervisorMemoryAssemblyReadiness {
         guard let snapshot else {
             let syncFailures = relevantCanonicalSyncFailures(
@@ -57,6 +60,13 @@ enum SupervisorMemoryAssemblyDiagnostics {
                 snapshot: canonicalSyncSnapshot
             )
             var issues: [SupervisorMemoryAssemblyIssue] = []
+            if let modelCallIssue = rustGatewayModelCallPlanIssue(
+                status: rustGatewayModelCallPlanStatus,
+                history: rustGatewayModelCallPlanHistory,
+                shadowRequired: rustGatewayModelCallPlanShadowRequired
+            ) {
+                issues.append(modelCallIssue)
+            }
             if let readinessIssue = rustGatewayCutoverReadinessIssue(
                 forFocusedProjectId: nil,
                 readiness: rustGatewayCutoverReadiness,
@@ -109,6 +119,13 @@ enum SupervisorMemoryAssemblyDiagnostics {
             failures: syncFailures
         ) {
             issues.append(syncIssue)
+        }
+        if let modelCallIssue = rustGatewayModelCallPlanIssue(
+            status: rustGatewayModelCallPlanStatus,
+            history: rustGatewayModelCallPlanHistory,
+            shadowRequired: rustGatewayModelCallPlanShadowRequired
+        ) {
+            issues.append(modelCallIssue)
         }
         if let gatewayIssue = rustGatewayShadowCompareIssue(
             forFocusedProjectId: focusedProjectId.isEmpty ? nil : focusedProjectId,
@@ -333,6 +350,71 @@ low_signal_samples=\(dropSamples)
         }
     }
 
+    private static func rustGatewayModelCallPlanIssue(
+        status: HubIPCClient.RustMemoryGatewayModelCallPlanEvidence?,
+        history: HubIPCClient.RustMemoryGatewayModelCallPlanHistory?,
+        shadowRequired: Bool
+    ) -> SupervisorMemoryAssemblyIssue? {
+        let historyItems = history?.items ?? []
+        let evidence = status ?? historyItems.first
+        let evidenceSource = status == nil && evidence != nil ? "history" : "status"
+        guard let evidence else {
+            guard shadowRequired else { return nil }
+            return SupervisorMemoryAssemblyIssue(
+                code: "memory_gateway_model_call_plan_shadow_missing",
+                severity: .blocking,
+                summary: "Rust memory gateway model-call shadow 缺少写前证据",
+                detail: "shadow_required=true status_found=false history_found=\(history != nil) history_items=\(historyItems.count)"
+            )
+        }
+
+        let issueCodes = evidence.issueCodes.joined(separator: ",")
+        let schemaOk = evidence.schemaVersion == HubIPCClient.RustMemoryGatewayModelCallPlanEvidence.schemaVersion
+        let planSchemaOk = evidence.planSchemaVersion == "xhub.memory.gateway_model_call_plan.v1"
+        let executionSafe = !evidence.wouldCallModel
+            && !evidence.modelCallExecuted
+            && !evidence.productionAuthorityChange
+        let textSafe = !evidence.contextTextIncluded && !evidence.promptTextIncluded
+        let ageMs = max(0, Int64(Date().timeIntervalSince1970 * 1000.0) - evidence.recordedAtMs)
+        let detail = """
+shadow_required=\(shadowRequired) status_source=\(evidenceSource) status_found=\(status != nil) history_found=\(history != nil) history_items=\(historyItems.count) evidence_ok=\(evidence.ok) schema_ok=\(schemaOk) plan_schema_ok=\(planSchemaOk) execution_safe=\(executionSafe) text_safe=\(textSafe) source=\(evidence.source) mode=\(evidence.mode) plan_source=\(evidence.planSource ?? "(none)") plan_mode=\(evidence.planMode ?? "(none)") plan_authority=\(evidence.planAuthority ?? "(none)") plan_status=\(evidence.planStatus ?? "(none)") project_id=\(evidence.projectId ?? "(none)") session_id=\(evidence.sessionId ?? "(none)") provider_id=\(evidence.providerId ?? "(none)") model_id=\(evidence.modelId ?? "(none)") task_kind=\(evidence.taskKind) would_call_model=\(evidence.wouldCallModel) model_call_executed=\(evidence.modelCallExecuted) production_authority_change=\(evidence.productionAuthorityChange) context_text_included=\(evidence.contextTextIncluded) prompt_text_included=\(evidence.promptTextIncluded) context_chars=\(evidence.contextCharCount) selected_refs=\(evidence.selectedRefCount) prompt_chars=\(evidence.promptCharCount) message_count=\(evidence.messageCount) recorded_at_ms=\(evidence.recordedAtMs) age_ms=\(ageMs) issue_codes=\(issueCodes.isEmpty ? "(none)" : issueCodes)
+"""
+
+        if !schemaOk || !planSchemaOk || evidence.issueCodes.contains("rust_memory_gateway_model_call_plan_schema_mismatch") {
+            return SupervisorMemoryAssemblyIssue(
+                code: "memory_gateway_model_call_plan_shadow_schema_mismatch",
+                severity: shadowRequired ? .blocking : .warning,
+                summary: "Rust memory gateway model-call shadow schema 不匹配",
+                detail: detail
+            )
+        }
+        if evidence.wouldCallModel || evidence.modelCallExecuted {
+            return SupervisorMemoryAssemblyIssue(
+                code: "memory_gateway_model_call_plan_executed_unexpectedly",
+                severity: .blocking,
+                summary: "Rust memory gateway model-call shadow 意外触发模型执行",
+                detail: detail
+            )
+        }
+        if evidence.contextTextIncluded || evidence.promptTextIncluded {
+            return SupervisorMemoryAssemblyIssue(
+                code: "memory_gateway_model_call_plan_text_leak",
+                severity: .blocking,
+                summary: "Rust memory gateway model-call shadow 写入了明文 prompt/context",
+                detail: detail
+            )
+        }
+        guard evidence.ok && executionSafe && textSafe else {
+            return SupervisorMemoryAssemblyIssue(
+                code: "memory_gateway_model_call_plan_shadow_invalid",
+                severity: shadowRequired ? .blocking : .warning,
+                summary: "Rust memory gateway model-call shadow 证据未通过",
+                detail: detail
+            )
+        }
+        return nil
+    }
+
     private static func rustGatewayShadowCompareIssue(
         forFocusedProjectId focusedProjectId: String?,
         shadowCompare: HubIPCClient.RustMemoryGatewayShadowCompareResult?
@@ -347,7 +429,7 @@ low_signal_samples=\(dropSamples)
         }
 
         let detail = """
-project_id=\(comparedProjectId.isEmpty ? "(none)" : comparedProjectId) role=\(shadowCompare.requesterRole) use_mode=\(shadowCompare.useMode) mode=\(shadowCompare.mode) ok=\(shadowCompare.ok) parity_ok=\(shadowCompare.parityOk) production_authority_change=\(shadowCompare.productionAuthorityChange) rust_objects=\(shadowCompare.rustObjectCount) matched_anchors=\(shadowCompare.matchedRustAnchors.count) missing_anchors=\(shadowCompare.missingRustAnchors.count) reason=\(shadowCompare.reasonCode ?? "(none)") rust_deny=\(shadowCompare.rustDenyCode ?? "(none)") product_hash=\(shadowCompare.productTextHash) rust_hash=\(shadowCompare.rustContextHash) recorded_at_ms=\(shadowCompare.recordedAtMs)
+project_id=\(comparedProjectId.isEmpty ? "(none)" : comparedProjectId) role=\(shadowCompare.requesterRole) use_mode=\(shadowCompare.useMode) serving_profile_id=\(shadowCompare.servingProfileId ?? "(none)") selected_profile=\(shadowCompare.selectedProfile ?? "(none)") effective_profile=\(shadowCompare.effectiveProfile ?? "(none)") mode=\(shadowCompare.mode) ok=\(shadowCompare.ok) parity_ok=\(shadowCompare.parityOk) production_authority_change=\(shadowCompare.productionAuthorityChange) rust_objects=\(shadowCompare.rustObjectCount) matched_anchors=\(shadowCompare.matchedRustAnchors.count) missing_anchors=\(shadowCompare.missingRustAnchors.count) reason=\(shadowCompare.reasonCode ?? "(none)") rust_deny=\(shadowCompare.rustDenyCode ?? "(none)") product_hash=\(shadowCompare.productTextHash) rust_hash=\(shadowCompare.rustContextHash) recorded_at_ms=\(shadowCompare.recordedAtMs)
 missing_anchor_sample=\(shadowCompare.missingRustAnchors.prefix(2).joined(separator: " | "))
 """
 
@@ -395,8 +477,13 @@ missing_anchor_sample=\(shadowCompare.missingRustAnchors.prefix(2).joined(separa
         let issueDetails = readiness.issues.prefix(3).map { issue in
             "\(issue.code):\(issue.detail)"
         }.joined(separator: " | ")
+        let profileReadinessSample = (readiness.profileReadiness ?? []).prefix(5).map { profile in
+            "\(profile.servingProfileId):fresh=\(profile.freshSampleCount),passing=\(profile.passingSampleCount),ready=\(profile.readyForRequire),downgrade=\(profile.downgradeCount),deny=\(profile.denyCount)"
+        }.joined(separator: " | ")
         let detail = """
-ready_for_require=\(readiness.readyForRequire) ok=\(readiness.ok) require_env=\(readiness.requireEnvKey) require_env_enabled=\(requireEnabled) project_id=\(readinessProjectId.isEmpty ? "(none)" : readinessProjectId) role=\(readiness.requesterRole ?? "(none)") use_mode=\(readiness.useMode ?? "(none)") required_samples=\(readiness.requiredSampleCount) matching_samples=\(readiness.matchingSampleCount) fresh_matching_samples=\(readiness.freshMatchingSampleCount) considered_samples=\(readiness.consideredSampleCount) passing_samples=\(readiness.passingSampleCount) stale_matching_samples=\(readiness.staleMatchingSampleCount) authority_violations=\(readiness.authorityViolationCount) parity_failures=\(readiness.parityFailureCount) rust_source_mismatches=\(readiness.rustSourceMismatchCount) latest_recorded_at_ms=\(readiness.latestRecordedAtMs?.description ?? "(none)") report_path=\(readiness.reportPath ?? "(none)") issue_codes=\(issueCodes.isEmpty ? "(none)" : issueCodes)
+ready_for_require=\(readiness.readyForRequire) ok=\(readiness.ok) require_env=\(readiness.requireEnvKey) require_env_enabled=\(requireEnabled) project_id=\(readinessProjectId.isEmpty ? "(none)" : readinessProjectId) role=\(readiness.requesterRole ?? "(none)") use_mode=\(readiness.useMode ?? "(none)") serving_profile_id=\(readiness.servingProfileId ?? "(none)") selected_profile=\(readiness.selectedProfile ?? "(none)") effective_profile=\(readiness.effectiveProfile ?? "(none)") required_samples=\(readiness.requiredSampleCount) matching_samples=\(readiness.matchingSampleCount) fresh_matching_samples=\(readiness.freshMatchingSampleCount) considered_samples=\(readiness.consideredSampleCount) passing_samples=\(readiness.passingSampleCount) stale_matching_samples=\(readiness.staleMatchingSampleCount) authority_violations=\(readiness.authorityViolationCount) parity_failures=\(readiness.parityFailureCount) rust_source_mismatches=\(readiness.rustSourceMismatchCount) latest_recorded_at_ms=\(readiness.latestRecordedAtMs?.description ?? "(none)") report_path=\(readiness.reportPath ?? "(none)") issue_codes=\(issueCodes.isEmpty ? "(none)" : issueCodes)
+profile_readiness_source=\(readiness.profileReadinessSource ?? "(none)") profile_readiness_sample_count=\(readiness.profileReadinessSampleCount?.description ?? "(none)") profile_downgrade_count=\(readiness.profileDowngradeCount?.description ?? "(none)") rust_deny_count=\(readiness.rustDenyCount?.description ?? "(none)")
+profile_readiness_sample=\(profileReadinessSample.isEmpty ? "(none)" : profileReadinessSample)
 issue_detail_sample=\(issueDetails.isEmpty ? "(none)" : issueDetails)
 """
 

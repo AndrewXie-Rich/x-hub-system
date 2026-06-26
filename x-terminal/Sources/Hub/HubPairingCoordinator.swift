@@ -1274,7 +1274,7 @@ actor HubPairingCoordinator {
     }
 
     static func hasHubEnvFast(stateDir: URL?) -> Bool {
-        let base = stateDir ?? XTProcessPaths.defaultAxhubStateDir()
+        let base = stateDir ?? XTProcessPaths.activeAxhubStateDir()
         let env = base.appendingPathComponent("hub.env")
         guard FileManager.default.fileExists(atPath: env.path) else { return false }
         let token = readEnvValueFast(from: env, key: "HUB_CLIENT_TOKEN") ?? ""
@@ -1396,6 +1396,9 @@ actor HubPairingCoordinator {
         if nonEmpty(opts.internetHost) == nil, let cachedInternetHost = cachedPairing.internetHost {
             opts.internetHost = cachedInternetHost
         }
+        logs.append(
+            "[config] requested hub=\(nonEmpty(opts.internetHost) ?? "(auto)") pairing=\(opts.pairingPort) grpc=\(opts.grpcPort) authoritative=\(opts.configuredEndpointIsAuthoritative ? "true" : "false")"
+        )
         let customEnv = discoveryEnv(
             internetHost: opts.internetHost,
             cachedPairing: cachedPairing,
@@ -1514,7 +1517,7 @@ actor HubPairingCoordinator {
                                 "discover",
                                 "--pairing-port", "\(p)",
                                 "--timeout-sec", "3",
-                            ],
+                            ] + configuredDiscoverHintArgs(options: discoverOpts),
                             options: discoverOpts,
                             env: customEnv,
                             timeoutSec: 30.0
@@ -1768,7 +1771,7 @@ actor HubPairingCoordinator {
                                 "discover",
                                 "--pairing-port", "\(p)",
                                 "--timeout-sec", "3",
-                            ],
+                            ] + configuredDiscoverHintArgs(options: discoverOpts),
                             options: discoverOpts,
                             env: customEnv,
                             timeoutSec: 30.0
@@ -2661,7 +2664,7 @@ actor HubPairingCoordinator {
                     "discover",
                     "--pairing-port", "\(p)",
                     "--timeout-sec", "2",
-                ],
+                ] + configuredDiscoverHintArgs(options: probeOptions),
                 options: probeOptions,
                 env: customEnv,
                 timeoutSec: 12.0
@@ -9513,6 +9516,8 @@ actor HubPairingCoordinator {
         cachedGrpcPort: Int? = nil,
         hubInstanceID: String? = nil,
         lanDiscoveryName: String? = nil,
+        inviteAlias: String = "",
+        inviteInstanceID: String = "",
         allowConfiguredHostRepair: Bool,
         configuredEndpointIsAuthoritative: Bool = false
     ) -> Bool {
@@ -9528,7 +9533,9 @@ actor HubPairingCoordinator {
             configuredInternetHost: configuredInternetHost,
             cachedPairing: cachedPairing,
             allowConfiguredHostRepair: allowConfiguredHostRepair,
-            configuredEndpointIsAuthoritative: configuredEndpointIsAuthoritative
+            configuredEndpointIsAuthoritative: configuredEndpointIsAuthoritative,
+            inviteAlias: inviteAlias,
+            inviteInstanceID: inviteInstanceID
         )
     }
 
@@ -9540,6 +9547,8 @@ actor HubPairingCoordinator {
         cachedGrpcPort: Int? = nil,
         hubInstanceID: String? = nil,
         lanDiscoveryName: String? = nil,
+        inviteAlias: String = "",
+        inviteInstanceID: String = "",
         allowConfiguredHostRepair: Bool,
         configuredEndpointIsAuthoritative: Bool = false
     ) -> Bool {
@@ -9555,7 +9564,9 @@ actor HubPairingCoordinator {
             configuredInternetHost: configuredInternetHost,
             cachedPairing: cachedPairing,
             allowConfiguredHostRepair: allowConfiguredHostRepair,
-            configuredEndpointIsAuthoritative: configuredEndpointIsAuthoritative
+            configuredEndpointIsAuthoritative: configuredEndpointIsAuthoritative,
+            inviteAlias: inviteAlias,
+            inviteInstanceID: inviteInstanceID
         )
     }
 
@@ -11721,7 +11732,8 @@ actor HubPairingCoordinator {
         let tlsCAPath = nonEmpty(existingHubExports["HUB_GRPC_TLS_CA_CERT_PATH"])
         let tlsClientCertPath = nonEmpty(existingHubExports["HUB_GRPC_TLS_CLIENT_CERT_PATH"])
         let tlsClientKeyPath = nonEmpty(existingHubExports["HUB_GRPC_TLS_CLIENT_KEY_PATH"])
-        let preservedInternetHost = nonEmpty(internetHost) ?? nonEmpty(options.internetHost)
+        let preservedInternetHost = Self.reusableDiscoveredInternetHost(internetHost)
+            ?? Self.reusableDiscoveredInternetHost(options.internetHost)
 
         let hubContents = hubEnvContents(
             host: host,
@@ -19837,7 +19849,7 @@ main().catch((err) => {
                 reasonCode: nil,
                 candidates: [],
                 logLines: [
-                    "[lan-discover] skip fallback subnet scan: configured remote host is authoritative."
+                    "[lan-discover] skip fallback subnet scan: configured remote host or invite identity is authoritative."
                 ]
             )
         }
@@ -20533,9 +20545,9 @@ main().catch((err) => {
             host: host,
             pairingPort: parsePortField(output, fieldName: "pairing_port") ?? defaultPairingPort,
             grpcPort: parsePortField(output, fieldName: "grpc_port") ?? defaultGRPCPort,
-            internetHost: nonEmpty(parseStringField(output, fieldName: "internet_host"))
-                ?? nonEmpty(parseStringField(output, fieldName: "internet_host_hint"))
-                ?? nonEmpty(fallbackInternetHost),
+            internetHost: Self.reusableDiscoveredInternetHost(parseStringField(output, fieldName: "internet_host"))
+                ?? Self.reusableDiscoveredInternetHost(parseStringField(output, fieldName: "internet_host_hint"))
+                ?? Self.reusableDiscoveredInternetHost(fallbackInternetHost),
             hubInstanceID: nonEmpty(parseStringField(output, fieldName: "hub_instance_id")),
             lanDiscoveryName: nonEmpty(parseStringField(output, fieldName: "lan_discovery_name")),
             pairingProfileEpoch: positiveInt(parseStringField(output, fieldName: "pairing_profile_epoch")),
@@ -20590,8 +20602,8 @@ main().catch((err) => {
             ?? "X-Terminal"
         let pairingRequestID = readEnvValue(from: pairingEnv, key: "AXHUB_PAIRING_REQUEST_ID") ?? ""
         let pairingSecret = readEnvValue(from: pairingEnv, key: "AXHUB_PAIRING_SECRET") ?? ""
-        let preservedInternetHost = nonEmpty(internetHost)
-            ?? nonEmpty(readEnvValue(from: pairingEnv, key: "AXHUB_INTERNET_HOST"))
+        let preservedInternetHost = Self.reusableDiscoveredInternetHost(internetHost)
+            ?? Self.reusableDiscoveredInternetHost(readEnvValue(from: pairingEnv, key: "AXHUB_INTERNET_HOST"))
             ?? ""
         let preservedHubInstanceID = nonEmpty(hubInstanceID)
             ?? nonEmpty(readEnvValue(from: pairingEnv, key: "AXHUB_HUB_INSTANCE_ID"))
@@ -21100,7 +21112,7 @@ main().catch((err) => {
                     host: matchedHost,
                     pairingPort: payload.pairingPort ?? pairingPort,
                     grpcPort: payload.grpcPort ?? 50051,
-                    internetHost: normalizedTrimmed(payload.internetHostHint),
+                    internetHost: reusableDiscoveredInternetHost(payload.internetHostHint),
                     hubInstanceID: normalizedTrimmed(payload.hubInstanceID),
                     lanDiscoveryName: normalizedTrimmed(payload.lanDiscoveryName),
                     pairingProfileEpoch: payload.pairingProfileEpoch,
@@ -21125,6 +21137,14 @@ main().catch((err) => {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         return description.contains("operation not permitted")
+    }
+
+    private nonisolated static func reusableDiscoveredInternetHost(_ raw: String?) -> String? {
+        guard let host = normalizedTrimmed(raw),
+              HubRemoteHostPolicy.isDirectInternetRemoteHost(host) else {
+            return nil
+        }
+        return host
     }
 
     private nonisolated static func performLANDiscoveryRequest(
@@ -21473,6 +21493,11 @@ main().catch((err) => {
         return ["HUB_DISCOVERY_HINTS": hints.joined(separator: ",")]
     }
 
+    private func configuredDiscoverHintArgs(options: HubRemoteConnectOptions) -> [String] {
+        guard let host = nonEmpty(options.internetHost) else { return [] }
+        return ["--hints", host]
+    }
+
     private nonisolated static func discoveryHintCandidatesValue(
         configuredInternetHost: String,
         cachedPairing: HubCachedPairingInfo? = nil,
@@ -21751,7 +21776,7 @@ main().catch((err) => {
     }
 
     private func defaultStateDir() -> URL {
-        XTProcessPaths.defaultAxhubStateDir()
+        XTProcessPaths.activeAxhubStateDir()
     }
 
     private func normalizedRemoteAuxTimeoutSec(_ raw: Double) -> Double {
@@ -21797,7 +21822,9 @@ main().catch((err) => {
             configuredInternetHost: options.internetHost,
             cachedPairing: cachedPairing,
             allowConfiguredHostRepair: allowConfiguredHostRepair,
-            configuredEndpointIsAuthoritative: options.configuredEndpointIsAuthoritative
+            configuredEndpointIsAuthoritative: options.configuredEndpointIsAuthoritative,
+            inviteAlias: options.inviteAlias,
+            inviteInstanceID: options.inviteInstanceID
         )
     }
 
@@ -21810,7 +21837,9 @@ main().catch((err) => {
             configuredInternetHost: options.internetHost,
             cachedPairing: cachedPairing,
             allowConfiguredHostRepair: allowConfiguredHostRepair,
-            configuredEndpointIsAuthoritative: options.configuredEndpointIsAuthoritative
+            configuredEndpointIsAuthoritative: options.configuredEndpointIsAuthoritative,
+            inviteAlias: options.inviteAlias,
+            inviteInstanceID: options.inviteInstanceID
         )
     }
 
@@ -21818,8 +21847,12 @@ main().catch((err) => {
         configuredInternetHost: String,
         cachedPairing: HubCachedPairingInfo,
         allowConfiguredHostRepair: Bool,
-        configuredEndpointIsAuthoritative: Bool
+        configuredEndpointIsAuthoritative: Bool,
+        inviteAlias: String = "",
+        inviteInstanceID: String = ""
     ) -> Bool {
+        _ = inviteAlias
+        _ = inviteInstanceID
         if shouldHonorConfiguredEndpointAuthority(
             configuredInternetHost: configuredInternetHost,
             configuredEndpointIsAuthoritative: configuredEndpointIsAuthoritative
@@ -21837,13 +21870,17 @@ main().catch((err) => {
         configuredInternetHost: String,
         cachedPairing: HubCachedPairingInfo,
         allowConfiguredHostRepair: Bool,
-        configuredEndpointIsAuthoritative: Bool
+        configuredEndpointIsAuthoritative: Bool,
+        inviteAlias: String = "",
+        inviteInstanceID: String = ""
     ) -> Bool {
         guard shouldRunLANDiscoveryPrepassValue(
             configuredInternetHost: configuredInternetHost,
             cachedPairing: cachedPairing,
             allowConfiguredHostRepair: allowConfiguredHostRepair,
-            configuredEndpointIsAuthoritative: configuredEndpointIsAuthoritative
+            configuredEndpointIsAuthoritative: configuredEndpointIsAuthoritative,
+            inviteAlias: inviteAlias,
+            inviteInstanceID: inviteInstanceID
         ) else {
             return false
         }
@@ -21853,6 +21890,14 @@ main().catch((err) => {
         // can legitimately move between nearby DHCP segments.
         if let configuredHost = normalizedTrimmed(configuredInternetHost),
            HubRemoteHostPolicy.isFormalRemoteHost(configuredHost) {
+            return false
+        }
+
+        if normalizedTrimmed(configuredInternetHost) == nil,
+           !discoveryIdentityHostCandidates(
+            inviteAlias: inviteAlias,
+            inviteInstanceID: inviteInstanceID
+           ).isEmpty {
             return false
         }
 

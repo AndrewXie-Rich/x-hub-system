@@ -1,5 +1,5 @@
+import RELFlowHubAppSupport
 import XCTest
-@testable import RELFlowHub
 
 final class LaunchPresentationPolicyTests: XCTestCase {
     func testDefaultsToForeground() {

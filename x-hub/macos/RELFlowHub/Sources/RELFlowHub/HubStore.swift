@@ -911,6 +911,18 @@ final class HubStore: ObservableObject {
         }
     }
 
+    @Published var orbParticleDensity: OrbParticleDensity = .medium {
+        didSet {
+            UserDefaults.standard.set(orbParticleDensity.rawValue, forKey: "relflowhub_orb_particle_density")
+        }
+    }
+
+    @Published var orbParticleSize: OrbParticleSize = .standard {
+        didSet {
+            UserDefaults.standard.set(orbParticleSize.rawValue, forKey: "relflowhub_orb_particle_size")
+        }
+    }
+
     @Published var suppressFloatingContent: Bool = false
 
     @Published var meetingUrgentMinutes: Int = 5 {
@@ -961,6 +973,8 @@ final class HubStore: ObservableObject {
     private var autoDetectedPythonCacheAtByKey: [String: TimeInterval] = [:]
     private var pythonCandidateStatusCacheByKey: [String: [LocalPythonRuntimeCandidateStatus]] = [:]
     private var pythonCandidateStatusCacheAtByKey: [String: TimeInterval] = [:]
+    @Published private(set) var modelConcurrencyPolicy: HubModelConcurrencyPolicySnapshot =
+        HubModelConcurrencyPolicyStorage.load()
     @Published private(set) var aiRuntimeStatusSnapshot: AIRuntimeStatus? = AIRuntimeStatusStorage.load()
     @Published private(set) var aiRuntimeStatusText: String = HubUIStrings.Settings.Advanced.Runtime.statusUnknown
     @Published private(set) var aiRuntimeLastError: String = ""
@@ -1157,6 +1171,14 @@ final class HubStore: ObservableObject {
         if let s = UserDefaults.standard.string(forKey: "relflowhub_floating_mode"),
            let m = FloatingMode(rawValue: s) {
             floatingMode = m
+        }
+        if let s = UserDefaults.standard.string(forKey: "relflowhub_orb_particle_density"),
+           let density = OrbParticleDensity(rawValue: s) {
+            orbParticleDensity = density
+        }
+        if let s = UserDefaults.standard.string(forKey: "relflowhub_orb_particle_size"),
+           let size = OrbParticleSize(rawValue: s) {
+            orbParticleSize = size
         }
 
         let um = UserDefaults.standard.integer(forKey: "relflowhub_meeting_urgent_minutes")
@@ -3407,6 +3429,8 @@ INSERT OR IGNORE INTO audit_events(
                     aiRuntimeLastError = ""
                 }
             }
+
+            revalidateLocalModelHealthIfNeeded(runtimeStatus: s)
         } else {
             didForceRestartRuntimeForVersionMismatch = false
             aiRuntimeStatusText = HubUIStrings.Settings.Advanced.Runtime.statusNotRunning
@@ -3415,6 +3439,19 @@ INSERT OR IGNORE INTO audit_events(
             aiRuntimeInstallHintsText = ""
             aiRuntimeStatusSnapshot = nil
         }
+    }
+
+    private func revalidateLocalModelHealthIfNeeded(runtimeStatus: AIRuntimeStatus) {
+        let currentSnapshot = localModelHealthSnapshot
+        let revalidated = LocalModelHealthRuntimeInvalidationPolicy.revalidatedSnapshot(
+            currentSnapshot,
+            models: ModelStore.shared.snapshot.models,
+            runtimeStatus: runtimeStatus
+        )
+        guard revalidated != currentSnapshot else { return }
+        localModelHealthSnapshot = revalidated
+        LocalModelHealthStorage.save(revalidated)
+        refreshLocalModelHealthAutoScanTimer()
     }
 
     private func mlxUnavailableHelp(importError: String) -> String {
@@ -3732,6 +3769,10 @@ INSERT OR IGNORE INTO audit_events(
         p.arguments = args
         var env = ProcessInfo.processInfo.environment
         env["REL_FLOW_HUB_BASE_DIR"] = base.path
+        let concurrencyPolicyURL = HubModelConcurrencyPolicyStorage.url(baseDir: base)
+        HubModelConcurrencyPolicyStorage.save(modelConcurrencyPolicy, baseDir: base)
+        env["XHUB_MODEL_CONCURRENCY_POLICY_PATH"] = concurrencyPolicyURL.path
+        env["HUB_MODEL_CONCURRENCY_POLICY_PATH"] = concurrencyPolicyURL.path
         env["PYTHONUNBUFFERED"] = "1"
         for (key, value) in hubRuntimeProbeEnv() {
             env[key] = value
@@ -4228,6 +4269,56 @@ INSERT OR IGNORE INTO audit_events(
 
     private func runtimeBaseDirForAIRuntime() -> URL {
         SharedPaths.appGroupDirectory() ?? SharedPaths.ensureHubDirectory()
+    }
+
+    func setLocalModelDefaultConcurrencyLimit(_ value: Int) {
+        updateModelConcurrencyPolicy { policy in
+            policy.localDefaultConcurrencyLimit = value
+        }
+    }
+
+    func setPaidModelGlobalConcurrencyLimit(_ value: Int) {
+        updateModelConcurrencyPolicy { policy in
+            policy.paidModelGlobalConcurrencyLimit = value
+        }
+    }
+
+    func setPaidModelPerProjectConcurrencyLimit(_ value: Int) {
+        updateModelConcurrencyPolicy { policy in
+            policy.paidModelPerProjectConcurrencyLimit = value
+        }
+    }
+
+    func setPaidModelQueueLimit(_ value: Int) {
+        updateModelConcurrencyPolicy { policy in
+            policy.paidModelQueueLimit = value
+        }
+    }
+
+    func setPaidModelQueueTimeoutMs(_ value: Int) {
+        updateModelConcurrencyPolicy { policy in
+            policy.paidModelQueueTimeoutMs = value
+        }
+    }
+
+    private func updateModelConcurrencyPolicy(
+        _ mutate: (inout HubModelConcurrencyPolicySnapshot) -> Void
+    ) {
+        var next = modelConcurrencyPolicy
+        mutate(&next)
+        next = next.normalized(updatingTimestamp: true)
+        guard next != modelConcurrencyPolicy else { return }
+        modelConcurrencyPolicy = next
+        let runtimeBase = runtimeBaseDirForAIRuntime()
+        HubModelConcurrencyPolicyStorage.save(next, baseDir: runtimeBase)
+        HubModelConcurrencyPolicyStorage.save(next)
+        appendAIRuntimeLogLine(
+            "Model concurrency policy updated: local=\(next.localDefaultConcurrencyLimit) paid_global=\(next.paidModelGlobalConcurrencyLimit) paid_per_project=\(next.paidModelPerProjectConcurrencyLimit) queue_limit=\(next.paidModelQueueLimit) queue_timeout_ms=\(next.paidModelQueueTimeoutMs)"
+        )
+        if grpc.isRunning {
+            grpc.restart()
+        }
+        refreshAIRuntimeStatus()
     }
 
     private func resolvedLsofPath() -> String? {
@@ -4838,6 +4929,20 @@ INSERT OR IGNORE INTO audit_events(
         )
         guard !normalized.isEmpty else { return }
         requestLocalModelHealthScan(limitingTo: normalized, mode: .full, updatesTrialStatus: true)
+    }
+
+    func recordLocalModelBenchHealth(result: ModelBenchResult, detail: String) {
+        let model = ModelStore.shared.snapshot.models.first { $0.id == result.modelId }
+        let updated = LocalModelBenchHealthRecorder.updatedSnapshot(
+            after: result,
+            previous: localModelHealthSnapshot,
+            model: model,
+            detail: detail
+        )
+        guard updated != localModelHealthSnapshot else { return }
+        localModelHealthSnapshot = updated
+        LocalModelHealthStorage.save(updated)
+        refreshLocalModelHealthAutoScanTimer()
     }
 
     func remoteModelTrialStatus(for modelId: String) -> ModelTrialStatus? {

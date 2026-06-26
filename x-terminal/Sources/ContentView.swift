@@ -800,6 +800,9 @@ struct ContentView: View {
         if !host.isEmpty {
             return "host: \(host)" + (hasInviteToken ? " · invite token ready" : "")
         }
+        if hasInviteToken {
+            return "同 Wi-Fi 配对码已载入；XT 会用 Hub 身份在局域网内精确发现，不显示 Hub IP。"
+        }
         return "Pair Hub 参数已从邀请链接自动填入。"
     }
 }

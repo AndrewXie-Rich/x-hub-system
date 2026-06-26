@@ -53,6 +53,7 @@ struct XTConnectivityRepairLedgerEntry: Identifiable, Codable, Equatable, Sendab
     var attemptedRoutes: [String]? = nil
     var handoffReason: String? = nil
     var cooldownApplied: Bool? = nil
+    var hubProfileID: String? = nil
 
     var id: String { entryID }
 
@@ -75,6 +76,7 @@ struct XTConnectivityRepairLedgerEntry: Identifiable, Codable, Equatable, Sendab
         case attemptedRoutes = "attempted_routes"
         case handoffReason = "handoff_reason"
         case cooldownApplied = "cooldown_applied"
+        case hubProfileID = "hub_profile_id"
     }
 }
 
@@ -170,7 +172,8 @@ enum XTConnectivityRepairLedgerStore {
             finalRoute: HubRemoteRoute.none.rawValue,
             decisionReasonCode: incidentSnapshot.decisionReasonCode,
             incidentReasonCode: incidentSnapshot.reasonCode,
-            summaryLine: incidentSnapshot.summaryLine
+            summaryLine: incidentSnapshot.summaryLine,
+            hubProfileID: XTHubProfilesStorage.activeCacheScopeID()
         )
     }
 
@@ -209,7 +212,8 @@ enum XTConnectivityRepairLedgerStore {
             incidentReasonCode: incidentSnapshot.reasonCode,
             summaryLine: report.summary,
             selectedRoute: report.route == .none ? nil : report.route.rawValue,
-            attemptedRoutes: report.route == .none ? nil : [report.route.rawValue]
+            attemptedRoutes: report.route == .none ? nil : [report.route.rawValue],
+            hubProfileID: XTHubProfilesStorage.activeCacheScopeID()
         )
     }
 
@@ -241,11 +245,12 @@ enum XTConnectivityRepairLedgerStore {
         now: Date = Date()
     ) -> [XTHubConnectivityRouteStatusSnapshot] {
         let nowMs = Int64((now.timeIntervalSince1970 * 1000).rounded())
-        let newestFirst = Array(snapshot.entries.reversed())
+        let scopedEntries = routeScopedEntries(snapshot.entries)
+        let newestFirst = Array(scopedEntries.reversed())
 
         return XTHubRouteCandidate.allCases.map { route in
-            let recentSuccessCount = snapshot.entries.filter { $0.countsSuccess(for: route) }.count
-            let recentFailureCount = snapshot.entries.filter { $0.countsFailure(for: route) }.count
+            let recentSuccessCount = scopedEntries.filter { $0.countsSuccess(for: route) }.count
+            let recentFailureCount = scopedEntries.filter { $0.countsFailure(for: route) }.count
             let consecutiveFailures = newestFirst.consecutiveFailures(for: route)
             let lastFailureAtMs = newestFirst.first { $0.countsFailure(for: route) }?.recordedAtMs
             let cooldownUntilMs: Int64?
@@ -273,6 +278,20 @@ enum XTConnectivityRepairLedgerStore {
                 recentSuccessCount: recentSuccessCount,
                 recentFailureCount: recentFailureCount
             )
+        }
+    }
+
+    private static func routeScopedEntries(
+        _ entries: [XTConnectivityRepairLedgerEntry]
+    ) -> [XTConnectivityRepairLedgerEntry] {
+        let currentHubProfileID = XTHubProfilesStorage.activeCacheScopeID()
+        let multipleProfiles = XTHubProfilesStorage.hasMultipleProfiles()
+        return entries.filter { entry in
+            let entryHubProfileID = entry.hubProfileID?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let entryHubProfileID, !entryHubProfileID.isEmpty {
+                return entryHubProfileID == currentHubProfileID
+            }
+            return !multipleProfiles
         }
     }
 

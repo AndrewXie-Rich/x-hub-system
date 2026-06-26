@@ -1,6 +1,7 @@
 import AppKit
-import SwiftUI
 import Combine
+import RELFlowHubAppSupport
+import SwiftUI
 
 extension Notification.Name {
     static let relflowhubToggleFloating = Notification.Name("relflowhub.toggleFloating")
@@ -9,6 +10,8 @@ extension Notification.Name {
 enum FloatingPanelLevelPolicy {
     static func level(for mode: FloatingMode) -> NSWindow.Level {
         switch mode {
+        case .hidden:
+            return .normal
         case .orb:
             // The orb is the persistent "alive" surface after the main panel closes,
             // so it must remain above regular app windows.
@@ -27,6 +30,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     private var levelTimer: Timer?
     private var suppressedByMainPanel = false
     private var userHidden = false
+    private var didReceiveInitialFloatingMode = false
 
     var isVisible: Bool {
         panel.isVisible
@@ -70,15 +74,14 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             }
         }
 
-        // Resize panel when mode changes.
+        // Resize panel when mode changes, and make hidden a real absence of UI.
         store.$floatingMode
             .receive(on: DispatchQueue.main)
             .sink { [weak self] mode in
                 guard let self else { return }
-                let sz = mode.panelSize
-                self.panel.setContentSize(NSSize(width: sz.width, height: sz.height))
-                self.updateWindowLevel()
-                self.panel.hasShadow = (mode == .card)
+                let allowAutoShow = self.didReceiveInitialFloatingMode
+                self.didReceiveInitialFloatingMode = true
+                self.applyFloatingMode(mode, allowAutoShow: allowAutoShow)
             }
             .store(in: &cancellables)
 
@@ -116,12 +119,20 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             panel.orderOut(nil)
         } else {
             HubDiagnostics.log("floating.toggle action=show userHidden=\(userHidden ? 1 : 0) suppressed=\(suppressedByMainPanel ? 1 : 0)")
+            if store.floatingMode == .hidden {
+                store.floatingMode = .orb
+            }
             show()
         }
     }
 
     func show() {
         userHidden = false
+        guard store.floatingMode != .hidden else {
+            HubDiagnostics.log("floating.show skipped reason=hidden level=\(panel.level.rawValue)")
+            panel.orderOut(nil)
+            return
+        }
         guard !suppressedByMainPanel else {
             HubDiagnostics.log("floating.show skipped reason=suppressed level=\(panel.level.rawValue)")
             return
@@ -145,8 +156,27 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         HubDiagnostics.log("floating.suppressed value=\(suppressed ? 1 : 0) userHidden=\(userHidden ? 1 : 0) visible=\(panel.isVisible ? 1 : 0)")
         if suppressed {
             panel.orderOut(nil)
-        } else if !userHidden {
+        } else if !userHidden && store.floatingMode != .hidden {
             show()
+        }
+    }
+
+    private func applyFloatingMode(_ mode: FloatingMode, allowAutoShow: Bool) {
+        let size = mode.panelSize
+        panel.setContentSize(NSSize(width: size.width, height: size.height))
+        panel.hasShadow = (mode == .card)
+        updateWindowLevel()
+
+        if mode == .hidden {
+            HubDiagnostics.log("floating.mode hidden visible=\(panel.isVisible ? 1 : 0)")
+            panel.orderOut(nil)
+            return
+        }
+
+        restoreFrameIfNeeded()
+        if allowAutoShow && !suppressedByMainPanel && !userHidden {
+            HubDiagnostics.log("floating.mode show mode=\(mode.rawValue) frame=\(NSStringFromRect(panel.frame))")
+            panel.orderFrontRegardless()
         }
     }
 

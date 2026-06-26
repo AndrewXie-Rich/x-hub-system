@@ -1,4 +1,5 @@
 import AppKit
+import RELFlowHubAppSupport
 import SwiftUI
 
 extension Notification.Name {

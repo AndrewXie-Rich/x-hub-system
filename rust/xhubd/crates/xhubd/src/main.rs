@@ -20,9 +20,7 @@ use xhub_core::{
 use xhub_db::{apply_baseline_migrations, baseline_migrations, recommended_sqlite_pragmas};
 use xhub_memory::{MemoryIndexSnapshot, MemoryMode, MemoryRetrievalRequest, RetrievalPlan};
 use xhub_policy::default_fail_closed_policy;
-use xhub_scheduler::{
-    EnqueueRunRequest, ReleaseOutcome, SchedulerConfig, SchedulerSnapshot, SchedulerStore,
-};
+use xhub_scheduler::{EnqueueRunRequest, ReleaseOutcome, SchedulerSnapshot, SchedulerStore};
 use xhub_skills::{
     scan_skill_catalog, SkillBoundary, SkillCatalog, SKILL_CATALOG_SCHEMA,
     SKILL_POLICY_EVENTS_PRUNE_SCHEMA, SKILL_POLICY_EVENTS_SCHEMA,
@@ -126,7 +124,7 @@ fn print_help() {
     println!("  local-ml HTTP: /local-ml/execute, /local-ml/readiness");
     println!("           Rust-governed local ML execution bridge, opt-in only");
     println!(
-        "  memory <retrieve|search|write|object-create|object-list|object-get|object-history|object-index-rebuild|policy-evaluate|project-canonical-sync|gateway-prepare|readiness>"
+        "  memory <retrieve|search|write|object-create|object-list|object-get|object-history|object-archive|object-delete|object-pin|object-unpin|candidate-create|candidate-list|candidate-approve|candidate-reject|object-index-rebuild|policy-evaluate|project-canonical-sync|gateway-prepare|readiness>"
     );
     println!(
         "           JSON memory retrieval, object store, project canonical sync, policy, and readiness commands"
@@ -171,7 +169,10 @@ fn migrate(config: &HubConfig) -> Result<(), String> {
 fn scheduler_smoke(config: &HubConfig) -> Result<(), String> {
     apply_baseline_migrations(&config.db_path)
         .map_err(|err| format!("scheduler smoke migration failed: {err}"))?;
-    let scheduler = SchedulerStore::new(config.db_path.clone(), SchedulerConfig::default());
+    let scheduler = SchedulerStore::new(
+        config.db_path.clone(),
+        scheduler_bridge::effective_scheduler_config(config),
+    );
     let stamp = now_ms();
     let request_id = format!("scheduler-smoke-{stamp}");
     let enqueue = scheduler
@@ -519,6 +520,9 @@ fn handle_client(mut stream: TcpStream, state: &HubState) -> Result<(), String> 
             }
             "/runtime/scheduler_status" => ("200 OK", scheduler_status_json()),
             "/runtime/http-metrics" | "/http/metrics" => http_metrics_json(state),
+            "/runtime/product-process-sanity" | "/product/process-sanity" => {
+                ("200 OK", product_process_sanity_http_json(query))
+            }
             "/network/remote-entry-candidates"
             | "/network/remote-entry"
             | "/remote/entry-candidates" => {
@@ -653,15 +657,41 @@ fn handle_client(mut stream: TcpStream, state: &HubState) -> Result<(), String> 
             "/memory/object-index/rebuild" | "/memory/reindex" => {
                 memory_bridge::object_index_rebuild_http_json(config, request.method.as_str())
             }
+            path if path == "/memory/user-reveal-grant"
+                || path.starts_with("/memory/user-reveal-grant/") =>
+            {
+                memory_bridge::user_reveal_grant_http_json(
+                    config,
+                    path,
+                    request.method.as_str(),
+                    query,
+                    request.body.as_str(),
+                )
+            }
             "/memory/objects" => memory_bridge::object_collection_http_json(
                 config,
                 request.method.as_str(),
                 query,
                 request.body.as_str(),
             ),
-            path if path.starts_with("/memory/objects/") => {
-                memory_bridge::object_item_http_json(config, path, request.method.as_str(), query)
+            path if path == "/memory/writeback/candidates"
+                || path.starts_with("/memory/writeback/candidates/") =>
+            {
+                memory_bridge::writeback_candidates_http_json(
+                    config,
+                    path,
+                    request.method.as_str(),
+                    query,
+                    request.body.as_str(),
+                )
             }
+            path if path.starts_with("/memory/objects/") => memory_bridge::object_item_http_json(
+                config,
+                path,
+                request.method.as_str(),
+                query,
+                request.body.as_str(),
+            ),
             "/memory/policy/evaluate" => {
                 memory_bridge::policy_evaluate_http_json(request.body.as_str())
             }
@@ -675,6 +705,32 @@ fn handle_client(mut stream: TcpStream, state: &HubState) -> Result<(), String> 
             }
             "/memory/gateway/prepare" | "/memory/context" => {
                 memory_bridge::memory_gateway_prepare_http_json(
+                    config,
+                    request.method.as_str(),
+                    request.body.as_str(),
+                )
+            }
+            "/memory/gateway/model-call-plan"
+            | "/memory/gateway/generate-plan"
+            | "/memory/model-call-plan" => memory_bridge::memory_gateway_model_call_plan_http_json(
+                config,
+                request.method.as_str(),
+                request.body.as_str(),
+            ),
+            "/memory/gateway/model-call-execution-gate"
+            | "/memory/gateway/generate-execution-gate"
+            | "/memory/gateway/execution-gate"
+            | "/memory/model-call-execution-gate" => {
+                memory_bridge::memory_gateway_model_call_execution_gate_http_json(
+                    config,
+                    request.method.as_str(),
+                    request.body.as_str(),
+                )
+            }
+            "/memory/gateway/model-call-execute"
+            | "/memory/gateway/generate"
+            | "/memory/model-call-execute" => {
+                memory_bridge::memory_gateway_model_call_execute_http_json(
                     config,
                     request.method.as_str(),
                     request.body.as_str(),
@@ -713,6 +769,9 @@ fn handle_client(mut stream: TcpStream, state: &HubState) -> Result<(), String> 
             "/model/inventory" => model_inventory_http_json(config, query),
             "/model/capabilities" | "/model/local-capabilities" => {
                 model_capabilities_http_json(config, query)
+            }
+            "/model/concurrency-policy" | "/model/capacity-policy" => {
+                model_concurrency_policy_http_json(config)
             }
             "/model/repair-plan" | "/model/local-repair-plan" => {
                 model_repair_plan_http_json(config, query)
@@ -2016,6 +2075,359 @@ fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
+#[derive(Clone, Debug)]
+struct ProductProcessRow {
+    pid: i64,
+    ppid: i64,
+    stat: String,
+    cpu_percent: f64,
+    mem_percent: f64,
+    etime: String,
+    command: String,
+    label: String,
+}
+
+fn product_process_sanity_http_json(query: &str) -> String {
+    let started_ms = now_ms();
+    let max_product_cpu_percent = query_param(query, "max_product_cpu_percent")
+        .or_else(|| query_param(query, "maxProductCpuPercent"))
+        .and_then(|value| value.parse::<f64>().ok())
+        .map(|value| value.clamp(0.0, 1_000.0))
+        .unwrap_or(0.0);
+    let require_xhubd =
+        optional_query_bool_alias(query, "require_xhubd", "requireXhubd", true).unwrap_or(true);
+    let require_product_shell =
+        optional_query_bool_alias(query, "require_product_shell", "requireProductShell", false)
+            .unwrap_or(false);
+    let require_no_target_xhubd = optional_query_bool_alias(
+        query,
+        "require_no_target_xhubd",
+        "requireNoTargetXhubd",
+        true,
+    )
+    .unwrap_or(true);
+
+    let ps_output = Command::new("ps")
+        .args(["ax", "-o", "pid=,ppid=,stat=,%cpu=,%mem=,etime=,command="])
+        .output();
+    let (snapshot_ok, snapshot_error, stdout) = match ps_output {
+        Ok(output) => (
+            output.status.success(),
+            if output.status.success() {
+                String::new()
+            } else {
+                String::from_utf8_lossy(&output.stderr).trim().to_string()
+            },
+            String::from_utf8_lossy(&output.stdout).to_string(),
+        ),
+        Err(err) => (false, err.to_string(), String::new()),
+    };
+
+    let mut body = product_process_sanity_from_ps_output(
+        snapshot_ok,
+        snapshot_error,
+        stdout.as_str(),
+        max_product_cpu_percent,
+        require_xhubd,
+        require_product_shell,
+        require_no_target_xhubd,
+    );
+    if let Some(object) = body.as_object_mut() {
+        object.insert(
+            "duration_ms".to_string(),
+            json!(now_ms().saturating_sub(started_ms).min(i64::MAX as u128) as i64),
+        );
+    }
+    format!("{body}\n")
+}
+
+fn product_process_sanity_from_ps_output(
+    snapshot_ok: bool,
+    snapshot_error: String,
+    stdout: &str,
+    max_product_cpu_percent: f64,
+    require_xhubd: bool,
+    require_product_shell: bool,
+    require_no_target_xhubd: bool,
+) -> Value {
+    let process_rows = stdout
+        .lines()
+        .filter_map(parse_product_process_row)
+        .collect::<Vec<_>>();
+    let product_processes = process_rows
+        .iter()
+        .filter(|row| !row.label.is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    let product_shell_processes = product_processes
+        .iter()
+        .filter(|row| matches!(row.label.as_str(), "x_hub_app" | "x_hub_node_bridge"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let xhubd_processes = product_processes
+        .iter()
+        .filter(|row| row.label == "xhubd")
+        .cloned()
+        .collect::<Vec<_>>();
+    let target_xhubd_processes = process_rows
+        .iter()
+        .filter(|row| is_target_xhubd_command(row.command.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mounted_app_processes = process_rows
+        .iter()
+        .filter(|row| is_mounted_app_command(row.command.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let external_relflowhub_processes = process_rows
+        .iter()
+        .filter(|row| is_external_relflowhub_command(row.command.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let high_cpu_product_processes = if max_product_cpu_percent > 0.0 {
+        product_processes
+            .iter()
+            .filter(|row| row.cpu_percent > max_product_cpu_percent)
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let product_total_cpu_percent = product_processes
+        .iter()
+        .fold(0.0_f64, |sum, row| sum + row.cpu_percent);
+    let product_max_cpu_percent = product_processes
+        .iter()
+        .fold(0.0_f64, |max, row| max.max(row.cpu_percent));
+    let product_cpu_over_budget = max_product_cpu_percent > 0.0
+        && (product_total_cpu_percent > max_product_cpu_percent
+            || product_max_cpu_percent > max_product_cpu_percent);
+
+    let mut issues = Vec::new();
+    if !snapshot_ok {
+        issues.push("process_snapshot_unavailable");
+    }
+    if require_xhubd && xhubd_processes.is_empty() {
+        issues.push("xhubd_process_not_found");
+    }
+    if require_product_shell && product_shell_processes.is_empty() {
+        issues.push("product_shell_process_not_found");
+    }
+    if require_no_target_xhubd && !target_xhubd_processes.is_empty() {
+        issues.push("target_xhubd_process_present");
+    }
+    if !mounted_app_processes.is_empty() {
+        issues.push("stale_mounted_app_process_present");
+    }
+    if product_cpu_over_budget {
+        issues.push("product_process_cpu_over_budget");
+    }
+
+    let mut recommendations = Vec::new();
+    if !mounted_app_processes.is_empty() {
+        recommendations.push("Close stale /Volumes X-Hub app and sidecar processes after confirming they are not the current /Applications app.");
+    }
+    if product_cpu_over_budget {
+        recommendations
+            .push("Defer heavy gates or checkpoints until product CPU returns under budget.");
+    }
+    if require_no_target_xhubd && !target_xhubd_processes.is_empty() {
+        recommendations
+            .push("Stop ad-hoc target/debug or target/release xhubd before production checks.");
+    }
+
+    json!({
+        "ok": issues.is_empty(),
+        "schema_version": "xhub.product_process_sanity.v1",
+        "command": "product-process-sanity",
+        "generated_at_ms": now_ms().min(i64::MAX as u128) as i64,
+        "duration_ms": 0,
+        "authority": "diagnostics_only",
+        "production_authority_change": false,
+        "ui_product_change": false,
+        "rust_browser_product_ui": false,
+        "require_xhubd": require_xhubd,
+        "require_product_shell": require_product_shell,
+        "require_no_target_xhubd": require_no_target_xhubd,
+        "max_product_cpu_percent": round2(max_product_cpu_percent),
+        "process_snapshot_ok": snapshot_ok,
+        "process_snapshot_error": snapshot_error,
+        "product_process_count": product_processes.len(),
+        "product_shell_process_count": product_shell_processes.len(),
+        "xhubd_process_count": xhubd_processes.len(),
+        "target_xhubd_process_count": target_xhubd_processes.len(),
+        "mounted_app_process_count": mounted_app_processes.len(),
+        "external_relflowhub_process_count": external_relflowhub_processes.len(),
+        "high_cpu_product_process_count": high_cpu_product_processes.len(),
+        "product_total_cpu_percent": round2(product_total_cpu_percent),
+        "product_max_cpu_percent": round2(product_max_cpu_percent),
+        "product_cpu_over_budget": product_cpu_over_budget,
+        "product_processes": product_processes.iter().map(product_process_row_json).collect::<Vec<_>>(),
+        "product_shell_processes": product_shell_processes.iter().map(product_process_row_json).collect::<Vec<_>>(),
+        "xhubd_processes": xhubd_processes.iter().map(product_process_row_json).collect::<Vec<_>>(),
+        "target_xhubd_processes": target_xhubd_processes.iter().map(product_process_row_json).collect::<Vec<_>>(),
+        "mounted_app_processes": mounted_app_processes.iter().map(product_process_row_json).collect::<Vec<_>>(),
+        "external_relflowhub_processes": external_relflowhub_processes.iter().map(product_process_row_json).collect::<Vec<_>>(),
+        "high_cpu_product_processes": high_cpu_product_processes.iter().map(product_process_row_json).collect::<Vec<_>>(),
+        "issues": issues,
+        "recommendations": recommendations,
+    })
+}
+
+fn parse_product_process_row(line: &str) -> Option<ProductProcessRow> {
+    let mut rest = line.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    let pid = take_process_token(&mut rest)?.parse::<i64>().ok()?;
+    let ppid = take_process_token(&mut rest)?.parse::<i64>().ok()?;
+    let stat = take_process_token(&mut rest)?;
+    let cpu_percent = take_process_token(&mut rest)?.parse::<f64>().unwrap_or(0.0);
+    let mem_percent = take_process_token(&mut rest)?.parse::<f64>().unwrap_or(0.0);
+    let etime = take_process_token(&mut rest)?;
+    let command = redact_process_command(rest.trim());
+    let label = product_process_label(command.as_str());
+    Some(ProductProcessRow {
+        pid,
+        ppid,
+        stat,
+        cpu_percent,
+        mem_percent,
+        etime,
+        command,
+        label,
+    })
+}
+
+fn take_process_token(rest: &mut &str) -> Option<String> {
+    let trimmed = rest.trim_start();
+    if trimmed.is_empty() {
+        *rest = "";
+        return None;
+    }
+    match trimmed.find(char::is_whitespace) {
+        Some(index) => {
+            let token = &trimmed[..index];
+            *rest = &trimmed[index..];
+            Some(token.to_string())
+        }
+        None => {
+            *rest = "";
+            Some(trimmed.to_string())
+        }
+    }
+}
+
+fn product_process_row_json(row: &ProductProcessRow) -> Value {
+    json!({
+        "pid": row.pid,
+        "ppid": row.ppid,
+        "stat": row.stat,
+        "cpu_percent": round2(row.cpu_percent),
+        "mem_percent": round2(row.mem_percent),
+        "etime": row.etime,
+        "label": row.label,
+        "command": row.command,
+    })
+}
+
+fn product_process_label(command: &str) -> String {
+    if command.contains("/bin/xhubd serve")
+        || command.contains("/xhubd serve")
+        || command.starts_with("xhubd serve")
+        || command.contains(" xhubd serve")
+    {
+        return "xhubd".to_string();
+    }
+    if command.contains("/X-Hub.app/Contents/MacOS/XHub") {
+        return "x_hub_app".to_string();
+    }
+    if command.contains("/X-Terminal.app/Contents/MacOS/XTerminal") {
+        return "x_terminal_app".to_string();
+    }
+    if is_x_hub_node_bridge_command(command) {
+        return "x_hub_node_bridge".to_string();
+    }
+    if is_x_hub_python_runtime_command(command) {
+        return "python_ml_runtime".to_string();
+    }
+    String::new()
+}
+
+fn is_x_hub_scoped_process(command: &str) -> bool {
+    command.contains("/X-Hub.app/")
+        || command.contains("/x-hub-system/x-hub/")
+        || command.contains("/x-hub-system-github-clean/x-hub/")
+}
+
+fn is_x_hub_node_bridge_command(command: &str) -> bool {
+    is_x_hub_scoped_process(command)
+        && !is_external_relflowhub_command(command)
+        && (command.contains("/relflowhub_node")
+            || command.contains("hub_grpc_server/src/server.js"))
+}
+
+fn is_x_hub_python_runtime_command(command: &str) -> bool {
+    is_x_hub_scoped_process(command)
+        && !is_external_relflowhub_command(command)
+        && (command.contains("relflowhub_local_runtime.py")
+            || command.contains("relflowhub_mlx_runtime.py"))
+}
+
+fn is_target_xhubd_command(command: &str) -> bool {
+    command.contains("/target/debug/xhubd") || command.contains("/target/release/xhubd")
+}
+
+fn is_mounted_app_command(command: &str) -> bool {
+    let mounted = command.contains("/Volumes/X-Hub") || command.contains("/Volumes/XHub");
+    mounted
+        && (command.contains("/X-Hub.app/")
+            || is_x_hub_node_bridge_command(command)
+            || is_x_hub_python_runtime_command(command))
+}
+
+fn is_external_relflowhub_command(command: &str) -> bool {
+    !command.contains("/X-Hub.app/")
+        && (command.contains("/RELFlowHub.app/") || command.contains("/Volumes/RELFlowHub"))
+}
+
+fn redact_process_command(command: &str) -> String {
+    let mut redacted = Vec::new();
+    let mut redact_next = false;
+    for token in command.split_whitespace() {
+        if redact_next {
+            redacted.push("[REDACTED]".to_string());
+            redact_next = false;
+            continue;
+        }
+        let lower = token.to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "--access-key" | "--api-key" | "--token" | "--secret" | "--password"
+        ) {
+            redacted.push(token.to_string());
+            redact_next = true;
+            continue;
+        }
+        if let Some((key, _)) = token.split_once('=') {
+            let key_lower = key.to_ascii_lowercase();
+            if key_lower.contains("access_key")
+                || key_lower.contains("access-key")
+                || key_lower.contains("api_key")
+                || key_lower.contains("api-key")
+                || key_lower.contains("token")
+                || key_lower.contains("secret")
+                || key_lower.contains("password")
+            {
+                redacted.push(format!("{key}=[REDACTED]"));
+                continue;
+            }
+        }
+        redacted.push(token.to_string());
+    }
+    redacted.join(" ")
+}
+
 fn memory_search_http_json(state: &HubState, query: &str) -> (&'static str, String) {
     let config = &state.config;
     let memory_dir = query_param(query, "memory_dir")
@@ -2972,6 +3384,37 @@ fn model_capabilities_http_json(config: &HubConfig, query: &str) -> (&'static st
     }
 }
 
+fn model_concurrency_policy_http_json(config: &HubConfig) -> (&'static str, String) {
+    let scheduler = scheduler_bridge::effective_scheduler_config(config);
+    let policy_path = std::env::var("XHUB_MODEL_CONCURRENCY_POLICY_PATH")
+        .ok()
+        .or_else(|| std::env::var("HUB_MODEL_CONCURRENCY_POLICY_PATH").ok())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            if config.runtime_base_dir.as_os_str().is_empty() {
+                String::new()
+            } else {
+                config
+                    .runtime_base_dir
+                    .join("model_concurrency_policy.json")
+                    .display()
+                    .to_string()
+            }
+        });
+    let body = json!({
+        "schema_version": "xhub.model_concurrency_policy_status.v1",
+        "ok": true,
+        "policy_path": policy_path,
+        "paid_ai": {
+            "global_concurrency": scheduler.global_concurrency,
+            "per_project_concurrency": scheduler.per_scope_concurrency,
+            "queue_limit": scheduler.queue_limit,
+            "queue_timeout_ms": scheduler.queue_timeout_ms,
+        },
+    });
+    ("200 OK", format!("{body}\n"))
+}
+
 fn model_repair_plan_http_json(config: &HubConfig, query: &str) -> (&'static str, String) {
     let runtime_base_dir = query_param(query, "runtime_base_dir")
         .or_else(|| query_param(query, "runtimeBaseDir"))
@@ -3081,6 +3524,64 @@ fn model_repair_apply_http_json(
             .or_else(|| query_param(query, "requested_by"))
             .or_else(|| query_param(query, "requestedBy"))
             .unwrap_or_else(|| "http".to_string()),
+        model_id: body_string_alias(&parsed_body, "model_id", "modelId")
+            .or_else(|| query_param(query, "model_id"))
+            .or_else(|| query_param(query, "modelId"))
+            .unwrap_or_default(),
+        display_name: body_string_alias(&parsed_body, "display_name", "displayName")
+            .or_else(|| body_string(&parsed_body, "name"))
+            .or_else(|| query_param(query, "display_name"))
+            .or_else(|| query_param(query, "displayName"))
+            .or_else(|| query_param(query, "name"))
+            .unwrap_or_default(),
+        artifact_path: body_string_alias(&parsed_body, "artifact_path", "artifactPath")
+            .or_else(|| body_string_alias(&parsed_body, "model_path", "modelPath"))
+            .or_else(|| body_string(&parsed_body, "path"))
+            .or_else(|| query_param(query, "artifact_path"))
+            .or_else(|| query_param(query, "artifactPath"))
+            .or_else(|| query_param(query, "model_path"))
+            .or_else(|| query_param(query, "modelPath"))
+            .or_else(|| query_param(query, "path"))
+            .unwrap_or_default(),
+        format: body_string(&parsed_body, "format")
+            .or_else(|| body_string_alias(&parsed_body, "artifact_format", "artifactFormat"))
+            .or_else(|| query_param(query, "format"))
+            .or_else(|| query_param(query, "artifact_format"))
+            .or_else(|| query_param(query, "artifactFormat"))
+            .unwrap_or_default(),
+        quantization: body_string(&parsed_body, "quantization")
+            .or_else(|| body_string(&parsed_body, "quant"))
+            .or_else(|| query_param(query, "quantization"))
+            .or_else(|| query_param(query, "quant"))
+            .unwrap_or_default(),
+        capabilities: first_non_empty_vec(vec![
+            body_string_list(&parsed_body, "capabilities"),
+            body_string_list(&parsed_body, "capability"),
+            query_param_list(query, "capabilities").unwrap_or_default(),
+            query_param_list(query, "capability").unwrap_or_default(),
+        ]),
+        task_kinds: first_non_empty_vec(vec![
+            body_string_list(&parsed_body, "task_kinds"),
+            body_string_list(&parsed_body, "taskKinds"),
+            query_param_list(query, "task_kinds").unwrap_or_default(),
+            query_param_list(query, "taskKinds").unwrap_or_default(),
+        ]),
+        context_length: body_u64_alias(&parsed_body, "context_length", "contextLength")
+            .or_else(|| {
+                query_param(query, "context_length").and_then(|value| value.parse::<u64>().ok())
+            })
+            .or_else(|| {
+                query_param(query, "contextLength").and_then(|value| value.parse::<u64>().ok())
+            })
+            .unwrap_or(0),
+        memory_bytes: body_u64_alias(&parsed_body, "memory_bytes", "memoryBytes")
+            .or_else(|| {
+                query_param(query, "memory_bytes").and_then(|value| value.parse::<u64>().ok())
+            })
+            .or_else(|| {
+                query_param(query, "memoryBytes").and_then(|value| value.parse::<u64>().ok())
+            })
+            .unwrap_or(0),
     };
     match model_bridge::local_repair_apply_json_from_parts(
         config,
@@ -3725,6 +4226,13 @@ fn body_string_list(value: &Value, key: &str) -> Vec<String> {
         Some(Value::String(raw)) => split_string_list(raw),
         _ => Vec::new(),
     }
+}
+
+fn first_non_empty_vec(values: Vec<Vec<String>>) -> Vec<String> {
+    values
+        .into_iter()
+        .find(|items| !items.is_empty())
+        .unwrap_or_default()
 }
 
 fn body_string_alias(value: &Value, key: &str, alias: &str) -> Option<String> {
@@ -4796,7 +5304,10 @@ fn readiness_json(
     let proto_ok = path_exists(&config.proto_path);
     let canonical_proto_ok = path_exists(&config.canonical_proto_path);
     let db_parent_ok = config.db_path.parent().map(path_exists).unwrap_or(false);
-    let scheduler = SchedulerStore::new(config.db_path.clone(), SchedulerConfig::default());
+    let scheduler = SchedulerStore::new(
+        config.db_path.clone(),
+        scheduler_bridge::effective_scheduler_config(config),
+    );
     let scheduler_status = scheduler.status_view(false, 0);
     let scheduler_ok = scheduler_status.is_ok();
     let runtime_configured = !config.runtime_base_dir.as_os_str().is_empty();
@@ -4834,6 +5345,20 @@ fn readiness_json(
     let memory_writer_authority = memory_bridge::memory_writer_authority_enabled();
     let skills_execution_authority = skills_bridge::skills_execution_authority_enabled();
     let local_ml_readiness = local_ml_bridge::readiness(config);
+    let memory_gateway_model_call_execution =
+        memory_bridge::memory_gateway_model_call_execution_status_value();
+    let memory_gateway_model_call_execute =
+        memory_bridge::memory_gateway_model_call_execute_status_value();
+    let memory_gateway_model_call_execution_admission =
+        memory_bridge::memory_gateway_model_call_execution_admission_enabled();
+    let memory_gateway_model_call_execution_admission_ready =
+        memory_gateway_model_call_execution_admission
+            && memory_bridge::memory_gateway_model_call_route_authority_ready();
+    let memory_gateway_model_call_execution_in_rust =
+        memory_gateway_model_call_execution_admission_ready
+            && memory_bridge::memory_gateway_model_call_local_executor_enabled()
+            && memory_bridge::memory_gateway_model_call_local_executor_apply_enabled()
+            && local_ml_readiness.ready;
     let provider_route_authority = provider_route_production_authority_enabled();
     let model_route_authority = model_route_production_authority_enabled();
     let scheduler_authority = scheduler_production_authority_enabled();
@@ -4873,6 +5398,7 @@ fn readiness_json(
             "http_io_timeouts": true,
             "http_metrics": true,
             "http_backpressure": true,
+            "product_process_sanity_http": true,
             "readiness_cache_scope": "process_memory",
             "read_only_snapshot_cache_scope": "process_memory",
             "stutter_guard": true,
@@ -4936,6 +5462,7 @@ fn readiness_json(
             "provider_route_authority_in_rust": provider_route_authority,
             "model_inventory_http": true,
             "model_local_capabilities_http": true,
+            "model_concurrency_policy_http": true,
             "model_local_repair_plan_http": true,
             "model_local_repair_apply_http": true,
             "model_local_repair_jobs_http": true,
@@ -4961,10 +5488,23 @@ fn readiness_json(
             "retrieval_shadow_http": true,
             "write_http": true,
             "gateway_prepare_http": true,
+            "gateway_model_call_plan_http": true,
+            "gateway_model_call_execution_gate_http": true,
+            "object_mutation_gate_http": true,
+            "object_mutation_gate_authority": "rust_memory_object_store",
+            "object_mutation_gate_delete_mode": "tombstone",
             "role_transcript_projection_http": true,
             "role_transcript_projection_schema": memory_role_projection::PROJECT_ROLE_TRANSCRIPT_PROJECTION_SCHEMA,
             "role_transcript_projection_authority": "shadow_read_only",
             "gateway_prepare_authority": "prepare_only_no_model_call",
+            "gateway_model_call_authority": "plan_only_no_model_call",
+            "gateway_model_call_execution_authority": if memory_gateway_model_call_execution_in_rust { "rust_local_ml_executor" } else if memory_gateway_model_call_execution_admission { "execution_admission_no_model_call" } else { "gate_only_no_model_call" },
+            "gateway_model_call_execution_admission_in_rust": memory_gateway_model_call_execution_admission,
+            "gateway_model_call_execution_admission_ready": memory_gateway_model_call_execution_admission_ready,
+            "gateway_model_call_execution_in_rust": memory_gateway_model_call_execution_in_rust,
+            "gateway_model_call_execution_gate": memory_gateway_model_call_execution,
+            "gateway_model_call_execute_http": true,
+            "gateway_model_call_execute": memory_gateway_model_call_execute,
             "write_result_schema": xhub_memory::MEMORY_WRITE_RESULT_SCHEMA,
             "retrieval_result_schema": xhub_memory::MEMORY_RETRIEVAL_RESULT_SCHEMA,
         },
@@ -5019,6 +5559,7 @@ fn readiness_json(
             "provider_route_authority_in_rust": provider_route_authority,
             "model_inventory_http": true,
             "model_local_capabilities_http": true,
+            "model_concurrency_policy_http": true,
             "model_local_repair_plan_http": true,
             "model_local_repair_apply_http": true,
             "model_local_repair_jobs_http": true,
@@ -5031,11 +5572,19 @@ fn readiness_json(
             "http_metrics": true,
             "http_metrics_recent_window": true,
             "http_io_timeouts": true,
+            "product_process_sanity_http": true,
             "remote_entry_candidates_http": true,
             "swift_shell_remote_entry_authority": true,
             "memory_retrieval_http": true,
             "memory_write_http": true,
             "memory_gateway_prepare_http": true,
+            "memory_gateway_model_call_plan_http": true,
+            "memory_gateway_model_call_execution_gate_http": true,
+            "memory_gateway_model_call_execute_http": true,
+            "memory_object_mutation_gate_http": true,
+            "memory_gateway_model_call_execution_admission_in_rust": memory_gateway_model_call_execution_admission,
+            "memory_gateway_model_call_execution_admission_ready": memory_gateway_model_call_execution_admission_ready,
+            "memory_gateway_model_call_execution_in_rust": memory_gateway_model_call_execution_in_rust,
             "memory_role_transcript_projection_http": true,
             "memory_writer_authority_in_rust": memory_writer_authority,
             "xt_classic_hub_compat_preflight_http": true,
@@ -5252,6 +5801,72 @@ mod tests {
         }
 
         assert_eq!(readiness_json_cached(&state), "{\"cached\":true}\n");
+    }
+
+    #[test]
+    fn product_process_sanity_detects_mounted_app_target_xhubd_and_cpu_budget() {
+        let ps_output = "\
+123 1 S 0.2 0.1 00:01 /Users/test/Library/Application Support/AX/rust-hub/local/bin/xhubd serve
+124 1 S 97.5 1.2 00:02 /Volumes/X-Hub v1.2.9/X-Hub.app/Contents/Resources/relflowhub_node server.js --access-key secret-value
+125 1 S 1.0 0.1 00:03 /Users/test/Documents/AX/x-hub-system/rust/xhubd/target/debug/xhubd serve
+";
+        let value = product_process_sanity_from_ps_output(
+            true,
+            String::new(),
+            ps_output,
+            80.0,
+            true,
+            false,
+            true,
+        );
+
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["xhubd_process_count"], 2);
+        assert_eq!(value["mounted_app_process_count"], 1);
+        assert_eq!(value["product_processes"][1]["label"], "x_hub_node_bridge");
+        assert_eq!(value["target_xhubd_process_count"], 1);
+        assert_eq!(value["product_cpu_over_budget"], true);
+        let issues = value["issues"].as_array().expect("issues should be array");
+        assert!(issues.contains(&json!("stale_mounted_app_process_present")));
+        assert!(issues.contains(&json!("target_xhubd_process_present")));
+        assert!(issues.contains(&json!("product_process_cpu_over_budget")));
+        let command = value["mounted_app_processes"][0]["command"]
+            .as_str()
+            .expect("command should be present");
+        assert!(command.contains("--access-key [REDACTED]"));
+        assert!(!command.contains("secret-value"));
+    }
+
+    #[test]
+    fn product_process_sanity_treats_relflowhub_app_as_external() {
+        let ps_output = "\
+123 1 S 0.2 0.1 00:01 /Users/test/Library/Application Support/AX/rust-hub/local/bin/xhubd serve
+124 1 S 97.5 1.2 00:02 /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/MacOS/RELFlowHub
+125 1 S 92.5 1.2 00:02 /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/relflowhub_node /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/hub_grpc_server/src/server.js --access-key other-secret
+126 1 S 88.0 1.2 00:02 /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/python-runtime/relflowhub_local_runtime.py
+";
+        let value = product_process_sanity_from_ps_output(
+            true,
+            String::new(),
+            ps_output,
+            80.0,
+            true,
+            false,
+            true,
+        );
+
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["product_process_count"], 1);
+        assert_eq!(value["product_shell_process_count"], 0);
+        assert_eq!(value["mounted_app_process_count"], 0);
+        assert_eq!(value["external_relflowhub_process_count"], 3);
+        assert_eq!(value["product_cpu_over_budget"], false);
+        assert_eq!(value["issues"].as_array().unwrap().len(), 0);
+        let command = value["external_relflowhub_processes"][1]["command"]
+            .as_str()
+            .expect("command should be present");
+        assert!(command.contains("--access-key [REDACTED]"));
+        assert!(!command.contains("other-secret"));
     }
 
     #[test]

@@ -18,12 +18,16 @@ struct FloatingRootView: View {
                 Color.clear
             } else {
                 switch store.floatingMode {
+                case .hidden:
+                    Color.clear
                 case .orb:
                     OrbFloatingView(
                         alert: store.topAlert(),
                         devices: grpcDevicesStatus.devices,
                         pairedSurfaceClients: pairedSurfaceClients,
-                        snapshotUpdatedAtMs: grpcDevicesStatus.updatedAtMs
+                        snapshotUpdatedAtMs: grpcDevicesStatus.updatedAtMs,
+                        particleDensity: store.orbParticleDensity,
+                        particleSize: store.orbParticleSize
                     )
                         .onTapGesture {
                             // Orb should not react to hover; only a single click action is supported.
@@ -71,6 +75,8 @@ struct OrbFloatingView: View {
     let devices: [GRPCDeviceStatusEntry]
     let pairedSurfaceClients: [HubClientHeartbeat]
     let snapshotUpdatedAtMs: Int64
+    let particleDensity: OrbParticleDensity
+    let particleSize: OrbParticleSize
 
     fileprivate struct SatelliteVisual: Identifiable, Equatable {
         let id: String
@@ -344,7 +350,7 @@ struct OrbFloatingView: View {
         // Discretize to avoid tiny float diffs.
         let a = Int((omegaTarget * 10_000).rounded())
         let b = Int((orbitOmegaTarget * 10_000).rounded())
-        return "k=\(alert.kind.rawValue)|c=\(alert.count)|r=\(alert.urgentSecondsToMeeting ?? -1)|w=\(alert.urgentWindowSeconds ?? -1)|o=\(a)|so=\(b)"
+        return "k=\(alert.kind.rawValue)|c=\(alert.count)|r=\(alert.urgentSecondsToMeeting ?? -1)|w=\(alert.urgentWindowSeconds ?? -1)|o=\(a)|so=\(b)|d=\(particleDensity.rawValue)|s=\(particleSize.rawValue)"
     }
 
     private func timelineMinimumInterval() -> Double {
@@ -690,16 +696,18 @@ struct OrbFloatingView: View {
     }
 
     private func pointStride() -> Int {
+        let baseStride: Int
         switch alert.kind {
         case .meetingUrgent:
-            return 1
+            baseStride = 1
         case .meetingHot, .meetingSoon:
-            return 2
+            baseStride = 2
         case .idle:
-            return 6
+            baseStride = 6
         default:
-            return 4
+            baseStride = 4
         }
+        return particleDensity.adjustedStride(baseStride)
     }
 
     private func draw(context: inout GraphicsContext, side: CGFloat, t: Double, ay: Double, ax: Double, rgba: (Double, Double, Double, Double)) {
@@ -766,6 +774,7 @@ struct OrbFloatingView: View {
 
                 let sizeP = CGFloat(0.24 + 0.48 * depthL)
                     * pointScale
+                    * particleSize.scale
                     * ((alert.kind == .meetingUrgent || alert.kind == .meetingHot) ? CGFloat(1.0 + 0.04 * pulse) : 1.0)
                 let rect = CGRect(x: px - sizeP / 2, y: py - sizeP / 2, width: sizeP, height: sizeP)
 

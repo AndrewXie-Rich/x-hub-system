@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 @preconcurrency import UserNotifications
+import RELFlowHubAppSupport
 import RELFlowHubCore
 
 @main

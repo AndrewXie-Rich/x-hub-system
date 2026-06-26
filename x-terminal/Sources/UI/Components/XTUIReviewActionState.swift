@@ -47,9 +47,20 @@ final class XTUIReviewActionState: ObservableObject {
             refreshNonce += 1
         }
         onSnapshotResolved?(result)
-        statusMessage = ToolResultHumanSummary.body(for: result)
+        statusMessage = statusMessage(for: result)
         statusIsError = !result.ok
         isResampling = false
+    }
+
+    private func statusMessage(for result: ToolResult) -> String {
+        let rawOutput = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !result.ok else {
+            return ToolResultHumanSummary.body(for: result)
+        }
+        guard !rawOutput.isEmpty else {
+            return ToolResultHumanSummary.body(for: result)
+        }
+        return rawOutput.contains("\n\n") ? ToolResultHumanSummary.body(for: result) : rawOutput
     }
 
     private static func liveExecuteSnapshot(projectRoot: URL) async throws -> ToolResult {

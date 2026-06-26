@@ -30,11 +30,14 @@ function parseArgs(argv) {
     maxStatusAgeMs: 5000,
     statusReadTimeoutMs: 3000,
     maxSlowRequests: 0,
+    maxProductCpuPercent: 0,
     requireUiCompatibility: true,
-    requireRelFlowHubProcess: true,
+    requireProductBridgeProcess: true,
     requireNoTargetXhubd: true,
     allowMemorySkillsProduction: false,
     requireMemorySkillsProduction: false,
+    requireMemoryGatewayCutoverReady: false,
+    requireMemoryGatewayModelCallPlanShadow: false,
     includeChildOutput: false,
     reportPath: '',
   };
@@ -87,11 +90,18 @@ function parseArgs(argv) {
         out.maxSlowRequests = parseIntInRange(next, out.maxSlowRequests, 0, 100000);
         i += 1;
         break;
+      case '--max-product-cpu-percent':
+        out.maxProductCpuPercent = parseIntInRange(next, out.maxProductCpuPercent, 0, 1000);
+        i += 1;
+        break;
       case '--skip-ui-compatibility':
         out.requireUiCompatibility = false;
         break;
+      case '--allow-missing-product-bridge':
+        out.requireProductBridgeProcess = false;
+        break;
       case '--allow-missing-relflowhub':
-        out.requireRelFlowHubProcess = false;
+        out.requireProductBridgeProcess = false;
         break;
       case '--allow-target-xhubd':
         out.requireNoTargetXhubd = false;
@@ -102,6 +112,12 @@ function parseArgs(argv) {
       case '--require-memory-skills-production':
         out.allowMemorySkillsProduction = true;
         out.requireMemorySkillsProduction = true;
+        break;
+      case '--require-memory-gateway-cutover-ready':
+        out.requireMemoryGatewayCutoverReady = true;
+        break;
+      case '--require-memory-gateway-model-call-plan-shadow':
+        out.requireMemoryGatewayModelCallPlanShadow = true;
         break;
       case '--include-child-output':
         out.includeChildOutput = true;
@@ -158,11 +174,15 @@ function usage() {
     '  --max-status-age-ms <ms>        Heartbeat freshness budget, default 5000',
     '  --status-read-timeout-ms <ms>   Child status read timeout, default 3000',
     '  --max-slow-requests <n>         Recent slow request budget for daemon ops gate, default 0',
+    '  --max-product-cpu-percent <n>   Fail process sanity when product process CPU exceeds n, default 0 disabled',
     '  --skip-ui-compatibility         Skip no-product-UI-change gate',
-    '  --allow-missing-relflowhub      Do not fail if RELFlowHub/X-Hub bridge process is absent',
+    '  --allow-missing-product-bridge Do not fail if the X-Hub shell or Node bridge process is absent',
+    '  --allow-missing-relflowhub      Legacy alias for --allow-missing-product-bridge',
     '  --allow-target-xhubd            Do not fail if target/debug or target/release xhubd is present',
     '  --allow-memory-skills-production Permit explicit Rust memory writer and skills execution authority',
     '  --require-memory-skills-production Require both Rust memory writer and skills execution authority',
+    '  --require-memory-gateway-cutover-ready Require memory_gateway_cutover_readiness.json ready_for_require=true in daemon ops gate',
+    '  --require-memory-gateway-model-call-plan-shadow Require XT model-call shadow preflight evidence in daemon ops gate',
     '  --include-child-output          Embed full child JSON outputs in the top-level report',
     '  --report-path <p>               JSON report path',
   ].join('\n');
@@ -366,6 +386,22 @@ function summarizeOpsGate(output) {
     xt_file_ipc_production_surface_ready: readiness?.capabilities?.xt_file_ipc_production_surface_ready === true,
     memory_writer_authority_in_rust: output?.memory_writer_authority_in_rust === true,
     skills_execution_authority_in_rust: output?.skills_execution_authority_in_rust === true,
+    memory_gateway_cutover_readiness_required: output?.memory_gateway_cutover_readiness_required === true,
+    memory_gateway_cutover_ready: output?.memory_gateway_cutover_ready === true,
+    memory_gateway_cutover_readiness_ok: output?.memory_gateway_cutover_readiness_ok === true,
+    memory_gateway_model_call_plan_shadow_required: output?.memory_gateway_model_call_plan_shadow_required === true,
+    memory_gateway_model_call_plan_shadow_found: output?.memory_gateway_model_call_plan_shadow_found === true,
+    memory_gateway_model_call_plan_shadow_ok: output?.memory_gateway_model_call_plan_shadow_ok === true,
+    memory_gateway_model_call_plan_shadow_evidence_ok: output?.memory_gateway_model_call_plan_shadow_evidence_ok === true,
+    memory_gateway_model_call_plan_shadow_execution_safe: output?.memory_gateway_model_call_plan_shadow_execution_safe === true,
+    memory_gateway_model_call_plan_shadow_text_safe: output?.memory_gateway_model_call_plan_shadow_text_safe === true,
+    memory_gateway_model_call_plan_shadow_selected_chunk_count: Number(output?.memory_gateway_model_call_plan_shadow_selected_chunk_count || 0),
+    memory_gateway_model_call_plan_shadow_selected_chunk_ref_count: Number(output?.memory_gateway_model_call_plan_shadow_selected_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_ref_count: Number(output?.memory_gateway_model_call_plan_shadow_omitted_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count: Number(output?.memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_index_granularity: String(output?.memory_gateway_model_call_plan_shadow_index_granularity || ''),
+    memory_gateway_model_call_plan_shadow_chunk_identity_schema: String(output?.memory_gateway_model_call_plan_shadow_chunk_identity_schema || ''),
+    memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref: output?.memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref === true,
     ui_product_change: output?.ui_product_change === true,
     secret_leak: output?.secret_leak === true,
     issue_count: Array.isArray(output?.issues) ? output.issues.length : 0,
@@ -398,7 +434,7 @@ function summarizeUiGate(output) {
 
 function collectProcesses() {
   try {
-    const rows = execFileSync('ps', ['ax', '-o', 'pid=,ppid=,stat=,command='], {
+    const rows = execFileSync('ps', ['ax', '-o', 'pid=,ppid=,stat=,%cpu=,command='], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       maxBuffer: 8 * 1024 * 1024,
@@ -409,41 +445,119 @@ function collectProcesses() {
   }
 }
 
+function parseProcessRow(line) {
+  const match = String(line || '').match(/^(\d+)\s+(\d+)\s+(\S+)\s+([0-9.]+)\s+([\s\S]*)$/);
+  if (!match) {
+    return { pid: 0, ppid: 0, stat: '', cpu_percent: 0, command: String(line || ''), raw: String(line || '') };
+  }
+  return {
+    pid: Number(match[1]),
+    ppid: Number(match[2]),
+    stat: match[3],
+    cpu_percent: Number(match[4] || 0),
+    command: match[5],
+    raw: String(line || ''),
+  };
+}
+
+function isExternalRelFlowHubProcessLine(line) {
+  const text = String(line || '');
+  return !/\/X-Hub\.app\//.test(text)
+    && (/\/RELFlowHub\.app\//.test(text) || /\/Volumes\/RELFlowHub[^/]*\//.test(text));
+}
+
+function isXHubScopedProcessLine(line) {
+  const text = String(line || '');
+  return /\/X-Hub\.app\//.test(text)
+    || /\/x-hub-system(?:-github-clean)?\/x-hub\//.test(text);
+}
+
+function isXHubNodeBridgeProcessLine(line) {
+  const text = String(line || '');
+  return isXHubScopedProcessLine(text)
+    && !isExternalRelFlowHubProcessLine(text)
+    && (/\/relflowhub_node(?:\s|$)/.test(text) || /hub_grpc_server\/src\/server\.js/.test(text));
+}
+
+function isXHubPythonRuntimeProcessLine(line) {
+  const text = String(line || '');
+  return isXHubScopedProcessLine(text)
+    && !isExternalRelFlowHubProcessLine(text)
+    && /relflowhub_(?:local|mlx)_runtime\.py/.test(text);
+}
+
+function isMountedXHubProcessLine(line) {
+  const text = String(line || '');
+  return /\/Volumes\/(?:X-Hub|XHub)[^/]*\//.test(text)
+    && (/\/X-Hub\.app\//.test(text)
+      || isXHubNodeBridgeProcessLine(text)
+      || isXHubPythonRuntimeProcessLine(text));
+}
+
 function processSanity(config) {
   const snapshot = collectProcesses();
+  const processRows = snapshot.rows.map(parseProcessRow);
   const xhubd = snapshot.rows
     .filter((line) => /\bxhubd\b/.test(line))
     .filter((line) => !line.includes('production_live_stability_gate.js'));
   const targetXhubd = xhubd.filter((line) => /target\/(?:debug|release)\/xhubd\b/.test(line));
-  const relflowhub = snapshot.rows
-    .filter((line) => /Contents\/MacOS\/RELFlowHub(?:\s|$)/.test(line) || /\/RELFlowHub(?:\s|$)/.test(line))
-    .filter((line) => !line.includes('production_live_stability_gate.js'));
   const xhubApp = snapshot.rows
     .filter((line) => /Contents\/MacOS\/XHub(?:\s|$)/.test(line) || /\/X-Hub\.app\//.test(line))
     .filter((line) => !line.includes('production_live_stability_gate.js'));
-  const relflowhubNode = snapshot.rows
-    .filter((line) => /\/relflowhub_node(?:\s|$)/.test(line) || /hub_grpc_server\/src\/server\.js/.test(line))
+  const xHubNodeBridge = snapshot.rows
+    .filter((line) => isXHubNodeBridgeProcessLine(line))
     .filter((line) => !line.includes('production_live_stability_gate.js'));
-  const pythonRuntime = snapshot.rows.filter((line) => /relflowhub_local_runtime\.py/.test(line));
-  const productBridgePresent = relflowhub.length > 0 || xhubApp.length > 0 || relflowhubNode.length > 0;
+  const pythonRuntime = snapshot.rows.filter((line) => isXHubPythonRuntimeProcessLine(line));
+  const externalRelFlowHub = snapshot.rows
+    .filter((line) => isExternalRelFlowHubProcessLine(line))
+    .filter((line) => !line.includes('production_live_stability_gate.js'));
+  const productBridgePresent = xhubApp.length > 0 || xHubNodeBridge.length > 0;
+  const productProcessRows = processRows.filter((item) => {
+    const text = item.raw || item.command || '';
+    return /Contents\/MacOS\/XHub(?:\s|$)/.test(text)
+      || /\/X-Hub\.app\//.test(text)
+      || isXHubNodeBridgeProcessLine(text)
+      || isXHubPythonRuntimeProcessLine(text);
+  });
+  const mountedXHubProcesses = processRows.filter((item) => isMountedXHubProcessLine(item.raw || item.command || ''));
+  const maxProductCpuPercent = Number(config.maxProductCpuPercent || 0);
+  const highCpuProductProcesses = maxProductCpuPercent > 0
+    ? productProcessRows.filter((item) => Number(item.cpu_percent || 0) > maxProductCpuPercent)
+    : [];
+  const productTotalCpuPercent = productProcessRows.reduce((sum, item) => sum + Number(item.cpu_percent || 0), 0);
+  const productMaxCpuPercent = productProcessRows.reduce((max, item) => Math.max(max, Number(item.cpu_percent || 0)), 0);
   const issues = [];
   if (!snapshot.ok) issues.push('process_snapshot_unavailable');
   if (xhubd.length === 0) issues.push('xhubd_process_not_found');
   if (config.requireNoTargetXhubd && targetXhubd.length > 0) issues.push('target_xhubd_process_present');
-  if (config.requireRelFlowHubProcess && !productBridgePresent) issues.push('product_bridge_process_not_found');
+  if (config.requireProductBridgeProcess && !productBridgePresent) issues.push('product_bridge_process_not_found');
+  if (mountedXHubProcesses.length > 0) issues.push('stale_mounted_xhub_process_present');
+  if (highCpuProductProcesses.length > 0) issues.push('product_process_cpu_over_budget');
   return {
     ok: issues.length === 0,
     process_snapshot_ok: snapshot.ok,
     process_snapshot_error: snapshot.error,
     xhubd_processes: xhubd,
     target_xhubd_processes: targetXhubd,
-    relflowhub_processes: relflowhub,
     xhub_app_processes: xhubApp,
-    relflowhub_node_processes: relflowhubNode,
+    x_hub_node_bridge_processes: xHubNodeBridge,
     python_runtime_processes: pythonRuntime,
+    mounted_xhub_processes: mountedXHubProcesses,
+    external_relflowhub_processes: externalRelFlowHub,
+    external_relflowhub_process_count: externalRelFlowHub.length,
+    relflowhub_processes: [],
+    relflowhub_node_processes: [],
+    mounted_relflowhub_processes: [],
+    product_processes: productProcessRows,
+    product_process_count: productProcessRows.length,
+    product_total_cpu_percent: Number(productTotalCpuPercent.toFixed(2)),
+    product_max_cpu_percent: Number(productMaxCpuPercent.toFixed(2)),
+    max_product_cpu_percent: maxProductCpuPercent,
+    high_cpu_product_processes: highCpuProductProcesses,
     product_bridge_present: productBridgePresent,
     require_no_target_xhubd: config.requireNoTargetXhubd,
-    require_relflowhub_process: config.requireRelFlowHubProcess,
+    require_product_bridge_process: config.requireProductBridgeProcess,
+    require_relflowhub_process: config.requireProductBridgeProcess,
     issues,
   };
 }
@@ -498,6 +612,13 @@ async function run(config) {
   } else if (config.allowMemorySkillsProduction) {
     memorySkillsGateArgs.push('--allow-memory-skills-production');
   }
+  const memoryGatewayGateArgs = [];
+  if (config.requireMemoryGatewayCutoverReady) {
+    memoryGatewayGateArgs.push('--require-memory-gateway-cutover-ready');
+  }
+  if (config.requireMemoryGatewayModelCallPlanShadow) {
+    memoryGatewayGateArgs.push('--require-memory-gateway-model-call-plan-shadow');
+  }
   const liveBaseDirArgs = config.liveBaseDirExplicit
     ? ['--live-base-dir', config.liveBaseDir]
     : [];
@@ -505,6 +626,7 @@ async function run(config) {
     ...(config.profile ? ['--profile', config.profile] : []),
     ...(config.profileFile ? ['--profile-file', config.profileFile] : []),
     ...(config.accessKeyFile ? ['--access-key-file', config.accessKeyFile] : []),
+    ...memoryGatewayGateArgs,
   ];
   const heartbeat = runJsonStep('xt_file_ipc_live_heartbeat_soak', 'node', [
     path.join(SCRIPT_DIR, 'xt_file_ipc_live_heartbeat_soak.js'),
@@ -652,6 +774,22 @@ async function run(config) {
     max_slow_requests: config.maxSlowRequests,
     memory_skills_production_allowed: config.allowMemorySkillsProduction,
     memory_skills_production_required: config.requireMemorySkillsProduction,
+    memory_gateway_cutover_ready_required: config.requireMemoryGatewayCutoverReady,
+    memory_gateway_model_call_plan_shadow_required: config.requireMemoryGatewayModelCallPlanShadow,
+    memory_gateway_cutover_ready: opsGate.summary.memory_gateway_cutover_ready === true,
+    memory_gateway_cutover_readiness_ok: opsGate.summary.memory_gateway_cutover_readiness_ok === true,
+    memory_gateway_model_call_plan_shadow_found: opsGate.summary.memory_gateway_model_call_plan_shadow_found === true,
+    memory_gateway_model_call_plan_shadow_ok: opsGate.summary.memory_gateway_model_call_plan_shadow_ok === true,
+    memory_gateway_model_call_plan_shadow_evidence_ok: opsGate.summary.memory_gateway_model_call_plan_shadow_evidence_ok === true,
+    memory_gateway_model_call_plan_shadow_execution_safe: opsGate.summary.memory_gateway_model_call_plan_shadow_execution_safe === true,
+    memory_gateway_model_call_plan_shadow_text_safe: opsGate.summary.memory_gateway_model_call_plan_shadow_text_safe === true,
+    memory_gateway_model_call_plan_shadow_selected_chunk_count: Number(opsGate.summary.memory_gateway_model_call_plan_shadow_selected_chunk_count || 0),
+    memory_gateway_model_call_plan_shadow_selected_chunk_ref_count: Number(opsGate.summary.memory_gateway_model_call_plan_shadow_selected_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_ref_count: Number(opsGate.summary.memory_gateway_model_call_plan_shadow_omitted_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count: Number(opsGate.summary.memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count || 0),
+    memory_gateway_model_call_plan_shadow_index_granularity: String(opsGate.summary.memory_gateway_model_call_plan_shadow_index_granularity || ''),
+    memory_gateway_model_call_plan_shadow_chunk_identity_schema: String(opsGate.summary.memory_gateway_model_call_plan_shadow_chunk_identity_schema || ''),
+    memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref: opsGate.summary.memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref === true,
     http_metrics_baseline: {
       ok: metricsBefore.ok,
       status_code: metricsBefore.status_code,

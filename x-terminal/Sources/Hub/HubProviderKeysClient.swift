@@ -815,14 +815,14 @@ enum HubProviderKeysClient {
     }
 
     private static func resolveHubEnv() -> [String: String]? {
-        let stateDir = XTProcessPaths.defaultAxhubStateDir()
+        let stateDir = XTProcessPaths.activeAxhubStateDir()
         let hubEnv = stateDir.appendingPathComponent("hub.env")
         guard FileManager.default.fileExists(atPath: hubEnv.path) else { return nil }
         return readEnvExports(from: hubEnv)
     }
 
     private static func resolveNodeAndCwd(env: [String: String]) -> (String, URL)? {
-        let stateDir = XTProcessPaths.defaultAxhubStateDir()
+        let stateDir = XTProcessPaths.activeAxhubStateDir()
         let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
         let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
         guard FileManager.default.fileExists(atPath: clientKitHub.path) else { return nil }

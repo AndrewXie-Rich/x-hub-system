@@ -98,6 +98,40 @@ private struct TerminalAccessAPIErrorObj: Codable {
     var retryable: Bool?
 }
 
+struct TerminalAccessGatewayHealth: Codable, Equatable, Sendable {
+    var ok: Bool?
+    var service: String?
+    var schemaVersion: String?
+    var daemon: String?
+    var error: String?
+    var message: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case service
+        case schemaVersion = "schema_version"
+        case daemon
+        case error
+        case message
+    }
+
+    var isPairingGateway: Bool {
+        ok == true && terminalAccessNormalizedText(service).lowercased() == "pairing"
+    }
+
+    var diagnosticSummary: String {
+        let parts = [
+            terminalAccessNormalizedText(service).isEmpty ? "" : "service=\(terminalAccessNormalizedText(service))",
+            terminalAccessNormalizedText(schemaVersion).isEmpty ? "" : "schema=\(terminalAccessNormalizedText(schemaVersion))",
+            terminalAccessNormalizedText(daemon).isEmpty ? "" : "daemon=\(terminalAccessNormalizedText(daemon))",
+            terminalAccessNormalizedText(error).isEmpty ? "" : "error=\(terminalAccessNormalizedText(error))",
+            terminalAccessNormalizedText(message).isEmpty ? "" : "message=\(terminalAccessNormalizedText(message))",
+        ]
+        .filter { !$0.isEmpty }
+        return parts.isEmpty ? "unknown health response" : parts.joined(separator: " ")
+    }
+}
+
 struct HubTerminalAccessKey: Identifiable, Codable, Equatable, Sendable {
     var accessKeyID: String
     var authKind: String
@@ -575,6 +609,7 @@ enum TerminalAccessKeyHTTPClient {
     enum ClientError: LocalizedError {
         case badURL
         case badResponse
+        case gatewayUnavailable(message: String)
         case apiError(code: String, message: String)
 
         var errorDescription: String? {
@@ -583,6 +618,8 @@ enum TerminalAccessKeyHTTPClient {
                 return "普通 Terminal access key URL 无法构造。"
             case .badResponse:
                 return "Hub 返回了无法识别的普通 Terminal access key 响应。"
+            case .gatewayUnavailable(let message):
+                return message
             case .apiError(let code, let message):
                 let normalizedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
                 return normalizedMessage.isEmpty ? code : "\(code): \(normalizedMessage)"
@@ -596,6 +633,41 @@ enum TerminalAccessKeyHTTPClient {
 
     private static func baseURL(pairingPort: Int) -> URL? {
         URL(string: "http://127.0.0.1:\(pairingPort)")
+    }
+
+    static func gatewayBaseURLText(grpcPort: Int) -> String {
+        "http://127.0.0.1:\(pairingPort(grpcPort: grpcPort))"
+    }
+
+    static func decodeGatewayHealth(data: Data) -> TerminalAccessGatewayHealth? {
+        try? JSONDecoder().decode(TerminalAccessGatewayHealth.self, from: data)
+    }
+
+    static func gatewayHealth(
+        grpcPort: Int,
+        timeoutSec: Double = 1.0
+    ) async -> TerminalAccessGatewayHealth? {
+        let pairingPort = pairingPort(grpcPort: grpcPort)
+        guard let base = baseURL(pairingPort: pairingPort),
+              let url = URL(string: "/health", relativeTo: base) else {
+            return nil
+        }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.timeoutInterval = max(0.5, min(5.0, timeoutSec))
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<500).contains(http.statusCode) else {
+                return nil
+            }
+            return decodeGatewayHealth(data: data)
+        } catch {
+            return nil
+        }
     }
 
     private static func request(
@@ -623,8 +695,25 @@ enum TerminalAccessKeyHTTPClient {
         }
 
         let (data, response) = try await URLSession.shared.data(for: req)
-        guard response is HTTPURLResponse else {
+        guard let http = response as? HTTPURLResponse else {
             throw ClientError.badResponse
+        }
+        if http.statusCode == 404 {
+            let endpoint = "\(base.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")))\(path)"
+            if let obj = try? JSONDecoder().decode(HubTerminalAccessKeyMutationResponse.self, from: data),
+               obj.error?.code == "not_found" {
+                throw ClientError.apiError(
+                    code: "terminal_gateway_not_found",
+                    message: "普通 Terminal Gateway 没有挂载这个接口：\(endpoint)。请确认 Hub 的 Node pairing gateway 正在运行，不要把普通 terminal URL 指到 Rust kernel 的 HTTP 端口。"
+                )
+            }
+            if let obj = try? JSONDecoder().decode(HubTerminalAccessKeyListResponse.self, from: data),
+               obj.error?.code == "not_found" {
+                throw ClientError.apiError(
+                    code: "terminal_gateway_not_found",
+                    message: "普通 Terminal Gateway 没有挂载这个接口：\(endpoint)。请确认 Hub 的 Node pairing gateway 正在运行，不要把普通 terminal URL 指到 Rust kernel 的 HTTP 端口。"
+                )
+            }
         }
         return data
     }

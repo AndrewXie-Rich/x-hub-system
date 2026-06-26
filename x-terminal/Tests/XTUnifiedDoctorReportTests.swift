@@ -1844,6 +1844,452 @@ struct XTUnifiedDoctorReportTests {
     }
 
     @Test
+    func sessionRuntimeSectionIncludesRustMemoryWritebackCandidateQueueDiagnostics() throws {
+        let model = sampleModel(id: "hub.model.coder")
+        let rustMemoryReadiness = RustHubMemoryReadinessSnapshot(
+            schemaVersion: "xhub.memory_bridge.v1",
+            ok: true,
+            objectStore: RustHubMemoryReadinessSnapshot.ObjectStore(
+                ready: true,
+                objectCount: 5,
+                activeObjectCount: 2,
+                candidateObjectCount: 3,
+                writebackCandidates: RustHubMemoryReadinessSnapshot.WritebackCandidates(
+                    schemaVersion: "xhub.memory.writeback_candidate.v1",
+                    ready: true,
+                    candidateObjectCount: 3,
+                    candidateCreateHTTP: true,
+                    candidateListHTTP: true,
+                    candidateApproveRejectHTTP: true,
+                    candidateMaintenanceHTTP: true,
+                    authority: "rust_policy_gated_candidate_queue",
+                    diagnostics: HubIPCClient.MemoryWritebackCandidateDiagnostics(
+                        schemaVersion: "xhub.memory.writeback_candidate_diagnostics.v1",
+                        ready: true,
+                        source: "rust_memory_object_store",
+                        candidateCount: 3,
+                        conflictCandidateCount: 1,
+                        staleReviewRequiredCount: 1,
+                        staleCandidateCount: 2,
+                        plannedArchiveCount: 1,
+                        plannedStaleReviewRequiredCount: 1,
+                        activeReviewLockCount: 0,
+                        supersedingCandidateCount: 1,
+                        archivedSupersededCount: 1,
+                        supersededCandidateCount: 1,
+                        queuePressure: "high",
+                        noiseScore: 12,
+                        productionAuthorityChange: false
+                    ),
+                    productionAuthorityChange: false
+                )
+            )
+        )
+
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: true,
+                bridgeEnabled: true,
+                sessionRuntime: nil,
+                skillsSnapshot: readySkillsSnapshot(),
+                rustMemoryReadinessSnapshot: rustMemoryReadiness
+            )
+        )
+
+        let section = try #require(report.section(.sessionRuntimeReadiness))
+        #expect(section.detailLines.contains("rust_memory_writeback_candidate_queue_schema=xhub.memory.writeback_candidate_diagnostics.v1"))
+        #expect(section.detailLines.contains("rust_memory_writeback_candidate_queue_authority=rust_policy_gated_candidate_queue"))
+        #expect(section.detailLines.contains("rust_memory_writeback_candidate_queue_candidates=3"))
+        #expect(section.detailLines.contains("rust_memory_writeback_candidate_queue_conflicts=1"))
+        #expect(section.detailLines.contains("rust_memory_writeback_candidate_queue_stale_review_required=1"))
+        #expect(section.detailLines.contains("rust_memory_writeback_candidate_queue_pressure=high"))
+        #expect(section.detailLines.contains("rust_memory_writeback_candidate_queue_production_authority_change=false"))
+
+        let projection = try #require(section.rustMemoryWritebackCandidateQueueProjection)
+        #expect(projection.schemaVersion == "xhub.memory.writeback_candidate_diagnostics.v1")
+        #expect(projection.authority == "rust_policy_gated_candidate_queue")
+        #expect(projection.candidateCount == 3)
+        #expect(projection.conflictCandidateCount == 1)
+        #expect(projection.staleReviewRequiredCount == 1)
+        #expect(projection.queuePressure == "high")
+        #expect(projection.noiseScore == 12)
+        #expect(projection.productionAuthorityChange == false)
+
+        let encoded = try JSONEncoder().encode(report)
+        let payload = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let sections = try #require(payload["sections"] as? [[String: Any]])
+        let sessionSection = try #require(
+            sections.first { $0["kind"] as? String == XTUnifiedDoctorSectionKind.sessionRuntimeReadiness.rawValue }
+        )
+        let exportedProjection = try #require(
+            sessionSection["rustMemoryWritebackCandidateQueueProjection"] as? [String: Any]
+        )
+        #expect(exportedProjection["candidate_count"] as? Int == 3)
+        #expect(exportedProjection["conflict_candidate_count"] as? Int == 1)
+        #expect(exportedProjection["stale_review_required_count"] as? Int == 1)
+        #expect(exportedProjection["queue_pressure"] as? String == "high")
+        #expect(exportedProjection["noise_score"] as? Int == 12)
+        #expect(exportedProjection["production_authority_change"] as? Bool == false)
+        #expect(exportedProjection["candidate_ids"] == nil)
+    }
+
+    @Test
+    func sessionRuntimeSectionIncludesRustMemoryObjectMutationGateProjection() throws {
+        let model = sampleModel(id: "hub.model.coder")
+        let rustMemoryReadiness = RustHubMemoryReadinessSnapshot(
+            schemaVersion: "xhub.memory_bridge.v1",
+            ok: true,
+            objectStore: RustHubMemoryReadinessSnapshot.ObjectStore(
+                ready: true,
+                objectCount: 5,
+                activeObjectCount: 2,
+                candidateObjectCount: 0,
+                writebackCandidates: nil,
+                mutationGate: RustHubMemoryReadinessSnapshot.MutationGate(
+                    schemaVersion: "xhub.memory.object_mutation.v1",
+                    ready: true,
+                    archiveHTTP: true,
+                    deleteHTTP: nil,
+                    deleteTombstoneHTTP: true,
+                    pinHTTP: true,
+                    unpinHTTP: true,
+                    confirmationRequired: nil,
+                    confirmationRequiredFor: ["archive", "delete"],
+                    immutableFailClosed: true,
+                    deleteMode: "tombstone",
+                    authority: "rust_memory_object_store",
+                    activeMemoryMutation: false,
+                    productionAuthorityChange: false
+                )
+            )
+        )
+
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: true,
+                bridgeEnabled: true,
+                sessionRuntime: nil,
+                skillsSnapshot: readySkillsSnapshot(),
+                rustMemoryReadinessSnapshot: rustMemoryReadiness
+            )
+        )
+
+        let section = try #require(report.section(.sessionRuntimeReadiness))
+        #expect(section.detailLines.contains("rust_memory_object_mutation_gate_schema=xhub.memory.object_mutation.v1"))
+        #expect(section.detailLines.contains("rust_memory_object_mutation_gate_authority=rust_memory_object_store"))
+        #expect(section.detailLines.contains("rust_memory_object_mutation_gate_archive_http=true"))
+        #expect(section.detailLines.contains("rust_memory_object_mutation_gate_delete_http=true"))
+        #expect(section.detailLines.contains("rust_memory_object_mutation_gate_pin_http=true"))
+        #expect(section.detailLines.contains("rust_memory_object_mutation_gate_unpin_http=true"))
+        #expect(section.detailLines.contains("rust_memory_object_mutation_gate_confirmation_required=true"))
+        #expect(section.detailLines.contains("rust_memory_object_mutation_gate_confirmation_required_for=archive,delete"))
+        #expect(section.detailLines.contains("rust_memory_object_mutation_gate_immutable_fail_closed=true"))
+        #expect(section.detailLines.contains("rust_memory_object_mutation_gate_delete_mode=tombstone"))
+        #expect(section.detailLines.contains("rust_memory_object_mutation_gate_production_authority_change=false"))
+
+        let projection = try #require(section.rustMemoryObjectMutationGateProjection)
+        #expect(projection.schemaVersion == "xhub.memory.object_mutation.v1")
+        #expect(projection.authority == "rust_memory_object_store")
+        #expect(projection.archiveHTTP == true)
+        #expect(projection.deleteHTTP == true)
+        #expect(projection.pinHTTP == true)
+        #expect(projection.unpinHTTP == true)
+        #expect(projection.confirmationRequired == true)
+        #expect(projection.confirmationRequiredFor == ["archive", "delete"])
+        #expect(projection.immutableFailClosed == true)
+        #expect(projection.deleteMode == "tombstone")
+        #expect(projection.productionAuthorityChange == false)
+
+        let encoded = try JSONEncoder().encode(report)
+        let payload = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let sections = try #require(payload["sections"] as? [[String: Any]])
+        let sessionSection = try #require(
+            sections.first { $0["kind"] as? String == XTUnifiedDoctorSectionKind.sessionRuntimeReadiness.rawValue }
+        )
+        let exportedProjection = try #require(
+            sessionSection["rustMemoryObjectMutationGateProjection"] as? [String: Any]
+        )
+        #expect(exportedProjection["schema_version"] as? String == "xhub.memory.object_mutation.v1")
+        #expect(exportedProjection["archive_http"] as? Bool == true)
+        #expect(exportedProjection["delete_http"] as? Bool == true)
+        #expect(exportedProjection["pin_http"] as? Bool == true)
+        #expect(exportedProjection["unpin_http"] as? Bool == true)
+        #expect(exportedProjection["confirmation_required"] as? Bool == true)
+        #expect(exportedProjection["immutable_fail_closed"] as? Bool == true)
+        #expect(exportedProjection["delete_mode"] as? String == "tombstone")
+        #expect(exportedProjection["memory_id"] == nil)
+        #expect(exportedProjection["event_id"] == nil)
+    }
+
+    @Test
+    func sessionRuntimeSectionIncludesRustMemoryUserRevealGrantProjection() throws {
+        let model = sampleModel(id: "hub.model.coder")
+        let rustMemoryReadiness = RustHubMemoryReadinessSnapshot(
+            schemaVersion: "xhub.memory_bridge.v1",
+            ok: true,
+            objectStore: RustHubMemoryReadinessSnapshot.ObjectStore(
+                ready: true,
+                objectCount: 5,
+                activeObjectCount: 2,
+                candidateObjectCount: 0,
+                writebackCandidates: nil,
+                mutationGate: nil,
+                userRevealGrant: RustHubMemoryReadinessSnapshot.UserRevealGrant(
+                    schemaVersion: "xhub.memory.user_reveal_grant.v1",
+                    ready: true,
+                    issueHTTP: true,
+                    evaluateHTTP: true,
+                    revokeHTTP: true,
+                    scope: "user",
+                    surface: "assistant_user_memory_inspector",
+                    defaultTTLMS: 300_000,
+                    maxTTLMS: 900_000,
+                    contentIncluded: false,
+                    memoryIDsIncluded: false,
+                    projectCoderAllowed: false,
+                    authority: "rust_memory_user_reveal_gate",
+                    modelContextAuthority: false,
+                    memoryServingAuthorityChange: false,
+                    productionAuthorityChange: false
+                )
+            )
+        )
+
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: true,
+                bridgeEnabled: true,
+                sessionRuntime: nil,
+                skillsSnapshot: readySkillsSnapshot(),
+                rustMemoryReadinessSnapshot: rustMemoryReadiness
+            )
+        )
+
+        let section = try #require(report.section(.sessionRuntimeReadiness))
+        #expect(section.detailLines.contains("rust_memory_user_reveal_grant_schema=xhub.memory.user_reveal_grant.v1"))
+        #expect(section.detailLines.contains("rust_memory_user_reveal_grant_ready=true"))
+        #expect(section.detailLines.contains("rust_memory_user_reveal_grant_authority=rust_memory_user_reveal_gate"))
+        #expect(section.detailLines.contains("rust_memory_user_reveal_grant_scope=user"))
+        #expect(section.detailLines.contains("rust_memory_user_reveal_grant_surface=assistant_user_memory_inspector"))
+        #expect(section.detailLines.contains("rust_memory_user_reveal_grant_issue_http=true"))
+        #expect(section.detailLines.contains("rust_memory_user_reveal_grant_evaluate_http=true"))
+        #expect(section.detailLines.contains("rust_memory_user_reveal_grant_revoke_http=true"))
+        #expect(section.detailLines.contains("rust_memory_user_reveal_grant_content_included=false"))
+        #expect(section.detailLines.contains("rust_memory_user_reveal_grant_memory_ids_included=false"))
+        #expect(section.detailLines.contains("rust_memory_user_reveal_grant_project_coder_allowed=false"))
+        #expect(section.detailLines.contains("rust_memory_user_reveal_grant_model_context_authority=false"))
+        #expect(section.detailLines.contains("rust_memory_user_reveal_grant_memory_serving_authority_change=false"))
+        #expect(section.detailLines.contains("rust_memory_user_reveal_grant_production_authority_change=false"))
+
+        let projection = try #require(section.rustMemoryUserRevealGrantProjection)
+        #expect(projection.schemaVersion == "xhub.memory.user_reveal_grant.v1")
+        #expect(projection.ready == true)
+        #expect(projection.authority == "rust_memory_user_reveal_gate")
+        #expect(projection.scope == "user")
+        #expect(projection.surface == "assistant_user_memory_inspector")
+        #expect(projection.issueHTTP == true)
+        #expect(projection.evaluateHTTP == true)
+        #expect(projection.revokeHTTP == true)
+        #expect(projection.defaultTTLMS == 300_000)
+        #expect(projection.maxTTLMS == 900_000)
+        #expect(projection.contentIncluded == false)
+        #expect(projection.memoryIDsIncluded == false)
+        #expect(projection.projectCoderAllowed == false)
+        #expect(projection.modelContextAuthority == false)
+        #expect(projection.memoryServingAuthorityChange == false)
+        #expect(projection.productionAuthorityChange == false)
+
+        let encoded = try JSONEncoder().encode(report)
+        let payload = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let sections = try #require(payload["sections"] as? [[String: Any]])
+        let sessionSection = try #require(
+            sections.first { $0["kind"] as? String == XTUnifiedDoctorSectionKind.sessionRuntimeReadiness.rawValue }
+        )
+        let exportedProjection = try #require(
+            sessionSection["rustMemoryUserRevealGrantProjection"] as? [String: Any]
+        )
+        #expect(exportedProjection["schema_version"] as? String == "xhub.memory.user_reveal_grant.v1")
+        #expect(exportedProjection["authority"] as? String == "rust_memory_user_reveal_gate")
+        #expect(exportedProjection["scope"] as? String == "user")
+        #expect(exportedProjection["surface"] as? String == "assistant_user_memory_inspector")
+        #expect(exportedProjection["content_included"] as? Bool == false)
+        #expect(exportedProjection["memory_ids_included"] as? Bool == false)
+        #expect(exportedProjection["project_coder_allowed"] as? Bool == false)
+        #expect(exportedProjection["model_context_authority"] as? Bool == false)
+        #expect(exportedProjection["memory_serving_authority_change"] as? Bool == false)
+        #expect(exportedProjection["production_authority_change"] as? Bool == false)
+        #expect(exportedProjection["memory_id"] == nil)
+        #expect(exportedProjection["memory_ids"] == nil)
+        #expect(exportedProjection["project_id"] == nil)
+        #expect(exportedProjection["prompt_text"] == nil)
+        #expect(exportedProjection["content"] == nil)
+    }
+
+    @Test
+    func sessionRuntimeSectionIncludesRustMemorySelectionEvidenceProjection() throws {
+        let model = sampleModel(id: "hub.model.coder")
+        let projectRef = HubIPCClient.RustMemoryGatewaySelectedRef(
+            ref: "memory://rust/object/mem_project_secret_should_not_export",
+            chunkRef: "memory://rust/object/mem_project_secret_should_not_export#object-0-lines-1-9",
+            chunkId: "object-0-lines-1-9",
+            chunkIdentitySchema: "xhub.memory.object_chunk_identity.v1",
+            chunkStartLine: 1,
+            chunkEndLine: 9,
+            memoryId: "mem_project_secret_should_not_export",
+            layer: "l1_canonical",
+            sourceKind: "project_fact",
+            scope: "project",
+            projectId: "project-snake",
+            sensitivity: "internal",
+            visibility: "local_only",
+            updatedAtMs: 1_778_000_000_000,
+            version: 3,
+            reasonCode: "selected",
+            contentIncluded: false
+        )
+        let crossScopeRef = HubIPCClient.RustMemoryGatewaySelectedRef(
+            ref: "memory://rust/object/mem_other_should_not_export",
+            chunkRef: "memory://rust/object/mem_other_should_not_export#object-0-lines-1-4",
+            chunkId: "object-0-lines-1-4",
+            chunkIdentitySchema: "xhub.memory.object_chunk_identity.v1",
+            chunkStartLine: 1,
+            chunkEndLine: 4,
+            memoryId: "mem_other_should_not_export",
+            layer: "l3_longterm",
+            sourceKind: "personal_fact",
+            scope: "personal",
+            projectId: "other-project",
+            sensitivity: "private",
+            visibility: "local_only",
+            updatedAtMs: 1_778_000_000_001,
+            version: 1,
+            reasonCode: "selected",
+            contentIncluded: false
+        )
+        let latest = makeRustMemorySelectionEvidence(
+            projectId: "project-snake",
+            requestId: "req-selection-latest",
+            selectedRefs: [projectRef, crossScopeRef],
+            detail: "literal prompt/context text should not export"
+        )
+        let olderCrossScope = makeRustMemorySelectionEvidence(
+            projectId: "other-project",
+            requestId: "req-selection-other",
+            selectedRefs: [crossScopeRef],
+            recordedAtMs: 1_778_000_000_100
+        )
+        let history = HubIPCClient.RustMemoryGatewayModelCallPlanHistory(
+            generatedAtMs: 1_778_000_000_500,
+            itemLimit: 2,
+            items: [latest, olderCrossScope]
+        )
+        let projection = try #require(
+            XTUnifiedDoctorRustMemorySelectionEvidenceProjection(
+                status: latest,
+                history: history,
+                projectId: "project-snake",
+                refSampleLimit: 8
+            )
+        )
+
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: true,
+                bridgeEnabled: true,
+                sessionRuntime: nil,
+                skillsSnapshot: readySkillsSnapshot(),
+                rustMemorySelectionEvidenceProjection: projection
+            )
+        )
+
+        let section = try #require(report.section(.sessionRuntimeReadiness))
+        let exportedProjection = try #require(section.rustMemorySelectionEvidenceProjection)
+        #expect(section.detailLines.contains("rust_memory_selection_evidence_schema=xt.rust_memory_selection_evidence_projection.v1"))
+        #expect(section.detailLines.contains("rust_memory_selection_evidence_selected=2"))
+        #expect(section.detailLines.contains("rust_memory_selection_evidence_selected_chunks=2"))
+        #expect(section.detailLines.contains("rust_memory_selection_evidence_selected_chunk_refs=1"))
+        #expect(section.detailLines.contains("rust_memory_selection_evidence_omitted=4"))
+        #expect(section.detailLines.contains("rust_memory_selection_evidence_omitted_refs=1"))
+        #expect(section.detailLines.contains("rust_memory_selection_evidence_omitted_chunk_refs=1"))
+        #expect(section.detailLines.contains("rust_memory_selection_evidence_index_granularity=object_chunk"))
+        #expect(section.detailLines.contains("rust_memory_selection_evidence_chunk_identity_schema=xhub.memory.object_chunk_identity.v1"))
+        #expect(section.detailLines.contains("rust_memory_selection_evidence_chunk_expand_via_get_ref=true"))
+        #expect(section.detailLines.contains("rust_memory_selection_evidence_denied=1"))
+        #expect(section.detailLines.contains("rust_memory_selection_evidence_skipped_budget=5"))
+        #expect(section.detailLines.contains("rust_memory_selection_evidence_omitted_reason_counts=budget_limit:5,secret_or_secret_like:1"))
+        #expect(exportedProjection.omittedReasonCounts == [
+            "budget_limit": 5,
+            "secret_or_secret_like": 1
+        ])
+        #expect(exportedProjection.selectedLayerCounts == ["l1_canonical": 1])
+        #expect(exportedProjection.selectedSourceKindCounts == ["project_fact": 1])
+        #expect(exportedProjection.selectedRefSamples.count == 1)
+        #expect(exportedProjection.selectedRefSamples.first?.layer == "l1_canonical")
+        #expect(exportedProjection.selectedRefSamples.first?.sourceKind == "project_fact")
+        #expect(exportedProjection.selectedRefSamples.first?.chunkPresent == true)
+        #expect(exportedProjection.selectedRefSamples.first?.chunkStartLine == 1)
+        #expect(exportedProjection.selectedRefSamples.first?.chunkEndLine == 9)
+        #expect(exportedProjection.selectedRefSamples.first?.contentIncluded == false)
+        #expect(exportedProjection.selectedChunkCount == 2)
+        #expect(exportedProjection.selectedChunkRefCount == 1)
+        #expect(exportedProjection.omittedRefCount == 1)
+        #expect(exportedProjection.omittedChunkRefCount == 1)
+        #expect(exportedProjection.indexGranularity == "object_chunk")
+        #expect(exportedProjection.chunkExpandViaGetRef == true)
+        #expect(exportedProjection.textSafe == true)
+        #expect(exportedProjection.executionSafe == true)
+
+        let encoded = try JSONEncoder().encode(report)
+        let encodedText = try #require(String(data: encoded, encoding: .utf8))
+        #expect(encodedText.contains("rustMemorySelectionEvidenceProjection"))
+        #expect(encodedText.contains("mem_project_secret_should_not_export") == false)
+        #expect(encodedText.contains("mem_other_should_not_export") == false)
+        #expect(encodedText.contains("mem_omitted_should_not_export") == false)
+        #expect(encodedText.contains("object-0-lines-1-9") == false)
+        #expect(encodedText.contains("object-1-lines-10-18") == false)
+        #expect(encodedText.contains("project-snake") == false)
+        #expect(encodedText.contains("literal prompt/context text should not export") == false)
+
+        let generic = XHubDoctorOutputReport.xtReadinessBundle(from: report)
+        let genericEncoded = try JSONEncoder().encode(generic)
+        let genericText = try #require(String(data: genericEncoded, encoding: .utf8))
+        #expect(genericText.contains("rust_memory_selection_evidence_snapshot"))
+        #expect(genericText.contains("mem_project_secret_should_not_export") == false)
+        #expect(genericText.contains("mem_other_should_not_export") == false)
+        #expect(genericText.contains("mem_omitted_should_not_export") == false)
+        #expect(genericText.contains("object-0-lines-1-9") == false)
+        #expect(genericText.contains("object-1-lines-10-18") == false)
+        #expect(genericText.contains("project-snake") == false)
+        #expect(genericText.contains("literal prompt/context text should not export") == false)
+
+        let check = try #require(generic.checks.first {
+            $0.checkID == XTUnifiedDoctorSectionKind.sessionRuntimeReadiness.rawValue
+        })
+        #expect(check.rustMemorySelectionEvidenceSnapshot?.selectedCount == 2)
+        #expect(check.rustMemorySelectionEvidenceSnapshot?.omittedReasonCounts["budget_limit"] == 5)
+        #expect(check.rustMemorySelectionEvidenceSnapshot?.selectedLayerCounts == ["l1_canonical": 1])
+        #expect(check.rustMemorySelectionEvidenceSnapshot?.selectedRefSamples.count == 1)
+        #expect(check.rustMemorySelectionEvidenceSnapshot?.selectedChunkRefCount == 1)
+        #expect(check.rustMemorySelectionEvidenceSnapshot?.omittedChunkRefCount == 1)
+    }
+
+    @Test
     func sessionRuntimeSectionFeedsProjectMemoryReadinessIntoHeartbeatProjection() throws {
         let model = sampleModel(id: "hub.model.coder")
         let diagnostics = AXProjectContextAssemblyDiagnosticsSummary(
@@ -3904,6 +4350,8 @@ private func makeDoctorInput(
     heartbeatGovernanceSnapshot: XTProjectHeartbeatGovernanceDoctorSnapshot? = nil,
     supervisorMemoryAssemblySnapshot: SupervisorMemoryAssemblySnapshot? = nil,
     supervisorLatestTurnContextAssembly: SupervisorTurnContextAssemblyResult? = nil,
+    rustMemoryReadinessSnapshot: RustHubMemoryReadinessSnapshot? = nil,
+    rustMemorySelectionEvidenceProjection: XTUnifiedDoctorRustMemorySelectionEvidenceProjection? = nil,
     doctorProjectContext: AXProjectContext? = nil,
     remotePaidAccessSnapshot: HubRemotePaidAccessSnapshot? = nil,
     internetHost: String? = nil,
@@ -3958,12 +4406,103 @@ private func makeDoctorInput(
         heartbeatGovernanceSnapshot: heartbeatGovernanceSnapshot,
         supervisorMemoryAssemblySnapshot: supervisorMemoryAssemblySnapshot,
         supervisorLatestTurnContextAssembly: supervisorLatestTurnContextAssembly,
+        rustMemoryReadinessSnapshot: rustMemoryReadinessSnapshot,
+        rustMemorySelectionEvidenceProjection: rustMemorySelectionEvidenceProjection,
         doctorProjectContext: doctorProjectContext,
         supervisorVoiceSmokeReport: supervisorVoiceSmokeReport,
         freshPairReconnectSmokeSnapshot: freshPairReconnectSmokeSnapshot,
         firstPairCompletionProofSnapshot: firstPairCompletionProofSnapshot,
         pairedRouteSetSnapshot: pairedRouteSetSnapshot,
         connectivityIncidentSnapshot: connectivityIncidentSnapshot
+    )
+}
+
+private func makeRustMemorySelectionEvidence(
+    projectId: String,
+    requestId: String,
+    selectedRefs: [HubIPCClient.RustMemoryGatewaySelectedRef],
+    recordedAtMs: Int64 = 1_778_000_000_200,
+    detail: String? = nil
+) -> HubIPCClient.RustMemoryGatewayModelCallPlanEvidence {
+    let omittedRefs = [
+        HubIPCClient.RustMemoryGatewaySelectedRef(
+            ref: "memory://rust/object/mem_omitted_should_not_export",
+            chunkRef: "memory://rust/object/mem_omitted_should_not_export#object-1-lines-10-18",
+            chunkId: "object-1-lines-10-18",
+            chunkIdentitySchema: "xhub.memory.object_chunk_identity.v1",
+            chunkStartLine: 10,
+            chunkEndLine: 18,
+            memoryId: "mem_omitted_should_not_export",
+            layer: "l2_observation",
+            sourceKind: "tool_result",
+            scope: "project",
+            projectId: projectId,
+            sensitivity: "internal",
+            visibility: "local_only",
+            updatedAtMs: nil,
+            version: nil,
+            reasonCode: "budget_limit",
+            contentIncluded: false
+        )
+    ]
+    return HubIPCClient.RustMemoryGatewayModelCallPlanEvidence(
+        ok: true,
+        source: "xt_shadow_hook",
+        mode: "plan_only",
+        requestId: requestId,
+        auditRef: "audit-\(requestId)",
+        requesterRole: "coder",
+        useMode: "project_execution",
+        scope: "project",
+        servingProfileId: "m1_execute",
+        projectId: projectId,
+        sessionId: "session-selection",
+        appId: "xt",
+        providerId: "local",
+        modelId: "hub.model.coder",
+        taskKind: "chat",
+        planSchemaVersion: "xhub.memory_gateway_model_call_plan.v1",
+        planStatus: "prepared",
+        planSource: "rust_memory_gateway",
+        planMode: "shadow",
+        planAuthority: "rust_memory_gateway_prepare",
+        contextCharCount: 0,
+        selectedRefCount: selectedRefs.count,
+        selectedCount: selectedRefs.count,
+        selectedChunkCount: selectedRefs.count,
+        omittedCount: 4,
+        omittedRefCount: omittedRefs.count,
+        deniedCount: 1,
+        effectiveLayers: ["l0_raw", "l1_canonical"],
+        selectedRefs: selectedRefs,
+        omittedRefs: omittedRefs,
+        skipped: HubIPCClient.RustMemoryGatewayPrepareSkipped(
+            policyOrFilter: 2,
+            remoteVisibility: 1,
+            secret: 1,
+            budget: 5
+        ),
+        omittedReasonCounts: [
+            "budget_limit": 5,
+            "secret_or_secret_like": 1
+        ],
+        indexSource: "derived_index",
+        indexGranularity: "object_chunk",
+        indexRebuilt: false,
+        indexRebuildError: nil,
+        chunkIdentitySchema: "xhub.memory.object_chunk_identity.v1",
+        chunkExpandViaGetRef: true,
+        promptCharCount: 0,
+        messageCount: 0,
+        wouldCallModel: false,
+        modelCallExecuted: false,
+        productionAuthorityChange: false,
+        contextTextIncluded: false,
+        promptTextIncluded: false,
+        issueCodes: [],
+        reasonCode: nil,
+        detail: detail,
+        recordedAtMs: recordedAtMs
     )
 }
 

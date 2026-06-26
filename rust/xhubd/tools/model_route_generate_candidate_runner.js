@@ -194,11 +194,26 @@ function resolveXHubSystemRoot() {
   const candidates = [
     path.resolve(ROOT_DIR, '..', '..', 'x-hub-system'),
     path.resolve(ROOT_DIR, '..', '..', '..', '..', 'x-hub-system'),
+    '/Users/andrew.xie/Documents/AX/x-hub-system',
   ];
   for (const candidate of candidates) {
     if (fs.existsSync(path.join(candidate, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src', 'services.js'))) {
       return candidate;
     }
+  }
+  return candidates[0];
+}
+
+function resolveNodeHubSourceDir(sourceRoot = resolveXHubSystemRoot()) {
+  const explicit = safeString(process.env.XHUB_NODE_HUB_SRC_DIR || process.env.XHUB_HUB_GRPC_SERVER_SRC_DIR);
+  const candidates = [
+    explicit,
+    path.join(sourceRoot, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src'),
+    path.join(sourceRoot, 'hub_grpc_server', 'src'),
+    path.resolve(ROOT_DIR, '..', 'hub_grpc_server', 'src'),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, 'services.js'))) return candidate;
   }
   return candidates[0];
 }
@@ -705,6 +720,15 @@ function startXhubd({ runtimeBaseDir, dbPath, port }) {
   const env = {
     ...process.env,
     XHUB_RUST_HUB_HTTP_PORT: String(port),
+    XHUB_RUST_HTTP_REQUIRE_ACCESS_KEY: '0',
+    XHUB_RUST_HTTP_ACCESS_KEY: '',
+    XHUB_RUST_HTTP_ACCESS_KEY_FILE: '',
+    XHUB_RUST_HUB_ACCESS_KEY: '',
+    XHUB_RUST_HUB_ACCESS_KEY_FILE: '',
+    XHUB_RUST_CROSS_NETWORK_PUBLIC_ENDPOINT: '0',
+    XHUB_RUST_HUB_PUBLIC_BASE_URL: '',
+    XHUB_RUST_HUB_PUBLIC_HOST: '',
+    XHUB_RUST_HUB_PUBLIC_ENDPOINT: '0',
     HUB_RUNTIME_BASE_DIR: runtimeBaseDir,
     HUB_DB_PATH: dbPath,
     XHUB_RUST_HUB_ROOT: ROOT_DIR,
@@ -800,7 +824,7 @@ async function main() {
   }
 
   const sourceRoot = resolveXHubSystemRoot();
-  const srcDir = path.join(sourceRoot, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src');
+  const srcDir = resolveNodeHubSourceDir(sourceRoot);
   if (!fs.existsSync(path.join(srcDir, 'services.js'))) {
     throw new Error(`Node Hub source not found: ${srcDir}`);
   }

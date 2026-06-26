@@ -209,6 +209,32 @@ fn local_repair_apply_json(config: &HubConfig, flags: FlagArgs) -> Result<String
         requested_by: flags
             .optional("requested-by")
             .unwrap_or_else(|| "cli".to_string()),
+        model_id: flags.optional("model-id").unwrap_or_default(),
+        display_name: flags
+            .optional("display-name")
+            .or_else(|| flags.optional("name"))
+            .unwrap_or_default(),
+        artifact_path: flags
+            .optional("artifact-path")
+            .or_else(|| flags.optional("model-path"))
+            .or_else(|| flags.optional("path"))
+            .unwrap_or_default(),
+        format: flags.optional("format").unwrap_or_default(),
+        quantization: flags
+            .optional("quantization")
+            .or_else(|| flags.optional("quant"))
+            .unwrap_or_default(),
+        capabilities: first_non_empty_vec(vec![
+            flags.optional_list("capability"),
+            flags.optional_list("capabilities"),
+        ]),
+        task_kinds: first_non_empty_vec(vec![
+            flags.optional_list("task-kind"),
+            flags.optional_list("task-kinds"),
+            flags.optional_list("taskKinds"),
+        ]),
+        context_length: flags.optional_u64("context-length")?.unwrap_or(0),
+        memory_bytes: flags.optional_u64("memory-bytes")?.unwrap_or(0),
     };
     local_repair_apply_json_from_parts(config, Some(runtime_base_dir), request, Some(now))
 }
@@ -250,6 +276,15 @@ pub struct ModelLocalRepairApplyRequest {
     pub dry_run: bool,
     pub confirmation_token: String,
     pub requested_by: String,
+    pub model_id: String,
+    pub display_name: String,
+    pub artifact_path: String,
+    pub format: String,
+    pub quantization: String,
+    pub capabilities: Vec<String>,
+    pub task_kinds: Vec<String>,
+    pub context_length: u64,
+    pub memory_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -987,6 +1022,15 @@ fn local_repair_apply_value(
         }));
     }
 
+    if local_registry_repair_action(&resolved_action) {
+        return Ok(apply_local_model_registry_repair_value(
+            runtime_base_dir,
+            request,
+            plan,
+            updated_at_ms,
+        ));
+    }
+
     let job_id = local_repair_job_id(&resolved_action, updated_at_ms);
     let jobs_dir = local_repair_jobs_dir(runtime_base_dir);
     fs::create_dir_all(&jobs_dir)
@@ -1039,6 +1083,394 @@ fn local_repair_apply_value(
         ],
         "secret_fields_included": false,
     }))
+}
+
+fn local_registry_repair_action(action: &str) -> bool {
+    let (kind, _) = repair_action_parts(action);
+    matches!(kind.as_str(), "add_local_model" | "register_local_model")
+}
+
+fn apply_local_model_registry_repair_value(
+    runtime_base_dir: &Path,
+    request: &ModelLocalRepairApplyRequest,
+    plan: Value,
+    updated_at_ms: u128,
+) -> Value {
+    let resolved = plan.get("resolved").cloned().unwrap_or(Value::Null);
+    let target = plan.get("target").cloned().unwrap_or(Value::Null);
+    let resolved_action = value_string(&resolved, "action");
+    let row = match local_model_registry_row_from_request(
+        runtime_base_dir,
+        request,
+        &resolved_action,
+        &target,
+        updated_at_ms,
+    ) {
+        Ok(row) => row,
+        Err((status, message)) => {
+            return json!({
+                "schema_version": MODEL_LOCAL_RUNTIME_REPAIR_APPLY_SCHEMA_VERSION,
+                "ok": true,
+                "accepted": false,
+                "dry_run": false,
+                "status": status,
+                "message": message,
+                "updated_at_ms": updated_at_ms.min(i64::MAX as u128) as i64,
+                "runtime_base_dir": runtime_base_dir.display().to_string(),
+                "resolved": resolved,
+                "target": target,
+                "plan": plan,
+                "secret_fields_included": false,
+            });
+        }
+    };
+
+    let catalog_path = runtime_base_dir.join("models_catalog.json");
+    let state_path = runtime_base_dir.join("models_state.json");
+    let catalog_write = upsert_local_model_registry_file(&catalog_path, &row, updated_at_ms);
+    let state_write = match catalog_write {
+        Ok(_) => upsert_local_model_registry_file(&state_path, &row, updated_at_ms),
+        Err(err) => Err(err),
+    };
+    if let Err(err) = state_write {
+        return json!({
+            "schema_version": MODEL_LOCAL_RUNTIME_REPAIR_APPLY_SCHEMA_VERSION,
+            "ok": false,
+            "accepted": false,
+            "dry_run": false,
+            "status": "registry_write_failed",
+            "error": err,
+            "updated_at_ms": updated_at_ms.min(i64::MAX as u128) as i64,
+            "runtime_base_dir": runtime_base_dir.display().to_string(),
+            "resolved": resolved,
+            "target": target,
+            "registry_paths": {
+                "models_catalog": catalog_path.display().to_string(),
+                "models_state": state_path.display().to_string(),
+            },
+            "secret_fields_included": false,
+        });
+    }
+
+    let local_models = local_model_inventory_rows(runtime_base_dir);
+    let capability_summary =
+        local_capability_summary_value(runtime_base_dir, &local_models, updated_at_ms);
+    let model_id = value_string(&row, "id");
+    let task_kinds = sorted_string_values(&row, &["taskKinds", "task_kinds"]);
+    json!({
+        "schema_version": MODEL_LOCAL_RUNTIME_REPAIR_APPLY_SCHEMA_VERSION,
+        "ok": true,
+        "accepted": true,
+        "dry_run": false,
+        "status": "applied_local_model_registry",
+        "updated_at_ms": updated_at_ms.min(i64::MAX as u128) as i64,
+        "runtime_base_dir": runtime_base_dir.display().to_string(),
+        "resolved": resolved,
+        "target": target,
+        "registered_model": {
+            "model_id": model_id,
+            "display_name": value_string(&row, "name"),
+            "provider_id": value_string(&row, "backend"),
+            "artifact_path": value_string(&row, "modelPath"),
+            "task_kinds": task_kinds.clone(),
+            "capabilities": sorted_string_values(&row, &["capabilities"]),
+        },
+        "registry_paths": {
+            "models_catalog": catalog_path.display().to_string(),
+            "models_state": state_path.display().to_string(),
+        },
+        "local_model_count": local_models.len(),
+        "local_capability_summary": capability_summary,
+        "post_checks": local_repair_post_checks(
+            &task_kinds.first().cloned().unwrap_or_default()
+        ),
+        "secret_fields_included": false,
+    })
+}
+
+fn local_model_registry_row_from_request(
+    runtime_base_dir: &Path,
+    request: &ModelLocalRepairApplyRequest,
+    resolved_action: &str,
+    target: &Value,
+    updated_at_ms: u128,
+) -> Result<Value, (&'static str, String)> {
+    let artifact_path = request.artifact_path.trim();
+    if artifact_path.is_empty() {
+        return Err((
+            "artifact_path_required",
+            "local model registry repair requires artifact_path or model_path".to_string(),
+        ));
+    }
+    let artifact_path = resolve_runtime_relative_path_for_repair(runtime_base_dir, artifact_path);
+    if !artifact_path.exists() {
+        return Err((
+            "artifact_not_found",
+            format!(
+                "local model artifact does not exist: {}",
+                artifact_path.display()
+            ),
+        ));
+    }
+
+    let task_from_action = task_kind_for_repair_action(resolved_action).unwrap_or_default();
+    let task_kind = normalized_task_kind(&first_non_empty(
+        &first_non_empty(&request.task_kind, &value_string(target, "task_kind")),
+        &task_from_action,
+    ));
+    let task_kinds = normalized_task_kind_values(&first_non_empty_vec(vec![
+        request.task_kinds.clone(),
+        if task_kind.is_empty() {
+            Vec::new()
+        } else {
+            vec![task_kind.clone()]
+        },
+    ]));
+    let primary_task = task_kinds
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "text_generate".to_string());
+    let provider_id = first_non_empty(
+        &normalized_provider_id(&first_non_empty(
+            &first_non_empty(&request.provider_id, &value_string(target, "provider_id")),
+            &provider_id_for_repair_action(resolved_action).unwrap_or_default(),
+        )),
+        default_provider_for_task(&primary_task).unwrap_or("mlx"),
+    );
+    let display_name = first_non_empty(
+        &request.display_name,
+        &artifact_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("local-model"),
+    );
+    let model_id = first_non_empty(
+        &request.model_id,
+        &format!(
+            "{}-{}",
+            provider_id.replace('.', "-"),
+            safe_model_id_slug(&display_name)
+        ),
+    );
+    let format = first_non_empty(
+        &normalized_artifact_format_for_repair(&request.format),
+        &infer_artifact_format_for_repair(&artifact_path, &provider_id),
+    );
+    let capabilities = normalized_capability_values_for_repair(
+        &first_non_empty_vec(vec![
+            request.capabilities.clone(),
+            task_kinds
+                .iter()
+                .filter_map(|task| capability_for_task(task).map(str::to_string))
+                .collect(),
+        ]),
+        &format,
+    );
+    let context_length = if request.context_length > 0 {
+        request.context_length
+    } else {
+        8192
+    };
+
+    let mut row = serde_json::Map::new();
+    row.insert("id".to_string(), json!(model_id));
+    row.insert("name".to_string(), json!(display_name));
+    row.insert("backend".to_string(), json!(provider_id));
+    row.insert("runtimeProviderID".to_string(), json!(provider_id));
+    row.insert(
+        "modelPath".to_string(),
+        json!(artifact_path.display().to_string()),
+    );
+    row.insert(
+        "path".to_string(),
+        json!(artifact_path.display().to_string()),
+    );
+    row.insert("format".to_string(), json!(format));
+    row.insert(
+        "quant".to_string(),
+        json!(first_non_empty(&request.quantization, "unknown")),
+    );
+    row.insert("contextLength".to_string(), json!(context_length));
+    row.insert("paramsB".to_string(), json!(0.0));
+    row.insert("roles".to_string(), json!([]));
+    row.insert("state".to_string(), json!("available"));
+    row.insert("offlineReady".to_string(), json!(true));
+    row.insert("note".to_string(), json!("rust_hub_local_model_registry"));
+    row.insert("taskKinds".to_string(), json!(task_kinds));
+    row.insert("capabilities".to_string(), json!(capabilities));
+    row.insert(
+        "registeredAtMs".to_string(),
+        json!(updated_at_ms.min(i64::MAX as u128) as i64),
+    );
+    row.insert(
+        "updatedAtMs".to_string(),
+        json!(updated_at_ms.min(i64::MAX as u128) as i64),
+    );
+    row.insert("source".to_string(), json!("rust_model_repair_apply"));
+    if request.memory_bytes > 0 {
+        row.insert("memoryBytes".to_string(), json!(request.memory_bytes));
+        row.insert(
+            "estimatedMemoryBytes".to_string(),
+            json!(request.memory_bytes),
+        );
+    }
+    Ok(Value::Object(row))
+}
+
+fn upsert_local_model_registry_file(
+    path: &Path,
+    row: &Value,
+    updated_at_ms: u128,
+) -> Result<Value, String> {
+    let mut root = read_local_model_registry_file(path)?;
+    let model_id = value_string(row, "id");
+    if model_id.is_empty() {
+        return Err("local model registry row missing id".to_string());
+    }
+    let mut models = root
+        .get("models")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    models.retain(|item| value_string(item, "id") != model_id);
+    models.push(row.clone());
+    models.sort_by(|left, right| value_string(left, "id").cmp(&value_string(right, "id")));
+    if let Value::Object(map) = &mut root {
+        map.insert(
+            "updatedAtMs".to_string(),
+            json!(updated_at_ms.min(i64::MAX as u128) as i64),
+        );
+        map.insert(
+            "updatedAt".to_string(),
+            json!((updated_at_ms as f64) / 1000.0),
+        );
+        map.insert("models".to_string(), Value::Array(models));
+    }
+    write_json_atomic_for_repair(path, &root)?;
+    Ok(root)
+}
+
+fn read_local_model_registry_file(path: &Path) -> Result<Value, String> {
+    if !path.exists() {
+        return Ok(json!({ "models": [] }));
+    }
+    let raw = fs::read_to_string(path)
+        .map_err(|err| format!("local model registry read failed: {err}"))?;
+    if raw_contains_potential_secret_material(&raw) {
+        return Err("refusing_to_read_secret_bearing_model_registry".to_string());
+    }
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|err| format!("local model registry parse failed: {err}"))?;
+    if value.is_array() {
+        return Ok(json!({ "models": value }));
+    }
+    if value.is_object() {
+        return Ok(value);
+    }
+    Err("local model registry must be a JSON object or array".to_string())
+}
+
+fn write_json_atomic_for_repair(path: &Path, value: &Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("local model registry parent create failed: {err}"))?;
+    }
+    let raw = serde_json::to_vec_pretty(value)
+        .map_err(|err| format!("local model registry serialize failed: {err}"))?;
+    let tmp_path = path.with_extension(format!(
+        "{}.tmp",
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("json")
+    ));
+    fs::write(&tmp_path, raw)
+        .map_err(|err| format!("local model registry temp write failed: {err}"))?;
+    fs::rename(&tmp_path, path).map_err(|err| format!("local model registry rename failed: {err}"))
+}
+
+fn resolve_runtime_relative_path_for_repair(runtime_base_dir: &Path, raw: &str) -> PathBuf {
+    let path = PathBuf::from(raw.trim());
+    if path.is_absolute() {
+        path
+    } else {
+        runtime_base_dir.join(path)
+    }
+}
+
+fn safe_model_id_slug(value: &str) -> String {
+    let mut out = String::new();
+    for ch in normalized_token(value).chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out = out.trim_matches('-');
+    if out.is_empty() {
+        "local-model".to_string()
+    } else {
+        out.to_string()
+    }
+}
+
+fn infer_artifact_format_for_repair(path: &Path, provider_id: &str) -> String {
+    let raw = normalized_token(path.to_string_lossy().as_ref());
+    if raw.ends_with(".gguf") {
+        return "gguf".to_string();
+    }
+    if raw.ends_with(".mlmodel") || raw.ends_with(".mlmodelc") {
+        return "coreml".to_string();
+    }
+    if raw.ends_with(".safetensors") || raw.ends_with(".bin") {
+        return "transformers".to_string();
+    }
+    match normalized_provider_id(provider_id).as_str() {
+        "mlx" | "mlx_vlm" => "mlx".to_string(),
+        "llama.cpp" => "gguf".to_string(),
+        "transformers" => "transformers".to_string(),
+        other if !other.is_empty() => other.to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn normalized_artifact_format_for_repair(raw: &str) -> String {
+    match normalized_token(raw).replace('_', "-").as_str() {
+        "gguf" => "gguf".to_string(),
+        "mlx" | "mlx-lm" => "mlx".to_string(),
+        "coreml" | "core-ml" | "mlmodel" | "mlmodelc" => "coreml".to_string(),
+        "transformers" | "safetensors" | "hf" | "huggingface" => "transformers".to_string(),
+        "" => String::new(),
+        other => other.to_string(),
+    }
+}
+
+fn normalized_task_kind_values(values: &[String]) -> Vec<String> {
+    let mut out = values
+        .iter()
+        .map(|value| normalized_task_kind(value))
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<String>>();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn normalized_capability_values_for_repair(values: &[String], format: &str) -> Vec<String> {
+    let mut out = values
+        .iter()
+        .map(|value| normalized_capability(value))
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<String>>();
+    if out.is_empty() {
+        out.push("text.generate".to_string());
+        if format == "transformers" {
+            out.push("embedding.generate".to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 fn local_repair_jobs_value(runtime_base_dir: &Path, limit: usize, updated_at_ms: u128) -> Value {
@@ -3964,6 +4396,65 @@ mod tests {
             false
         );
         assert_eq!(jobs["secret_fields_included"], false);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_repair_apply_registers_existing_local_model_registry() {
+        let dir = unique_temp_dir("xhub-model-repair-register-local-model");
+        fs::create_dir_all(&dir).expect("temp dir should be created");
+        let model_dir = dir.join("Llama-3.2-3B-Instruct-4bit");
+        fs::create_dir_all(&model_dir).expect("model dir should be created");
+        fs::write(model_dir.join("config.json"), "{}").expect("model config should be written");
+        write_runtime_status(&dir, "mlx", true, &["text_generate"]);
+        let config = config_for_runtime_dir(dir.clone());
+
+        let raw = local_repair_apply_json_from_parts(
+            &config,
+            Some(dir.clone()),
+            ModelLocalRepairApplyRequest {
+                action: "add_local_model:text_generate".to_string(),
+                task_kind: "text_generate".to_string(),
+                provider_id: "mlx".to_string(),
+                confirm: true,
+                confirmation_token: "confirm:add_local_model:text_generate".to_string(),
+                requested_by: "test".to_string(),
+                model_id: "mlx-text-llama-3-2-3b-instruct-4bit-test".to_string(),
+                display_name: "Llama-3.2-3B-Instruct-4bit".to_string(),
+                artifact_path: model_dir.display().to_string(),
+                format: "mlx".to_string(),
+                quantization: "4bit".to_string(),
+                task_kinds: vec!["text_generate".to_string()],
+                memory_bytes: 2_338_355_490,
+                ..Default::default()
+            },
+            Some(3000),
+        )
+        .expect("confirmed local registry repair should apply");
+        let value: serde_json::Value = serde_json::from_str(&raw).expect("apply json should parse");
+
+        assert_eq!(value["accepted"], true);
+        assert_eq!(value["status"], "applied_local_model_registry");
+        assert_eq!(
+            value["registered_model"]["model_id"],
+            "mlx-text-llama-3-2-3b-instruct-4bit-test"
+        );
+        assert!(dir.join("models_catalog.json").exists());
+        assert!(dir.join("models_state.json").exists());
+        assert_eq!(
+            value["local_capability_summary"]["by_task"]["text_generate"]["ready"],
+            true
+        );
+        assert_eq!(
+            value["local_capability_summary"]["by_task"]["text_generate"]["ready_model_ids"][0],
+            "mlx-text-llama-3-2-3b-instruct-4bit-test"
+        );
+
+        let rows = local_model_inventory_rows(&dir);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].availability_state, "ready");
+        assert_eq!(rows[0].runtime_provider, "mlx");
+        assert_eq!(rows[0].capabilities, vec!["text.generate"]);
         let _ = fs::remove_dir_all(&dir);
     }
 

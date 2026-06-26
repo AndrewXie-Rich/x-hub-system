@@ -2,14 +2,24 @@ import SwiftUI
 
 struct SupervisorPersonalMemoryCenterView: View {
     @StateObject private var store = SupervisorPersonalMemoryStore.shared
+    @StateObject private var rustMemoryInspectorStore = XTMemoryInspectorStore()
 
     @State private var selectedMemoryID: String = ""
+    @State private var selectedAssistantUserMemoryID: String = ""
     @State private var draftSnapshot: SupervisorPersonalMemorySnapshot = .empty
+    @State private var assistantUserMemoryGrant: HubIPCClient.MemoryUserRevealGrantResult?
+    @State private var assistantUserMemoryReadiness: RustHubMemoryReadinessSnapshot?
+    @State private var assistantUserMemoryGateRefreshing: Bool = false
+    @State private var assistantUserMemoryGateError: String = ""
+    @State private var assistantUserMemoryMutationInFlight: Bool = false
+    @State private var pendingAssistantUserMemoryMutationAction: XTMemoryInspectorObjectMutationAction?
+    @State private var pendingAssistantUserMemoryMutationID: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
             summaryStrip
+            assistantUserRustMemoryGateSection
             HStack(alignment: .top, spacing: 16) {
                 memoryList
                     .frame(width: 300)
@@ -34,11 +44,41 @@ struct SupervisorPersonalMemoryCenterView: View {
         .clipShape(RoundedRectangle(cornerRadius: 20))
         .onAppear {
             syncFromStore()
+            Task {
+                await refreshAssistantUserRustMemoryGate()
+            }
         }
         .onChange(of: store.snapshot) { _ in
             if !hasUnsavedChanges {
                 syncFromStore()
             }
+        }
+        .confirmationDialog(
+            "确认 Rust user memory 治理动作",
+            isPresented: Binding(
+                get: { pendingAssistantUserMemoryMutationAction != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        pendingAssistantUserMemoryMutationAction = nil
+                        pendingAssistantUserMemoryMutationID = ""
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let action = pendingAssistantUserMemoryMutationAction {
+                Button(action.label, role: action.destructive ? .destructive : nil) {
+                    Task {
+                        await confirmAssistantUserMemoryMutation()
+                    }
+                }
+            }
+            Button("取消", role: .cancel) {
+                pendingAssistantUserMemoryMutationAction = nil
+                pendingAssistantUserMemoryMutationID = ""
+            }
+        } message: {
+            Text("Rust mutation gate 会执行此动作；Swift 只保留隐藏内容后的 shell 投影。")
         }
     }
 
@@ -114,6 +154,285 @@ struct SupervisorPersonalMemoryCenterView: View {
         .padding(14)
         .background(Color.white.opacity(0.72))
         .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var assistantUserRustMemoryGateSection: some View {
+        let snapshot = rustMemoryInspectorStore.assistantUserSnapshot
+        let gate = snapshot.gate
+        let status = XTAssistantUserMemoryInspectorPresentation.statusText(snapshot: snapshot)
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Label(
+                    status,
+                    systemImage: gate.ready ? "lock.open" : "lock"
+                )
+                .font(.caption)
+                .foregroundStyle(gate.ready ? Color.secondary : Color(red: 0.76, green: 0.23, blue: 0.18))
+
+                Spacer()
+
+                Button {
+                    Task {
+                        await updateAssistantUserRustMemoryRevealGrant(
+                            action: assistantUserMemoryGrantActive ? "revoke" : "issue"
+                        )
+                    }
+                } label: {
+                    Label(
+                        assistantUserMemoryGrantActive ? "结束查看" : "请求查看",
+                        systemImage: assistantUserMemoryGrantActive ? "lock" : "lock.open"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .disabled(assistantUserMemoryGateRefreshing)
+
+                Button {
+                    Task {
+                        await refreshAssistantUserRustMemoryGate()
+                    }
+                } label: {
+                    Label("检查", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .disabled(assistantUserMemoryGateRefreshing)
+            }
+
+            HStack(spacing: 8) {
+                memoryBadge(
+                    gate.rustObjectStoreReady ? "Rust object store ready" : "Rust object store blocked",
+                    tint: gate.rustObjectStoreReady ? Color(red: 0.22, green: 0.52, blue: 0.36) : Color(red: 0.76, green: 0.23, blue: 0.18)
+                )
+                memoryBadge(
+                    gate.userScopeGrantSatisfied ? "user-scope reveal on" : "user-scope grant required",
+                    tint: gate.userScopeGrantSatisfied ? Color(red: 0.18, green: 0.48, blue: 0.77) : Color(red: 0.75, green: 0.51, blue: 0.12)
+                )
+                memoryBadge(
+                    gate.mutationGateReady ? "mutation gate ready" : "mutation gate closed",
+                    tint: gate.mutationGateReady ? Color(red: 0.22, green: 0.52, blue: 0.36) : Color.secondary.opacity(0.9)
+                )
+            }
+
+            Text(XTAssistantUserMemoryInspectorPresentation.scopeLine(snapshot: snapshot))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            Text(assistantUserMemoryGrantLine)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            if gate.ready {
+                assistantUserRustMemoryObjectList(snapshot: snapshot)
+            } else {
+                Text(assistantUserMemoryGateError.isEmpty ? gate.reasonCode : assistantUserMemoryGateError)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.72))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func assistantUserRustMemoryObjectList(
+        snapshot: XTAssistantUserMemoryInspectorSnapshot
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Rust user-scope objects=\(snapshot.objects.count) · dropped_cross_scope=\(snapshot.droppedCrossScopeCount) · content=hidden")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            if let mutationStatus = XTMemoryInspectorPresentation.mutationStatusText(snapshot.lastMutationResult) {
+                Text(mutationStatus)
+                    .font(.caption2)
+                    .foregroundStyle(snapshot.lastMutationResult?.ok == true ? Color.secondary : Color(red: 0.76, green: 0.23, blue: 0.18))
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+            }
+
+            if let historyRefresh = XTMemoryInspectorPresentation.assistantUserMutationHistoryRefreshText(snapshot.lastMutationHistoryRefresh) {
+                Text(historyRefresh)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+            }
+
+            if snapshot.objects.isEmpty {
+                Text("暂无 Rust user-scope memory objects")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(snapshot.objects) { object in
+                            assistantUserRustMemoryObjectRow(object)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(maxHeight: 180)
+
+                assistantUserRustMemoryDetailPanel(snapshot: snapshot)
+            }
+        }
+    }
+
+    private func assistantUserRustMemoryObjectRow(
+        _ object: HubIPCClient.MemoryWritebackCandidateObject
+    ) -> some View {
+        let isSelected = selectedAssistantUserMemoryID == object.memoryId
+        return Button {
+            selectedAssistantUserMemoryID = object.memoryId
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text("User memory")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    if object.pinned == true {
+                        Image(systemName: "pin.fill")
+                            .font(.caption2)
+                            .foregroundStyle(Color(red: 0.18, green: 0.48, blue: 0.77))
+                    }
+                }
+                Text(XTMemoryInspectorPresentation.assistantUserObjectLine(for: object))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(isSelected ? Color(red: 0.18, green: 0.48, blue: 0.77).opacity(0.12) : Color(NSColor.controlBackgroundColor).opacity(0.68))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isSelected ? Color(red: 0.18, green: 0.48, blue: 0.77) : Color.black.opacity(0.06), lineWidth: isSelected ? 1.5 : 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func assistantUserRustMemoryDetailPanel(
+        snapshot: XTAssistantUserMemoryInspectorSnapshot
+    ) -> some View {
+        let selected = snapshot.objects.first { $0.memoryId == selectedAssistantUserMemoryID }
+            ?? snapshot.objects.first
+        guard let selected else {
+            return AnyView(EmptyView())
+        }
+        let detail = snapshot.details[selected.memoryId]
+        let history = snapshot.histories[selected.memoryId]
+        let mutationActionStates = XTMemoryInspectorPresentation.assistantUserMutationActionStates(
+            for: selected,
+            gate: snapshot.gate,
+            grantActive: assistantUserMemoryGrantActive,
+            gateRefreshing: assistantUserMemoryGateRefreshing,
+            mutationInFlight: assistantUserMemoryMutationInFlight
+        )
+        return AnyView(
+            VStack(alignment: .leading, spacing: 8) {
+                Divider()
+
+                HStack(spacing: 8) {
+                    Text("Selected user memory")
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                    Button {
+                        selectedAssistantUserMemoryID = selected.memoryId
+                        Task {
+                            await loadAssistantUserRustMemoryDetail(selected)
+                        }
+                    } label: {
+                        Label("详情", systemImage: "doc.text.magnifyingglass")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(detail?.loading == true || assistantUserMemoryGateRefreshing)
+
+                    Button {
+                        selectedAssistantUserMemoryID = selected.memoryId
+                        Task {
+                            await loadAssistantUserRustMemoryHistory(selected)
+                        }
+                    } label: {
+                        Label("历史", systemImage: "clock.arrow.circlepath")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(history?.loading == true || assistantUserMemoryGateRefreshing)
+                }
+
+                HStack(spacing: 8) {
+                    ForEach(mutationActionStates) { state in
+                        Button(role: state.action.destructive ? .destructive : nil) {
+                            guard state.enabled else { return }
+                            selectedAssistantUserMemoryID = selected.memoryId
+                            if state.action.confirmationRequired {
+                                pendingAssistantUserMemoryMutationAction = state.action
+                                pendingAssistantUserMemoryMutationID = selected.memoryId
+                            } else {
+                                Task {
+                                    await mutateAssistantUserRustMemory(selected, action: state.action)
+                                }
+                            }
+                        } label: {
+                            Label(state.action.label, systemImage: state.action.systemImage)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help(state.helpText)
+                        .disabled(!state.enabled)
+                    }
+                }
+
+                if let disabledReasonLine = XTMemoryInspectorPresentation.assistantUserMutationDisabledReasonLine(states: mutationActionStates) {
+                    Text(disabledReasonLine)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+
+                Text(XTMemoryInspectorPresentation.assistantUserDetailLine(for: detail?.object ?? selected))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                if let detailError = detail?.lastError, !detailError.isEmpty {
+                    Text(detailError)
+                        .font(.caption2)
+                        .foregroundStyle(Color(red: 0.76, green: 0.23, blue: 0.18))
+                        .lineLimit(2)
+                } else if detail?.loading == true {
+                    Text("读取详情中")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let history {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(XTMemoryInspectorPresentation.historyStatusText(history))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        ForEach(history.events.prefix(3)) { event in
+                            Text(XTMemoryInspectorPresentation.historyLine(for: event))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                    }
+                }
+            }
+        )
     }
 
     private var memoryList: some View {
@@ -468,6 +787,174 @@ struct SupervisorPersonalMemoryCenterView: View {
                 }
             }
         )
+    }
+
+    private var assistantUserMemoryGrantActive: Bool {
+        assistantUserMemoryGrant?.isActive() == true
+    }
+
+    private var assistantUserMemoryGrantLine: String {
+        let status = assistantUserMemoryGrant?.status?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reason = assistantUserMemoryGrant?.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expiresAtMs = assistantUserMemoryGrant?.expiresAtMs ?? 0
+        var parts = [
+            "grant=\((status?.isEmpty == false ? status : nil) ?? "missing")",
+            "source=rust_memory_user_reveal_grant",
+            "content=hidden",
+            "ids=hidden"
+        ]
+        if expiresAtMs > 0 {
+            parts.append("expires_at_ms=\(expiresAtMs)")
+        }
+        if let reason, !reason.isEmpty {
+            parts.append("reason=\(reason)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    @MainActor
+    private func updateAssistantUserRustMemoryRevealGrant(action: String) async {
+        assistantUserMemoryGateRefreshing = true
+        assistantUserMemoryGateError = ""
+        let result = await HubIPCClient.requestMemoryUserRevealGrantViaRust(
+            HubIPCClient.MemoryUserRevealGrantRequest(
+                action: action,
+                grantId: assistantUserMemoryGrant?.grantId,
+                scope: "user",
+                surface: "assistant_user_memory_inspector",
+                actor: "xt_swift_shell",
+                requesterRole: "supervisor",
+                useMode: "assistant_user_memory_inspector",
+                ttlMs: 300_000,
+                auditRef: "assistant_user_memory_inspector_reveal"
+            ),
+            timeoutSec: 0.5
+        )
+        await refreshAssistantUserRustMemoryGate(grantOverride: result)
+    }
+
+    @MainActor
+    private func refreshAssistantUserRustMemoryGate(
+        grantOverride: HubIPCClient.MemoryUserRevealGrantResult? = nil
+    ) async {
+        assistantUserMemoryGateRefreshing = true
+        assistantUserMemoryGateError = ""
+
+        let grant: HubIPCClient.MemoryUserRevealGrantResult
+        if let grantOverride {
+            grant = grantOverride
+        } else {
+            grant = await HubIPCClient.requestMemoryUserRevealGrantViaRust(
+                HubIPCClient.MemoryUserRevealGrantRequest(
+                    action: "evaluate",
+                    grantId: assistantUserMemoryGrant?.grantId,
+                    scope: "user",
+                    surface: "assistant_user_memory_inspector",
+                    actor: "xt_swift_shell",
+                    requesterRole: "supervisor",
+                    useMode: "assistant_user_memory_inspector",
+                    ttlMs: nil,
+                    auditRef: nil
+                ),
+                timeoutSec: 0.5
+            )
+        }
+        assistantUserMemoryGrant = grant
+        if !grant.ok, let reason = grant.reasonCode, !reason.isEmpty {
+            assistantUserMemoryGateError = reason
+        }
+
+        let result = await RustHubReadinessClient.fetchMemoryReadiness(timeout: 0.8)
+        let readiness = result.snapshot
+        assistantUserMemoryReadiness = readiness
+        if !result.ok {
+            assistantUserMemoryGateError = result.errorMessage.isEmpty
+                ? result.errorCode
+                : result.errorMessage
+        }
+
+        await rustMemoryInspectorStore.refreshAssistantUser(
+            readiness: readiness,
+            userScopeGrantSatisfied: grant.isActive(),
+            userRevealGrant: grant,
+            timeoutSec: 0.5
+        )
+        if selectedAssistantUserMemoryID.isEmpty
+            || !rustMemoryInspectorStore.assistantUserSnapshot.objects.contains(where: { $0.memoryId == selectedAssistantUserMemoryID }) {
+            selectedAssistantUserMemoryID = rustMemoryInspectorStore.assistantUserSnapshot.objects.first?.memoryId ?? ""
+        }
+        assistantUserMemoryGateRefreshing = false
+    }
+
+    @MainActor
+    private func loadAssistantUserRustMemoryDetail(
+        _ object: HubIPCClient.MemoryWritebackCandidateObject
+    ) async {
+        await rustMemoryInspectorStore.loadAssistantUserDetail(
+            object: object,
+            readiness: assistantUserMemoryReadiness,
+            userRevealGrant: assistantUserMemoryGrant,
+            timeoutSec: 0.5
+        )
+    }
+
+    @MainActor
+    private func loadAssistantUserRustMemoryHistory(
+        _ object: HubIPCClient.MemoryWritebackCandidateObject
+    ) async {
+        await rustMemoryInspectorStore.loadAssistantUserHistory(
+            object: object,
+            readiness: assistantUserMemoryReadiness,
+            userRevealGrant: assistantUserMemoryGrant,
+            limit: 8,
+            timeoutSec: 0.5
+        )
+    }
+
+    @MainActor
+    private func confirmAssistantUserMemoryMutation() async {
+        guard let action = pendingAssistantUserMemoryMutationAction else { return }
+        let memoryId = pendingAssistantUserMemoryMutationID
+        pendingAssistantUserMemoryMutationAction = nil
+        pendingAssistantUserMemoryMutationID = ""
+        guard let object = rustMemoryInspectorStore.assistantUserSnapshot.objects.first(where: { $0.memoryId == memoryId }) else {
+            assistantUserMemoryGateError = "assistant_user_memory_mutation_selection_missing"
+            return
+        }
+        await mutateAssistantUserRustMemory(object, action: action)
+    }
+
+    @MainActor
+    private func mutateAssistantUserRustMemory(
+        _ object: HubIPCClient.MemoryWritebackCandidateObject,
+        action: XTMemoryInspectorObjectMutationAction
+    ) async {
+        assistantUserMemoryMutationInFlight = true
+        assistantUserMemoryGateError = ""
+        var payload = XTMemoryInspectorPresentation.mutationPayload(action: action)
+        payload.auditRef = "assistant_user_memory_inspector_\(action.rawValue)"
+        payload.reason = "supervisor_requested_user_memory_\(action.rawValue)"
+        payload.requesterRole = "supervisor"
+        payload.useMode = "assistant_user_memory_inspector"
+
+        let result = await rustMemoryInspectorStore.mutateAssistantUserObject(
+            object: object,
+            action: action.rawValue,
+            payload: payload,
+            readiness: assistantUserMemoryReadiness,
+            userRevealGrant: assistantUserMemoryGrant,
+            refreshHistoryIfLoaded: true,
+            historyLimit: 8,
+            timeoutSec: 0.5
+        )
+        if !result.ok {
+            assistantUserMemoryGateError = result.reasonCode ?? result.denyCode ?? result.errorCode ?? result.detail ?? "assistant_user_memory_mutation_failed"
+        }
+        if selectedAssistantUserMemoryID.isEmpty
+            || !rustMemoryInspectorStore.assistantUserSnapshot.objects.contains(where: { $0.memoryId == selectedAssistantUserMemoryID }) {
+            selectedAssistantUserMemoryID = rustMemoryInspectorStore.assistantUserSnapshot.objects.first?.memoryId ?? ""
+        }
+        assistantUserMemoryMutationInFlight = false
     }
 
     private func dueText(for item: SupervisorPersonalMemoryRecord) -> String? {

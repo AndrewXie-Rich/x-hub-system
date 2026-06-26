@@ -9,6 +9,8 @@ use xhub_core::HubConfig;
 use xhub_db::read_latest_scheduler_snapshot;
 use xhub_scheduler::{SchedulerConfig, SchedulerSnapshot, SchedulerStore};
 
+use crate::scheduler_bridge;
+
 #[derive(Debug, Clone)]
 pub struct RuntimeService {
     scheduler_config: SchedulerConfig,
@@ -17,8 +19,9 @@ pub struct RuntimeService {
 
 impl RuntimeService {
     pub fn new(config: HubConfig) -> Self {
+        let scheduler_config = scheduler_bridge::effective_scheduler_config(&config);
         Self {
-            scheduler_config: SchedulerConfig::default(),
+            scheduler_config,
             config,
         }
     }

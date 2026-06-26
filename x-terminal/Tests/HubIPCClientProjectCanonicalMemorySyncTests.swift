@@ -25,6 +25,26 @@ actor RustMemoryGatewayPrepareRecorder {
     func count() -> Int {
         requests.count
     }
+
+    func snapshot() -> [HubIPCClient.RustMemoryGatewayPrepareRequest] {
+        requests
+    }
+}
+
+actor RustMemoryGatewayModelCallPlanRecorder {
+    private var requests: [HubIPCClient.RustMemoryGatewayModelCallPlanRequest] = []
+
+    func append(_ request: HubIPCClient.RustMemoryGatewayModelCallPlanRequest) {
+        requests.append(request)
+    }
+
+    func count() -> Int {
+        requests.count
+    }
+
+    func snapshot() -> [HubIPCClient.RustMemoryGatewayModelCallPlanRequest] {
+        requests
+    }
 }
 
 @Suite(.serialized)
@@ -879,7 +899,8 @@ struct HubIPCClientProjectCanonicalMemorySyncTests {
                 #expect(request.scope == "project")
                 #expect(request.projectId == "project-gateway")
                 #expect(request.remoteExportRequested == false)
-                #expect(request.requestedLayers == ["l1_canonical", "l2_observations", "l3_working_set"])
+                #expect(request.servingProfileId == "M1_Execute")
+                #expect(request.requestedLayers == nil)
                 #expect(timeoutSec == 0.1)
                 return rustMemoryGatewayPrepareResult(
                     projectId: request.projectId,
@@ -947,6 +968,9 @@ struct HubIPCClientProjectCanonicalMemorySyncTests {
             #expect(compare.matchedRustAnchors.count == 2)
             #expect(compare.missingRustAnchors.isEmpty)
             #expect(compare.productionAuthorityChange == false)
+            #expect(compare.servingProfileId == "M1_Execute")
+            #expect(compare.selectedProfile == "M1_Execute")
+            #expect(compare.effectiveProfile == "M1_Execute")
 
             let statusURL = hubBase.appendingPathComponent("memory_gateway_shadow_compare_status.json")
             let data = try Data(contentsOf: statusURL)
@@ -965,6 +989,7 @@ struct HubIPCClientProjectCanonicalMemorySyncTests {
                 requesterRole: "chat",
                 useMode: XTMemoryUseMode.projectChat.rawValue,
                 projectId: "project-gateway",
+                servingProfileId: "M1_Execute",
                 requiredSamples: 1,
                 maxAgeMs: 600_000,
                 recordReport: true
@@ -973,6 +998,181 @@ struct HubIPCClientProjectCanonicalMemorySyncTests {
             #expect(readiness.passingSampleCount == 1)
             #expect(readiness.reportPath?.hasSuffix("memory_gateway_cutover_readiness.json") == true)
             #expect(FileManager.default.fileExists(atPath: readiness.reportPath ?? ""))
+        }
+    }
+
+    @Test
+    func rustMemoryGatewayModelCallPlanShadowRecordsBoundedStatusWhenEnabled() async throws {
+        try await Self.gate.run {
+            let hubBase = FileManager.default.temporaryDirectory
+                .appendingPathComponent("hub_memory_gateway_model_call_plan_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: hubBase, withIntermediateDirectories: true)
+            HubPaths.setPinnedBaseDirOverride(hubBase)
+            let recorder = RustMemoryGatewayModelCallPlanRecorder()
+            let prompt = "Shadow model-call prompt must not be persisted in XT evidence."
+            HubIPCClient.installRustMemoryGatewayModelCallPlanOverrideForTesting { request, timeoutSec in
+                await recorder.append(request)
+                #expect(request.requestId == "plan-shadow-1")
+                #expect(request.requesterRole == "chat")
+                #expect(request.useMode == XTMemoryUseMode.projectChat.rawValue)
+                #expect(request.scope == "project")
+                #expect(request.projectId == "project-model-plan-shadow")
+                #expect(request.sessionId == "session-model-plan-shadow")
+                #expect(request.providerId == "remote_hub")
+                #expect(request.modelId == "remote-model")
+                #expect(request.prompt == prompt)
+                #expect(timeoutSec == 0.25)
+                return rustMemoryGatewayModelCallPlanResult(
+                    requestId: request.requestId,
+                    auditRef: request.auditRef,
+                    providerId: request.providerId,
+                    modelId: request.modelId,
+                    taskKind: request.taskKind,
+                    promptCharCount: request.prompt.count,
+                    projectId: request.projectId
+                )
+            }
+            defer {
+                HubIPCClient.resetRustMemoryGatewayModelCallPlanOverrideForTesting()
+                HubPaths.clearPinnedBaseDirOverride()
+                try? FileManager.default.removeItem(at: hubBase)
+            }
+
+            let request = HubIPCClient.RustMemoryGatewayModelCallPlanRequest(
+                requestId: "plan-shadow-1",
+                auditRef: "xt_model_call_shadow:plan-shadow-1",
+                requesterRole: "chat",
+                useMode: XTMemoryUseMode.projectChat.rawValue,
+                scope: "project",
+                servingProfileId: "M1_Execute",
+                projectId: "project-model-plan-shadow",
+                sessionId: "session-model-plan-shadow",
+                appId: "x_terminal",
+                providerId: "remote_hub",
+                modelId: "remote-model",
+                taskKind: "chat_plan",
+                prompt: prompt
+            )
+            let evidence = await HubIPCClient.recordRustMemoryGatewayModelCallPlanShadow(
+                request: request,
+                timeoutSec: 0.25,
+                recordStatus: true
+            )
+
+            #expect(await recorder.count() == 1)
+            #expect(evidence.ok)
+            let status = try #require(HubIPCClient.rustMemoryGatewayModelCallPlanStatus())
+            #expect(status.schemaVersion == HubIPCClient.RustMemoryGatewayModelCallPlanEvidence.schemaVersion)
+            #expect(status.ok)
+            #expect(status.requestId == "plan-shadow-1")
+            #expect(status.planSchemaVersion == "xhub.memory.gateway_model_call_plan.v1")
+            #expect(status.planSource == "rust_memory_gateway_model_call_plan")
+            #expect(status.planAuthority == "rust_memory_gateway_plan_only")
+            #expect(status.planMode == "plan_only_no_model_call")
+            #expect(status.promptCharCount == prompt.count)
+            #expect(status.selectedRefCount == 2)
+            #expect(status.selectedCount == 2)
+            #expect(status.selectedChunkCount == 2)
+            #expect(status.omittedCount == 5)
+            #expect(status.omittedRefCount == 1)
+            #expect(status.deniedCount == 1)
+            #expect(status.indexSource == "derived_index")
+            #expect(status.indexGranularity == "object_chunk")
+            #expect(status.chunkIdentitySchema == "xhub.memory.object_chunk_identity.v1")
+            #expect(status.chunkExpandViaGetRef == true)
+            #expect(status.effectiveLayers == ["l1_canonical"])
+            #expect(status.selectedRefs?.map(\.memoryId) == ["mem_plan_1", "mem_plan_2"])
+            #expect(status.selectedRefs?.first?.chunkRef == "memory://rust/object/mem_plan_1#object-0-lines-1-10")
+            #expect(status.selectedRefs?.first?.contentIncluded == false)
+            #expect(status.omittedRefs?.map(\.reasonCode) == ["budget_limit"])
+            #expect(status.omittedRefs?.first?.contentIncluded == false)
+            #expect(status.skipped?.budget == 5)
+            #expect(status.omittedReasonCounts?["budget_limit"] == 5)
+            #expect(status.omittedReasonCounts?["secret_or_secret_like"] == 1)
+            #expect(status.contextCharCount == 512)
+            #expect(status.wouldCallModel == false)
+            #expect(status.modelCallExecuted == false)
+            #expect(status.productionAuthorityChange == false)
+            #expect(status.contextTextIncluded == false)
+            #expect(status.promptTextIncluded == false)
+            #expect(status.issueCodes.isEmpty)
+
+            let history = try #require(HubIPCClient.rustMemoryGatewayModelCallPlanHistory())
+            #expect(history.schemaVersion == HubIPCClient.RustMemoryGatewayModelCallPlanHistory.schemaVersion)
+            #expect(history.items.count == 1)
+            #expect(history.items.first?.requestId == "plan-shadow-1")
+            #expect(history.items.first?.selectedRefs?.first?.chunkId == "object-0-lines-1-10")
+            #expect(history.items.first?.omittedRefs?.first?.chunkId == "object-2-lines-21-30")
+
+            let statusURL = hubBase.appendingPathComponent("memory_gateway_model_call_plan_status.json")
+            let rawStatus = try String(contentsOf: statusURL, encoding: .utf8)
+            #expect(!rawStatus.contains(prompt))
+            #expect(!rawStatus.contains("context text"))
+            #expect(rawStatus.contains("\"context_text_included\" : false"))
+            #expect(rawStatus.contains("\"prompt_text_included\" : false"))
+            #expect(rawStatus.contains("mem_plan_1#object-0-lines-1-10"))
+            #expect(rawStatus.contains("\"content_included\" : false"))
+        }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_LIVE_SMOKE"] == "1"))
+    func rustMemoryGatewayModelCallPlanShadowRecordsLiveStatusAgainstRunningRustHub() async throws {
+        try await Self.gate.run {
+            let liveBaseRaw = ProcessInfo.processInfo.environment["XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_LIVE_BASE_DIR"]
+                ?? "~/Library/Application Support/AX/rust-hub/local"
+            let liveBase = URL(
+                fileURLWithPath: NSString(string: liveBaseRaw).expandingTildeInPath,
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(at: liveBase, withIntermediateDirectories: true)
+            HubPaths.setPinnedBaseDirOverride(liveBase)
+            RustHubHTTPAccess.resetCacheForTesting()
+            defer {
+                RustHubHTTPAccess.resetCacheForTesting()
+                HubPaths.clearPinnedBaseDirOverride()
+            }
+
+            let requestId = "xt-live-model-call-shadow-\(UUID().uuidString)"
+            let prompt = "XT live model-call shadow smoke prompt must not be persisted."
+            let request = HubIPCClient.RustMemoryGatewayModelCallPlanRequest(
+                requestId: requestId,
+                auditRef: "xt_model_call_shadow:\(requestId)",
+                requesterRole: "chat",
+                useMode: XTMemoryUseMode.projectChat.rawValue,
+                scope: "project",
+                servingProfileId: "M1_Execute",
+                projectId: "xt-live-model-call-shadow",
+                sessionId: "xt-live-model-call-shadow-session",
+                appId: "x_terminal",
+                providerId: "remote_hub",
+                modelId: "remote-model",
+                taskKind: "chat_plan",
+                prompt: prompt
+            )
+            let evidence = await HubIPCClient.recordRustMemoryGatewayModelCallPlanShadow(
+                request: request,
+                timeoutSec: 0.5,
+                recordStatus: true
+            )
+
+            #expect(evidence.ok)
+            #expect(evidence.planSchemaVersion == "xhub.memory.gateway_model_call_plan.v1")
+            #expect(evidence.planSource == "rust_memory_gateway_model_call_plan")
+            #expect(evidence.planAuthority == "rust_memory_gateway_plan_only")
+            #expect(evidence.planMode == "plan_only_no_model_call")
+            #expect(evidence.wouldCallModel == false)
+            #expect(evidence.modelCallExecuted == false)
+            #expect(evidence.productionAuthorityChange == false)
+            #expect(evidence.contextTextIncluded == false)
+            #expect(evidence.promptTextIncluded == false)
+
+            let statusURL = liveBase.appendingPathComponent("memory_gateway_model_call_plan_status.json")
+            let historyURL = liveBase.appendingPathComponent("memory_gateway_model_call_plan_history.json")
+            #expect(FileManager.default.fileExists(atPath: statusURL.path))
+            #expect(FileManager.default.fileExists(atPath: historyURL.path))
+            let rawStatus = try String(contentsOf: statusURL, encoding: .utf8)
+            #expect(!rawStatus.contains(prompt))
+            #expect(!rawStatus.contains("prompt must not be persisted"))
         }
     }
 
@@ -1033,6 +1233,7 @@ struct HubIPCClientProjectCanonicalMemorySyncTests {
                 requesterRole: "chat",
                 useMode: XTMemoryUseMode.projectChat.rawValue,
                 projectId: "project-gateway-live",
+                servingProfileId: "M1_Execute",
                 requiredSamples: 4,
                 maxAgeMs: 600_000
             )
@@ -1043,6 +1244,7 @@ struct HubIPCClientProjectCanonicalMemorySyncTests {
                 requesterRole: "chat",
                 useMode: XTMemoryUseMode.projectChat.rawValue,
                 projectId: "project-gateway-live",
+                servingProfileId: "M1_Execute",
                 requiredSamples: 3,
                 maxAgeMs: 600_000,
                 recordReport: true
@@ -1052,6 +1254,14 @@ struct HubIPCClientProjectCanonicalMemorySyncTests {
             #expect(ready.matchingSampleCount == 3)
             #expect(ready.freshMatchingSampleCount == 3)
             #expect(ready.passingSampleCount == 3)
+            #expect(ready.profileReadinessSampleCount == 3)
+            #expect(ready.profileReadiness?.count == 1)
+            #expect(ready.profileReadiness?.first?.servingProfileId == "M1_Execute")
+            #expect(ready.profileReadiness?.first?.freshSampleCount == 3)
+            #expect(ready.profileReadiness?.first?.passingSampleCount == 3)
+            #expect(ready.profileReadiness?.first?.readyForRequire == true)
+            #expect(ready.profileDowngradeCount == 0)
+            #expect(ready.rustDenyCount == 0)
             #expect(ready.issues.isEmpty)
             #expect(FileManager.default.fileExists(atPath: ready.reportPath ?? ""))
         }
@@ -1125,6 +1335,7 @@ struct HubIPCClientProjectCanonicalMemorySyncTests {
             }
             HubIPCClient.installRustMemoryGatewayPrepareOverrideForTesting { request, _ in
                 #expect(request.projectId == "project-gateway-primary")
+                #expect(request.servingProfileId == "M1_Execute")
                 return rustMemoryGatewayPrepareResult(
                     projectId: request.projectId,
                     objects: [
@@ -1170,9 +1381,160 @@ struct HubIPCClientProjectCanonicalMemorySyncTests {
             let response = try #require(result.response)
             #expect(response.source == "rust_memory_gateway_prepare")
             #expect(response.freshness == "fresh_rust_gateway")
+            #expect(response.requestedProfile == XTMemoryServingProfile.m1Execute.rawValue)
+            #expect(response.resolvedProfile == XTMemoryServingProfile.m1Execute.rawValue)
             #expect(response.text.contains("Rust gateway primary context"))
             #expect(!response.text.contains("swift canonical fallback"))
             #expect(result.reasonCode == nil)
+        }
+    }
+
+    @Test
+    func rustMemoryGatewayRequestMemoryContextSendsServingProfilesForCallerModes() async throws {
+        try await Self.gate.run {
+            struct Case {
+                var mode: XTMemoryUseMode
+                var role: XTMemoryRequesterRole
+                var latestUser: String
+                var explicitProfile: XTMemoryServingProfile?
+                var expectedProfile: String
+                var remoteExportRequested: Bool
+            }
+
+            let cases: [Case] = [
+                Case(
+                    mode: .sessionResume,
+                    role: .session,
+                    latestUser: "resume the last work session",
+                    explicitProfile: nil,
+                    expectedProfile: "M1_Execute",
+                    remoteExportRequested: false
+                ),
+                Case(
+                    mode: .projectChat,
+                    role: .chat,
+                    latestUser: "review the execution plan",
+                    explicitProfile: nil,
+                    expectedProfile: "M2_PlanReview",
+                    remoteExportRequested: false
+                ),
+                Case(
+                    mode: .supervisorOrchestration,
+                    role: .supervisor,
+                    latestUser: "full scan the portfolio before the next plan",
+                    explicitProfile: nil,
+                    expectedProfile: "M3_DeepDive",
+                    remoteExportRequested: false
+                ),
+                Case(
+                    mode: .toolActHighRisk,
+                    role: .tool,
+                    latestUser: "review this high risk command before acting",
+                    explicitProfile: .m4FullScan,
+                    expectedProfile: "M2_PlanReview",
+                    remoteExportRequested: false
+                ),
+                Case(
+                    mode: .remotePromptBundle,
+                    role: .remoteExport,
+                    latestUser: "status handoff only",
+                    explicitProfile: nil,
+                    expectedProfile: "M0_Heartbeat",
+                    remoteExportRequested: true
+                ),
+                Case(
+                    mode: .remotePromptBundle,
+                    role: .remoteExport,
+                    latestUser: "review plan for remote prompt bundle",
+                    explicitProfile: nil,
+                    expectedProfile: "M1_Execute",
+                    remoteExportRequested: true
+                ),
+                Case(
+                    mode: .projectChat,
+                    role: .chat,
+                    latestUser: "continue",
+                    explicitProfile: .m4FullScan,
+                    expectedProfile: "M4_FullScan",
+                    remoteExportRequested: false
+                ),
+            ]
+
+            let hubBase = FileManager.default.temporaryDirectory
+                .appendingPathComponent("hub_memory_gateway_profile_modes_\(UUID().uuidString)", isDirectory: true)
+            let originalMode = HubAIClient.transportMode()
+            let recorder = RustMemoryGatewayPrepareRecorder()
+            try FileManager.default.createDirectory(at: hubBase, withIntermediateDirectories: true)
+            HubAIClient.setTransportMode(.auto)
+            HubPaths.setPinnedBaseDirOverride(hubBase)
+            HubIPCClient.installHubRouteDecisionOverrideForTesting {
+                HubRouteDecision(
+                    mode: .auto,
+                    hasRemoteProfile: true,
+                    preferRemote: false,
+                    allowFileFallback: true,
+                    requiresRemote: false,
+                    remoteUnavailableReasonCode: nil
+                )
+            }
+            HubIPCClient.installRustMemoryGatewayPrepareOverrideForTesting { request, _ in
+                await recorder.append(request)
+                return rustMemoryGatewayPrepareResult(
+                    projectId: request.projectId,
+                    objects: [
+                        rustMemoryGatewayObject(
+                            memoryId: "mem_profile_modes_context",
+                            sourceKind: "project_goal",
+                            layer: "l1_canonical",
+                            title: "Profile mode context",
+                            text: "Rust gateway profile mode context"
+                        )
+                    ]
+                )
+            }
+            defer {
+                HubAIClient.setTransportMode(originalMode)
+                HubIPCClient.installHubRouteDecisionOverrideForTesting(nil)
+                HubIPCClient.resetRustMemoryGatewayPrepareOverrideForTesting()
+                HubPaths.clearPinnedBaseDirOverride()
+                try? FileManager.default.removeItem(at: hubBase)
+            }
+
+            await withTemporaryEnvironment([
+                "XHUB_RUST_MEMORY_CONTEXT_GATEWAY": "1"
+            ]) {
+                for (index, testCase) in cases.enumerated() {
+                    let result = await HubIPCClient.requestMemoryContextDetailed(
+                        useMode: testCase.mode,
+                        requesterRole: testCase.role,
+                        projectId: "project-gateway-profile-mode-\(index)",
+                        projectRoot: nil,
+                        displayName: "Gateway Profile Mode \(index)",
+                        latestUser: testCase.latestUser,
+                        constitutionHint: "safe",
+                        canonicalText: "swift canonical fallback",
+                        observationsText: "swift observation fallback",
+                        workingSetText: "swift working set fallback",
+                        rawEvidenceText: nil,
+                        servingProfile: testCase.explicitProfile,
+                        progressiveDisclosure: false,
+                        budgets: nil,
+                        timeoutSec: 0.1
+                    )
+                    #expect(result.response?.source == "rust_memory_gateway_prepare")
+                }
+            }
+
+            let requests = await recorder.snapshot()
+            #expect(requests.count == cases.count)
+            for (request, testCase) in zip(requests, cases) {
+                #expect(request.useMode == testCase.mode.rawValue)
+                #expect(request.servingProfileId == testCase.expectedProfile)
+                #expect(request.remoteExportRequested == testCase.remoteExportRequested)
+                #expect(request.requestedLayers == nil)
+                #expect(request.maxItems == nil)
+                #expect(request.maxSnippetChars == nil)
+            }
         }
     }
 
@@ -1240,6 +1602,77 @@ struct HubIPCClientProjectCanonicalMemorySyncTests {
     }
 
     @Test
+    func requestMemoryContextRequireGateBlocksProfileMismatchEvidence() async throws {
+        try await Self.gate.run {
+            let hubBase = FileManager.default.temporaryDirectory
+                .appendingPathComponent("hub_memory_gateway_profile_mismatch_\(UUID().uuidString)", isDirectory: true)
+            let originalMode = HubAIClient.transportMode()
+            let recorder = RustMemoryGatewayPrepareRecorder()
+            try FileManager.default.createDirectory(at: hubBase, withIntermediateDirectories: true)
+            HubAIClient.setTransportMode(.auto)
+            HubPaths.setPinnedBaseDirOverride(hubBase)
+            HubIPCClient.installHubRouteDecisionOverrideForTesting {
+                HubRouteDecision(
+                    mode: .auto,
+                    hasRemoteProfile: true,
+                    preferRemote: false,
+                    allowFileFallback: true,
+                    requiresRemote: false,
+                    remoteUnavailableReasonCode: nil
+                )
+            }
+            try writeRustMemoryGatewayShadowCompareStatus(
+                base: hubBase,
+                requesterRole: "chat",
+                useMode: XTMemoryUseMode.projectChat.rawValue,
+                projectId: "project-gateway-profile-mismatch",
+                servingProfileId: "M1_Execute",
+                recordedAtMs: Int64(Date().timeIntervalSince1970 * 1000.0)
+            )
+            HubIPCClient.installRustMemoryGatewayPrepareOverrideForTesting { request, _ in
+                await recorder.append(request)
+                return nil
+            }
+            defer {
+                HubAIClient.setTransportMode(originalMode)
+                HubIPCClient.installHubRouteDecisionOverrideForTesting(nil)
+                HubIPCClient.resetRustMemoryGatewayPrepareOverrideForTesting()
+                HubPaths.clearPinnedBaseDirOverride()
+                try? FileManager.default.removeItem(at: hubBase)
+            }
+
+            let result = await withTemporaryEnvironment([
+                "XHUB_RUST_MEMORY_CONTEXT_GATEWAY": nil,
+                "XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE": "1",
+                "XHUB_RUST_MEMORY_CONTEXT_GATEWAY_PARITY_MAX_AGE_MS": "600000"
+            ]) {
+                await HubIPCClient.requestMemoryContextDetailed(
+                    useMode: .projectChat,
+                    requesterRole: .chat,
+                    projectId: "project-gateway-profile-mismatch",
+                    projectRoot: nil,
+                    displayName: "Gateway Profile Mismatch",
+                    latestUser: "review the plan",
+                    constitutionHint: "safe",
+                    canonicalText: "swift canonical fallback",
+                    observationsText: "swift observation fallback",
+                    workingSetText: nil,
+                    rawEvidenceText: nil,
+                    servingProfile: .m2PlanReview,
+                    progressiveDisclosure: false,
+                    budgets: nil,
+                    timeoutSec: 0.1
+                )
+            }
+
+            #expect(result.response == nil)
+            #expect(result.source == "rust_memory_gateway_cutover_gate")
+            #expect(result.reasonCode == "memory_gateway_cutover_evidence_profile_mismatch")
+            #expect(await recorder.count() == 0)
+        }
+    }
+
+    @Test
     func requestMemoryContextRequireGateUsesRustGatewayWithFreshParityEvidence() async throws {
         try await Self.gate.run {
             let hubBase = FileManager.default.temporaryDirectory
@@ -1263,10 +1696,12 @@ struct HubIPCClientProjectCanonicalMemorySyncTests {
                 requesterRole: "chat",
                 useMode: XTMemoryUseMode.projectChat.rawValue,
                 projectId: "project-gateway-required",
+                servingProfileId: "M1_Execute",
                 recordedAtMs: Int64(Date().timeIntervalSince1970 * 1000.0)
             )
             HubIPCClient.installRustMemoryGatewayPrepareOverrideForTesting { request, _ in
                 #expect(request.projectId == "project-gateway-required")
+                #expect(request.servingProfileId == "M1_Execute")
                 return rustMemoryGatewayPrepareResult(
                     projectId: request.projectId,
                     objects: [
@@ -1507,6 +1942,21 @@ struct HubIPCClientProjectCanonicalMemorySyncTests {
         }
     }
 
+    private func waitForRustMemoryGatewayModelCallPlanStatus(
+        requestId: String,
+        timeoutMs: UInt64 = 2_000,
+        pollMs: UInt64 = 25
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1_000.0)
+        while Date() < deadline {
+            if HubIPCClient.rustMemoryGatewayModelCallPlanStatus()?.requestId == requestId {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: pollMs * 1_000_000)
+        }
+        return HubIPCClient.rustMemoryGatewayModelCallPlanStatus()?.requestId == requestId
+    }
+
     private func pendingProjectCanonicalRustSyncURL(projectRoot: URL) -> URL {
         projectRoot
             .appendingPathComponent(".xterminal", isDirectory: true)
@@ -1551,6 +2001,7 @@ struct HubIPCClientProjectCanonicalMemorySyncTests {
         requesterRole: String,
         useMode: String,
         projectId: String?,
+        servingProfileId: String = "M1_Execute",
         recordedAtMs: Int64
     ) throws {
         let result = HubIPCClient.RustMemoryGatewayShadowCompareResult(
@@ -1561,6 +2012,9 @@ struct HubIPCClientProjectCanonicalMemorySyncTests {
             productionAuthorityChange: false,
             requesterRole: requesterRole,
             useMode: useMode,
+            servingProfileId: servingProfileId,
+            selectedProfile: servingProfileId,
+            effectiveProfile: servingProfileId,
             projectId: projectId,
             productSource: "swift_memory_v1_builder",
             rustSource: "rust_memory_gateway_prepare",
@@ -1634,25 +2088,191 @@ struct HubIPCClientProjectCanonicalMemorySyncTests {
             requesterRole: "chat",
             useMode: "project_chat",
             scope: "project",
+            servingProfileId: "M1_Execute",
+            selectedProfile: "M1_Execute",
+            effectiveProfile: "M1_Execute",
+            profileReason: "unit_test",
+            expanded: false,
+            expansionReason: nil,
             projectId: projectId,
             remoteExportRequested: false,
             queryPresent: true,
             objectCount: objects.count,
+            selectedCount: objects.count,
+            omittedCount: 0,
+            deniedCount: 0,
             maxItems: 24,
             maxSnippetChars: 420,
             requestedLayers: ["l1_canonical", "l2_observations", "l3_working_set"],
             effectiveLayers: slots.map(\.layer),
             requestedSourceKinds: [],
+            rawEvidenceAllowed: false,
+            remoteExportFilteredCount: 0,
+            fallbackDisabled: false,
+            fallbackReason: nil,
             slots: slots,
             contextText: context,
             skipped: HubIPCClient.RustMemoryGatewayPrepareSkipped(
                 policyOrFilter: 0,
                 remoteVisibility: 0,
-                secret: 0
+                secret: 0,
+                budget: 0
             ),
             denyCode: nil,
             reasonCode: nil,
             errorCode: nil,
+            message: nil
+        )
+    }
+
+    private func rustMemoryGatewayModelCallPlanResult(
+        requestId: String,
+        auditRef: String?,
+        providerId: String?,
+        modelId: String?,
+        taskKind: String,
+        promptCharCount: Int,
+        projectId: String?
+    ) -> HubIPCClient.RustMemoryGatewayModelCallPlanResult {
+        let selectedRefs = [
+            HubIPCClient.RustMemoryGatewaySelectedRef(
+                ref: "memory://rust/object/mem_plan_1",
+                chunkRef: "memory://rust/object/mem_plan_1#object-0-lines-1-10",
+                chunkId: "object-0-lines-1-10",
+                chunkIdentitySchema: "xhub.memory.object_chunk_identity.v1",
+                chunkStartLine: 1,
+                chunkEndLine: 10,
+                memoryId: "mem_plan_1",
+                layer: "l1_canonical",
+                sourceKind: "decision_track",
+                scope: "project",
+                projectId: projectId,
+                sensitivity: "internal",
+                visibility: "local_only",
+                updatedAtMs: 1779660000000,
+                version: 1,
+                reasonCode: "selected",
+                contentIncluded: false
+            ),
+            HubIPCClient.RustMemoryGatewaySelectedRef(
+                ref: "memory://rust/object/mem_plan_2",
+                chunkRef: "memory://rust/object/mem_plan_2#object-1-lines-11-20",
+                chunkId: "object-1-lines-11-20",
+                chunkIdentitySchema: "xhub.memory.object_chunk_identity.v1",
+                chunkStartLine: 11,
+                chunkEndLine: 20,
+                memoryId: "mem_plan_2",
+                layer: "l1_canonical",
+                sourceKind: "workflow_state",
+                scope: "project",
+                projectId: projectId,
+                sensitivity: "internal",
+                visibility: "local_only",
+                updatedAtMs: 1779660000001,
+                version: 2,
+                reasonCode: "selected",
+                contentIncluded: false
+            )
+        ]
+        let omittedRefs = [
+            HubIPCClient.RustMemoryGatewaySelectedRef(
+                ref: "memory://rust/object/mem_plan_omitted",
+                chunkRef: "memory://rust/object/mem_plan_omitted#object-2-lines-21-30",
+                chunkId: "object-2-lines-21-30",
+                chunkIdentitySchema: "xhub.memory.object_chunk_identity.v1",
+                chunkStartLine: 21,
+                chunkEndLine: 30,
+                memoryId: "mem_plan_omitted",
+                layer: "l2_observation",
+                sourceKind: "tool_result",
+                scope: "project",
+                projectId: projectId,
+                sensitivity: "internal",
+                visibility: "local_only",
+                updatedAtMs: 1779660000002,
+                version: 1,
+                reasonCode: "budget_limit",
+                contentIncluded: false
+            )
+        ]
+        return HubIPCClient.RustMemoryGatewayModelCallPlanResult(
+            schemaVersion: "xhub.memory.gateway_model_call_plan.v1",
+            ok: true,
+            status: "planned",
+            source: "rust_memory_gateway_model_call_plan",
+            mode: "plan_only_no_model_call",
+            authority: "rust_memory_gateway_plan_only",
+            productionAuthorityChange: false,
+            wouldCallModel: false,
+            modelCallExecuted: false,
+            requestId: requestId,
+            auditRef: auditRef,
+            prepare: HubIPCClient.RustMemoryGatewayPrepareSummary(
+                schemaVersion: "xhub.memory.gateway_prepare.v1",
+                ok: true,
+                status: "prepared",
+                source: "rust_memory_gateway_prepare",
+                mode: "prepare_only_no_model_call",
+                requesterRole: "chat",
+                useMode: XTMemoryUseMode.projectChat.rawValue,
+                scope: "project",
+                servingProfileId: "M1_Execute",
+                selectedProfile: "M1_Execute",
+                effectiveProfile: "M1_Execute",
+                projectId: projectId,
+                objectCount: 2,
+                selectedCount: 2,
+                selectedChunkCount: 2,
+                selectedRefs: selectedRefs,
+                omittedCount: 5,
+                omittedRefCount: omittedRefs.count,
+                omittedRefs: omittedRefs,
+                deniedCount: 1,
+                indexSource: "derived_index",
+                indexGranularity: "object_chunk",
+                indexRebuilt: false,
+                indexRebuildError: nil,
+                chunkIdentitySchema: "xhub.memory.object_chunk_identity.v1",
+                chunkExpandViaGetRef: true,
+                effectiveLayers: ["l1_canonical"],
+                skipped: HubIPCClient.RustMemoryGatewayPrepareSkipped(
+                    policyOrFilter: 0,
+                    remoteVisibility: 0,
+                    secret: 1,
+                    budget: 5
+                ),
+                omittedReasonCounts: [
+                    "budget_limit": 5,
+                    "secret_or_secret_like": 1
+                ],
+                productionAuthorityChange: false
+            ),
+            memoryContext: HubIPCClient.RustMemoryGatewayModelCallPlanMemoryContext(
+                contextTextIncluded: false,
+                contextCharCount: 512,
+                selectedRefCount: 2,
+                selectedRefs: selectedRefs,
+                omittedRefCount: omittedRefs.count,
+                omittedRefs: omittedRefs,
+                indexGranularity: "object_chunk",
+                chunkIdentitySchema: "xhub.memory.object_chunk_identity.v1",
+                chunkExpandViaGetRef: true
+            ),
+            modelRequest: HubIPCClient.RustMemoryGatewayModelCallPlanModelRequest(
+                taskKind: taskKind,
+                providerId: providerId,
+                modelId: modelId,
+                routeIntent: "route_required_before_execute",
+                prompt: HubIPCClient.RustMemoryGatewayModelCallPlanPrompt(
+                    promptPresent: true,
+                    promptCharCount: promptCharCount,
+                    messageCount: 0,
+                    messageCharCount: 0,
+                    textIncluded: false
+                )
+            ),
+            errorCode: nil,
+            prepareErrorCode: nil,
             message: nil
         )
     }

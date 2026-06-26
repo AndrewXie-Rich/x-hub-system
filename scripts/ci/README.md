@@ -55,9 +55,35 @@ Build snapshot hygiene:
 GitHub Actions entrypoints:
 
 - `.github/workflows/xhub-doctor-source-gate.yml`
+- `.github/workflows/rust-memory-hybrid-quality-gate.yml`
 - `.github/workflows/xt-w3-24-safe-onboarding-gate.yml`
 
-## Focused Work-Order Gate
+## Rust Memory Hybrid Quality Gate
+
+```bash
+bash scripts/ci/rust_memory_hybrid_quality_gate.sh
+```
+
+This focused gate packages the Rust Hub W6 hybrid memory retrieval quality
+boundary into one rerunnable command. It intentionally runs only the quick
+profile for normal CI/source validation:
+
+- syntax check for `rust/xhubd/tools/memory_hybrid_quality_bench.js`
+- quick route-sensitive memory hybrid quality bench
+- BM25/derived-index/trace/no-production-authority assertions from the bench
+
+When the gate is green it writes:
+
+- `build/reports/rust_memory_hybrid_quality_gate_summary.v1.json`
+- `build/reports/rust_memory_hybrid_quality_bench_quick.v1.json`
+- `build/reports/rust_memory_hybrid_quality_gate_logs/`
+
+The large profile remains a manual or nightly validation target via
+`bash rust/xhubd/tools/memory_hybrid_quality_bench.command --profile large`, so
+normal source gates keep proving the W6 safety boundary without absorbing the
+larger sustained fixture cost.
+
+## XT Safe Onboarding Gate
 
 ```bash
 bash scripts/ci/xt_w3_24_s_safe_onboarding_gate.sh

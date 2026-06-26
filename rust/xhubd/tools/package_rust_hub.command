@@ -55,6 +55,12 @@ cp "$ROOT_DIR/tools/memory_retrieval_http_smoke.js" "$DIST_DIR/tools/memory_retr
 cp "$ROOT_DIR/tools/memory_retrieval_http_smoke.command" "$DIST_DIR/tools/memory_retrieval_http_smoke.command"
 cp "$ROOT_DIR/tools/memory_gateway_cutover_smoke.js" "$DIST_DIR/tools/memory_gateway_cutover_smoke.js"
 cp "$ROOT_DIR/tools/memory_gateway_cutover_smoke.command" "$DIST_DIR/tools/memory_gateway_cutover_smoke.command"
+cp "$ROOT_DIR/tools/memory_gateway_model_call_execute_smoke.js" "$DIST_DIR/tools/memory_gateway_model_call_execute_smoke.js"
+cp "$ROOT_DIR/tools/memory_gateway_model_call_execute_smoke.command" "$DIST_DIR/tools/memory_gateway_model_call_execute_smoke.command"
+cp "$ROOT_DIR/tools/memory_gateway_model_call_local_executor_smoke.js" "$DIST_DIR/tools/memory_gateway_model_call_local_executor_smoke.js"
+cp "$ROOT_DIR/tools/memory_gateway_model_call_local_executor_smoke.command" "$DIST_DIR/tools/memory_gateway_model_call_local_executor_smoke.command"
+cp "$ROOT_DIR/tools/memory_gateway_model_call_live_canary_session.js" "$DIST_DIR/tools/memory_gateway_model_call_live_canary_session.js"
+cp "$ROOT_DIR/tools/memory_gateway_model_call_live_canary_session.command" "$DIST_DIR/tools/memory_gateway_model_call_live_canary_session.command"
 cp "$ROOT_DIR/tools/memory_gateway_cutover_session.js" "$DIST_DIR/tools/memory_gateway_cutover_session.js"
 cp "$ROOT_DIR/tools/memory_gateway_cutover_session.command" "$DIST_DIR/tools/memory_gateway_cutover_session.command"
 cp "$ROOT_DIR/tools/memory_skills_production_smoke.js" "$DIST_DIR/tools/memory_skills_production_smoke.js"
@@ -91,6 +97,8 @@ cp "$ROOT_DIR/tools/production_live_stability_gate.js" "$DIST_DIR/tools/producti
 cp "$ROOT_DIR/tools/production_live_stability_gate.command" "$DIST_DIR/tools/production_live_stability_gate.command"
 cp "$ROOT_DIR/tools/production_live_stability_session.js" "$DIST_DIR/tools/production_live_stability_session.js"
 cp "$ROOT_DIR/tools/production_live_stability_session.command" "$DIST_DIR/tools/production_live_stability_session.command"
+cp "$ROOT_DIR/tools/product_process_sanity.js" "$DIST_DIR/tools/product_process_sanity.js"
+cp "$ROOT_DIR/tools/product_process_sanity.command" "$DIST_DIR/tools/product_process_sanity.command"
 cp "$ROOT_DIR/tools/ui_compatibility_no_product_ui_change_gate.js" "$DIST_DIR/tools/ui_compatibility_no_product_ui_change_gate.js"
 cp "$ROOT_DIR/tools/ui_compatibility_no_product_ui_change_gate.command" "$DIST_DIR/tools/ui_compatibility_no_product_ui_change_gate.command"
 cp "$ROOT_DIR/tools/ops_readiness_gate.js" "$DIST_DIR/tools/ops_readiness_gate.js"
@@ -212,6 +220,12 @@ chmod +x "$DIST_DIR/tools/run_rust_hub.command" \
   "$DIST_DIR/tools/memory_retrieval_http_smoke.command" \
   "$DIST_DIR/tools/memory_gateway_cutover_smoke.js" \
   "$DIST_DIR/tools/memory_gateway_cutover_smoke.command" \
+  "$DIST_DIR/tools/memory_gateway_model_call_execute_smoke.js" \
+  "$DIST_DIR/tools/memory_gateway_model_call_execute_smoke.command" \
+  "$DIST_DIR/tools/memory_gateway_model_call_local_executor_smoke.js" \
+  "$DIST_DIR/tools/memory_gateway_model_call_local_executor_smoke.command" \
+  "$DIST_DIR/tools/memory_gateway_model_call_live_canary_session.js" \
+  "$DIST_DIR/tools/memory_gateway_model_call_live_canary_session.command" \
   "$DIST_DIR/tools/memory_gateway_cutover_session.js" \
   "$DIST_DIR/tools/memory_gateway_cutover_session.command" \
   "$DIST_DIR/tools/memory_skills_production_smoke.js" \
@@ -248,6 +262,8 @@ chmod +x "$DIST_DIR/tools/run_rust_hub.command" \
   "$DIST_DIR/tools/production_live_stability_gate.command" \
   "$DIST_DIR/tools/production_live_stability_session.js" \
   "$DIST_DIR/tools/production_live_stability_session.command" \
+  "$DIST_DIR/tools/product_process_sanity.js" \
+  "$DIST_DIR/tools/product_process_sanity.command" \
   "$DIST_DIR/tools/ui_compatibility_no_product_ui_change_gate.js" \
   "$DIST_DIR/tools/ui_compatibility_no_product_ui_change_gate.command" \
   "$DIST_DIR/tools/ops_readiness_gate.js" \

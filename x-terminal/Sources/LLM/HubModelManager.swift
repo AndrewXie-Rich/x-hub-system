@@ -16,6 +16,7 @@ final class HubModelManager: ObservableObject {
     private var fetchGeneration: UInt64 = 0
     private var fetchInFlight = false
     private var lastFetchCompletedAt: Date?
+    private var latestHubCacheScopeID: String = XTHubProfilesStorage.activeCacheScopeID()
     private let fetchCoalescingWindow: TimeInterval = 2.0
 
     init() {}
@@ -25,6 +26,7 @@ final class HubModelManager: ObservableObject {
     }
 
     func fetchModels(force: Bool = false) async {
+        resetIfHubProfileChanged()
         let fallbackSnapshot = currentFallbackSnapshot()
         let hadVisibleModels = !visibleSnapshot(fallback: fallbackSnapshot).models.isEmpty
         if !force {
@@ -98,7 +100,10 @@ final class HubModelManager: ObservableObject {
     }
 
     func visibleSnapshot(fallback: ModelStateSnapshot) -> ModelStateSnapshot {
-        hasFetchedAuthoritativeSnapshot ? latestSnapshot : fallback
+        guard latestHubCacheScopeID == XTHubProfilesStorage.activeCacheScopeID() else {
+            return fallback
+        }
+        return hasFetchedAuthoritativeSnapshot ? latestSnapshot : fallback
     }
 
     func visibleModels(fallback: [HubModel]) -> [HubModel] {
@@ -170,6 +175,18 @@ final class HubModelManager: ObservableObject {
         objectWillChange.send()
     }
 
+    func resetForHubProfileChange() {
+        fetchGeneration &+= 1
+        fetchInFlight = false
+        lastFetchCompletedAt = nil
+        latestHubCacheScopeID = XTHubProfilesStorage.activeCacheScopeID()
+        latestSnapshot = .empty()
+        availableModels = []
+        hasFetchedAuthoritativeSnapshot = false
+        error = nil
+        isLoading = false
+    }
+
     private func normalizedModelId(_ raw: String?) -> String {
         (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
@@ -181,11 +198,21 @@ final class HubModelManager: ObservableObject {
         return latestSnapshot
     }
 
+    private func resetIfHubProfileChanged() {
+        guard latestHubCacheScopeID != XTHubProfilesStorage.activeCacheScopeID() else { return }
+        resetForHubProfileChange()
+    }
+
     private func applyFetchedSnapshot(_ snapshot: ModelStateSnapshot) {
+        latestHubCacheScopeID = XTHubProfilesStorage.activeCacheScopeID()
         latestSnapshot = snapshot
         availableModels = snapshot.models
         hasFetchedAuthoritativeSnapshot = true
         appModel?.modelsState = snapshot
+        appModel?.recordActiveHubModelInventoryUpdated(
+            modelCount: snapshot.models.count,
+            updatedAt: snapshot.updatedAt
+        )
     }
 
     private func isCurrentFetch(_ generation: UInt64) -> Bool {

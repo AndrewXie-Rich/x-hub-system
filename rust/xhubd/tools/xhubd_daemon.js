@@ -35,11 +35,17 @@ function parseBool(value, fallback = false) {
 
 function allowMemorySkillsProduction(args = {}) {
   return parseBool(args['allow-memory-skills-production'], false)
-    || parseBool(process.env.XHUB_ALLOW_RUST_MEMORY_SKILLS_PRODUCTION, false);
+    || parseBool(process.env.XHUB_ALLOW_RUST_MEMORY_SKILLS_PRODUCTION, false)
+    || requireMemorySkillsProduction(args);
 }
 
 function requireMemorySkillsProduction(args = {}) {
-  return parseBool(args['require-memory-skills-production'], false);
+  return parseBool(args['no-require-memory-skills-production'], false)
+    ? false
+    : parseBool(
+      args['require-memory-skills-production'],
+      parseBool(process.env.XHUB_REQUIRE_RUST_MEMORY_SKILLS_PRODUCTION, true),
+    );
 }
 
 function memorySkillsAuthorityState(readiness) {
@@ -64,6 +70,21 @@ function requireMemoryGatewayCutoverReady(args = {}) {
   return parseBool(args['require-memory-gateway-cutover-ready'], false)
     || parseBool(process.env.XHUB_RUST_MEMORY_GATEWAY_CUTOVER_REQUIRE_READY, false)
     || parseBool(process.env.XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE, false);
+}
+
+function requireMemoryGatewayModelCallPlanShadow(args = {}) {
+  return parseBool(args['require-memory-gateway-model-call-plan-shadow'], false)
+    || parseBool(process.env.XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW_REQUIRE, false);
+}
+
+function requireMemoryGatewayModelCallExecuteSmoke(args = {}) {
+  return parseBool(args['require-memory-gateway-model-call-execute-smoke'], false)
+    || parseBool(process.env.XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_SMOKE_REQUIRE, false);
+}
+
+function requireMemoryGatewayModelCallLocalExecutorSmoke(args = {}) {
+  return parseBool(args['require-memory-gateway-model-call-local-executor-smoke'], false)
+    || parseBool(process.env.XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR_SMOKE_REQUIRE, false);
 }
 
 function parseArgs(argv) {
@@ -590,6 +611,69 @@ async function readReady(config) {
   return { ok: readiness?.ready === true, readiness };
 }
 
+async function collectMemoryReadiness(config) {
+  try {
+    const readiness = await httpGetJson(
+      `${config.baseUrl}/memory/readiness`,
+      1500,
+      readAccessKeyForProbe(config),
+    );
+    return { ok: true, readiness, error_code: "", error_message: "" };
+  } catch (error) {
+    return {
+      ok: false,
+      readiness: null,
+      error_code: "memory_readiness_fetch_failed",
+      error_message: redactHttpDiagnostic(String(error.message || error)).slice(0, 300),
+    };
+  }
+}
+
+function compactMemoryWritebackCandidateDiagnostics(memoryReadiness) {
+  const writebackCandidates = memoryReadiness?.object_store?.writeback_candidates;
+  const diagnostics = writebackCandidates?.diagnostics;
+  const maintenance = writebackCandidates?.maintenance;
+  const out = {
+    schema_version: "xhub.rust_hub.memory_writeback_candidate_ops_rollup.v1",
+    ok: true,
+    ready: writebackCandidates?.ready === true && diagnostics?.ready === true,
+    authority: safeString(writebackCandidates?.authority),
+    candidate_count: Number(diagnostics?.candidate_count || writebackCandidates?.candidate_object_count || 0),
+    conflict_candidate_count: Number(diagnostics?.conflict_candidate_count || 0),
+    stale_review_required_count: Number(diagnostics?.stale_review_required_count || 0),
+    stale_candidate_count: Number(diagnostics?.stale_candidate_count || maintenance?.stale_candidate_count || 0),
+    superseding_candidate_count: Number(diagnostics?.superseding_candidate_count || 0),
+    superseded_candidate_count: Number(diagnostics?.superseded_candidate_count || diagnostics?.archived_superseded_count || 0),
+    archived_superseded_count: Number(diagnostics?.archived_superseded_count || diagnostics?.superseded_candidate_count || 0),
+    planned_archive_count: Number(diagnostics?.planned_archive_count || maintenance?.planned_archive_count || 0),
+    planned_stale_review_required_count: Number(diagnostics?.planned_stale_review_required_count || maintenance?.planned_stale_review_required_count || 0),
+    active_review_lock_count: Number(diagnostics?.active_review_lock_count || 0),
+    queue_pressure: safeString(diagnostics?.queue_pressure || "unknown"),
+    noise_score: Number(diagnostics?.noise_score || 0),
+    maintenance_ready: maintenance?.maintenance_ready === true,
+    candidate_maintenance_http: writebackCandidates?.candidate_maintenance_http === true || maintenance?.candidate_maintenance_http === true,
+    production_authority_change: writebackCandidates?.production_authority_change === true
+      || diagnostics?.production_authority_change === true
+      || maintenance?.production_authority_change === true,
+    blocking_issues: [],
+  };
+  const schemaOk = diagnostics?.schema_version === "xhub.memory.writeback_candidate_diagnostics.v1";
+  if (!writebackCandidates || !diagnostics) {
+    out.ok = false;
+    out.ready = false;
+    out.error_code = "memory_writeback_candidate_diagnostics_unavailable";
+  } else if (!schemaOk) {
+    out.ok = false;
+    out.blocking_issues.push("memory_writeback_candidate_diagnostics_schema_mismatch");
+  }
+  if (out.production_authority_change) {
+    out.ok = false;
+    out.blocking_issues.push("memory_writeback_candidate_production_authority_change");
+  }
+  out.blocking_issues = Array.from(new Set(out.blocking_issues));
+  return out;
+}
+
 async function waitForHealth(config, child = null) {
   const deadline = Date.now() + config.waitMs;
   let lastError = null;
@@ -981,6 +1065,25 @@ function plistKeyString(key, value) {
 
 const LAUNCHD_PASSTHROUGH_ENV_KEYS = [
   'XHUB_SYSTEM_ROOT',
+  'XHUB_ENABLE_RUST_AUTHORITY_CUTOVER',
+  'XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PRODUCTION',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_CUTOVER',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_APPLY',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_HTTP',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_HTTP_BASE_URL',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_REQUIRE_READY',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_REQUIRE_NODE_MATCH',
+  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_FALLBACK_ON_ERROR',
+  'XHUB_RUST_MODEL_ROUTE_PRODUCTION_AUTHORITY',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_PRODUCTION',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_CUTOVER',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_APPLY',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_HTTP',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_HTTP_BASE_URL',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_REQUIRE_READY',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_REQUIRE_NODE_MATCH',
+  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_FALLBACK_ON_ERROR',
   'XHUB_RUST_XT_FILE_IPC_PRODUCTION_CUTOVER',
   'XHUB_RUST_XT_FILE_IPC_BASE_DIR',
   'XHUB_RUST_XT_CLASSIC_COMPAT',
@@ -1000,9 +1103,26 @@ const LAUNCHD_PASSTHROUGH_ENV_KEYS = [
   'XHUB_RUST_XT_CLASSIC_ROLLBACK_CONTRACT',
   'XHUB_RUST_XT_CLASSIC_FILE_IPC_READY',
   'XHUB_RUST_XT_CLASSIC_PRODUCTION_CUTOVER',
+  'XHUB_ALLOW_RUST_MEMORY_SKILLS_PRODUCTION',
   'XHUB_RUST_MEMORY_WRITER_AUTHORITY',
   'XHUB_RUST_MEMORY_WRITE_AUTHORITY',
   'XHUB_RUST_MEMORY_PRODUCTION_AUTHORITY',
+  'XHUB_RUST_MEMORY_CONTEXT_GATEWAY',
+  'XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE',
+  'XHUB_RUST_MEMORY_CONTEXT_GATEWAY_PARITY_MAX_AGE_MS',
+  'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW',
+  'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW_REQUIRE',
+  'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_BASE_DIR',
+  'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_STATUS_PATH',
+  'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_HISTORY_PATH',
+  'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTION_ADMISSION',
+  'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_ADMISSION',
+  'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR',
+  'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_APPLY',
+  'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_ONLY',
+  'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_PROJECT_ID',
+  'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_REQUEST_PREFIX',
+  'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_AUDIT_PREFIX',
   'XHUB_RUST_SKILLS_EXECUTION_AUTHORITY',
   'XHUB_RUST_SKILLS_PRODUCTION_EXECUTION',
   'XHUB_RUST_SKILLS_EXECUTION_PRODUCTION',
@@ -1104,6 +1224,84 @@ function assertLaunchdExplicitConfigWins() {
   }
 }
 
+function assertLaunchdPassthroughIncludesProviderModelProduction() {
+  const required = [
+    'XHUB_ENABLE_RUST_AUTHORITY_CUTOVER',
+    'XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY',
+    'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PRODUCTION',
+    'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_CUTOVER',
+    'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_APPLY',
+    'XHUB_RUST_MODEL_ROUTE_PRODUCTION_AUTHORITY',
+    'XHUB_RUST_MODEL_ROUTE_AUTHORITY_PRODUCTION',
+    'XHUB_RUST_MODEL_ROUTE_AUTHORITY_CUTOVER',
+    'XHUB_RUST_MODEL_ROUTE_AUTHORITY_APPLY',
+  ];
+  const missing = required.filter((key) => !LAUNCHD_PASSTHROUGH_ENV_KEYS.includes(key));
+  if (missing.length > 0) {
+    throw new Error(`launchd_passthrough_missing_provider_model_production_keys:${missing.join(',')}`);
+  }
+}
+
+function assertMemoryGatewayModelCallExecuteSmokeCollector() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xhubd-execute-smoke-collector-'));
+  try {
+    const statusPath = path.join(tempRoot, 'memory_gateway_model_call_execute_smoke_status.json');
+    fs.writeFileSync(statusPath, `${JSON.stringify({
+      ok: true,
+      schema_version: 'xhub.rust_hub.memory_gateway_model_call_execute_smoke.v1',
+      generated_at_ms: Date.now(),
+      execution_blocked: true,
+      content_free: true,
+      admission_ready: false,
+      production_authority_change: false,
+      gate: {
+        status: 'blocked',
+        mode: 'execution_admission_no_model_call',
+        authority: 'rust_memory_gateway',
+        ready_for_execution: false,
+      },
+      execute: {
+        status: 'blocked',
+        mode: 'execute_guard_no_model_call',
+        authority: 'rust_memory_gateway',
+        executor: 'none',
+        blocker_count: 1,
+        would_call_model: false,
+        model_call_invoked: false,
+        model_call_executed: false,
+        local_ml_execute_http_invoked: false,
+      },
+      issue_codes: [],
+      rollback_plan: {
+        env_to_unset: [
+          'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTION_ADMISSION',
+          'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR',
+          'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_APPLY',
+        ],
+      },
+    }, null, 2)}\n`, 'utf8');
+    const baseConfig = { rootDir: tempRoot, profile: 'local' };
+    const requiredArgs = {
+      'memory-gateway-model-call-execute-smoke-status-path': statusPath,
+      'require-memory-gateway-model-call-execute-smoke': true,
+    };
+    const valid = collectMemoryGatewayModelCallExecuteSmoke(baseConfig, requiredArgs, {}, {});
+    if (valid.ok !== true || valid.status_found !== true || valid.execution_blocked !== true) {
+      throw new Error('memory_gateway_model_call_execute_smoke_collector_valid_required_failed');
+    }
+    fs.unlinkSync(statusPath);
+    const missing = collectMemoryGatewayModelCallExecuteSmoke(baseConfig, {
+      'memory-gateway-model-call-execute-smoke-status-path': path.join(tempRoot, 'missing.json'),
+      'require-memory-gateway-model-call-execute-smoke': true,
+    }, {}, {});
+    if (missing.ok === true || !missing.blocking_issues.includes('memory_gateway_model_call_execute_smoke_missing')) {
+      throw new Error('memory_gateway_model_call_execute_smoke_collector_required_missing_not_blocked');
+    }
+  } finally {
+    try { fs.rmSync(tempRoot, { recursive: true, force: true }); } catch {}
+  }
+}
+
 function launchdPlistXml(config) {
   const stdoutPath = path.join(config.logDir, 'xhubd.launchd.out.log');
   const stderrPath = path.join(config.logDir, 'xhubd.launchd.err.log');
@@ -1143,7 +1341,7 @@ ${envLines}
 }
 
 function launchdRuntimeConfig(config) {
-  const root = config.launchdRuntimeRoot;
+  const root = safeString(config.launchdRuntimeRoot || config.rootDir);
   const useRuntimeAccessKey = shouldUseLaunchdRuntimeAccessKeyFile(config, root);
   const accessKeyFile = useRuntimeAccessKey
     ? launchdRuntimeAccessKeyFile(config, root)
@@ -1328,13 +1526,18 @@ function launchctl(args, options = {}) {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const status = Number.isInteger(result.status) ? result.status : 1;
+  const stdout = safeString(result.stdout);
   const output = {
     args,
     ok: status === 0,
     status,
-    stdout: safeString(result.stdout).slice(0, 2000),
+    stdout: stdout.slice(0, 2000),
     stderr: safeString(result.stderr).slice(0, 2000),
   };
+  Object.defineProperty(output, 'stdoutFull', {
+    value: stdout,
+    enumerable: false,
+  });
   if (!output.ok && !options.allowFailure) {
     throw new Error(`launchctl_failed:${args.join(' ')}:${output.stderr || output.stdout || status}`);
   }
@@ -1342,7 +1545,7 @@ function launchctl(args, options = {}) {
 }
 
 function launchctlPid(output) {
-  const text = safeString(output?.stdout);
+  const text = safeString(output?.stdoutFull || output?.stdout);
   const match = text.match(/(?:^|\n)\s*pid\s*=\s*(\d+)\s*(?:\n|$)/);
   if (!match) return 0;
   const pid = Number.parseInt(match[1], 10);
@@ -1574,7 +1777,9 @@ async function collectLaunchdStatus(config) {
   const serviceConfig = launchdRuntimeConfig(config);
   const launchdPrint = launchctl(['print', service], { allowFailure: true });
   const pidFilePid = readPid(serviceConfig.pidFile);
-  const pid = pidFilePid || launchctlPid(launchdPrint);
+  const launchctlPrintPid = launchctlPid(launchdPrint);
+  const pid = launchctlPrintPid || pidFilePid;
+  const pidSource = launchctlPrintPid ? 'launchctl_print' : (pidFilePid ? 'pid_file' : 'none');
   let healthOut = null;
   let readinessOut = null;
   let healthError = '';
@@ -1604,7 +1809,7 @@ async function collectLaunchdStatus(config) {
     launchctl_error: launchdPrint.ok ? '' : launchdPrint.stderr || launchdPrint.stdout,
     running: healthOut?.ok === true,
     pid: pid || null,
-    pid_source: pidFilePid ? 'pid_file' : (pid ? 'launchctl_print' : 'none'),
+    pid_source: pidSource,
     pid_alive: isProcessAlive(pid),
     pid_file: serviceConfig.pidFile,
     http_base_url: config.baseUrl,
@@ -2320,6 +2525,103 @@ function runUiCompatibilityGate(config) {
   }
 }
 
+function runProductProcessSanity(config, args = {}, reportPath = '', caller = 'ops_gate') {
+  const enabled = !parseBool(args['skip-product-process-sanity'], false);
+  const commandPath = path.join(config.rootDir, 'tools', 'product_process_sanity.command');
+  const sanityReportPath = path.join(
+    path.dirname(reportPath || resolveReportPath(config, '', caller === 'watchdog' ? 'daemon_watchdog' : 'daemon_ops_gate')),
+    `product_process_sanity_${caller}_${utcStamp()}.json`
+  );
+  const maxProductCpuPercent = parseIntInRange(args['max-product-cpu-percent'], 0, 0, 1000);
+  if (!enabled) {
+    return {
+      ok: true,
+      enabled: false,
+      skipped: true,
+      reason: 'product_process_sanity_not_requested',
+      production_authority_change: false,
+      ui_product_change: false,
+    };
+  }
+  if (!fs.existsSync(commandPath)) {
+    return {
+      ok: false,
+      enabled: true,
+      skipped: true,
+      reason: 'product_process_sanity_missing',
+      command_path: commandPath,
+      production_authority_change: false,
+      ui_product_change: false,
+    };
+  }
+  const commandArgs = [
+    commandPath,
+    '--report-path',
+    sanityReportPath,
+  ];
+  if (maxProductCpuPercent > 0) {
+    commandArgs.push('--max-product-cpu-percent', String(maxProductCpuPercent));
+  }
+  if (parseBool(args['allow-missing-xhubd'], false)) {
+    commandArgs.push('--allow-missing-xhubd');
+  }
+  if (parseBool(args['require-product-shell'], false)) {
+    commandArgs.push('--require-product-shell');
+  }
+  if (parseBool(args['allow-target-xhubd'], false)) {
+    commandArgs.push('--allow-target-xhubd');
+  }
+  const result = spawnSync('bash', commandArgs, {
+    cwd: config.rootDir,
+    encoding: 'utf8',
+    timeout: 5000,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  let parsed = null;
+  try {
+    if (fs.existsSync(sanityReportPath)) {
+      parsed = JSON.parse(fs.readFileSync(sanityReportPath, 'utf8'));
+    } else if (safeString(result.stdout)) {
+      parsed = JSON.parse(result.stdout);
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      enabled: true,
+      skipped: false,
+      report_path: sanityReportPath,
+      error_code: `product_process_sanity_invalid_json:${error.message}`,
+      exit_status: result.status,
+      stdout_tail: redactEvidenceText(safeString(result.stdout).split(/\r?\n/).slice(-20).join('\n')),
+      stderr_tail: redactEvidenceText(safeString(result.stderr).split(/\r?\n/).slice(-20).join('\n')),
+      production_authority_change: false,
+      ui_product_change: false,
+    };
+  }
+  if (!parsed) {
+    return {
+      ok: false,
+      enabled: true,
+      skipped: false,
+      report_path: sanityReportPath,
+      error_code: result.error ? `product_process_sanity_spawn_failed:${result.error.message}` : 'product_process_sanity_no_output',
+      exit_status: result.status,
+      stdout_tail: redactEvidenceText(safeString(result.stdout).split(/\r?\n/).slice(-20).join('\n')),
+      stderr_tail: redactEvidenceText(safeString(result.stderr).split(/\r?\n/).slice(-20).join('\n')),
+      production_authority_change: false,
+      ui_product_change: false,
+    };
+  }
+  return {
+    ...parsed,
+    ok: parsed?.ok === true && parsed?.production_authority_change !== true && parsed?.ui_product_change !== true,
+    enabled: true,
+    skipped: false,
+    report_path: parsed?.report_path || sanityReportPath,
+    exit_status: result.status,
+  };
+}
+
 function runXtFileIpcWatcherRunOnceSmoke(config, args = {}, reportPath = '') {
   const enabled = parseBool(args['xt-file-ipc-run-once-smoke'], false);
   const commandPath = path.join(config.rootDir, 'tools', 'xt_file_ipc_watcher_run_once_smoke.command');
@@ -2531,6 +2833,32 @@ async function opsReport(config, args = {}) {
     statusOut,
     launchdOut,
   );
+  const memoryGatewayModelCallPlanShadow = collectMemoryGatewayModelCallPlanShadow(
+    config,
+    args,
+    statusOut,
+    launchdOut,
+  );
+  const memoryGatewayModelCallExecuteSmoke = collectMemoryGatewayModelCallExecuteSmoke(
+    config,
+    args,
+    statusOut,
+    launchdOut,
+  );
+  const memoryGatewayModelCallLocalExecutorSmoke = collectMemoryGatewayModelCallLocalExecutorSmoke(
+    config,
+    args,
+  );
+  const memoryReadinessProbe = await collectMemoryReadiness(config);
+  const memoryWritebackCandidateOpsRollup = compactMemoryWritebackCandidateDiagnostics(
+    memoryReadinessProbe.readiness,
+  );
+  if (!memoryReadinessProbe.ok) {
+    memoryWritebackCandidateOpsRollup.ok = false;
+    memoryWritebackCandidateOpsRollup.ready = false;
+    memoryWritebackCandidateOpsRollup.error_code = memoryReadinessProbe.error_code;
+    memoryWritebackCandidateOpsRollup.error_message = memoryReadinessProbe.error_message;
+  }
   const memorySkills = {
     allow: allowMemorySkillsProduction(args) || requireMemorySkillsProduction(args),
     require: requireMemorySkillsProduction(args),
@@ -2564,6 +2892,80 @@ async function opsReport(config, args = {}) {
     memory_gateway_cutover_readiness_required: memoryGatewayCutoverReadiness.required === true,
     memory_gateway_cutover_ready: memoryGatewayCutoverReadiness.ready_for_require === true,
     memory_gateway_cutover_readiness_ok: memoryGatewayCutoverReadiness.ok === true,
+    memory_gateway_model_call_plan_smoke_enabled: memoryGatewayCutoverReadiness.model_call_plan_smoke_enabled === true,
+    memory_gateway_model_call_plan_ready: memoryGatewayCutoverReadiness.model_call_plan_ready === true,
+    memory_gateway_model_call_plan_execution_blocked: memoryGatewayCutoverReadiness.model_call_plan_execution_blocked === true,
+    memory_gateway_model_call_execution_gate_ready_for_execution: memoryGatewayCutoverReadiness.model_call_execution_gate_ready_for_execution === true,
+    memory_gateway_model_call_execution_admission_authority_in_rust: memoryGatewayCutoverReadiness.model_call_execution_admission_authority_in_rust === true,
+    memory_gateway_model_call_execution_gate_status: memoryGatewayCutoverReadiness.model_call_execution_gate_status || '',
+    memory_gateway_model_call_execution_gate_mode: memoryGatewayCutoverReadiness.model_call_execution_gate_mode || '',
+    memory_gateway_model_call_execution_gate_authority: memoryGatewayCutoverReadiness.model_call_execution_gate_authority || '',
+    memory_gateway_model_call_execution_gate_blocker_count: Number(memoryGatewayCutoverReadiness.model_call_execution_gate_blocker_count || 0),
+    memory_gateway_model_call_execute_blocked: memoryGatewayCutoverReadiness.model_call_execute_blocked === true,
+    memory_gateway_model_call_execute_status: memoryGatewayCutoverReadiness.model_call_execute_status || '',
+    memory_gateway_model_call_execute_mode: memoryGatewayCutoverReadiness.model_call_execute_mode || '',
+    memory_gateway_model_call_execute_authority: memoryGatewayCutoverReadiness.model_call_execute_authority || '',
+    memory_gateway_model_call_execute_executor: memoryGatewayCutoverReadiness.model_call_execute_executor || '',
+    memory_gateway_model_call_execute_blocker_count: Number(memoryGatewayCutoverReadiness.model_call_execute_blocker_count || 0),
+    memory_gateway_model_call_plan_omitted_reason_counts: memoryGatewayCutoverReadiness.model_call_plan_omitted_reason_counts || {},
+    memory_gateway_model_call_plan_selected_chunk_count: memoryGatewayCutoverReadiness.model_call_plan_selected_chunk_count || 0,
+    memory_gateway_model_call_plan_selected_chunk_ref_count: memoryGatewayCutoverReadiness.model_call_plan_selected_chunk_ref_count || 0,
+    memory_gateway_model_call_plan_omitted_ref_count: memoryGatewayCutoverReadiness.model_call_plan_omitted_ref_count || 0,
+    memory_gateway_model_call_plan_omitted_chunk_ref_count: memoryGatewayCutoverReadiness.model_call_plan_omitted_chunk_ref_count || 0,
+    memory_gateway_model_call_plan_index_granularity: memoryGatewayCutoverReadiness.model_call_plan_index_granularity || '',
+    memory_gateway_model_call_plan_index_source: memoryGatewayCutoverReadiness.model_call_plan_index_source || '',
+    memory_gateway_model_call_plan_chunk_identity_schema: memoryGatewayCutoverReadiness.model_call_plan_chunk_identity_schema || '',
+    memory_gateway_model_call_plan_chunk_expand_via_get_ref: memoryGatewayCutoverReadiness.model_call_plan_chunk_expand_via_get_ref === true,
+    memory_gateway_model_call_plan_shadow: memoryGatewayModelCallPlanShadow,
+    memory_gateway_model_call_plan_shadow_required: memoryGatewayModelCallPlanShadow.required === true,
+    memory_gateway_model_call_plan_shadow_found: memoryGatewayModelCallPlanShadow.status_found === true,
+    memory_gateway_model_call_plan_shadow_ok: memoryGatewayModelCallPlanShadow.ok === true,
+    memory_gateway_model_call_plan_shadow_evidence_ok: memoryGatewayModelCallPlanShadow.evidence_ok === true,
+    memory_gateway_model_call_plan_shadow_execution_safe: memoryGatewayModelCallPlanShadow.execution_safe === true,
+    memory_gateway_model_call_plan_shadow_text_safe: memoryGatewayModelCallPlanShadow.text_safe === true,
+    memory_gateway_model_call_plan_shadow_omitted_reason_counts: memoryGatewayModelCallPlanShadow.omitted_reason_counts || {},
+    memory_gateway_model_call_plan_shadow_selected_chunk_count: memoryGatewayModelCallPlanShadow.selected_chunk_count || 0,
+    memory_gateway_model_call_plan_shadow_selected_chunk_ref_count: memoryGatewayModelCallPlanShadow.selected_chunk_ref_count || 0,
+    memory_gateway_model_call_plan_shadow_omitted_ref_count: memoryGatewayModelCallPlanShadow.omitted_ref_count || 0,
+    memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count: memoryGatewayModelCallPlanShadow.omitted_chunk_ref_count || 0,
+    memory_gateway_model_call_plan_shadow_index_granularity: memoryGatewayModelCallPlanShadow.index_granularity || '',
+    memory_gateway_model_call_plan_shadow_index_source: memoryGatewayModelCallPlanShadow.index_source || '',
+    memory_gateway_model_call_plan_shadow_chunk_identity_schema: memoryGatewayModelCallPlanShadow.chunk_identity_schema || '',
+    memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref: memoryGatewayModelCallPlanShadow.chunk_expand_via_get_ref === true,
+    memory_gateway_model_call_execute_smoke: memoryGatewayModelCallExecuteSmoke,
+    memory_gateway_model_call_execute_smoke_required: memoryGatewayModelCallExecuteSmoke.required === true,
+    memory_gateway_model_call_execute_smoke_found: memoryGatewayModelCallExecuteSmoke.status_found === true,
+    memory_gateway_model_call_execute_smoke_ok: memoryGatewayModelCallExecuteSmoke.ok === true,
+    memory_gateway_model_call_execute_smoke_execution_blocked: memoryGatewayModelCallExecuteSmoke.execution_blocked === true,
+    memory_gateway_model_call_execute_smoke_content_free: memoryGatewayModelCallExecuteSmoke.content_free !== false,
+    memory_gateway_model_call_execute_smoke_admission_ready: memoryGatewayModelCallExecuteSmoke.admission_ready === true,
+    memory_gateway_model_call_execute_smoke_status: memoryGatewayModelCallExecuteSmoke.execute_status || '',
+    memory_gateway_model_call_execute_smoke_mode: memoryGatewayModelCallExecuteSmoke.execute_mode || '',
+    memory_gateway_model_call_execute_smoke_authority: memoryGatewayModelCallExecuteSmoke.execute_authority || '',
+    memory_gateway_model_call_execute_smoke_blocker_count: Number(memoryGatewayModelCallExecuteSmoke.execute_blocker_count || 0),
+    memory_gateway_model_call_local_executor_smoke: memoryGatewayModelCallLocalExecutorSmoke,
+    memory_gateway_model_call_local_executor_smoke_required: memoryGatewayModelCallLocalExecutorSmoke.required === true,
+    memory_gateway_model_call_local_executor_smoke_found: memoryGatewayModelCallLocalExecutorSmoke.report_found === true,
+    memory_gateway_model_call_local_executor_smoke_ok: memoryGatewayModelCallLocalExecutorSmoke.ok === true,
+    memory_gateway_model_call_local_executor_smoke_isolated_daemon: memoryGatewayModelCallLocalExecutorSmoke.isolated_daemon === true,
+    memory_gateway_model_call_local_executor_smoke_live_daemon_touched: memoryGatewayModelCallLocalExecutorSmoke.live_daemon_touched === true,
+    memory_gateway_model_call_local_executor_smoke_content_free: memoryGatewayModelCallLocalExecutorSmoke.content_free !== false,
+    memory_gateway_model_call_local_executor_smoke_status: memoryGatewayModelCallLocalExecutorSmoke.execute_status || '',
+    memory_gateway_model_call_local_executor_smoke_mode: memoryGatewayModelCallLocalExecutorSmoke.execute_mode || '',
+    memory_gateway_model_call_local_executor_smoke_authority: memoryGatewayModelCallLocalExecutorSmoke.execute_authority || '',
+    memory_gateway_model_call_local_executor_smoke_local_ml_execute_http_invoked: memoryGatewayModelCallLocalExecutorSmoke.local_ml_execute_http_invoked === true,
+    memory_gateway_model_call_local_executor_smoke_recent_slow_requests: Number(memoryGatewayModelCallLocalExecutorSmoke.http_recent_slow_requests || 0),
+    memory_gateway_model_call_local_executor_smoke_recent_max_elapsed_ms: Number(memoryGatewayModelCallLocalExecutorSmoke.http_recent_max_elapsed_ms || 0),
+    memory_readiness_ready: memoryReadinessProbe.ok === true,
+    memory_readiness_error_code: memoryReadinessProbe.error_code || "",
+    memory_readiness_error_message: memoryReadinessProbe.error_message || "",
+    memory_writeback_candidate_ops_rollup: memoryWritebackCandidateOpsRollup,
+    memory_writeback_candidate_queue_ready: memoryWritebackCandidateOpsRollup.ready === true,
+    memory_writeback_candidate_queue_pressure: memoryWritebackCandidateOpsRollup.queue_pressure,
+    memory_writeback_candidate_noise_score: memoryWritebackCandidateOpsRollup.noise_score,
+    memory_writeback_candidate_conflict_count: memoryWritebackCandidateOpsRollup.conflict_candidate_count,
+    memory_writeback_candidate_stale_review_required_count: memoryWritebackCandidateOpsRollup.stale_review_required_count,
+    memory_writeback_candidate_production_authority_change: memoryWritebackCandidateOpsRollup.production_authority_change === true,
     ui_product_change: uiGate.product_ui_change === true,
     swift_ui_files_touched: uiGate.swift_ui_files_touched === true,
     rust_browser_product_ui: uiGate.rust_browser_product_ui === true,
@@ -2588,6 +2990,7 @@ async function opsReport(config, args = {}) {
   report.secret_leak = /sk-[A-Za-z0-9]|api_key|access_key"\s*:\s*"(?!\[REDACTED\])|Bearer\s+(?!\[REDACTED\])\S+/i.test(serialized);
   report.ok = report.secret_leak === false
     && report.production_authority_change === false
+    && report.memory_writeback_candidate_production_authority_change === false
     && report.ui_product_change === false
     && report.swift_ui_files_touched === false
     && report.rust_browser_product_ui === false
@@ -2596,6 +2999,9 @@ async function opsReport(config, args = {}) {
     && (!memorySkills.require || report.memory_writer_authority_in_rust === true)
     && (!memorySkills.require || report.skills_execution_authority_in_rust === true)
     && report.memory_gateway_cutover_readiness_ok === true
+    && report.memory_gateway_model_call_plan_shadow_ok === true
+    && report.memory_gateway_model_call_execute_smoke_ok === true
+    && report.memory_gateway_model_call_local_executor_smoke_ok === true
     && report.xt_file_ipc_run_once_smoke_ok === true
     && report.xt_file_ipc_background_watcher_smoke_ok === true;
   ensureDir(path.dirname(reportPath));
@@ -2613,6 +3019,587 @@ function parentOfDataDbPath(dbPath) {
   const dataDir = path.dirname(resolved);
   if (path.basename(dataDir) !== 'data') return '';
   return path.dirname(dataDir);
+}
+
+function liveBaseDirCandidates(config, statusOut = {}, launchdOut = {}) {
+  const serviceConfig = launchdRuntimeConfig(config);
+  const groupBaseDir = path.join(os.homedir(), 'Library', 'Group Containers', 'group.rel.flowhub');
+  const appSupportBaseDir = path.join(os.homedir(), 'Library', 'Application Support', 'AX', 'rust-hub', config.profile);
+  const liveStatusBaseDir = safeString(statusOut?.health?.db_path)
+    ? parentOfDataDbPath(statusOut.health.db_path)
+    : '';
+  const liveLaunchdBaseDir = safeString(launchdOut?.health?.db_path)
+    ? parentOfDataDbPath(launchdOut.health.db_path)
+    : '';
+  return uniquePaths([
+    config.rootDir,
+    serviceConfig.rootDir,
+    liveStatusBaseDir,
+    liveLaunchdBaseDir,
+    appSupportBaseDir,
+    groupBaseDir,
+  ]);
+}
+
+function memoryGatewayModelCallPlanShadowCandidatePaths(config, args = {}, statusOut = {}, launchdOut = {}) {
+  const explicitStatusPath = pathFromRoot(firstValue([
+    args['memory-gateway-model-call-plan-status-path'],
+    process.env.XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_STATUS_PATH,
+  ]));
+  const explicitBaseDir = pathFromRoot(firstValue([
+    args['memory-gateway-model-call-plan-base-dir'],
+    process.env.XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_BASE_DIR,
+    process.env.XHUB_RUST_MEMORY_GATEWAY_CUTOVER_BASE_DIR,
+    process.env.REL_FLOW_HUB_BASE_DIR,
+  ]));
+  const fileName = 'memory_gateway_model_call_plan_status.json';
+  return uniquePaths([
+    explicitStatusPath,
+    explicitBaseDir ? path.join(explicitBaseDir, fileName) : '',
+    ...liveBaseDirCandidates(config, statusOut, launchdOut).map((baseDir) => path.join(baseDir, fileName)),
+  ]);
+}
+
+function memoryGatewayModelCallPlanShadowHistoryCandidatePaths(statusPath, args = {}) {
+  const explicitHistoryPath = pathFromRoot(firstValue([
+    args['memory-gateway-model-call-plan-history-path'],
+    process.env.XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_HISTORY_PATH,
+  ]));
+  const statusDir = safeString(statusPath) ? path.dirname(statusPath) : '';
+  return uniquePaths([
+    explicitHistoryPath,
+    statusDir ? path.join(statusDir, 'memory_gateway_model_call_plan_history.json') : '',
+  ]);
+}
+
+function readMemoryGatewayModelCallPlanShadowStatus(filePath) {
+  const parsed = readMemoryGatewayJsonObject(filePath);
+  if (!parsed) return { ok: false, error: 'status_not_parseable', status: null };
+  return { ok: true, error: '', status: parsed };
+}
+
+function collectMemoryGatewayModelCallPlanShadow(config, args = {}, statusOut = {}, launchdOut = {}) {
+  const required = requireMemoryGatewayModelCallPlanShadow(args);
+  const candidates = memoryGatewayModelCallPlanShadowCandidatePaths(config, args, statusOut, launchdOut);
+  const explicitPath = safeString(args['memory-gateway-model-call-plan-status-path'])
+    || safeString(process.env.XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_STATUS_PATH);
+  const out = {
+    schema_version: 'xhub.rust_hub.memory_gateway_model_call_plan_shadow_gate.v1',
+    ok: true,
+    required,
+    enabled: false,
+    status_found: false,
+    status_path: '',
+    history_found: false,
+    history_path: '',
+    candidate_paths: candidates,
+    schema_ok: false,
+    evidence_ok: false,
+    source: '',
+    mode: '',
+    request_id: '',
+    audit_ref: '',
+    requester_role: '',
+    use_mode: '',
+    scope: '',
+    serving_profile_id: '',
+    project_id: '',
+    session_id: '',
+    app_id: '',
+    provider_id: '',
+    model_id: '',
+    task_kind: '',
+    plan_schema_version: '',
+    plan_status: '',
+    plan_source: '',
+    plan_mode: '',
+    plan_authority: '',
+    context_char_count: 0,
+    selected_ref_count: 0,
+    selected_chunk_count: 0,
+    selected_chunk_ref_count: 0,
+    omitted_ref_count: 0,
+    omitted_chunk_ref_count: 0,
+    omitted_reason_counts: {},
+    index_source: '',
+    index_granularity: '',
+    chunk_identity_schema: '',
+    chunk_expand_via_get_ref: false,
+    prompt_char_count: 0,
+    message_count: 0,
+    would_call_model: false,
+    model_call_executed: false,
+    production_authority_change: false,
+    context_text_included: false,
+    prompt_text_included: false,
+    execution_safe: true,
+    text_safe: true,
+    issue_codes: [],
+    reason_code: '',
+    detail: '',
+    recorded_at_ms: null,
+    age_ms: null,
+    history_sample_count: 0,
+    latest_history_recorded_at_ms: null,
+    blocking_issues: [],
+    error: '',
+  };
+
+  const statusPath = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!statusPath) {
+    if (required) out.blocking_issues.push('memory_gateway_model_call_plan_shadow_missing');
+    out.ok = out.blocking_issues.length === 0;
+    return out;
+  }
+
+  out.enabled = true;
+  out.status_found = true;
+  out.status_path = statusPath;
+  const loaded = readMemoryGatewayModelCallPlanShadowStatus(statusPath);
+  if (!loaded.ok) {
+    out.error = loaded.error;
+    if (required || explicitPath) out.blocking_issues.push('memory_gateway_model_call_plan_shadow_invalid');
+    out.ok = out.blocking_issues.length === 0;
+    return out;
+  }
+
+  const status = loaded.status;
+  out.schema_ok = status.schema_version === 'xt.rust_memory_gateway_model_call_plan_shadow.v1';
+  out.evidence_ok = status.ok === true;
+  out.source = safeString(status.source);
+  out.mode = safeString(status.mode);
+  out.request_id = safeString(status.request_id);
+  out.audit_ref = safeString(status.audit_ref);
+  out.requester_role = safeString(status.requester_role);
+  out.use_mode = safeString(status.use_mode);
+  out.scope = safeString(status.scope);
+  out.serving_profile_id = normalizedMemoryGatewayProfileId(status.serving_profile_id);
+  out.project_id = safeString(status.project_id);
+  out.session_id = safeString(status.session_id);
+  out.app_id = safeString(status.app_id);
+  out.provider_id = safeString(status.provider_id);
+  out.model_id = safeString(status.model_id);
+  out.task_kind = safeString(status.task_kind);
+  out.plan_schema_version = safeString(status.plan_schema_version);
+  out.plan_status = safeString(status.plan_status);
+  out.plan_source = safeString(status.plan_source);
+  out.plan_mode = safeString(status.plan_mode);
+  out.plan_authority = safeString(status.plan_authority);
+  out.context_char_count = Number(status.context_char_count || 0);
+  out.selected_ref_count = Number(status.selected_ref_count || 0);
+  const chunkEvidence = summarizeMemoryGatewayChunkEvidence(status);
+  out.selected_chunk_count = chunkEvidence.selected_chunk_count;
+  out.selected_chunk_ref_count = chunkEvidence.selected_chunk_ref_count;
+  out.omitted_ref_count = chunkEvidence.omitted_ref_count;
+  out.omitted_chunk_ref_count = chunkEvidence.omitted_chunk_ref_count;
+  out.index_source = chunkEvidence.index_source;
+  out.index_granularity = chunkEvidence.index_granularity;
+  out.chunk_identity_schema = chunkEvidence.chunk_identity_schema;
+  out.chunk_expand_via_get_ref = chunkEvidence.chunk_expand_via_get_ref;
+  out.omitted_reason_counts = normalizedObjectCounts(status.omitted_reason_counts);
+  out.prompt_char_count = Number(status.prompt_char_count || 0);
+  out.message_count = Number(status.message_count || 0);
+  out.would_call_model = status.would_call_model === true;
+  out.model_call_executed = status.model_call_executed === true;
+  out.production_authority_change = status.production_authority_change === true;
+  out.context_text_included = status.context_text_included === true;
+  out.prompt_text_included = status.prompt_text_included === true;
+  out.execution_safe = !out.would_call_model && !out.model_call_executed;
+  out.text_safe = !out.context_text_included && !out.prompt_text_included;
+  out.issue_codes = Array.from(new Set(
+    (Array.isArray(status.issue_codes) ? status.issue_codes : [])
+      .map((value) => safeString(value))
+      .filter(Boolean)
+  )).slice(0, 16);
+  out.reason_code = safeString(status.reason_code || out.issue_codes[0]);
+  out.detail = safeString(status.detail).slice(0, 300);
+  out.recorded_at_ms = Number.isFinite(Number(status.recorded_at_ms)) ? Number(status.recorded_at_ms) : null;
+  out.age_ms = out.recorded_at_ms !== null ? Math.max(0, Date.now() - out.recorded_at_ms) : null;
+
+  for (const historyPath of memoryGatewayModelCallPlanShadowHistoryCandidatePaths(statusPath, args)) {
+    const parsed = readMemoryGatewayJsonObject(historyPath);
+    if (Array.isArray(parsed?.items)) {
+      out.history_found = true;
+      out.history_path = historyPath;
+      out.history_sample_count = parsed.items.length;
+      out.latest_history_recorded_at_ms = parsed.items.reduce((latest, item) => {
+        const value = Number(item?.recorded_at_ms || 0);
+        return value > latest ? value : latest;
+      }, 0) || null;
+      break;
+    }
+  }
+
+  if (!out.schema_ok && (required || explicitPath)) {
+    out.blocking_issues.push('memory_gateway_model_call_plan_shadow_schema_mismatch');
+  }
+  if (required && !out.evidence_ok) {
+    out.blocking_issues.push('memory_gateway_model_call_plan_shadow_not_ok');
+  }
+  if (out.production_authority_change) {
+    out.blocking_issues.push('memory_gateway_model_call_plan_shadow_authority_violation');
+  }
+  if (!out.execution_safe) {
+    out.blocking_issues.push('memory_gateway_model_call_plan_shadow_executed_unexpectedly');
+  }
+  if (!out.text_safe) {
+    out.blocking_issues.push('memory_gateway_model_call_plan_shadow_text_leak');
+  }
+  out.blocking_issues = Array.from(new Set(out.blocking_issues));
+  out.ok = out.blocking_issues.length === 0;
+  return out;
+}
+
+function memoryGatewayModelCallExecuteSmokeCandidatePaths(config, args = {}, statusOut = {}, launchdOut = {}) {
+  const explicitStatusPath = pathFromRoot(firstValue([
+    args['memory-gateway-model-call-execute-smoke-status-path'],
+    process.env.XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_SMOKE_STATUS_PATH,
+  ]));
+  const explicitBaseDir = pathFromRoot(firstValue([
+    args['memory-gateway-model-call-execute-smoke-base-dir'],
+    process.env.XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_SMOKE_BASE_DIR,
+    process.env.XHUB_RUST_MEMORY_GATEWAY_CUTOVER_BASE_DIR,
+    process.env.REL_FLOW_HUB_BASE_DIR,
+  ]));
+  const fileName = 'memory_gateway_model_call_execute_smoke_status.json';
+  return uniquePaths([
+    explicitStatusPath,
+    explicitBaseDir ? path.join(explicitBaseDir, fileName) : '',
+    ...liveBaseDirCandidates(config, statusOut, launchdOut).map((baseDir) => path.join(baseDir, fileName)),
+  ]);
+}
+
+function memoryGatewayModelCallExecuteSmokeHistoryCandidatePaths(statusPath, args = {}) {
+  const explicitHistoryPath = pathFromRoot(firstValue([
+    args['memory-gateway-model-call-execute-smoke-history-path'],
+    process.env.XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_SMOKE_HISTORY_PATH,
+  ]));
+  const statusDir = safeString(statusPath) ? path.dirname(statusPath) : '';
+  return uniquePaths([
+    explicitHistoryPath,
+    statusDir ? path.join(statusDir, 'memory_gateway_model_call_execute_smoke_history.json') : '',
+  ]);
+}
+
+function collectMemoryGatewayModelCallExecuteSmoke(config, args = {}, statusOut = {}, launchdOut = {}) {
+  const required = requireMemoryGatewayModelCallExecuteSmoke(args);
+  const candidates = memoryGatewayModelCallExecuteSmokeCandidatePaths(config, args, statusOut, launchdOut);
+  const explicitPath = safeString(args['memory-gateway-model-call-execute-smoke-status-path'])
+    || safeString(process.env.XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_SMOKE_STATUS_PATH);
+  const out = {
+    schema_version: 'xhub.rust_hub.memory_gateway_model_call_execute_smoke_gate.v1',
+    ok: true,
+    required,
+    enabled: false,
+    status_found: false,
+    status_path: '',
+    history_found: false,
+    history_path: '',
+    candidate_paths: candidates,
+    schema_ok: false,
+    evidence_ok: false,
+    execution_blocked: false,
+    content_free: true,
+    admission_ready: false,
+    require_admission_ready: false,
+    memory_execute_http: false,
+    gate_status: '',
+    gate_mode: '',
+    gate_authority: '',
+    gate_ready_for_execution: false,
+    execute_status: '',
+    execute_mode: '',
+    execute_authority: '',
+    execute_executor: '',
+    execute_blocker_count: 0,
+    execute_would_call_model: false,
+    execute_model_call_invoked: false,
+    execute_model_call_executed: false,
+    execute_local_ml_invoked: false,
+    production_authority_change: false,
+    issue_codes: [],
+    generated_at_ms: null,
+    age_ms: null,
+    history_sample_count: 0,
+    latest_history_generated_at_ms: null,
+    rollback_env_to_unset: [],
+    blocking_issues: [],
+    error: '',
+  };
+
+  const statusPath = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!statusPath) {
+    if (required) out.blocking_issues.push('memory_gateway_model_call_execute_smoke_missing');
+    out.ok = out.blocking_issues.length === 0;
+    return out;
+  }
+
+  out.enabled = true;
+  out.status_found = true;
+  out.status_path = statusPath;
+  const status = readMemoryGatewayJsonObject(statusPath);
+  if (!status) {
+    if (required || explicitPath) out.blocking_issues.push('memory_gateway_model_call_execute_smoke_invalid');
+    out.error = 'status_not_parseable';
+    out.ok = out.blocking_issues.length === 0;
+    return out;
+  }
+
+  out.schema_ok = status.schema_version === 'xhub.rust_hub.memory_gateway_model_call_execute_smoke.v1';
+  out.evidence_ok = status.ok === true;
+  out.execution_blocked = status.execution_blocked === true;
+  out.content_free = status.content_free !== false;
+  out.admission_ready = status.admission_ready === true;
+  out.require_admission_ready = status.require_admission_ready === true;
+  out.memory_execute_http = status.memory_execute_http === true;
+  out.gate_status = safeString(status.gate?.status);
+  out.gate_mode = safeString(status.gate?.mode);
+  out.gate_authority = safeString(status.gate?.authority);
+  out.gate_ready_for_execution = status.gate?.ready_for_execution === true;
+  out.execute_status = safeString(status.execute?.status);
+  out.execute_mode = safeString(status.execute?.mode);
+  out.execute_authority = safeString(status.execute?.authority);
+  out.execute_executor = safeString(status.execute?.executor);
+  out.execute_blocker_count = Number(status.execute?.blocker_count || 0);
+  out.execute_would_call_model = status.execute?.would_call_model === true;
+  out.execute_model_call_invoked = status.execute?.model_call_invoked === true;
+  out.execute_model_call_executed = status.execute?.model_call_executed === true;
+  out.execute_local_ml_invoked = status.execute?.local_ml_execute_http_invoked === true;
+  out.production_authority_change = status.production_authority_change === true;
+  out.issue_codes = Array.from(new Set(
+    (Array.isArray(status.issue_codes) ? status.issue_codes : [])
+      .map((value) => safeString(value))
+      .filter(Boolean)
+  )).slice(0, 16);
+  out.generated_at_ms = Number.isFinite(Number(status.generated_at_ms)) ? Number(status.generated_at_ms) : null;
+  out.age_ms = out.generated_at_ms !== null ? Math.max(0, Date.now() - out.generated_at_ms) : null;
+  out.rollback_env_to_unset = Array.isArray(status.rollback_plan?.env_to_unset)
+    ? status.rollback_plan.env_to_unset.map((value) => safeString(value)).filter(Boolean).slice(0, 16)
+    : [];
+
+  for (const historyPath of memoryGatewayModelCallExecuteSmokeHistoryCandidatePaths(statusPath, args)) {
+    const parsed = readMemoryGatewayJsonObject(historyPath);
+    if (Array.isArray(parsed?.items)) {
+      out.history_found = true;
+      out.history_path = historyPath;
+      out.history_sample_count = parsed.items.length;
+      out.latest_history_generated_at_ms = parsed.items.reduce((latest, item) => {
+        const value = Number(item?.generated_at_ms || 0);
+        return value > latest ? value : latest;
+      }, 0) || null;
+      break;
+    }
+  }
+
+  if (!out.schema_ok && (required || explicitPath)) {
+    out.blocking_issues.push('memory_gateway_model_call_execute_smoke_schema_mismatch');
+  }
+  if (required && !out.evidence_ok) {
+    out.blocking_issues.push('memory_gateway_model_call_execute_smoke_not_ok');
+  }
+  if (out.production_authority_change) {
+    out.blocking_issues.push('memory_gateway_model_call_execute_smoke_authority_violation');
+  }
+  if (!out.execution_blocked) {
+    out.blocking_issues.push('memory_gateway_model_call_execute_smoke_not_blocked');
+  }
+  if (out.execute_would_call_model || out.execute_model_call_invoked || out.execute_model_call_executed || out.execute_local_ml_invoked) {
+    out.blocking_issues.push('memory_gateway_model_call_execute_smoke_invoked_unexpectedly');
+  }
+  if (!out.content_free) {
+    out.blocking_issues.push('memory_gateway_model_call_execute_smoke_text_leak');
+  }
+  out.blocking_issues = Array.from(new Set(out.blocking_issues));
+  out.ok = out.blocking_issues.length === 0;
+  return out;
+}
+
+function latestReportPathInDir(dir, prefix) {
+  const resolvedDir = safeString(dir);
+  if (!resolvedDir || !fs.existsSync(resolvedDir)) return '';
+  try {
+    const matches = fs.readdirSync(resolvedDir)
+      .filter((name) => name.startsWith(prefix) && name.endsWith('.json'))
+      .map((name) => {
+        const filePath = path.join(resolvedDir, name);
+        let mtimeMs = 0;
+        try {
+          mtimeMs = fs.statSync(filePath).mtimeMs;
+        } catch {}
+        return { filePath, mtimeMs };
+      })
+      .filter((entry) => entry.mtimeMs > 0)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return matches[0]?.filePath || '';
+  } catch {
+    return '';
+  }
+}
+
+function memoryGatewayModelCallLocalExecutorSmokeCandidatePaths(config, args = {}) {
+  const explicitReportPath = pathFromRoot(firstValue([
+    args['memory-gateway-model-call-local-executor-smoke-report-path'],
+    process.env.XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR_SMOKE_REPORT_PATH,
+  ]));
+  const explicitBaseDir = pathFromRoot(firstValue([
+    args['memory-gateway-model-call-local-executor-smoke-base-dir'],
+    process.env.XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR_SMOKE_BASE_DIR,
+  ]));
+  const prefix = 'memory_gateway_model_call_local_executor_smoke_';
+  const reportDirs = uniquePaths([
+    explicitBaseDir ? path.join(explicitBaseDir, 'reports') : '',
+    explicitBaseDir,
+    path.join(config.rootDir, 'reports'),
+  ]);
+  return uniquePaths([
+    explicitReportPath,
+    ...reportDirs.map((dir) => latestReportPathInDir(dir, prefix)),
+  ]);
+}
+
+function collectMemoryGatewayModelCallLocalExecutorSmoke(config, args = {}) {
+  const required = requireMemoryGatewayModelCallLocalExecutorSmoke(args);
+  const candidates = memoryGatewayModelCallLocalExecutorSmokeCandidatePaths(config, args);
+  const explicitPath = safeString(args['memory-gateway-model-call-local-executor-smoke-report-path'])
+    || safeString(process.env.XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR_SMOKE_REPORT_PATH);
+  const out = {
+    schema_version: 'xhub.rust_hub.memory_gateway_model_call_local_executor_smoke_gate.v1',
+    ok: true,
+    required,
+    enabled: false,
+    report_found: false,
+    report_path: '',
+    candidate_paths: candidates,
+    schema_ok: false,
+    evidence_ok: false,
+    isolated_daemon: false,
+    live_daemon_touched: false,
+    production_authority_change: false,
+    content_free: true,
+    execute_status: '',
+    execute_mode: '',
+    execute_authority: '',
+    execution_authority_in_rust: false,
+    execution_enabled: false,
+    ready_for_execution: false,
+    model_call_invoked: false,
+    model_call_executed: false,
+    local_ml_execute_http_invoked: false,
+    context_text_redacted_from_execute: false,
+    prompt_text_redacted_from_execute: false,
+    provider_route_not_mutated: false,
+    node_not_authority: false,
+    local_executor_enabled: false,
+    local_executor_apply_enabled: false,
+    local_route_allowed: false,
+    http_slow_requests: 0,
+    http_recent_slow_requests: 0,
+    http_recent_max_elapsed_ms: 0,
+    duration_ms: 0,
+    generated_at_iso: '',
+    age_ms: null,
+    issue_codes: [],
+    blocking_issues: [],
+    error: '',
+  };
+
+  const reportPath = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!reportPath) {
+    if (required) out.blocking_issues.push('memory_gateway_model_call_local_executor_smoke_missing');
+    out.ok = out.blocking_issues.length === 0;
+    return out;
+  }
+
+  out.enabled = true;
+  out.report_found = true;
+  out.report_path = reportPath;
+  const report = readMemoryGatewayJsonObject(reportPath);
+  if (!report) {
+    if (required || explicitPath) out.blocking_issues.push('memory_gateway_model_call_local_executor_smoke_invalid');
+    out.error = 'report_not_parseable';
+    out.ok = out.blocking_issues.length === 0;
+    return out;
+  }
+
+  const execute = report.execute || {};
+  out.schema_ok = report.schema_version === 'xhub.rust_hub.memory_gateway_model_call_local_executor_smoke.v1';
+  out.evidence_ok = report.ok === true;
+  out.isolated_daemon = report.isolated_daemon === true;
+  out.live_daemon_touched = report.live_daemon_touched === true;
+  out.production_authority_change = report.production_authority_change === true;
+  out.content_free = report.content_free !== false;
+  out.execute_status = safeString(execute.status);
+  out.execute_mode = safeString(execute.mode);
+  out.execute_authority = safeString(execute.authority);
+  out.execution_authority_in_rust = execute.execution_authority_in_rust === true;
+  out.execution_enabled = execute.execution_enabled === true;
+  out.ready_for_execution = execute.ready_for_execution === true;
+  out.model_call_invoked = execute.model_call_invoked === true;
+  out.model_call_executed = execute.model_call_executed === true;
+  out.local_ml_execute_http_invoked = execute.local_ml_execute_http_invoked === true;
+  out.context_text_redacted_from_execute = execute.context_text_redacted_from_execute === true;
+  out.prompt_text_redacted_from_execute = execute.prompt_text_redacted_from_execute === true;
+  out.provider_route_not_mutated = execute.provider_route_not_mutated === true;
+  out.node_not_authority = execute.node_not_authority === true;
+  out.local_executor_enabled = execute.local_executor_enabled === true;
+  out.local_executor_apply_enabled = execute.local_executor_apply_enabled === true;
+  out.local_route_allowed = execute.local_route_allowed === true;
+  out.http_slow_requests = Number(report.http_metrics?.slow_requests || 0);
+  out.http_recent_slow_requests = Number(report.http_metrics?.recent_slow_requests || 0);
+  out.http_recent_max_elapsed_ms = Number(report.http_metrics?.recent_max_elapsed_ms || 0);
+  out.duration_ms = Number(report.duration_ms || 0);
+  out.generated_at_iso = safeString(report.generated_at_iso);
+  const generatedAtMs = Date.parse(out.generated_at_iso);
+  out.age_ms = Number.isFinite(generatedAtMs) ? Math.max(0, Date.now() - generatedAtMs) : null;
+  out.issue_codes = Array.from(new Set(
+    (Array.isArray(report.issue_codes) ? report.issue_codes : [])
+      .map((value) => safeString(value))
+      .filter(Boolean)
+  )).slice(0, 16);
+  out.error = safeString(report.error).slice(0, 300);
+
+  if (!out.schema_ok && (required || explicitPath)) {
+    out.blocking_issues.push('memory_gateway_model_call_local_executor_smoke_schema_mismatch');
+  }
+  if (required && !out.evidence_ok) {
+    out.blocking_issues.push('memory_gateway_model_call_local_executor_smoke_not_ok');
+  }
+  if (!out.isolated_daemon) {
+    out.blocking_issues.push('memory_gateway_model_call_local_executor_smoke_not_isolated');
+  }
+  if (out.live_daemon_touched) {
+    out.blocking_issues.push('memory_gateway_model_call_local_executor_smoke_live_daemon_touched');
+  }
+  if (out.production_authority_change) {
+    out.blocking_issues.push('memory_gateway_model_call_local_executor_smoke_authority_violation');
+  }
+  if (!out.content_free) {
+    out.blocking_issues.push('memory_gateway_model_call_local_executor_smoke_text_leak');
+  }
+  if (out.http_slow_requests > 0 || out.http_recent_slow_requests > 0) {
+    out.blocking_issues.push('memory_gateway_model_call_local_executor_smoke_slow_request_observed');
+  }
+  if (out.execute_status !== 'executed' || out.execute_mode !== 'local_ml_execute') {
+    out.blocking_issues.push('memory_gateway_model_call_local_executor_smoke_execute_not_observed');
+  }
+  if (!out.execution_authority_in_rust || !out.execution_enabled || !out.ready_for_execution) {
+    out.blocking_issues.push('memory_gateway_model_call_local_executor_smoke_authority_not_active');
+  }
+  if (!out.model_call_invoked || !out.model_call_executed || !out.local_ml_execute_http_invoked) {
+    out.blocking_issues.push('memory_gateway_model_call_local_executor_smoke_model_call_not_invoked');
+  }
+  if (!out.context_text_redacted_from_execute || !out.prompt_text_redacted_from_execute) {
+    out.blocking_issues.push('memory_gateway_model_call_local_executor_smoke_redaction_guard_missing');
+  }
+  if (!out.provider_route_not_mutated || !out.node_not_authority) {
+    out.blocking_issues.push('memory_gateway_model_call_local_executor_smoke_authority_guard_missing');
+  }
+  if (!out.local_executor_enabled || !out.local_executor_apply_enabled || !out.local_route_allowed) {
+    out.blocking_issues.push('memory_gateway_model_call_local_executor_smoke_executor_flags_missing');
+  }
+  out.blocking_issues = Array.from(new Set(out.blocking_issues));
+  out.ok = out.blocking_issues.length === 0;
+  return out;
 }
 
 function memoryGatewayCutoverReadinessCandidatePaths(config, args = {}, statusOut = {}, launchdOut = {}) {
@@ -2671,6 +3658,262 @@ function compactMemoryGatewayCutoverIssue(issue) {
   };
 }
 
+function normalizedMemoryGatewayProfileId(value) {
+  const raw = safeString(value);
+  if (!raw) return '';
+  const key = raw.toLowerCase().replace(/[\s-]+/g, '_');
+  const profiles = {
+    m0_heartbeat: 'M0_Heartbeat',
+    m1_execute: 'M1_Execute',
+    m2_plan_review: 'M2_PlanReview',
+    m3_deep_dive: 'M3_DeepDive',
+    m4_full_scan: 'M4_FullScan',
+  };
+  return profiles[key] || raw;
+}
+
+function normalizedEvidenceKey(value) {
+  return safeString(value)
+    .replace(/[^A-Za-z0-9_.:-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80);
+}
+
+function normalizedObjectCounts(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out = {};
+  const entries = Object.entries(value)
+    .map(([key, count]) => [normalizedEvidenceKey(key), Number(count)])
+    .filter(([key, count]) => key && Number.isFinite(count) && count > 0)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .slice(0, 32);
+  for (const [key, count] of entries) {
+    out[key] = Math.max(0, Math.min(1_000_000, Math.trunc(count)));
+  }
+  return out;
+}
+
+function boundedOpsCount(value) {
+  const count = Number(value || 0);
+  if (!Number.isFinite(count)) return 0;
+  return Math.max(0, Math.min(1_000_000, Math.trunc(count)));
+}
+
+function arrayValue(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function countChunkIdentityRefs(value) {
+  return arrayValue(value).filter((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+    return Boolean(safeString(item.chunk_ref) || safeString(item.chunk_id));
+  }).length;
+}
+
+function summarizeMemoryGatewayChunkEvidence(source = {}, fallback = {}) {
+  const selectedRefs = arrayValue(source.selected_refs).length > 0
+    ? arrayValue(source.selected_refs)
+    : arrayValue(fallback.selected_refs);
+  const omittedRefs = arrayValue(source.omitted_refs).length > 0
+    ? arrayValue(source.omitted_refs)
+    : arrayValue(fallback.omitted_refs);
+  return {
+    selected_chunk_count: boundedOpsCount(
+      source.selected_chunk_count
+        || fallback.selected_chunk_count
+        || selectedRefs.length
+    ),
+    selected_chunk_ref_count: boundedOpsCount(countChunkIdentityRefs(selectedRefs)),
+    omitted_ref_count: boundedOpsCount(
+      source.omitted_ref_count
+        || fallback.omitted_ref_count
+        || omittedRefs.length
+    ),
+    omitted_chunk_ref_count: boundedOpsCount(countChunkIdentityRefs(omittedRefs)),
+    index_source: safeString(source.index_source || fallback.index_source),
+    index_granularity: safeString(source.index_granularity || fallback.index_granularity),
+    chunk_identity_schema: safeString(source.chunk_identity_schema || fallback.chunk_identity_schema),
+    chunk_expand_via_get_ref: source.chunk_expand_via_get_ref === true
+      || fallback.chunk_expand_via_get_ref === true,
+  };
+}
+
+function summarizeMemoryGatewayChunkEvidenceFromPlan(plan = {}, report = {}) {
+  const prepare = plan?.prepare && typeof plan.prepare === 'object' && !Array.isArray(plan.prepare)
+    ? plan.prepare
+    : {};
+  const memoryContext = plan?.memory_context && typeof plan.memory_context === 'object' && !Array.isArray(plan.memory_context)
+    ? plan.memory_context
+    : {};
+  const source = {
+    selected_chunk_count: report.model_call_plan_selected_chunk_count || prepare.selected_chunk_count,
+    selected_refs: arrayValue(memoryContext.selected_refs).length > 0
+      ? memoryContext.selected_refs
+      : prepare.selected_refs,
+    omitted_ref_count: report.model_call_plan_omitted_ref_count
+      || memoryContext.omitted_ref_count
+      || prepare.omitted_ref_count,
+    omitted_refs: arrayValue(memoryContext.omitted_refs).length > 0
+      ? memoryContext.omitted_refs
+      : prepare.omitted_refs,
+    index_source: report.model_call_plan_index_source || prepare.index_source,
+    index_granularity: report.model_call_plan_index_granularity
+      || memoryContext.index_granularity
+      || prepare.index_granularity,
+    chunk_identity_schema: report.model_call_plan_chunk_identity_schema
+      || memoryContext.chunk_identity_schema
+      || prepare.chunk_identity_schema,
+    chunk_expand_via_get_ref: report.model_call_plan_chunk_expand_via_get_ref === true
+      || memoryContext.chunk_expand_via_get_ref === true
+      || prepare.chunk_expand_via_get_ref === true,
+  };
+  const summary = summarizeMemoryGatewayChunkEvidence(source);
+  if (Number.isFinite(Number(report.model_call_plan_selected_chunk_ref_count))) {
+    summary.selected_chunk_ref_count = boundedOpsCount(report.model_call_plan_selected_chunk_ref_count);
+  }
+  if (Number.isFinite(Number(report.model_call_plan_omitted_chunk_ref_count))) {
+    summary.omitted_chunk_ref_count = boundedOpsCount(report.model_call_plan_omitted_chunk_ref_count);
+  }
+  return summary;
+}
+
+function memoryGatewaySampleProfile(sample) {
+  return normalizedMemoryGatewayProfileId(
+    firstValue([
+      sample?.serving_profile_id,
+      sample?.servingProfileId,
+      sample?.selected_profile,
+      sample?.selectedProfile,
+      sample?.effective_profile,
+      sample?.effectiveProfile,
+    ])
+  ) || 'unknown';
+}
+
+function memoryGatewayShadowSamplePasses(sample) {
+  return sample?.ok === true
+    && sample?.parity_ok === true
+    && sample?.production_authority_change !== true
+    && safeString(sample?.rust_source) === 'rust_memory_gateway_prepare';
+}
+
+function memoryGatewayShadowSampleMatchesReadinessScope(sample, report) {
+  const requesterRole = safeString(report?.requester_role);
+  const useMode = safeString(report?.use_mode);
+  const projectId = safeString(report?.project_id);
+  if (requesterRole && safeString(sample?.requester_role) !== requesterRole) return false;
+  if (useMode && safeString(sample?.use_mode) !== useMode) return false;
+  if (projectId && safeString(sample?.project_id) !== projectId) return false;
+  return true;
+}
+
+function readMemoryGatewayJsonObject(filePath) {
+  const resolved = safeString(filePath);
+  if (!resolved || !fs.existsSync(resolved)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(resolved, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function collectMemoryGatewayShadowSamples(report, reportPath) {
+  const reportDir = safeString(reportPath) ? path.dirname(reportPath) : '';
+  const historyCandidates = uniquePaths([
+    report?.history_path,
+    reportDir ? path.join(reportDir, 'memory_gateway_shadow_compare_history.json') : '',
+  ]);
+  for (const candidate of historyCandidates) {
+    const parsed = readMemoryGatewayJsonObject(candidate);
+    if (Array.isArray(parsed?.items)) {
+      return {
+        source: candidate,
+        samples: parsed.items.filter((item) => item && typeof item === 'object' && !Array.isArray(item)),
+      };
+    }
+  }
+
+  const statusCandidates = uniquePaths([
+    report?.status_path,
+    reportDir ? path.join(reportDir, 'memory_gateway_shadow_compare_status.json') : '',
+  ]);
+  for (const candidate of statusCandidates) {
+    const parsed = readMemoryGatewayJsonObject(candidate);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return { source: candidate, samples: [parsed] };
+    }
+  }
+  return { source: '', samples: [] };
+}
+
+function summarizeMemoryGatewayProfileReadiness(report, reportPath) {
+  const requiredSamples = Math.max(1, Number(report?.required_sample_count || 1));
+  const maxAgeMs = Math.max(0, Number(report?.max_age_ms || 0));
+  const nowMs = Date.now();
+  const loaded = collectMemoryGatewayShadowSamples(report, reportPath);
+  const samples = loaded.samples
+    .filter((sample) => memoryGatewayShadowSampleMatchesReadinessScope(sample, report));
+  const byProfile = new Map();
+  for (const sample of samples) {
+    const profile = memoryGatewaySampleProfile(sample);
+    if (!byProfile.has(profile)) {
+      byProfile.set(profile, {
+        serving_profile_id: profile,
+        total_sample_count: 0,
+        fresh_sample_count: 0,
+        passing_sample_count: 0,
+        authority_violation_count: 0,
+        fresh_authority_violation_count: 0,
+        parity_failure_count: 0,
+        fresh_parity_failure_count: 0,
+        rust_source_mismatch_count: 0,
+        fresh_rust_source_mismatch_count: 0,
+        downgrade_count: 0,
+        deny_count: 0,
+        latest_recorded_at_ms: null,
+        ready_for_require: false,
+      });
+    }
+    const bucket = byProfile.get(profile);
+    const recordedAtMs = Number(sample?.recorded_at_ms || 0);
+    const selectedProfile = normalizedMemoryGatewayProfileId(sample?.selected_profile);
+    const effectiveProfile = normalizedMemoryGatewayProfileId(sample?.effective_profile);
+    const fresh = maxAgeMs <= 0 || (recordedAtMs > 0 && nowMs - recordedAtMs >= 0 && nowMs - recordedAtMs <= maxAgeMs);
+    bucket.total_sample_count += 1;
+    if (fresh) bucket.fresh_sample_count += 1;
+    if (fresh && memoryGatewayShadowSamplePasses(sample)) bucket.passing_sample_count += 1;
+    if (sample?.production_authority_change === true) bucket.authority_violation_count += 1;
+    if (fresh && sample?.production_authority_change === true) bucket.fresh_authority_violation_count += 1;
+    if (sample?.ok !== true || sample?.parity_ok !== true) bucket.parity_failure_count += 1;
+    if (fresh && (sample?.ok !== true || sample?.parity_ok !== true)) bucket.fresh_parity_failure_count += 1;
+    if (safeString(sample?.rust_source) && safeString(sample?.rust_source) !== 'rust_memory_gateway_prepare') {
+      bucket.rust_source_mismatch_count += 1;
+      if (fresh) bucket.fresh_rust_source_mismatch_count += 1;
+    }
+    if (selectedProfile && effectiveProfile && selectedProfile !== effectiveProfile) bucket.downgrade_count += 1;
+    if (safeString(sample?.rust_deny_code)) bucket.deny_count += 1;
+    if (recordedAtMs > 0 && (bucket.latest_recorded_at_ms === null || recordedAtMs > bucket.latest_recorded_at_ms)) {
+      bucket.latest_recorded_at_ms = recordedAtMs;
+    }
+  }
+
+  const profileReadiness = Array.from(byProfile.values()).map((bucket) => ({
+    ...bucket,
+    ready_for_require: bucket.passing_sample_count >= requiredSamples
+      && bucket.fresh_authority_violation_count === 0
+      && bucket.fresh_parity_failure_count === 0
+      && bucket.fresh_rust_source_mismatch_count === 0,
+  })).sort((a, b) => a.serving_profile_id.localeCompare(b.serving_profile_id));
+  return {
+    source: loaded.source,
+    sample_count: samples.length,
+    profile_downgrade_count: profileReadiness.reduce((sum, item) => sum + item.downgrade_count, 0),
+    rust_deny_count: profileReadiness.reduce((sum, item) => sum + item.deny_count, 0),
+    profile_readiness: profileReadiness,
+  };
+}
+
 function collectMemoryGatewayCutoverReadiness(config, args = {}, statusOut = {}, launchdOut = {}) {
   const required = requireMemoryGatewayCutoverReady(args);
   const candidates = memoryGatewayCutoverReadinessCandidatePaths(config, args, statusOut, launchdOut);
@@ -2692,8 +3935,13 @@ function collectMemoryGatewayCutoverReadiness(config, args = {}, statusOut = {},
     age_ms: null,
     requester_role: '',
     use_mode: '',
+    serving_profile_id: '',
+    selected_profile: '',
+    effective_profile: '',
     project_id: '',
     required_sample_count: 0,
+    max_age_ms: 0,
+    total_sample_count: 0,
     matching_sample_count: 0,
     fresh_matching_sample_count: 0,
     considered_sample_count: 0,
@@ -2702,6 +3950,35 @@ function collectMemoryGatewayCutoverReadiness(config, args = {}, statusOut = {},
     authority_violation_count: 0,
     parity_failure_count: 0,
     rust_source_mismatch_count: 0,
+    latest_recorded_at_ms: null,
+    oldest_considered_at_ms: null,
+    profile_readiness_source: '',
+    profile_readiness_sample_count: 0,
+    profile_downgrade_count: 0,
+    rust_deny_count: 0,
+    profile_readiness: [],
+    model_call_plan_smoke_enabled: false,
+    model_call_plan_required: false,
+    model_call_plan_ready: false,
+    model_call_plan_schema: '',
+    model_call_plan_authority: '',
+    model_call_plan_mode: '',
+    model_call_plan_execution_blocked: false,
+    model_call_plan_would_call_model: false,
+    model_call_plan_model_call_executed: false,
+    model_call_plan_context_text_included: false,
+    model_call_plan_prompt_text_included: false,
+    model_call_plan_omitted_reason_counts: {},
+    model_call_plan_selected_chunk_count: 0,
+    model_call_plan_selected_chunk_ref_count: 0,
+    model_call_plan_omitted_ref_count: 0,
+    model_call_plan_omitted_chunk_ref_count: 0,
+    model_call_plan_index_granularity: '',
+    model_call_plan_index_source: '',
+    model_call_plan_chunk_identity_schema: '',
+    model_call_plan_chunk_expand_via_get_ref: false,
+    model_call_plan_issue_codes: [],
+    model_call_plan_smoke: null,
     report_issue_codes: [],
     report_issues: [],
     blocking_issues: [],
@@ -2735,8 +4012,13 @@ function collectMemoryGatewayCutoverReadiness(config, args = {}, statusOut = {},
   out.age_ms = out.generated_at_ms !== null ? Math.max(0, Date.now() - out.generated_at_ms) : null;
   out.requester_role = safeString(report.requester_role);
   out.use_mode = safeString(report.use_mode);
+  out.serving_profile_id = normalizedMemoryGatewayProfileId(report.serving_profile_id);
+  out.selected_profile = normalizedMemoryGatewayProfileId(report.selected_profile);
+  out.effective_profile = normalizedMemoryGatewayProfileId(report.effective_profile);
   out.project_id = safeString(report.project_id);
   out.required_sample_count = Number(report.required_sample_count || 0);
+  out.max_age_ms = Number(report.max_age_ms || 0);
+  out.total_sample_count = Number(report.total_sample_count || 0);
   out.matching_sample_count = Number(report.matching_sample_count || 0);
   out.fresh_matching_sample_count = Number(report.fresh_matching_sample_count || 0);
   out.considered_sample_count = Number(report.considered_sample_count || 0);
@@ -2745,6 +4027,174 @@ function collectMemoryGatewayCutoverReadiness(config, args = {}, statusOut = {},
   out.authority_violation_count = Number(report.authority_violation_count || 0);
   out.parity_failure_count = Number(report.parity_failure_count || 0);
   out.rust_source_mismatch_count = Number(report.rust_source_mismatch_count || 0);
+  out.latest_recorded_at_ms = Number.isFinite(Number(report.latest_recorded_at_ms)) ? Number(report.latest_recorded_at_ms) : null;
+  out.oldest_considered_at_ms = Number.isFinite(Number(report.oldest_considered_at_ms)) ? Number(report.oldest_considered_at_ms) : null;
+  const profileSummary = summarizeMemoryGatewayProfileReadiness(report, reportPath);
+  out.profile_readiness_source = profileSummary.source;
+  out.profile_readiness_sample_count = profileSummary.sample_count;
+  out.profile_downgrade_count = profileSummary.profile_downgrade_count;
+  out.rust_deny_count = profileSummary.rust_deny_count;
+  out.profile_readiness = profileSummary.profile_readiness;
+  const modelCallPlanSmoke = report?.model_call_plan_smoke && typeof report.model_call_plan_smoke === 'object' && !Array.isArray(report.model_call_plan_smoke)
+    ? report.model_call_plan_smoke
+    : {};
+  const modelCallPlan = modelCallPlanSmoke?.plan && typeof modelCallPlanSmoke.plan === 'object' && !Array.isArray(modelCallPlanSmoke.plan)
+    ? modelCallPlanSmoke.plan
+    : {};
+  const modelCallExecuteDenial = modelCallPlanSmoke?.execute_denial && typeof modelCallPlanSmoke.execute_denial === 'object' && !Array.isArray(modelCallPlanSmoke.execute_denial)
+    ? modelCallPlanSmoke.execute_denial
+    : {};
+  const modelCallExecutionGate = modelCallPlanSmoke?.execution_gate && typeof modelCallPlanSmoke.execution_gate === 'object' && !Array.isArray(modelCallPlanSmoke.execution_gate)
+    ? modelCallPlanSmoke.execution_gate
+    : {};
+  const modelCallExecute = modelCallPlanSmoke?.execute && typeof modelCallPlanSmoke.execute === 'object' && !Array.isArray(modelCallPlanSmoke.execute)
+    ? modelCallPlanSmoke.execute
+    : {};
+  const modelCallPlanIssueCodes = [
+    ...(Array.isArray(report?.model_call_plan_issue_codes) ? report.model_call_plan_issue_codes : []),
+    ...(Array.isArray(modelCallPlanSmoke?.issue_codes) ? modelCallPlanSmoke.issue_codes : []),
+  ].map((value) => safeString(value)).filter(Boolean);
+  out.model_call_plan_smoke_enabled = report.model_call_plan_smoke_enabled === true || modelCallPlanSmoke.enabled === true;
+  out.model_call_plan_required = report.model_call_plan_required === true || (out.model_call_plan_smoke_enabled && modelCallPlanSmoke.skipped !== true);
+  out.model_call_plan_ready = report.model_call_plan_ready === true || (out.model_call_plan_smoke_enabled && modelCallPlanSmoke.ok === true);
+  out.model_call_plan_schema = safeString(report.model_call_plan_schema || modelCallPlan.schema_version);
+  out.model_call_plan_authority = safeString(report.model_call_plan_authority || modelCallPlan.authority);
+  out.model_call_plan_mode = safeString(report.model_call_plan_mode || modelCallPlan.mode);
+  out.model_call_plan_execution_blocked = report.model_call_plan_execution_blocked === true || modelCallPlanSmoke.execution_blocked === true;
+  out.model_call_plan_would_call_model = report.model_call_plan_would_call_model === true || modelCallPlan.would_call_model === true;
+  out.model_call_plan_model_call_executed = report.model_call_plan_model_call_executed === true || modelCallPlan.model_call_executed === true;
+  out.model_call_plan_context_text_included = report.model_call_plan_context_text_included === true || modelCallPlan.context_text_included === true;
+  out.model_call_plan_prompt_text_included = report.model_call_plan_prompt_text_included === true || modelCallPlan.prompt_text_included === true;
+  out.model_call_plan_omitted_reason_counts = normalizedObjectCounts(
+    report.model_call_plan_omitted_reason_counts || modelCallPlan.omitted_reason_counts
+  );
+  const modelCallPlanChunkEvidence = summarizeMemoryGatewayChunkEvidenceFromPlan(modelCallPlan, report);
+  out.model_call_plan_selected_chunk_count = modelCallPlanChunkEvidence.selected_chunk_count;
+  out.model_call_plan_selected_chunk_ref_count = modelCallPlanChunkEvidence.selected_chunk_ref_count;
+  out.model_call_plan_omitted_ref_count = modelCallPlanChunkEvidence.omitted_ref_count;
+  out.model_call_plan_omitted_chunk_ref_count = modelCallPlanChunkEvidence.omitted_chunk_ref_count;
+  out.model_call_plan_index_granularity = modelCallPlanChunkEvidence.index_granularity;
+  out.model_call_plan_index_source = modelCallPlanChunkEvidence.index_source;
+  out.model_call_plan_chunk_identity_schema = modelCallPlanChunkEvidence.chunk_identity_schema;
+  out.model_call_plan_chunk_expand_via_get_ref = modelCallPlanChunkEvidence.chunk_expand_via_get_ref;
+  out.model_call_execution_gate_ready_for_execution = report.model_call_execution_gate_ready_for_execution === true
+    || modelCallPlanSmoke.execution_gate_ready_for_execution === true
+    || modelCallExecutionGate.ready_for_execution === true;
+  out.model_call_execution_admission_authority_in_rust = report.model_call_execution_admission_authority_in_rust === true
+    || modelCallPlanSmoke.execution_admission_authority_in_rust === true
+    || modelCallExecutionGate.execution_admission_authority_in_rust === true;
+  out.model_call_execution_gate_status = safeString(report.model_call_execution_gate_status || modelCallExecutionGate.status);
+  out.model_call_execution_gate_mode = safeString(report.model_call_execution_gate_mode || modelCallExecutionGate.mode);
+  out.model_call_execution_gate_authority = safeString(report.model_call_execution_gate_authority || modelCallExecutionGate.authority);
+  out.model_call_execution_gate_blocker_count = Number(report.model_call_execution_gate_blocker_count ?? (
+    Array.isArray(modelCallExecutionGate.blockers) ? modelCallExecutionGate.blockers.length : 0
+  ));
+  out.model_call_execution_gate_would_call_model = report.model_call_execution_gate_would_call_model === true
+    || modelCallExecutionGate.would_call_model === true;
+  out.model_call_execution_gate_model_call_executed = report.model_call_execution_gate_model_call_executed === true
+    || modelCallExecutionGate.model_call_executed === true;
+  out.model_call_execution_gate_context_text_included = report.model_call_execution_gate_context_text_included === true
+    || modelCallExecutionGate.context_text_included === true;
+  out.model_call_execution_gate_prompt_text_included = report.model_call_execution_gate_prompt_text_included === true
+    || modelCallExecutionGate.prompt_text_included === true;
+  out.model_call_execution_gate_production_authority_change = modelCallExecutionGate.production_authority_change === true;
+  out.model_call_execute_blocked = report.model_call_execute_blocked === true
+    || modelCallPlanSmoke.execute_blocked === true
+    || modelCallExecute.status === 'blocked';
+  out.model_call_execute_status = safeString(report.model_call_execute_status || modelCallExecute.status);
+  out.model_call_execute_mode = safeString(report.model_call_execute_mode || modelCallExecute.mode);
+  out.model_call_execute_authority = safeString(report.model_call_execute_authority || modelCallExecute.authority);
+  out.model_call_execute_executor = safeString(report.model_call_execute_executor || modelCallExecute.executor);
+  out.model_call_execute_blocker_count = Number(report.model_call_execute_blocker_count ?? modelCallExecute.blocker_count ?? (
+    Array.isArray(modelCallExecute.blockers) ? modelCallExecute.blockers.length : 0
+  ));
+  out.model_call_execute_would_call_model = report.model_call_execute_would_call_model === true
+    || modelCallExecute.would_call_model === true;
+  out.model_call_execute_model_call_invoked = report.model_call_execute_model_call_invoked === true
+    || modelCallExecute.model_call_invoked === true;
+  out.model_call_execute_model_call_executed = report.model_call_execute_model_call_executed === true
+    || modelCallExecute.model_call_executed === true;
+  out.model_call_execute_local_ml_invoked = report.model_call_execute_local_ml_invoked === true
+    || modelCallExecute.local_ml_execute_http_invoked === true;
+  out.model_call_execute_context_text_included = report.model_call_execute_context_text_included === true
+    || modelCallExecute.context_text_included === true;
+  out.model_call_execute_prompt_text_included = report.model_call_execute_prompt_text_included === true
+    || modelCallExecute.prompt_text_included === true;
+  out.model_call_execute_production_authority_change = modelCallExecute.production_authority_change === true;
+  out.model_call_plan_issue_codes = Array.from(new Set(modelCallPlanIssueCodes)).slice(0, 12);
+  out.model_call_plan_smoke = out.model_call_plan_smoke_enabled ? {
+    schema_version: safeString(modelCallPlanSmoke.schema_version),
+    enabled: true,
+    ok: modelCallPlanSmoke.ok === true,
+    endpoint: safeString(modelCallPlanSmoke.endpoint || 'POST /memory/gateway/model-call-plan'),
+    execution_blocked: out.model_call_plan_execution_blocked,
+    issue_codes: out.model_call_plan_issue_codes,
+    plan: {
+      schema_version: out.model_call_plan_schema,
+      ok: modelCallPlan.ok === true,
+      status: safeString(modelCallPlan.status),
+      source: safeString(modelCallPlan.source),
+      mode: out.model_call_plan_mode,
+      authority: out.model_call_plan_authority,
+      would_call_model: out.model_call_plan_would_call_model,
+      model_call_executed: out.model_call_plan_model_call_executed,
+      context_text_included: out.model_call_plan_context_text_included,
+      prompt_text_included: out.model_call_plan_prompt_text_included,
+      omitted_reason_counts: out.model_call_plan_omitted_reason_counts,
+      selected_chunk_count: out.model_call_plan_selected_chunk_count,
+      selected_chunk_ref_count: out.model_call_plan_selected_chunk_ref_count,
+      omitted_ref_count: out.model_call_plan_omitted_ref_count,
+      omitted_chunk_ref_count: out.model_call_plan_omitted_chunk_ref_count,
+      index_granularity: out.model_call_plan_index_granularity,
+      index_source: out.model_call_plan_index_source,
+      chunk_identity_schema: out.model_call_plan_chunk_identity_schema,
+      chunk_expand_via_get_ref: out.model_call_plan_chunk_expand_via_get_ref,
+      local_ml_execute_http_not_invoked: modelCallPlan.local_ml_execute_http_not_invoked === true,
+      provider_route_not_mutated: modelCallPlan.provider_route_not_mutated === true,
+      node_not_authority: modelCallPlan.node_not_authority === true,
+    },
+    execute_denial: {
+      schema_version: safeString(modelCallExecuteDenial.schema_version),
+      error_code: safeString(modelCallExecuteDenial.error_code),
+      would_call_model: modelCallExecuteDenial.would_call_model === true,
+      model_call_executed: modelCallExecuteDenial.model_call_executed === true,
+      production_authority_change: modelCallExecuteDenial.production_authority_change === true,
+    },
+    execution_gate: {
+      schema_version: safeString(modelCallExecutionGate.schema_version),
+      status: out.model_call_execution_gate_status,
+      mode: out.model_call_execution_gate_mode,
+      authority: out.model_call_execution_gate_authority,
+      ready_for_execution: out.model_call_execution_gate_ready_for_execution,
+      execution_admission_authority_in_rust: out.model_call_execution_admission_authority_in_rust,
+      execution_admission_ready: modelCallExecutionGate.execution_admission_ready === true,
+      execution_authority_in_rust: modelCallExecutionGate.execution_authority_in_rust === true,
+      execution_enabled: modelCallExecutionGate.execution_enabled === true,
+      would_call_model: out.model_call_execution_gate_would_call_model,
+      model_call_executed: out.model_call_execution_gate_model_call_executed,
+      context_text_included: out.model_call_execution_gate_context_text_included,
+      prompt_text_included: out.model_call_execution_gate_prompt_text_included,
+      route_specified: modelCallExecutionGate.route_specified === true,
+      provider_route_authority_in_rust: modelCallExecutionGate.provider_route_authority_in_rust === true,
+      model_route_authority_in_rust: modelCallExecutionGate.model_route_authority_in_rust === true,
+      blocker_count: out.model_call_execution_gate_blocker_count,
+    },
+    execute: {
+      schema_version: safeString(modelCallExecute.schema_version),
+      status: out.model_call_execute_status,
+      mode: out.model_call_execute_mode,
+      authority: out.model_call_execute_authority,
+      executor: out.model_call_execute_executor,
+      blocked: out.model_call_execute_blocked,
+      would_call_model: out.model_call_execute_would_call_model,
+      model_call_invoked: out.model_call_execute_model_call_invoked,
+      model_call_executed: out.model_call_execute_model_call_executed,
+      local_ml_execute_http_invoked: out.model_call_execute_local_ml_invoked,
+      context_text_included: out.model_call_execute_context_text_included,
+      prompt_text_included: out.model_call_execute_prompt_text_included,
+      blocker_count: out.model_call_execute_blocker_count,
+    },
+  } : null;
   out.report_issues = Array.isArray(report.issues)
     ? report.issues.slice(0, 12).map(compactMemoryGatewayCutoverIssue)
     : [];
@@ -2759,6 +4209,54 @@ function collectMemoryGatewayCutoverReadiness(config, args = {}, statusOut = {},
   if (required && (!out.report_ok || !out.ready_for_require)) {
     out.blocking_issues.push('memory_gateway_cutover_readiness_not_ready');
   }
+  if (out.model_call_plan_required && out.model_call_plan_ready !== true) {
+    out.blocking_issues.push('memory_gateway_model_call_plan_smoke_failed');
+  }
+  if (out.model_call_plan_smoke_enabled && out.model_call_plan_execution_blocked !== true) {
+    out.blocking_issues.push('memory_gateway_model_call_execute_denial_missing');
+  }
+  if (out.model_call_plan_would_call_model || out.model_call_plan_model_call_executed) {
+    out.blocking_issues.push('memory_gateway_model_call_plan_executed_unexpectedly');
+  }
+  if (out.model_call_plan_context_text_included || out.model_call_plan_prompt_text_included) {
+    out.blocking_issues.push('memory_gateway_model_call_plan_text_leak');
+  }
+  if (out.model_call_execution_gate_would_call_model || out.model_call_execution_gate_model_call_executed) {
+    out.blocking_issues.push('memory_gateway_model_call_execution_gate_executed_unexpectedly');
+  }
+  if (out.model_call_execution_gate_context_text_included || out.model_call_execution_gate_prompt_text_included) {
+    out.blocking_issues.push('memory_gateway_model_call_execution_gate_text_leak');
+  }
+  if (out.model_call_execution_gate_production_authority_change) {
+    out.blocking_issues.push('memory_gateway_model_call_execution_gate_authority_violation');
+  }
+  const modelCallExecuteEvidencePresent = Boolean(
+    out.model_call_execute_status
+      || out.model_call_execute_mode
+      || out.model_call_execute_authority
+      || out.model_call_execute_executor
+      || out.model_call_execute_blocker_count > 0
+      || out.model_call_execute_would_call_model
+      || out.model_call_execute_model_call_invoked
+      || out.model_call_execute_model_call_executed
+      || out.model_call_execute_local_ml_invoked
+  );
+  if (modelCallExecuteEvidencePresent && out.model_call_execute_blocked !== true) {
+    out.blocking_issues.push('memory_gateway_model_call_execute_block_missing');
+  }
+  if (out.model_call_execute_would_call_model
+    || out.model_call_execute_model_call_invoked
+    || out.model_call_execute_model_call_executed
+    || out.model_call_execute_local_ml_invoked) {
+    out.blocking_issues.push('memory_gateway_model_call_execute_invoked_unexpectedly');
+  }
+  if (out.model_call_execute_context_text_included || out.model_call_execute_prompt_text_included) {
+    out.blocking_issues.push('memory_gateway_model_call_execute_text_leak');
+  }
+  if (out.model_call_execute_production_authority_change) {
+    out.blocking_issues.push('memory_gateway_model_call_execute_authority_violation');
+  }
+  out.blocking_issues = Array.from(new Set(out.blocking_issues));
   out.ok = out.blocking_issues.length === 0;
   return out;
 }
@@ -3116,6 +4614,7 @@ async function watchdog(config, args = {}) {
   const reportMaintenance = collectReportMaintenance(config, maintenanceArgs, false, reportPath);
   const maintenanceSummary = compactMaintenanceSummary(logMaintenance, reportMaintenance);
   const uiGate = runUiCompatibilityGate(config);
+  const productProcessSanity = runProductProcessSanity(config, args, reportPath, 'watchdog');
   const readiness = statusOut.readiness || launchdOut.readiness || null;
   const healthy = statusOut.running === true || launchdOut.running === true;
   const readyState = readiness?.ready === true;
@@ -3137,6 +4636,7 @@ async function watchdog(config, args = {}) {
   if (uiGate.product_ui_change === true) issues.push('ui_product_change');
   if (uiGate.swift_ui_files_touched === true) issues.push('swift_ui_files_touched');
   if (uiGate.rust_browser_product_ui === true) issues.push('rust_browser_product_ui');
+  if (productProcessSanity.ok !== true) issues.push('product_process_sanity_failed');
   const memorySkills = appendMemorySkillsAuthorityIssues(issues, readiness, args);
   issues.push(...watchdogPidIssues(sourcePidAfter, launchdPidAfter));
   for (const action of actions) {
@@ -3157,6 +4657,12 @@ async function watchdog(config, args = {}) {
   }
   if (maintenanceSummary.maintenance_needed) {
     recommendedActions.push('Run daemon_maintenance.command --apply after reviewing the dry-run plan.');
+  }
+  if (Number(productProcessSanity.mounted_app_process_count || 0) > 0) {
+    recommendedActions.push('Close or terminate stale /Volumes X-Hub processes after confirming they are not the current /Applications app.');
+  }
+  if (productProcessSanity.product_cpu_over_budget === true) {
+    recommendedActions.push('Defer heavy gates or checkpoints until product CPU returns under budget.');
   }
 
   const report = {
@@ -3211,6 +4717,12 @@ async function watchdog(config, args = {}) {
     actions,
     recommended_actions: recommendedActions,
     ui_compatibility: uiGate,
+    product_process_sanity: productProcessSanity,
+    product_process_sanity_ok: productProcessSanity.ok === true,
+    stale_mounted_app_process_count: Number(productProcessSanity.mounted_app_process_count || 0),
+    product_total_cpu_percent: Number(productProcessSanity.product_total_cpu_percent || 0),
+    product_max_cpu_percent: Number(productProcessSanity.product_max_cpu_percent || 0),
+    product_process_cpu_over_budget: productProcessSanity.product_cpu_over_budget === true,
     ui_product_change: uiGate.product_ui_change === true,
     swift_ui_files_touched: uiGate.swift_ui_files_touched === true,
     rust_browser_product_ui: uiGate.rust_browser_product_ui === true,
@@ -3269,6 +4781,7 @@ async function opsGate(config, args = {}) {
   const logMaintenance = collectLogMaintenance(config, maintenanceArgs, false);
   const reportMaintenance = collectReportMaintenance(config, maintenanceArgs, false, reportPath);
   const uiGate = runUiCompatibilityGate(config);
+  const productProcessSanity = runProductProcessSanity(config, args, reportPath, 'ops_gate');
   const xtFileIpcRunOnceSmoke = runXtFileIpcWatcherRunOnceSmoke(config, args, reportPath);
   const xtFileIpcBackgroundWatcherSmoke = runXtFileIpcBackgroundWatcherSmoke(config, args, reportPath);
   const readiness = statusOut.readiness || launchdOut.readiness || null;
@@ -3287,6 +4800,32 @@ async function opsGate(config, args = {}) {
     statusOut,
     launchdOut,
   );
+  const memoryGatewayModelCallPlanShadow = collectMemoryGatewayModelCallPlanShadow(
+    config,
+    args,
+    statusOut,
+    launchdOut,
+  );
+  const memoryGatewayModelCallExecuteSmoke = collectMemoryGatewayModelCallExecuteSmoke(
+    config,
+    args,
+    statusOut,
+    launchdOut,
+  );
+  const memoryGatewayModelCallLocalExecutorSmoke = collectMemoryGatewayModelCallLocalExecutorSmoke(
+    config,
+    args,
+  );
+  const memoryReadinessProbe = await collectMemoryReadiness(config);
+  const memoryWritebackCandidateOpsRollup = compactMemoryWritebackCandidateDiagnostics(
+    memoryReadinessProbe.readiness,
+  );
+  if (!memoryReadinessProbe.ok) {
+    memoryWritebackCandidateOpsRollup.ok = false;
+    memoryWritebackCandidateOpsRollup.ready = false;
+    memoryWritebackCandidateOpsRollup.error_code = memoryReadinessProbe.error_code;
+    memoryWritebackCandidateOpsRollup.error_message = memoryReadinessProbe.error_message;
+  }
   const issues = [];
   if (requireReady && !healthy) issues.push('daemon_health_unavailable');
   if (requireReady && !readyState) issues.push('daemon_readiness_unavailable');
@@ -3295,9 +4834,20 @@ async function opsGate(config, args = {}) {
   if (uiGate.product_ui_change === true) issues.push('ui_product_change');
   if (uiGate.swift_ui_files_touched === true) issues.push('swift_ui_files_touched');
   if (uiGate.rust_browser_product_ui === true) issues.push('rust_browser_product_ui');
+  if (productProcessSanity.ok !== true) issues.push('product_process_sanity_failed');
   if (xtFileIpcRunOnceSmoke.ok !== true) issues.push('xt_file_ipc_run_once_smoke_failed');
   if (xtFileIpcBackgroundWatcherSmoke.ok !== true) issues.push('xt_file_ipc_background_watcher_smoke_failed');
   issues.push(...memoryGatewayCutoverReadiness.blocking_issues);
+  issues.push(...memoryGatewayModelCallPlanShadow.blocking_issues);
+  issues.push(...memoryGatewayModelCallExecuteSmoke.blocking_issues);
+  issues.push(...memoryGatewayModelCallLocalExecutorSmoke.blocking_issues);
+  if (requireReady && memoryReadinessProbe.ok !== true) issues.push("memory_readiness_unavailable");
+  if (memoryWritebackCandidateOpsRollup.production_authority_change === true) {
+    issues.push("memory_writeback_candidate_production_authority_change");
+  }
+  if (memoryWritebackCandidateOpsRollup.blocking_issues.includes("memory_writeback_candidate_diagnostics_schema_mismatch")) {
+    issues.push("memory_writeback_candidate_diagnostics_schema_mismatch");
+  }
   const memorySkills = appendMemorySkillsAuthorityIssues(issues, readiness, args);
 
   const report = {
@@ -3340,12 +4890,80 @@ async function opsGate(config, args = {}) {
       report_maintenance: reportMaintenance,
     },
     ui_compatibility: uiGate,
+    product_process_sanity: productProcessSanity,
+    product_process_sanity_ok: productProcessSanity.ok === true,
+    stale_mounted_app_process_count: Number(productProcessSanity.mounted_app_process_count || 0),
+    product_total_cpu_percent: Number(productProcessSanity.product_total_cpu_percent || 0),
+    product_max_cpu_percent: Number(productProcessSanity.product_max_cpu_percent || 0),
+    product_process_cpu_over_budget: productProcessSanity.product_cpu_over_budget === true,
     xt_file_ipc_run_once_smoke: xtFileIpcRunOnceSmoke,
     xt_file_ipc_background_watcher_smoke: xtFileIpcBackgroundWatcherSmoke,
     memory_gateway_cutover_readiness: memoryGatewayCutoverReadiness,
     memory_gateway_cutover_readiness_required: memoryGatewayCutoverReadiness.required === true,
     memory_gateway_cutover_ready: memoryGatewayCutoverReadiness.ready_for_require === true,
     memory_gateway_cutover_readiness_ok: memoryGatewayCutoverReadiness.ok === true,
+    memory_gateway_model_call_plan_smoke_enabled: memoryGatewayCutoverReadiness.model_call_plan_smoke_enabled === true,
+    memory_gateway_model_call_plan_ready: memoryGatewayCutoverReadiness.model_call_plan_ready === true,
+    memory_gateway_model_call_plan_execution_blocked: memoryGatewayCutoverReadiness.model_call_plan_execution_blocked === true,
+    memory_gateway_model_call_plan_omitted_reason_counts: memoryGatewayCutoverReadiness.model_call_plan_omitted_reason_counts || {},
+    memory_gateway_model_call_plan_selected_chunk_count: memoryGatewayCutoverReadiness.model_call_plan_selected_chunk_count || 0,
+    memory_gateway_model_call_plan_selected_chunk_ref_count: memoryGatewayCutoverReadiness.model_call_plan_selected_chunk_ref_count || 0,
+    memory_gateway_model_call_plan_omitted_ref_count: memoryGatewayCutoverReadiness.model_call_plan_omitted_ref_count || 0,
+    memory_gateway_model_call_plan_omitted_chunk_ref_count: memoryGatewayCutoverReadiness.model_call_plan_omitted_chunk_ref_count || 0,
+    memory_gateway_model_call_plan_index_granularity: memoryGatewayCutoverReadiness.model_call_plan_index_granularity || '',
+    memory_gateway_model_call_plan_index_source: memoryGatewayCutoverReadiness.model_call_plan_index_source || '',
+    memory_gateway_model_call_plan_chunk_identity_schema: memoryGatewayCutoverReadiness.model_call_plan_chunk_identity_schema || '',
+    memory_gateway_model_call_plan_chunk_expand_via_get_ref: memoryGatewayCutoverReadiness.model_call_plan_chunk_expand_via_get_ref === true,
+    memory_gateway_model_call_plan_shadow: memoryGatewayModelCallPlanShadow,
+    memory_gateway_model_call_plan_shadow_required: memoryGatewayModelCallPlanShadow.required === true,
+    memory_gateway_model_call_plan_shadow_found: memoryGatewayModelCallPlanShadow.status_found === true,
+    memory_gateway_model_call_plan_shadow_ok: memoryGatewayModelCallPlanShadow.ok === true,
+    memory_gateway_model_call_plan_shadow_evidence_ok: memoryGatewayModelCallPlanShadow.evidence_ok === true,
+    memory_gateway_model_call_plan_shadow_execution_safe: memoryGatewayModelCallPlanShadow.execution_safe === true,
+    memory_gateway_model_call_plan_shadow_text_safe: memoryGatewayModelCallPlanShadow.text_safe === true,
+    memory_gateway_model_call_plan_shadow_omitted_reason_counts: memoryGatewayModelCallPlanShadow.omitted_reason_counts || {},
+    memory_gateway_model_call_plan_shadow_selected_chunk_count: memoryGatewayModelCallPlanShadow.selected_chunk_count || 0,
+    memory_gateway_model_call_plan_shadow_selected_chunk_ref_count: memoryGatewayModelCallPlanShadow.selected_chunk_ref_count || 0,
+    memory_gateway_model_call_plan_shadow_omitted_ref_count: memoryGatewayModelCallPlanShadow.omitted_ref_count || 0,
+    memory_gateway_model_call_plan_shadow_omitted_chunk_ref_count: memoryGatewayModelCallPlanShadow.omitted_chunk_ref_count || 0,
+    memory_gateway_model_call_plan_shadow_index_granularity: memoryGatewayModelCallPlanShadow.index_granularity || '',
+    memory_gateway_model_call_plan_shadow_index_source: memoryGatewayModelCallPlanShadow.index_source || '',
+    memory_gateway_model_call_plan_shadow_chunk_identity_schema: memoryGatewayModelCallPlanShadow.chunk_identity_schema || '',
+    memory_gateway_model_call_plan_shadow_chunk_expand_via_get_ref: memoryGatewayModelCallPlanShadow.chunk_expand_via_get_ref === true,
+    memory_gateway_model_call_execute_smoke: memoryGatewayModelCallExecuteSmoke,
+    memory_gateway_model_call_execute_smoke_required: memoryGatewayModelCallExecuteSmoke.required === true,
+    memory_gateway_model_call_execute_smoke_found: memoryGatewayModelCallExecuteSmoke.status_found === true,
+    memory_gateway_model_call_execute_smoke_ok: memoryGatewayModelCallExecuteSmoke.ok === true,
+    memory_gateway_model_call_execute_smoke_execution_blocked: memoryGatewayModelCallExecuteSmoke.execution_blocked === true,
+    memory_gateway_model_call_execute_smoke_content_free: memoryGatewayModelCallExecuteSmoke.content_free !== false,
+    memory_gateway_model_call_execute_smoke_admission_ready: memoryGatewayModelCallExecuteSmoke.admission_ready === true,
+    memory_gateway_model_call_execute_smoke_status: memoryGatewayModelCallExecuteSmoke.execute_status || '',
+    memory_gateway_model_call_execute_smoke_mode: memoryGatewayModelCallExecuteSmoke.execute_mode || '',
+    memory_gateway_model_call_execute_smoke_authority: memoryGatewayModelCallExecuteSmoke.execute_authority || '',
+    memory_gateway_model_call_execute_smoke_blocker_count: Number(memoryGatewayModelCallExecuteSmoke.execute_blocker_count || 0),
+    memory_gateway_model_call_local_executor_smoke: memoryGatewayModelCallLocalExecutorSmoke,
+    memory_gateway_model_call_local_executor_smoke_required: memoryGatewayModelCallLocalExecutorSmoke.required === true,
+    memory_gateway_model_call_local_executor_smoke_found: memoryGatewayModelCallLocalExecutorSmoke.report_found === true,
+    memory_gateway_model_call_local_executor_smoke_ok: memoryGatewayModelCallLocalExecutorSmoke.ok === true,
+    memory_gateway_model_call_local_executor_smoke_isolated_daemon: memoryGatewayModelCallLocalExecutorSmoke.isolated_daemon === true,
+    memory_gateway_model_call_local_executor_smoke_live_daemon_touched: memoryGatewayModelCallLocalExecutorSmoke.live_daemon_touched === true,
+    memory_gateway_model_call_local_executor_smoke_content_free: memoryGatewayModelCallLocalExecutorSmoke.content_free !== false,
+    memory_gateway_model_call_local_executor_smoke_status: memoryGatewayModelCallLocalExecutorSmoke.execute_status || '',
+    memory_gateway_model_call_local_executor_smoke_mode: memoryGatewayModelCallLocalExecutorSmoke.execute_mode || '',
+    memory_gateway_model_call_local_executor_smoke_authority: memoryGatewayModelCallLocalExecutorSmoke.execute_authority || '',
+    memory_gateway_model_call_local_executor_smoke_local_ml_execute_http_invoked: memoryGatewayModelCallLocalExecutorSmoke.local_ml_execute_http_invoked === true,
+    memory_gateway_model_call_local_executor_smoke_recent_slow_requests: Number(memoryGatewayModelCallLocalExecutorSmoke.http_recent_slow_requests || 0),
+    memory_gateway_model_call_local_executor_smoke_recent_max_elapsed_ms: Number(memoryGatewayModelCallLocalExecutorSmoke.http_recent_max_elapsed_ms || 0),
+    memory_readiness_ready: memoryReadinessProbe.ok === true,
+    memory_readiness_error_code: memoryReadinessProbe.error_code || "",
+    memory_readiness_error_message: memoryReadinessProbe.error_message || "",
+    memory_writeback_candidate_ops_rollup: memoryWritebackCandidateOpsRollup,
+    memory_writeback_candidate_queue_ready: memoryWritebackCandidateOpsRollup.ready === true,
+    memory_writeback_candidate_queue_pressure: memoryWritebackCandidateOpsRollup.queue_pressure,
+    memory_writeback_candidate_noise_score: memoryWritebackCandidateOpsRollup.noise_score,
+    memory_writeback_candidate_conflict_count: memoryWritebackCandidateOpsRollup.conflict_candidate_count,
+    memory_writeback_candidate_stale_review_required_count: memoryWritebackCandidateOpsRollup.stale_review_required_count,
+    memory_writeback_candidate_production_authority_change: memoryWritebackCandidateOpsRollup.production_authority_change === true,
     ui_product_change: uiGate.product_ui_change === true,
     swift_ui_files_touched: uiGate.swift_ui_files_touched === true,
     rust_browser_product_ui: uiGate.rust_browser_product_ui === true,
@@ -3577,6 +5195,8 @@ function printEnv(config) {
 
 async function selfTest(config) {
   assertLaunchdExplicitConfigWins();
+  assertLaunchdPassthroughIncludesProviderModelProduction();
+  assertMemoryGatewayModelCallExecuteSmokeCollector();
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xhubd-daemon-self-test-'));
   const port = 57000 + (process.pid % 1000);
   const selfConfig = {
@@ -3679,6 +5299,10 @@ Options:
   --reports-dir <p> For maintenance, override report directory scope
   --no-require-ready For ops-gate, do not fail when health/readiness is unavailable
   --max-slow-requests <n> For ops-gate, slow-request budget, default 0
+  --max-product-cpu-percent <n> For ops-gate/watchdog, fail product process sanity when product CPU exceeds n
+  --skip-product-process-sanity For ops-gate/watchdog, skip stale mounted app and product CPU process check
+  --require-product-shell For ops-gate/watchdog, require X-Hub shell or X-Hub Node bridge process
+  --allow-target-xhubd For ops-gate/watchdog, allow ad-hoc target/debug or target/release xhubd
   --maintenance-max-log-bytes <n> For ops-gate maintenance dry-run log budget
   --xt-file-ipc-run-once-smoke For ops-report/ops-gate, run isolated XT file IPC run-once smoke
   --xt-file-ipc-run-once-smoke-timeout-ms <n> Timeout for that isolated smoke
@@ -3686,8 +5310,20 @@ Options:
   --xt-file-ipc-background-watcher-smoke-timeout-ms <n> Timeout for that isolated smoke
   --memory-gateway-cutover-readiness-path <p> For ops-report/ops-gate, explicit memory_gateway_cutover_readiness.json
   --require-memory-gateway-cutover-ready For ops-gate, require ready_for_require=true before live require cutover
+  --memory-gateway-model-call-plan-status-path <p> For ops-report/ops-gate, explicit memory_gateway_model_call_plan_status.json
+  --memory-gateway-model-call-plan-history-path <p> For ops-report/ops-gate, explicit memory_gateway_model_call_plan_history.json
+  --memory-gateway-model-call-plan-base-dir <p> For ops-report/ops-gate, base dir containing model-call plan shadow evidence
+  --require-memory-gateway-model-call-plan-shadow For ops-gate, require XT model-call shadow preflight evidence to be present and ok
+  --memory-gateway-model-call-execute-smoke-status-path <p> For ops-report/ops-gate, explicit memory_gateway_model_call_execute_smoke_status.json
+  --memory-gateway-model-call-execute-smoke-history-path <p> For ops-report/ops-gate, explicit memory_gateway_model_call_execute_smoke_history.json
+  --memory-gateway-model-call-execute-smoke-base-dir <p> For ops-report/ops-gate, base dir containing model-call execute smoke evidence
+  --require-memory-gateway-model-call-execute-smoke For ops-gate, require model-call execute smoke evidence to be present, blocked, and content-free
+  --memory-gateway-model-call-local-executor-smoke-report-path <p> For ops-report/ops-gate, explicit isolated local-executor smoke report JSON
+  --memory-gateway-model-call-local-executor-smoke-base-dir <p> For ops-report/ops-gate, base dir or package root containing isolated local-executor smoke reports
+  --require-memory-gateway-model-call-local-executor-smoke For ops-gate, require isolated local-executor smoke evidence to be present, executed, content-free, and zero-slow
   --allow-memory-skills-production For ops/report/watchdog gates, permit explicit Rust memory writer and skills execution authority
-  --require-memory-skills-production For ops/report/watchdog gates, require both Rust memory writer and skills execution authority
+  --require-memory-skills-production For ops/report/watchdog gates, require both Rust memory writer and skills execution authority, default post-cutover
+  --no-require-memory-skills-production For ops/report/watchdog gates, use pre-cutover boundary mode
   --allow-manual   For watchdog, do not require launchd to be loaded
   --repair-stale-pid For watchdog --apply, remove stale/invalid pid files
   --pid-file <p>   PID file, default run/xhubd.pid

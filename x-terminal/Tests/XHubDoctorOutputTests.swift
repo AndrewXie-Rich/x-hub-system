@@ -49,6 +49,8 @@ struct XHubDoctorOutputTests {
         #expect(bundle.checks[2].projectContextSummary == nil)
         #expect(bundle.checks[2].durableCandidateMirrorSnapshot == nil)
         #expect(bundle.checks[2].localStoreWriteSnapshot == nil)
+        #expect(bundle.checks[2].rustMemoryObjectMutationGateSnapshot == nil)
+        #expect(bundle.checks[2].rustMemoryUserRevealGrantSnapshot == nil)
         #expect(bundle.checks[2].skillDoctorTruthSnapshot == nil)
         #expect(bundle.checks[0].freshPairReconnectSmokeSnapshot == nil)
         #expect(bundle.nextSteps.count == 2)
@@ -2340,6 +2342,238 @@ struct XHubDoctorOutputTests {
         #expect(check?.localStoreWriteSnapshot?.personalMemoryIntent == SupervisorPersonalMemoryStoreWriteIntent.manualEditBufferCommit.rawValue)
         #expect(check?.localStoreWriteSnapshot?.crossLinkIntent == SupervisorCrossLinkStoreWriteIntent.afterTurnCacheRefresh.rawValue)
         #expect(check?.localStoreWriteSnapshot?.personalReviewIntent == SupervisorPersonalReviewNoteStoreWriteIntent.derivedRefresh.rawValue)
+    }
+
+    @Test
+    func projectsRustMemoryObjectMutationGateSnapshotFromStructuredSessionReadinessProjection() {
+        var xtReport = sampleXTUnifiedDoctorReport(sourceReportPath: "/tmp/xt_unified_doctor_report.json")
+        xtReport.sections[2] = XTUnifiedDoctorSection(
+            kind: .sessionRuntimeReadiness,
+            state: .ready,
+            headline: "Session runtime is ready",
+            summary: "Session runtime is healthy and carries Rust memory object mutation gate readiness.",
+            nextStep: "Continue into the first task.",
+            repairEntry: .xtDiagnostics,
+            detailLines: [
+                "runtime_state=ready"
+            ],
+            rustMemoryObjectMutationGateProjection: XTUnifiedDoctorRustMemoryObjectMutationGateProjection(
+                schemaVersion: "xhub.memory.object_mutation.v1",
+                ready: true,
+                authority: "rust_memory_object_store",
+                archiveHTTP: true,
+                deleteHTTP: true,
+                pinHTTP: true,
+                unpinHTTP: true,
+                confirmationRequired: true,
+                confirmationRequiredFor: ["archive", "delete"],
+                immutableFailClosed: true,
+                deleteMode: "tombstone",
+                activeMemoryMutation: false,
+                productionAuthorityChange: false
+            )
+        )
+
+        let bundle = XHubDoctorOutputReport.xtReadinessBundle(from: xtReport)
+        let check = bundle.checks.first { $0.checkID == XTUnifiedDoctorSectionKind.sessionRuntimeReadiness.rawValue }
+
+        #expect(check?.rustMemoryObjectMutationGateSnapshot?.schemaVersion == "xhub.memory.object_mutation.v1")
+        #expect(check?.rustMemoryObjectMutationGateSnapshot?.authority == "rust_memory_object_store")
+        #expect(check?.rustMemoryObjectMutationGateSnapshot?.archiveHTTP == true)
+        #expect(check?.rustMemoryObjectMutationGateSnapshot?.deleteHTTP == true)
+        #expect(check?.rustMemoryObjectMutationGateSnapshot?.confirmationRequired == true)
+        #expect(check?.rustMemoryObjectMutationGateSnapshot?.confirmationRequiredFor == ["archive", "delete"])
+        #expect(check?.rustMemoryObjectMutationGateSnapshot?.immutableFailClosed == true)
+        #expect(check?.rustMemoryObjectMutationGateSnapshot?.deleteMode == "tombstone")
+    }
+
+    @Test
+    func projectsRustMemoryUserRevealGrantSnapshotFromStructuredSessionReadinessProjection() {
+        var xtReport = sampleXTUnifiedDoctorReport(sourceReportPath: "/tmp/xt_unified_doctor_report.json")
+        xtReport.sections[2] = XTUnifiedDoctorSection(
+            kind: .sessionRuntimeReadiness,
+            state: .ready,
+            headline: "Session runtime is ready",
+            summary: "Session runtime is healthy and carries Rust user reveal grant readiness.",
+            nextStep: "Continue into the first task.",
+            repairEntry: .xtDiagnostics,
+            detailLines: [
+                "runtime_state=ready"
+            ],
+            rustMemoryUserRevealGrantProjection: XTUnifiedDoctorRustMemoryUserRevealGrantProjection(
+                schemaVersion: "xhub.memory.user_reveal_grant.v1",
+                ready: true,
+                authority: "rust_memory_user_reveal_gate",
+                scope: "user",
+                surface: "assistant_user_memory_inspector",
+                issueHTTP: true,
+                evaluateHTTP: true,
+                revokeHTTP: true,
+                defaultTTLMS: 300_000,
+                maxTTLMS: 900_000,
+                contentIncluded: false,
+                memoryIDsIncluded: false,
+                projectCoderAllowed: false,
+                modelContextAuthority: false,
+                memoryServingAuthorityChange: false,
+                productionAuthorityChange: false
+            )
+        )
+
+        let bundle = XHubDoctorOutputReport.xtReadinessBundle(from: xtReport)
+        let check = bundle.checks.first { $0.checkID == XTUnifiedDoctorSectionKind.sessionRuntimeReadiness.rawValue }
+
+        #expect(check?.rustMemoryUserRevealGrantSnapshot?.schemaVersion == "xhub.memory.user_reveal_grant.v1")
+        #expect(check?.rustMemoryUserRevealGrantSnapshot?.ready == true)
+        #expect(check?.rustMemoryUserRevealGrantSnapshot?.authority == "rust_memory_user_reveal_gate")
+        #expect(check?.rustMemoryUserRevealGrantSnapshot?.scope == "user")
+        #expect(check?.rustMemoryUserRevealGrantSnapshot?.surface == "assistant_user_memory_inspector")
+        #expect(check?.rustMemoryUserRevealGrantSnapshot?.issueHTTP == true)
+        #expect(check?.rustMemoryUserRevealGrantSnapshot?.evaluateHTTP == true)
+        #expect(check?.rustMemoryUserRevealGrantSnapshot?.revokeHTTP == true)
+        #expect(check?.rustMemoryUserRevealGrantSnapshot?.contentIncluded == false)
+        #expect(check?.rustMemoryUserRevealGrantSnapshot?.memoryIDsIncluded == false)
+        #expect(check?.rustMemoryUserRevealGrantSnapshot?.projectCoderAllowed == false)
+        #expect(check?.rustMemoryUserRevealGrantSnapshot?.modelContextAuthority == false)
+        #expect(check?.rustMemoryUserRevealGrantSnapshot?.memoryServingAuthorityChange == false)
+        #expect(check?.rustMemoryUserRevealGrantSnapshot?.productionAuthorityChange == false)
+    }
+
+    @Test
+    func projectsRustProductProcessSanitySnapshotFromStructuredSessionReadinessProjection() {
+        var xtReport = sampleXTUnifiedDoctorReport(sourceReportPath: "/tmp/xt_unified_doctor_report.json")
+        xtReport.sections[2] = XTUnifiedDoctorSection(
+            kind: .sessionRuntimeReadiness,
+            state: .ready,
+            headline: "Session runtime is ready",
+            summary: "Session runtime is healthy and carries Rust product process sanity.",
+            nextStep: "Continue into the first task.",
+            repairEntry: .xtDiagnostics,
+            detailLines: [
+                "runtime_state=ready"
+            ],
+            rustProductProcessSanityProjection: RustHubProductProcessSanitySnapshot(
+                schemaVersion: "xhub.product_process_sanity.v1",
+                ok: false,
+                generatedAtMs: 1_234,
+                authority: "diagnostics_only",
+                requireXhubd: true,
+                requireProductShell: false,
+                requireNoTargetXhubd: true,
+                maxProductCpuPercent: 80,
+                processSnapshotOK: true,
+                processSnapshotError: "",
+                productProcessCount: 3,
+                productShellProcessCount: 1,
+                xhubdProcessCount: 1,
+                targetXhubdProcessCount: 0,
+                mountedAppProcessCount: 1,
+                highCpuProductProcessCount: 1,
+                productTotalCpuPercent: 91.5,
+                productMaxCpuPercent: 91.5,
+                productCpuOverBudget: true,
+                issues: ["stale_mounted_app_process_present", "product_process_cpu_over_budget"],
+                recommendations: ["Close stale mounted app processes."]
+            )
+        )
+
+        let bundle = XHubDoctorOutputReport.xtReadinessBundle(from: xtReport)
+        let check = bundle.checks.first { $0.checkID == XTUnifiedDoctorSectionKind.sessionRuntimeReadiness.rawValue }
+
+        #expect(check?.rustProductProcessSanitySnapshot?.ok == false)
+        #expect(check?.rustProductProcessSanitySnapshot?.mountedAppProcessCount == 1)
+        #expect(check?.rustProductProcessSanitySnapshot?.productCpuOverBudget == true)
+        #expect(check?.rustProductProcessSanitySnapshot?.issues?.contains("stale_mounted_app_process_present") == true)
+    }
+
+    @Test
+    func projectsRustMemoryGatewayExecutionGateSnapshotFromStructuredSessionReadinessProjection() throws {
+        let executionGateSnapshot = RustHubMemoryGatewayModelCallExecutionGateSnapshot(
+            schemaVersion: "xhub.memory.gateway_model_call_execution_gate.v1",
+            ok: true,
+            status: "blocked",
+            source: "rust_memory_gateway_model_call_execution_gate",
+            authority: "rust_memory_gateway_execution_gate_only",
+            mode: "gate_only_no_model_call",
+            productionAuthorityChange: false,
+            executionAuthorityInRust: false,
+            executionEnabled: false,
+            readyForExecution: false,
+            wouldCallModel: false,
+            modelCallExecuted: false,
+            executionRequested: true,
+            requestID: "xt-doctor-smoke",
+            auditRef: "xt_doctor_memory_gateway_execution_gate",
+            blockers: ["memory_gateway_model_call_execution_not_enabled"],
+            plan: RustHubMemoryGatewayModelCallExecutionGateSnapshot.Plan(
+                ok: true,
+                schemaVersion: "xhub.memory.gateway_model_call_plan.v1",
+                source: "rust_memory_gateway_model_call_plan",
+                mode: "plan_only_no_model_call",
+                authority: "rust_memory_gateway_plan_only",
+                status: "planned",
+                contextTextIncluded: false,
+                contextCharCount: 0,
+                selectedRefCount: 2,
+                promptTextIncluded: false,
+                promptCharCount: 0,
+                messageCount: 1,
+                routeIntent: "route_required_before_execute"
+            ),
+            guards: RustHubMemoryGatewayModelCallExecutionGateSnapshot.Guards(
+                localMLExecuteHTTPNotInvoked: true,
+                providerRouteNotMutated: true,
+                nodeNotAuthority: true,
+                contextTextRedactedFromGate: true,
+                promptTextRedactedFromGate: true
+            )
+        )
+        var xtReport = sampleXTUnifiedDoctorReport(sourceReportPath: "/tmp/xt_unified_doctor_report.json")
+        xtReport.sections[2] = XTUnifiedDoctorSection(
+            kind: .sessionRuntimeReadiness,
+            state: .ready,
+            headline: "Session runtime is ready",
+            summary: "Session runtime carries Rust Memory Gateway model-call execution gate evidence.",
+            nextStep: "Keep the execution authority blocked until the live cutover gate is explicitly enabled.",
+            repairEntry: .xtDiagnostics,
+            detailLines: [
+                "runtime_state=ready"
+            ],
+            rustMemoryGatewayExecutionGateProjection: executionGateSnapshot
+        )
+
+        let bundle = XHubDoctorOutputReport.xtReadinessBundle(from: xtReport)
+        let check = try #require(bundle.checks.first {
+            $0.checkID == XTUnifiedDoctorSectionKind.sessionRuntimeReadiness.rawValue
+        })
+        let snapshot = try #require(check.rustMemoryGatewayModelCallExecutionGateSnapshot)
+
+        #expect(snapshot.status == "blocked")
+        #expect(snapshot.executionRequested == true)
+        #expect(snapshot.executionEnabled == false)
+        #expect(snapshot.wouldCallModel == false)
+        #expect(snapshot.modelCallExecuted == false)
+        #expect(snapshot.productionAuthorityChange == false)
+        #expect(snapshot.blockers == ["memory_gateway_model_call_execution_not_enabled"])
+        #expect(snapshot.plan?.contextTextIncluded == false)
+        #expect(snapshot.plan?.promptTextIncluded == false)
+        #expect(snapshot.guards?.localMLExecuteHTTPNotInvoked == true)
+        #expect(snapshot.guards?.providerRouteNotMutated == true)
+        #expect(snapshot.guards?.nodeNotAuthority == true)
+
+        let jsonObject = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(bundle)
+        ) as? [String: Any]
+        let checks = try #require(jsonObject?["checks"] as? [[String: Any]])
+        let sessionCheck = try #require(checks.first {
+            ($0["check_id"] as? String) == XTUnifiedDoctorSectionKind.sessionRuntimeReadiness.rawValue
+        })
+        let encodedSnapshot = try #require(
+            sessionCheck["rust_memory_gateway_model_call_execution_gate_snapshot"] as? [String: Any]
+        )
+        #expect(encodedSnapshot["status"] as? String == "blocked")
+        #expect(encodedSnapshot["would_call_model"] as? Bool == false)
+        #expect(encodedSnapshot["model_call_executed"] as? Bool == false)
     }
 
     @Test

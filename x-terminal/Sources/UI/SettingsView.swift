@@ -456,6 +456,8 @@ struct SettingsView: View {
     @State private var securityRuntimeChangeNotice: XTSettingsChangeNotice?
     @State private var rustHubReadinessPresentation = RustHubReadinessPresentation.loading()
     @State private var rustHubReadinessRefreshID = 0
+    @State private var hubDiscoveryScanConfirmPresented = false
+    @State private var hubProfileTransferStatus = ""
 
     init(embeddedInControlCenter: Bool = false) {
         self.embeddedInControlCenter = embeddedInControlCenter
@@ -491,7 +493,6 @@ struct SettingsView: View {
             }
             .onAppear {
                 processSettingsFocusRequest(proxy)
-                appModel.maybeAutoFillHubSetupPathAndPorts(force: false)
                 defaultToolSandboxMode = ToolExecutor.sandboxMode()
                 modelManager.setAppModel(appModel)
                 if settingsSnapshot.hubInteractive {
@@ -523,6 +524,18 @@ struct SettingsView: View {
             idealWidth: embeddedInControlCenter ? 900 : 960,
             minHeight: 720
         )
+        .confirmationDialog(
+            "确认扫描局域网 Hub",
+            isPresented: $hubDiscoveryScanConfirmPresented,
+            titleVisibility: .visible
+        ) {
+            Button("确认扫描") {
+                appModel.maybeAutoFillHubSetupPathAndPorts(force: true)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("建议先填写 Hub IP/域名、Pairing Port 和 gRPC Port。自动扫描会探测当前局域网，可能需要几秒；首次配对仍只允许同 Wi-Fi/LAN。")
+        }
     }
 
     private func settingsDetailContent(proxy: ScrollViewProxy) -> some View {
@@ -863,6 +876,8 @@ struct SettingsView: View {
                     HubInviteStatusCard(presentation: inviteStatusPresentation)
                 }
 
+                hubProfileSelector
+
                 HStack {
                     Text("当前状态")
                     Spacer()
@@ -905,13 +920,13 @@ struct SettingsView: View {
 
                 DisclosureGroup(isExpanded: $connectionToolsExpanded) {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("自动探测失败、需要固定目标 Hub，或要清掉旧配对时，再展开这里。")
+                        Text("先填 Hub IP/域名、Pairing Port 和 gRPC Port；只有手动确认后才扫描局域网。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
                         HStack(spacing: 10) {
                             Button(settingsSnapshot.hubPortAutoDetectRunning ? "探测中..." : "自动探测") {
-                                appModel.maybeAutoFillHubSetupPathAndPorts(force: true)
+                                handleAutoDetectHubAction()
                             }
                             .buttonStyle(.bordered)
                             .disabled(settingsSnapshot.hubRemoteLinking)
@@ -939,10 +954,10 @@ struct SettingsView: View {
                                     .frame(width: 120)
                             }
                             GridRow {
-                                Text("正式入口")
+                                Text("Hub IP/域名")
                                     .frame(width: 140, alignment: .leading)
                                 VStack(alignment: .leading, spacing: 4) {
-                                    TextField("hub.xhubsystem.com", text: internetHostBinding)
+                                    TextField("17.81.11.80 或 hub.xhubsystem.com", text: internetHostBinding)
                                         .textFieldStyle(.roundedBorder)
                                     Text(formalEntryGuidancePresentation.message)
                                         .font(.caption)
@@ -954,7 +969,7 @@ struct SettingsView: View {
                                 Text("邀请令牌（首配用）")
                                     .frame(width: 140, alignment: .leading)
                                 VStack(alignment: .leading, spacing: 4) {
-                                    TextField("来自 Hub 邀请链接", text: inviteTokenBinding)
+                                    TextField("Hub 配对码/邀请链接", text: inviteTokenBinding)
                                         .textFieldStyle(.roundedBorder)
                                     Text(inviteTokenGuidancePresentation.message)
                                         .font(.caption)
@@ -983,6 +998,206 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var hubProfileSelector: some View {
+        let profiles = settingsSnapshot.hubProfilesSnapshot.profiles
+        let activeID = settingsSnapshot.hubProfilesSnapshot.activeProfileID
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "rectangle.stack.badge.person.crop")
+                    .foregroundStyle(.secondary)
+                Text("Hub 配置")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Picker("", selection: activeHubProfileIDBinding) {
+                    ForEach(profiles) { profile in
+                        Text(profile.shortLabel).tag(profile.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 220)
+                .disabled(profiles.isEmpty || settingsSnapshot.hubRemoteLinking)
+            }
+
+            if profiles.isEmpty {
+                Text("还没有 Hub 配置")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 8) {
+                    Text("当前名称")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    TextField("Home Hub", text: activeHubProfileDisplayNameBinding)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 240)
+                        .disabled(settingsSnapshot.hubRemoteLinking)
+                }
+
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(profiles) { profile in
+                        hubProfileStatusRow(profile, isActive: profile.id == activeID)
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                Button("新增配置") {
+                    appModel.createNewHubProfileFromUser()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(settingsSnapshot.hubRemoteLinking)
+
+                Button("保存当前参数") {
+                    appModel.saveCurrentHubProfileFromUser()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("删除当前配置") {
+                    appModel.removeSelectedHubProfileFromUser()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(profiles.count <= 1 || settingsSnapshot.hubRemoteLinking)
+
+                Spacer()
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    copyActiveHubProfilePackageToClipboard()
+                } label: {
+                    Label("复制配置", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(profiles.isEmpty)
+
+                Button {
+                    importHubProfilePackageFromClipboard()
+                } label: {
+                    Label("从剪贴板导入", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(settingsSnapshot.hubRemoteLinking)
+
+                Spacer()
+            }
+
+            if !hubProfileTransferStatus.isEmpty {
+                Text(hubProfileTransferStatus)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func copyActiveHubProfilePackageToClipboard() {
+        guard let text = appModel.activeHubProfileExportPackageText() else {
+            hubProfileTransferStatus = "当前没有可复制的 Hub 配置。"
+            return
+        }
+        NSPasteboard.general.clearContents()
+        let ok = NSPasteboard.general.setString(text, forType: .string)
+        hubProfileTransferStatus = ok
+            ? "已复制安全配置包；不含令牌、证书、client kit、provider key。"
+            : "复制失败，请稍后重试。"
+    }
+
+    private func importHubProfilePackageFromClipboard() {
+        let text = NSPasteboard.general.string(forType: .string) ?? ""
+        if appModel.importHubProfilePackageTextFromUser(text) {
+            hubProfileTransferStatus = "已导入 Hub 配置并切换为当前配置；如未配对，需要重新配对授权。"
+        } else {
+            hubProfileTransferStatus = "剪贴板里没有有效的 Hub 安全配置包。"
+        }
+    }
+
+    private func hubProfileStatusRow(_ profile: XTHubProfile, isActive: Bool) -> some View {
+        let runtime = XTHubProfilesStorage.runtimeStatus(for: profile)
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: isActive ? "checkmark.circle.fill" : (runtime.isPaired ? "link.circle.fill" : "circle.dashed"))
+                .foregroundStyle(isActive ? .green : (runtime.isPaired ? .blue : .secondary))
+                .frame(width: 16, height: 16)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(profile.shortLabel)
+                        .font(.caption.weight(isActive ? .semibold : .regular))
+                        .lineLimit(1)
+                    Text(runtime.pairingLabel)
+                        .font(.caption2)
+                        .foregroundStyle(runtime.isPaired ? .green : .secondary)
+                    if isActive {
+                        Text("当前")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.green)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                Text(profile.endpointSummary)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+
+                Text("state \(runtime.stateDirPath)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+
+                Text(hubProfileRuntimeSummary(profile))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    private func hubProfileRuntimeSummary(_ profile: XTHubProfile) -> String {
+        let connect: String = {
+            guard let ok = profile.lastConnectOK else { return "连接 未验证" }
+            let route = (profile.lastConnectRoute ?? "none").trimmingCharacters(in: .whitespacesAndNewlines)
+            let status = ok ? "成功" : "失败"
+            let when = hubProfileRelativeTime(profile.lastConnectAtMs)
+            return "连接 \(status) \(route.isEmpty ? "none" : route) \(when)"
+        }()
+        let models: String = {
+            guard let count = profile.lastModelCount else { return "模型 未刷新" }
+            return "模型 \(count) \(hubProfileRelativeTime(profile.lastModelInventoryUpdatedAtMs))"
+        }()
+        let skills: String = {
+            guard let count = profile.lastSkillsCount else { return "Skills 未刷新" }
+            return "Skills \(count) \(hubProfileRelativeTime(profile.lastSkillsUpdatedAtMs))"
+        }()
+        return "\(connect) · \(models) · \(skills)"
+    }
+
+    private func hubProfileRelativeTime(_ ms: Int64?) -> String {
+        guard let ms, ms > 0 else { return "未更新" }
+        let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+        let deltaSeconds = max(0, (nowMs - ms) / 1000)
+        if deltaSeconds < 60 { return "刚刚" }
+        if deltaSeconds < 3600 { return "\(deltaSeconds / 60)m" }
+        if deltaSeconds < 86_400 { return "\(deltaSeconds / 3600)h" }
+        if deltaSeconds < 7 * 86_400 { return "\(deltaSeconds / 86_400)d" }
+        let date = Date(timeIntervalSince1970: Double(ms) / 1000.0)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd"
+        return formatter.string(from: date)
     }
 
     private var rustHubShadowStatusCard: some View {
@@ -2166,9 +2381,43 @@ struct SettingsView: View {
                     detail: "这里直接看发现 / 配对 / 连接的当前状态；需要手动修复时，再展开连接参数与修复工具。"
                 )
             } else {
-                appModel.startHubOneClickSetup()
+                if shouldRequireManualEndpointBeforeFirstPair {
+                    promptForManualHubEndpoint()
+                } else {
+                    appModel.startHubOneClickSetup()
+                }
             }
         }
+    }
+
+    private func handleAutoDetectHubAction() {
+        commitPendingHubEndpointEdits()
+        if settingsSnapshot.hubInternetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            promptForManualHubEndpoint()
+            hubDiscoveryScanConfirmPresented = true
+            return
+        }
+        appModel.maybeAutoFillHubSetupPathAndPorts(force: true)
+    }
+
+    private var shouldRequireManualEndpointBeforeFirstPair: Bool {
+        AppModel.shouldRequireManualEndpointBeforeFirstPair(
+            hasHubEnv: HubPairingCoordinator.hasHubEnvFast(stateDir: nil),
+            internetHost: settingsSnapshot.hubInternetHost,
+            inviteToken: settingsSnapshot.hubInviteToken,
+            inviteAlias: settingsSnapshot.hubInviteAlias,
+            inviteInstanceID: settingsSnapshot.hubInviteInstanceID
+        )
+    }
+
+    private func promptForManualHubEndpoint() {
+        connectionToolsExpanded = true
+        appModel.markHubManualEndpointRequired()
+        appModel.requestSettingsFocus(
+            sectionId: "pair_hub",
+            title: "先填写 Hub 地址或配对码",
+            detail: "首次配对前请填写 Hub IP/域名、Pairing Port 和 gRPC Port；也可以粘贴 Hub 生成的同 Wi-Fi 配对链接。未填写时 XT 不会自动扫描；需要扫描时，点击“自动探测”并确认。"
+        )
     }
 
     private func commitPendingHubEndpointEdits() {
@@ -2275,6 +2524,24 @@ struct SettingsView: View {
         )
     }
 
+    private var activeHubProfileIDBinding: Binding<String> {
+        Binding(
+            get: { settingsSnapshot.hubProfilesSnapshot.activeProfileID },
+            set: { value in
+                appModel.selectHubProfile(value)
+            }
+        )
+    }
+
+    private var activeHubProfileDisplayNameBinding: Binding<String> {
+        Binding(
+            get: { settingsSnapshot.hubProfilesSnapshot.activeProfile?.displayName ?? "" },
+            set: { value in
+                appModel.renameActiveHubProfileFromUser(value)
+            }
+        )
+    }
+
     private var localServerEnabledBinding: Binding<Bool> {
         Binding(
             get: { settingsSnapshot.localServerEnabled },
@@ -2330,7 +2597,7 @@ struct SettingsView: View {
         if hasStableFormalEntry {
             return "上面的首用动作负责连接；当前正式入口已设置，XT 后续切网与自愈都会优先验证这条路径。"
         }
-        return "上面的首用动作负责连接；这里主要用来看状态，必要时再展开底层修复工具。"
+        return "上面的首用动作负责连接；首次配对前先填写 Hub IP/域名、Pairing Port 和 gRPC Port，未填写不会自动扫描。"
     }
 
     private var internetHostBinding: Binding<String> {
@@ -2346,6 +2613,9 @@ struct SettingsView: View {
         Binding(
             get: { settingsSnapshot.hubInviteToken },
             set: { value in
+                if appModel.applyHubPairingInviteTextIfPossible(value) {
+                    return
+                }
                 appModel.hubInviteToken = value
                 appModel.saveHubRemotePrefsNow()
             }
@@ -2400,7 +2670,7 @@ struct SettingsView: View {
         if hasStableFormalEntry {
             return "正式入口已设置；切网后 XT 会优先验证这条路径。"
         }
-        return "进入页面会先自动探测一轮；需要手动修复时，再展开连接参数与修复工具。"
+        return "先填 Hub IP/域名、Pairing Port 和 gRPC Port；未填不会扫描，需要时确认后再自动探测。"
     }
 
     private var formalEntryGuidancePresentation: HubRemoteAccessGuidancePresentation {

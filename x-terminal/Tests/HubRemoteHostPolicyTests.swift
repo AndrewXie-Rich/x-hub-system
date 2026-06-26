@@ -28,4 +28,20 @@ struct HubRemoteHostPolicyTests {
         #expect(classification.isFormalRemoteEntry == false)
         #expect(classification.ipScope == .publicInternet)
     }
+
+    @Test
+    func privateIPv4IsLocalOnlyNotInternetRemote() {
+        let host = "192.168.10.110"
+        let classification = XTHubRemoteAccessHostClassification.classify(host)
+
+        #expect(HubRemoteHostPolicy.isPrivateIPv4Host(host))
+        #expect(HubRemoteHostPolicy.isDirectLocalFallbackHost(host))
+        #expect(HubRemoteHostPolicy.isDirectInternetRemoteHost(host) == false)
+        #expect(HubRemoteHostPolicy.shouldTrustPairingInternetHost(
+            pairingHost: host,
+            authoritativeHost: host,
+            pairingInternetHost: host
+        ) == false)
+        #expect(classification.ipScope == .privateLAN)
+    }
 }

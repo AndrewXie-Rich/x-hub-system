@@ -34,12 +34,17 @@ enum HubSecureRemoteSetupPackBuilder {
         )
 
         return """
-REL Flow Hub Secure Remote Setup
+REL Flow Hub Remote Setup
 
-Recommended path:
-1. On the XT device, open the invite link below. This is the preferred secure path.
+Choose one remote entry:
+- Secure non-Tailscale path: stable DNS name -> Cloudflare Spectrum or your VPS raw TCP relay -> Hub 50051/50052, with mTLS enabled.
+- Convenient path: public IP/DDNS + router port forwarding to Hub 50051/50052. Use only when you accept lower network exposure.
+- Private-network path: Tailscale/MagicDNS or another private TCP route, if the user chooses to install it.
+
+How to use:
+1. On the XT device, open the invite link below. This is the preferred path after the remote entry is reachable.
 2. If that device already has `axhubctl`, you can run the bootstrap command below instead.
-3. XT will keep using this stable DNS/Tailscale/relay entry for future network switches instead of falling back to public raw IP.
+3. XT will keep using this configured remote entry for future network switches instead of falling back to blind LAN scans.
 
 Invite link:
 \(inviteURL.absoluteString)
@@ -48,8 +53,9 @@ Bootstrap command (existing XT / axhubctl only):
 \(command)
 
 Security notes:
-- Uses stable DNS/Tailscale/relay host: \(host)
+- Uses configured remote host: \(host)
 - External pairing requires invite token validation
+- First pairing is still limited to the same Wi-Fi/LAN by Hub policy; after pairing, roaming relies on issued credentials and mTLS
 - Fails closed if the required client kit cannot be installed
 - Does not fetch `axhubctl` over unauthenticated remote HTTP
 """

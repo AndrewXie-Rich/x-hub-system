@@ -3,6 +3,27 @@ import SwiftUI
 import UniformTypeIdentifiers
 import RELFlowHubCore
 
+enum AddRemoteModelImportBehavior {
+    static func shouldPreserveExistingAPIKeyOnConfigImport(
+        currentAPIKey: String,
+        importedAPIKey: String
+    ) -> Bool {
+        let current = currentAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let imported = importedAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !current.isEmpty, !imported.isEmpty else { return false }
+        return current != imported
+    }
+
+    static func shouldPreserveExistingBaseURLOnAuthImport(
+        existingBaseURL: String,
+        rawCredentialBaseURL: String
+    ) -> Bool {
+        let existing = existingBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = rawCredentialBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !existing.isEmpty && raw.isEmpty
+    }
+}
+
 struct AddRemoteModelSheet: View {
     let onAdd: ([RemoteModelEntry]) -> Void
 
@@ -596,13 +617,21 @@ struct AddRemoteModelSheet: View {
 
         do {
             let resolved = try CodexProviderImportResolver.resolveAuthImport(from: url)
-            let imported = try (resolved.credentials ?? ProviderAuthImport.load(from: url))
+            let rawImported = try ProviderAuthImport.load(from: url)
+            let imported = resolved.credentials ?? rawImported
             apiKey = imported.apiKey
             let importedBase = imported.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawImportedBase = rawImported.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             let existingBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            let effectiveBase = importedBase.isEmpty ? existingBase : importedBase
+            let preserveExistingBase = AddRemoteModelImportBehavior.shouldPreserveExistingBaseURLOnAuthImport(
+                existingBaseURL: existingBase,
+                rawCredentialBaseURL: rawImportedBase
+            )
+            let effectiveBase = preserveExistingBase
+                ? existingBase
+                : (importedBase.isEmpty ? existingBase : importedBase)
             let effectiveBackend: String
-            if importedBase.isEmpty, !existingBase.isEmpty {
+            if preserveExistingBase || (importedBase.isEmpty && !existingBase.isEmpty) {
                 effectiveBackend = backend
             } else {
                 effectiveBackend = imported.backend
@@ -614,9 +643,16 @@ struct AddRemoteModelSheet: View {
                 wireAPI = importedWireAPI
             }
             let importedKeyRef = imported.apiKeyRef.trimmingCharacters(in: .whitespacesAndNewlines)
-            apiKeyRef = importedKeyRef.isEmpty
-                ? defaultAPIKeyRef(backend: effectiveBackend, baseURL: effectiveBase)
-                : importedKeyRef
+            if preserveExistingBase {
+                let existingRef = apiKeyRef.trimmingCharacters(in: .whitespacesAndNewlines)
+                apiKeyRef = existingRef.isEmpty
+                    ? defaultAPIKeyRef(backend: effectiveBackend, baseURL: effectiveBase)
+                    : existingRef
+            } else {
+                apiKeyRef = importedKeyRef.isEmpty
+                    ? defaultAPIKeyRef(backend: effectiveBackend, baseURL: effectiveBase)
+                    : importedKeyRef
+            }
             idPrefix = defaultPrefix(for: effectiveBackend)
             if let providerConfig = resolved.providerConfig {
                 let preferredModelID = providerConfig.preferredModelID
@@ -630,7 +666,7 @@ struct AddRemoteModelSheet: View {
             } else {
                 errorText = ""
             }
-            importedCredentialVariants = resolved.credentialVariants
+            importedCredentialVariants = preserveExistingBase ? [] : resolved.credentialVariants
             importedCredentialFingerprint = credentialFingerprint(
                 backend: effectiveBackend,
                 baseURL: effectiveBase,
@@ -663,6 +699,10 @@ struct AddRemoteModelSheet: View {
         do {
             let resolved = try CodexProviderImportResolver.resolveConfigImport(from: url)
             let imported = try (resolved.providerConfig ?? ProviderConfigImport.load(from: url))
+            let shouldPreserveCurrentKey = AddRemoteModelImportBehavior.shouldPreserveExistingAPIKeyOnConfigImport(
+                currentAPIKey: apiKey,
+                importedAPIKey: resolved.credentials?.apiKey ?? ""
+            )
             backend = imported.backend
             baseURL = imported.baseURL
             apiKeyRef = imported.apiKeyRef
@@ -671,14 +711,14 @@ struct AddRemoteModelSheet: View {
             if !imported.preferredModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 modelId = imported.preferredModelID
             }
-            if let credentials = resolved.credentials {
+            if let credentials = resolved.credentials, !shouldPreserveCurrentKey {
                 apiKey = credentials.apiKey
             }
-            importedCredentialVariants = resolved.credentialVariants
+            importedCredentialVariants = shouldPreserveCurrentKey ? [] : resolved.credentialVariants
             importedCredentialFingerprint = credentialFingerprint(
                 backend: imported.backend,
                 baseURL: imported.baseURL,
-                apiKey: resolved.credentials?.apiKey ?? "",
+                apiKey: shouldPreserveCurrentKey ? apiKey : (resolved.credentials?.apiKey ?? ""),
                 apiKeyRef: imported.apiKeyRef,
                 wireAPI: normalizedWireAPI(imported.wireAPI)
             )

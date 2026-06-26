@@ -524,6 +524,20 @@ final class HubGRPCServerSupport: ObservableObject {
         externalInviteURL?.absoluteString ?? ""
     }
 
+    var localPairingInviteURL: URL? {
+        HubExternalAccessInviteSupport.localPairingInviteURL(
+            alias: preferredExternalHubAlias,
+            inviteToken: externalInviteTokenRecord?.tokenSecret,
+            pairingPort: xtTerminalPairingPort,
+            grpcPort: port,
+            hubInstanceID: bonjourAdvertiser.metadata?.hubInstanceID
+        )
+    }
+
+    var localPairingInviteLinkText: String {
+        localPairingInviteURL?.absoluteString ?? ""
+    }
+
     var externalInviteQRCodeImage: NSImage? {
         guard let inviteURL = externalInviteURL else { return nil }
         return Self.qrCodeImage(for: inviteURL.absoluteString, side: 156)
@@ -538,6 +552,16 @@ final class HubGRPCServerSupport: ObservableObject {
 
     var canProvisionExternalInvite: Bool {
         HubExternalAccessInviteSupport.normalizedInviteHost(xtTerminalInternetHost) != nil
+    }
+
+    var canProvisionLocalPairingInvite: Bool {
+        HubExternalAccessInviteSupport.localPairingInviteURL(
+            alias: preferredExternalHubAlias,
+            inviteToken: externalInviteTokenRecord?.tokenSecret ?? "axhub_invite_preview",
+            pairingPort: xtTerminalPairingPort,
+            grpcPort: port,
+            hubInstanceID: bonjourAdvertiser.metadata?.hubInstanceID
+        ) != nil
     }
 
     var canProvisionSecureRemoteSetupPack: Bool {
@@ -818,6 +842,13 @@ final class HubGRPCServerSupport: ObservableObject {
         env["HUB_GRPC_MTLS_REQUIRE_CERT_PIN"] = "1"
         // Pin base dir so Node uses the same filesystem IPC directories as the Hub runtime + Bridge.
         env["HUB_RUNTIME_BASE_DIR"] = base.path
+        let concurrencyPolicyURL = HubModelConcurrencyPolicyStorage.url(baseDir: base)
+        HubModelConcurrencyPolicyStorage.save(
+            HubModelConcurrencyPolicyStorage.load(baseDir: base),
+            baseDir: base
+        )
+        env["XHUB_MODEL_CONCURRENCY_POLICY_PATH"] = concurrencyPolicyURL.path
+        env["HUB_MODEL_CONCURRENCY_POLICY_PATH"] = concurrencyPolicyURL.path
         // Bridge IPC should live next to the Hub runtime base dir so the bundled gRPC server
         // can always find Bridge status/requests in sandboxed builds (where /private/tmp may
         // not be writable). EmbeddedBridgeRunner uses the same base dir choice.
@@ -1058,8 +1089,8 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
 # Verify (LAN):
 "$AXHUBCTL" list-models
 
-# Remote (Tailscale/relay) example:
-# "$AXHUBCTL" tunnel --hub <hub_tailscale_or_relay_host> --grpc-port "$GRPC_PORT" --local-port "$GRPC_PORT" --install
+# Remote (domain/relay/public entry) example:
+# "$AXHUBCTL" tunnel --hub <hub_remote_host> --grpc-port "$GRPC_PORT" --local-port "$GRPC_PORT" --install
 # "$AXHUBCTL" tunnel --status
 # "$AXHUBCTL" remote list-models
 """
@@ -1072,6 +1103,17 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
             rotateExternalInviteToken()
         }
         guard let inviteURL = externalInviteURL else { return false }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(inviteURL.absoluteString, forType: .string)
+        return true
+    }
+
+    @discardableResult
+    func copyLocalPairingInviteLinkToClipboard() -> Bool {
+        if externalInviteTokenRecord == nil {
+            rotateExternalInviteToken()
+        }
+        guard let inviteURL = localPairingInviteURL else { return false }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(inviteURL.absoluteString, forType: .string)
         return true
@@ -1740,7 +1782,9 @@ HUB_CLIENT_TOKEN='\(tok)'
             return trimmedOverride
         }
 
-        let parsed = rows.compactMap(parseInterfaceIPv4Row(_:))
+        let parsed = rows
+            .compactMap(parseInterfaceIPv4Row(_:))
+            .filter { isAdvertisableRemoteInterfaceCandidate($0) }
         guard !parsed.isEmpty else { return nil }
         return parsed.min { lhs, rhs in
             preferredXTTerminalInternetHostScore(lhs) < preferredXTTerminalInternetHostScore(rhs)
@@ -1765,6 +1809,10 @@ HUB_CLIENT_TOKEN='\(tok)'
             return 0
         }
         return 1
+    }
+
+    private static func isAdvertisableRemoteInterfaceCandidate(_ candidate: (ifname: String, ip: String)) -> Bool {
+        isCarrierGradeNatIPv4(candidate.ip)
     }
 
     private static func preferredXTTerminalInternetHostScore(_ candidate: (ifname: String, ip: String)) -> Int {
@@ -2487,11 +2535,6 @@ HUB_CLIENT_TOKEN='\(tok)'
     private static func defaultFirstPairingLANAllowedCidrs() -> [String] {
         var out: [String] = ["loopback"]
         for cidr in currentLANIPv4Cidrs(maxBroadPrefix: 16, excludingRemoteTunnelInterfaces: true) {
-            if !out.contains(cidr) {
-                out.append(cidr)
-            }
-        }
-        for cidr in currentLANIPv4CoarseCidrs(prefix: 16, excludingRemoteTunnelInterfaces: true) {
             if !out.contains(cidr) {
                 out.append(cidr)
             }

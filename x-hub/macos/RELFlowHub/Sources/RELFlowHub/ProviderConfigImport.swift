@@ -109,10 +109,10 @@ enum ProviderConfigImport {
 
             if current == nil {
                 if key == "model_provider" {
-                    let providerName = unquote(value)
+                    let providerName = tomlStringValue(value)
                     preferredProviderName = providerName.isEmpty ? preferredProviderName : providerName
                 } else if key == "model" {
-                    let modelID = unquote(value)
+                    let modelID = tomlStringValue(value)
                     preferredModelID = modelID.isEmpty ? preferredModelID : modelID
                 }
                 continue
@@ -124,11 +124,11 @@ enum ProviderConfigImport {
 
             switch key {
             case "base_url":
-                section.baseURL = unquote(value)
+                section.baseURL = tomlStringValue(value)
             case "requires_openai_auth":
-                section.requiresOpenAIAuth = value.lowercased() == "true"
+                section.requiresOpenAIAuth = tomlStringValue(value).lowercased() == "true"
             case "wire_api":
-                section.wireAPI = unquote(value)
+                section.wireAPI = tomlStringValue(value)
             default:
                 break
             }
@@ -213,12 +213,66 @@ enum ProviderConfigImport {
         return canonical.isEmpty ? UUID().uuidString : canonical
     }
 
-    private static func unquote(_ raw: String) -> String {
-        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if value.hasPrefix("\""), value.hasSuffix("\""), value.count >= 2 {
-            value.removeFirst()
-            value.removeLast()
+    private static func tomlStringValue(_ raw: String) -> String {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return "" }
+
+        if let quote = value.first, quote == "\"" || quote == "'" {
+            var escaped = false
+            var out = ""
+            for character in value.dropFirst() {
+                if quote == "\"", escaped {
+                    out.append(character)
+                    escaped = false
+                    continue
+                }
+                if quote == "\"", character == "\\" {
+                    escaped = true
+                    continue
+                }
+                if character == quote {
+                    return out.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                out.append(character)
+            }
+            return out.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        return value
+
+        let stripped = stripInlineComment(from: value)
+        return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func stripInlineComment(from raw: String) -> String {
+        var escaped = false
+        var quote: Character?
+        var out = ""
+        for character in raw {
+            if let activeQuote = quote {
+                out.append(character)
+                if activeQuote == "\"", escaped {
+                    escaped = false
+                    continue
+                }
+                if activeQuote == "\"", character == "\\" {
+                    escaped = true
+                    continue
+                }
+                if character == activeQuote {
+                    quote = nil
+                }
+                continue
+            }
+
+            if character == "\"" || character == "'" {
+                quote = character
+                out.append(character)
+                continue
+            }
+            if character == "#" {
+                break
+            }
+            out.append(character)
+        }
+        return out
     }
 }

@@ -40,6 +40,7 @@ enum AXMemoryPipeline {
             // Fallback: apply a minimal deterministic merge so memory still updates.
             let existing = try AXProjectStore.loadOrCreateMemory(for: ctx)
             let delta = fallbackDelta(existing: existing, turn: turn)
+            startMemoryWritebackCandidateExtraction(ctx: ctx, delta: delta, deltaSource: "runtime_fallback")
             // Keep vault/candidates working even when the AI memory update fails (e.g. Hub offline).
             AXForgottenVault.autoArchiveTurn(ctx: ctx, turn: turn, delta: delta)
             let candidates = AXSkillCandidateDetector.detect(turn: turn, delta: delta, ctx: ctx, source: "event_fallback")
@@ -376,6 +377,7 @@ Merge rules:
         }
 
         // Automatic deep memory: archive non-trivial turns into project-level Forgotten Vault.
+        startMemoryWritebackCandidateExtraction(ctx: ctx, delta: delta, deltaSource: deltaSource)
         AXForgottenVault.autoArchiveTurn(ctx: ctx, turn: turn, delta: delta)
 
         // Event-trigger skill candidate detection (lightweight, deduped).
@@ -634,6 +636,139 @@ Merge rules:
             pipelineSource: "\(deltaSource)_refine_model_json"
         )
         return mem
+    }
+
+    @discardableResult
+    private static func startMemoryWritebackCandidateExtraction(
+        ctx: AXProjectContext,
+        delta: AXMemoryDelta,
+        deltaSource: String
+    ) -> Task<Void, Never>? {
+        guard memoryDeltaHasCandidateContent(delta) else { return nil }
+        return Task {
+            _ = await emitMemoryWritebackCandidates(
+                ctx: ctx,
+                delta: delta,
+                deltaSource: deltaSource
+            )
+        }
+    }
+
+    static func emitMemoryWritebackCandidates(
+        ctx: AXProjectContext,
+        delta: AXMemoryDelta,
+        deltaSource: String,
+        createdAt: Double = Date().timeIntervalSince1970,
+        timeoutSec: Double = 0.75
+    ) async -> HubIPCClient.MemoryWritebackCandidateExtractResult {
+        let startedAt = Date().timeIntervalSince1970
+        let payload = memoryWritebackCandidateExtractPayload(
+            ctx: ctx,
+            delta: delta,
+            deltaSource: deltaSource,
+            createdAt: createdAt
+        )
+        let result = await HubIPCClient.extractMemoryWritebackCandidatesViaRust(
+            payload: payload,
+            timeoutSec: timeoutSec
+        )
+        appendMemoryWritebackCandidateExtractLog(
+            ctx: ctx,
+            payload: payload,
+            result: result,
+            startedAt: startedAt
+        )
+        return result
+    }
+
+    static func memoryWritebackCandidateExtractPayload(
+        ctx: AXProjectContext,
+        delta: AXMemoryDelta,
+        deltaSource: String,
+        createdAt: Double = Date().timeIntervalSince1970
+    ) -> HubIPCClient.MemoryWritebackCandidateExtractPayload {
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let createdAtMs = Int64((createdAt * 1000.0).rounded())
+        let sourceToken = auditToken(deltaSource, fallback: "unknown")
+        return HubIPCClient.MemoryWritebackCandidateExtractPayload(
+            projectId: projectId,
+            auditRef: "xt_axmemory_delta_candidate_extract:\(String(projectId.prefix(16))):\(createdAtMs)",
+            actor: "x_terminal",
+            source: "xt_axmemory_pipeline",
+            delta: delta,
+            evidenceRefs: [
+                "xt_axmemory_delta:\(sourceToken):\(createdAtMs)"
+            ]
+        )
+    }
+
+    static func memoryDeltaHasCandidateContent(_ delta: AXMemoryDelta) -> Bool {
+        if let goal = delta.goalUpdate?.trimmingCharacters(in: .whitespacesAndNewlines), !goal.isEmpty {
+            return true
+        }
+        return [
+            delta.requirementsAdd,
+            delta.currentStateAdd,
+            delta.decisionsAdd,
+            delta.nextStepsAdd,
+            delta.openQuestionsAdd,
+            delta.risksAdd,
+            delta.recommendationsAdd
+        ].contains { list in
+            list.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        }
+    }
+
+    private static func appendMemoryWritebackCandidateExtractLog(
+        ctx: AXProjectContext,
+        payload: HubIPCClient.MemoryWritebackCandidateExtractPayload,
+        result: HubIPCClient.MemoryWritebackCandidateExtractResult,
+        startedAt: Double
+    ) {
+        var entry: [String: Any] = [
+            "type": "memory_writeback_candidate_extract",
+            "phase": result.ok ? "delivered" : "failed",
+            "created_at": Date().timeIntervalSince1970,
+            "elapsed_ms": Int((Date().timeIntervalSince1970 - startedAt) * 1000.0),
+            "project_id": payload.projectId,
+            "source": result.source ?? "rust_http",
+            "payload_source": payload.source,
+            "actor": payload.actor,
+            "ok": result.ok,
+            "candidate_count": result.candidateCount ?? 0,
+            "created_count": result.createdCount ?? 0,
+            "planned_create_count": result.plannedCreateCount ?? 0,
+            "duplicate_count": result.duplicateCount ?? 0,
+            "blocking_count": result.blockingCount ?? 0,
+            "active_write": result.candidateWriteback?.activeWrite ?? false,
+            "production_authority_change": result.candidateWriteback?.productionAuthorityChange ?? false,
+            "requires_approval": result.candidateWriteback?.requiresApproval ?? true,
+        ]
+        if let status = result.status, !status.isEmpty {
+            entry["status"] = status
+        }
+        if let reasonCode = result.reasonCode, !reasonCode.isEmpty {
+            entry["reason_code"] = reasonCode
+        }
+        if let denyCode = result.denyCode, !denyCode.isEmpty {
+            entry["deny_code"] = denyCode
+        }
+        if let detail = result.detail, !detail.isEmpty {
+            entry["detail"] = detail
+        }
+        AXProjectStore.appendRawLog(entry, for: ctx)
+    }
+
+    private static func auditToken(_ raw: String, fallback: String) -> String {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyz0123456789_-")
+        let normalized = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .map { allowed.contains($0) ? $0 : "_" }
+        let token = String(normalized)
+            .split(separator: "_", omittingEmptySubsequences: true)
+            .joined(separator: "_")
+        return token.isEmpty ? fallback : String(token.prefix(80))
     }
 
     private static func seedIfEmpty(_ mem: inout AXMemory, userText: String) {

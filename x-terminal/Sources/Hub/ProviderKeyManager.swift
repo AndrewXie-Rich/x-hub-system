@@ -130,6 +130,15 @@ actor ProviderKeyManager {
         _ = await HubProviderKeysClient.getProviderKeySummary(forceRefresh: true)
     }
 
+    func resetForHubProfileChange() {
+        invalidateAccountsCache()
+        invalidatePoolCache()
+        usageCache.removeAll()
+        usageCacheAt = 0
+        lastSelectedAccountKey.removeAll()
+        ProviderKeySelectionSnapshotStore.shared.removeAll()
+    }
+
     func getUsageForAccount(accountKey: String) async -> HubProviderKeysClient.KeyUsageInfo? {
         let now = Date().timeIntervalSince1970
         if let cached = usageCache[accountKey], (now - usageCacheAt) < usageCacheTTL {

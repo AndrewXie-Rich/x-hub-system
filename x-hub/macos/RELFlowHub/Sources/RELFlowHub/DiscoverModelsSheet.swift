@@ -188,14 +188,29 @@ enum DiscoverModelMarketSectionPlanner {
 }
 
 struct DiscoverModelMarketLifecycleStatus: Equatable {
+    enum VerificationStage: Equatable {
+        case pendingVerification
+        case needsReview
+        case runtimeUnavailable
+        case ready
+    }
+
     var isDownloaded: Bool
     var isImported: Bool
     var runtimeReadiness: LocalLibraryRuntimeReadiness?
+    var health: LocalModelHealthRecord?
+    var isHealthScanning: Bool
+    var verificationStage: VerificationStage?
+    var matchingModelID: String?
 
     static let notDownloaded = DiscoverModelMarketLifecycleStatus(
         isDownloaded: false,
         isImported: false,
-        runtimeReadiness: nil
+        runtimeReadiness: nil,
+        health: nil,
+        isHealthScanning: false,
+        verificationStage: nil,
+        matchingModelID: nil
     )
 }
 
@@ -203,6 +218,8 @@ enum DiscoverModelMarketLifecyclePlanner {
     static func status(
         for result: LMStudioMarketResult,
         matchingModel: HubModel?,
+        health: LocalModelHealthRecord? = nil,
+        isHealthScanning: Bool = false,
         runtimeReadinessEvaluator: (HubModel) -> LocalLibraryRuntimeReadiness
     ) -> DiscoverModelMarketLifecycleStatus {
         guard result.downloaded else {
@@ -214,7 +231,11 @@ enum DiscoverModelMarketLifecyclePlanner {
             return DiscoverModelMarketLifecycleStatus(
                 isDownloaded: true,
                 isImported: false,
-                runtimeReadiness: nil
+                runtimeReadiness: nil,
+                health: nil,
+                isHealthScanning: false,
+                verificationStage: nil,
+                matchingModelID: nil
             )
         }
 
@@ -222,15 +243,69 @@ enum DiscoverModelMarketLifecyclePlanner {
             return DiscoverModelMarketLifecycleStatus(
                 isDownloaded: true,
                 isImported: true,
-                runtimeReadiness: nil
+                runtimeReadiness: nil,
+                health: nil,
+                isHealthScanning: false,
+                verificationStage: .pendingVerification,
+                matchingModelID: nil
             )
         }
 
-        return DiscoverModelMarketLifecycleStatus(
-            isDownloaded: true,
-            isImported: true,
-            runtimeReadiness: runtimeReadinessEvaluator(matchingModel)
-        )
+        if isHealthScanning {
+            return DiscoverModelMarketLifecycleStatus(
+                isDownloaded: true,
+                isImported: true,
+                runtimeReadiness: nil,
+                health: health,
+                isHealthScanning: true,
+                verificationStage: .pendingVerification,
+                matchingModelID: matchingModel.id
+            )
+        }
+
+        switch LocalModelHealthSupport.effectiveState(for: health) {
+        case .healthy?:
+            let readiness = runtimeReadinessEvaluator(matchingModel)
+            return DiscoverModelMarketLifecycleStatus(
+                isDownloaded: true,
+                isImported: true,
+                runtimeReadiness: readiness,
+                health: health,
+                isHealthScanning: false,
+                verificationStage: readiness.state == .ready ? .ready : .runtimeUnavailable,
+                matchingModelID: matchingModel.id
+            )
+        case .degraded?, .unknownStale?:
+            return DiscoverModelMarketLifecycleStatus(
+                isDownloaded: true,
+                isImported: true,
+                runtimeReadiness: nil,
+                health: health,
+                isHealthScanning: false,
+                verificationStage: .needsReview,
+                matchingModelID: matchingModel.id
+            )
+        case .blockedReadiness?, .blockedRuntime?:
+            return DiscoverModelMarketLifecycleStatus(
+                isDownloaded: true,
+                isImported: true,
+                runtimeReadiness: .unavailable(health?.detail ?? ""),
+                health: health,
+                isHealthScanning: false,
+                verificationStage: .runtimeUnavailable,
+                matchingModelID: matchingModel.id
+            )
+        case nil:
+            return DiscoverModelMarketLifecycleStatus(
+                isDownloaded: true,
+                isImported: true,
+                runtimeReadiness: nil,
+                health: nil,
+                isHealthScanning: false,
+                verificationStage: .pendingVerification,
+                matchingModelID: matchingModel.id
+            )
+        }
     }
 }
 
@@ -1043,6 +1118,15 @@ struct DiscoverModelsSheet: View {
                             marketStore.importDownloadedModel(result)
                         }
                         .disabled(marketStore.isSearching || marketStore.isSyncingLibrary)
+                    } else if let modelID = lifecycleStatus.matchingModelID,
+                              shouldShowLifecycleVerifyAction(lifecycleStatus) {
+                        Button(HubUIStrings.Models.Discover.Lifecycle.verifyAction) {
+                            hubStore.scanLocalModelHealth(for: [modelID])
+                        }
+                        .disabled(
+                            hubStore.localModelHealthScanInFlight
+                                || hubStore.isLocalModelHealthScanInProgress(for: modelID)
+                        )
                     } else if !lifecycleStatus.isDownloaded {
                         Button(HubUIStrings.Models.Discover.Lifecycle.download) {
                             marketStore.downloadRecommended(result)
@@ -1077,13 +1161,25 @@ struct DiscoverModelsSheet: View {
             }
             HStack(spacing: 6) {
                 marketLifecycleChip(
+                    HubUIStrings.Models.Discover.Lifecycle.pendingVerification,
+                    active: status.verificationStage == .pendingVerification,
+                    tint: .secondary
+                )
+                marketLifecycleChip(
+                    HubUIStrings.Models.Discover.Lifecycle.needsReview,
+                    active: status.verificationStage == .needsReview,
+                    tint: .yellow
+                )
+            }
+            HStack(spacing: 6) {
+                marketLifecycleChip(
                     HubUIStrings.Models.Discover.Lifecycle.runtimeUnavailable,
-                    active: status.runtimeReadiness?.state == .unavailable,
+                    active: status.verificationStage == .runtimeUnavailable,
                     tint: .orange
                 )
                 marketLifecycleChip(
                     HubUIStrings.Models.Discover.Lifecycle.ready,
-                    active: status.runtimeReadiness?.state == .ready,
+                    active: status.verificationStage == .ready,
                     tint: .mint
                 )
             }
@@ -1290,8 +1386,10 @@ struct DiscoverModelsSheet: View {
         let lifecycleStatuses = marketStore.results.map(lifecycleStatus(for:))
         let downloadedCount = lifecycleStatuses.filter(\.isDownloaded).count
         let importedCount = lifecycleStatuses.filter(\.isImported).count
-        let runtimeUnavailableCount = lifecycleStatuses.filter { $0.runtimeReadiness?.state == .unavailable }.count
-        let readyCount = lifecycleStatuses.filter { $0.runtimeReadiness?.state == .ready }.count
+        let pendingVerificationCount = lifecycleStatuses.filter { $0.verificationStage == .pendingVerification }.count
+        let reviewCount = lifecycleStatuses.filter { $0.verificationStage == .needsReview }.count
+        let runtimeUnavailableCount = lifecycleStatuses.filter { $0.verificationStage == .runtimeUnavailable }.count
+        let readyCount = lifecycleStatuses.filter { $0.verificationStage == .ready }.count
         let recommendedCount = marketStore.results.filter(\.recommendedForThisMac).count
         let largerCount = max(0, marketStore.results.count - recommendedCount)
         let capabilityDefinitions: [(title: String, systemName: String, tag: String, tint: Color)] = [
@@ -1310,6 +1408,12 @@ struct DiscoverModelsSheet: View {
         }
         if importedCount > 0 {
             items.append((HubUIStrings.Models.Discover.Lifecycle.imported, "shippingbox.fill", importedCount, .green))
+        }
+        if pendingVerificationCount > 0 {
+            items.append((HubUIStrings.Models.Discover.Lifecycle.pendingVerification, "hourglass", pendingVerificationCount, .secondary))
+        }
+        if reviewCount > 0 {
+            items.append((HubUIStrings.Models.Discover.Lifecycle.needsReview, "arrow.triangle.2.circlepath", reviewCount, .yellow))
         }
         if runtimeUnavailableCount > 0 {
             items.append((HubUIStrings.Models.Discover.Lifecycle.runtimeUnavailable, "exclamationmark.triangle.fill", runtimeUnavailableCount, .orange))
@@ -1355,9 +1459,13 @@ struct DiscoverModelsSheet: View {
         let matchingModel = modelStore.snapshot.models.first { model in
             LMStudioMarketBridge.marketKeyMatchesModel(result.modelKey, model: model)
         }
+        let health = matchingModel.flatMap { hubStore.localModelHealth(for: $0.id) }
+        let isHealthScanning = matchingModel.map { hubStore.isLocalModelHealthScanInProgress(for: $0.id) } ?? false
         return DiscoverModelMarketLifecyclePlanner.status(
             for: result,
             matchingModel: matchingModel,
+            health: health,
+            isHealthScanning: isHealthScanning,
             runtimeReadinessEvaluator: runtimeReadiness(for:)
         )
     }
@@ -1376,19 +1484,40 @@ struct DiscoverModelsSheet: View {
         guard status.isImported else {
             return HubUIStrings.Models.Discover.Lifecycle.downloadedCacheOnly
         }
-        guard let runtimeReadiness = status.runtimeReadiness else {
-            return HubUIStrings.Models.Discover.Lifecycle.importedCheckingRuntime
-        }
 
-        switch runtimeReadiness.state {
-        case .ready:
-            return HubUIStrings.Models.Discover.Lifecycle.importedReady(runtimeReadiness.detail)
-        case .unavailable:
-            let detail = LocalLibraryRuntimeReadinessResolver.collapsedDetail(runtimeReadiness.detail)
+        switch status.verificationStage {
+        case .pendingVerification?:
+            return status.isHealthScanning
+                ? HubUIStrings.Models.Discover.Lifecycle.importedVerificationScanning
+                : HubUIStrings.Models.Discover.Lifecycle.importedVerificationPending
+        case .needsReview?:
+            let detail = LocalLibraryRuntimeReadinessResolver.collapsedDetail(status.health?.detail ?? "")
+            if detail.isEmpty {
+                return HubUIStrings.Models.Discover.Lifecycle.importedNeedsReviewNoDetail
+            }
+            return HubUIStrings.Models.Discover.Lifecycle.importedNeedsReview(detail)
+        case .ready?:
+            return HubUIStrings.Models.Discover.Lifecycle.importedReady(status.runtimeReadiness?.detail ?? "")
+        case .runtimeUnavailable?:
+            let detail = LocalLibraryRuntimeReadinessResolver.collapsedDetail(
+                status.runtimeReadiness?.detail ?? status.health?.detail ?? ""
+            )
             if detail.isEmpty {
                 return HubUIStrings.Models.Discover.Lifecycle.importedRuntimeUnavailableNoDetail
             }
             return HubUIStrings.Models.Discover.Lifecycle.importedRuntimeUnavailable(detail)
+        case nil:
+            return HubUIStrings.Models.Discover.Lifecycle.importedVerificationPending
+        }
+    }
+
+    private func shouldShowLifecycleVerifyAction(_ status: DiscoverModelMarketLifecycleStatus) -> Bool {
+        guard status.isImported, !status.isHealthScanning else { return false }
+        switch status.verificationStage {
+        case .pendingVerification?, .needsReview?, .runtimeUnavailable?:
+            return true
+        case .ready?, nil:
+            return false
         }
     }
 }

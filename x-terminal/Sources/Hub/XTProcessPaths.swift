@@ -30,4 +30,8 @@ enum XTProcessPaths {
         return realHomeDirectory(fileManager: fileManager)
             .appendingPathComponent(".axhub", isDirectory: true)
     }
+
+    static func activeAxhubStateDir(fileManager: FileManager = .default) -> URL {
+        XTHubProfilesStorage.activeStateDir(defaultBase: defaultAxhubStateDir(fileManager: fileManager))
+    }
 }

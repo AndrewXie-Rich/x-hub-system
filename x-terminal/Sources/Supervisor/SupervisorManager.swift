@@ -19789,9 +19789,13 @@ Coder 下一步建议：
         if let initial = mapRecord() {
             mapped = initial
         } else {
+            let hubBaseDir = HubPaths.baseDir()
             guard let resolvedProjectContext,
                   !normalizedProjectId.isEmpty,
-                  XTResolvedSkillsCacheStore.activeSnapshot(for: resolvedProjectContext) == nil,
+                  XTResolvedSkillsCacheStore.activeSnapshot(
+                    for: resolvedProjectContext,
+                    hubBaseDir: hubBaseDir
+                  ) == nil,
                   let remoteStateDirPath = normalizedSupervisorHubStateDirPath(record.hubStateDirPath) else {
                 return nil
             }
@@ -28539,7 +28543,8 @@ reason_code=no_response
         projectName: String? = nil,
         ctx: AXProjectContext
     ) -> SupervisorSkillRegistryItem? {
-        guard XTResolvedSkillsCacheStore.activeSnapshot(for: ctx) == nil else { return nil }
+        let hubBaseDir = HubPaths.baseDir()
+        guard XTResolvedSkillsCacheStore.activeSnapshot(for: ctx, hubBaseDir: hubBaseDir) == nil else { return nil }
         let normalizedProjectId = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedProjectId.isEmpty else { return nil }
         let config = try? AXProjectStore.loadOrCreateConfig(for: ctx)
@@ -28548,7 +28553,7 @@ reason_code=no_response
             projectName: firstNonEmptyString(projectName),
             projectRoot: ctx.root,
             config: config,
-            hubBaseDir: HubPaths.baseDir()
+            hubBaseDir: hubBaseDir
         ) else { return nil }
 
         let canonicalSkillId = AXSkillsLibrary.canonicalSupervisorSkillID(skillId)
@@ -34833,7 +34838,10 @@ Coder 下一步建议：
 
         for project in projects {
             guard let ctx = appModel.projectContext(for: project.projectId) else { continue }
-            guard XTResolvedSkillsCacheStore.activeSnapshot(for: ctx) == nil else { continue }
+            let hubBaseDir = HubPaths.baseDir()
+            guard XTResolvedSkillsCacheStore.activeSnapshot(for: ctx, hubBaseDir: hubBaseDir) == nil else {
+                continue
+            }
 
             let awaitingRecords = SupervisorProjectSkillCallStore.load(for: ctx)
                 .calls

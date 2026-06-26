@@ -8994,6 +8994,17 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
         let provider = router.provider(for: role)
         let configuredPreferredHub = router.preferredModelIdForHub(for: role, projectConfig: activeConfig)
         let projectContext = currentProjectContextForLLM()
+        if let testingOverride = Self.withLLMGenerateTestingLock({ Self.llmGenerateOverrideForTesting }) {
+            let routeDecision = effectiveProjectRouteDecision(
+                configuredModelId: configuredPreferredHub,
+                role: role,
+                ctx: projectContext,
+                snapshot: .empty(),
+                localSnapshot: .empty()
+            )
+            let overriddenOutput = try testingOverride(role, prompt, routeDecision)
+            return (overriddenOutput, nil, routeDecision)
+        }
         async let routeSnapshot = HubAIClient.shared.loadRouteDecisionModelsState()
         async let localSnapshot = HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
         async let hasRemoteProfile = HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
@@ -9006,10 +9017,6 @@ XT 当前传输模式是 fileIPC，所以这轮本来就不会强制走远端 pa
             snapshot: modelsSnapshot,
             localSnapshot: localModelsSnapshot
         )
-        if let testingOverride = Self.withLLMGenerateTestingLock({ Self.llmGenerateOverrideForTesting }) {
-            let overriddenOutput = try testingOverride(role, prompt, routeDecision)
-            return (overriddenOutput, nil, routeDecision)
-        }
         let projectId = currentProjectIdForLLM()
         let effectiveTransportOverride: HubTransportMode? = routeDecision.forceLocalExecution ? .fileIPC : nil
         let effectiveTransportMode = effectiveTransportOverride ?? HubAIClient.transportMode()
@@ -12286,17 +12293,18 @@ evidence_goal: recent_project_truth
     ) async -> SupervisorSkillRegistrySnapshot? {
         let normalizedProjectId = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedProjectId.isEmpty else { return nil }
+        let hubBaseDir = HubPaths.baseDir()
         _ = await XTResolvedSkillsCacheStore.refreshFromHubIfPossible(
             projectId: normalizedProjectId,
             projectName: projectName,
             context: ctx,
-            hubBaseDir: HubPaths.baseDir()
+            hubBaseDir: hubBaseDir
         )
         return AXSkillsLibrary.preferredSupervisorSkillRegistrySnapshot(
             projectId: normalizedProjectId,
             projectName: projectName,
             projectRoot: ctx.root,
-            hubBaseDir: HubPaths.baseDir()
+            hubBaseDir: hubBaseDir
         )
     }
 
@@ -12306,7 +12314,8 @@ evidence_goal: recent_project_truth
         projectName: String,
         remoteStateDirPath: String? = nil
     ) {
-        guard XTResolvedSkillsCacheStore.activeSnapshot(for: ctx) == nil else { return }
+        let hubBaseDir = HubPaths.baseDir()
+        guard XTResolvedSkillsCacheStore.activeSnapshot(for: ctx, hubBaseDir: hubBaseDir) == nil else { return }
         guard let remoteStateDirPath = normalizedProjectSkillRemoteStateDirPath(
             remoteStateDirPath
                 ?? XTResolvedSkillsCacheStore.load(for: ctx)?.remoteStateDirPath
@@ -12321,7 +12330,7 @@ evidence_goal: recent_project_truth
                 projectId: projectId,
                 projectName: projectName,
                 context: ctx,
-                hubBaseDir: HubPaths.baseDir(),
+                hubBaseDir: hubBaseDir,
                 remoteStateDirPath: remoteStateDirPath,
                 force: true
             )

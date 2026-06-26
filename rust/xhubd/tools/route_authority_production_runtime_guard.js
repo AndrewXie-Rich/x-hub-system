@@ -10,6 +10,62 @@ const REPORT_DIR = path.join(ROOT_DIR, 'reports');
 const NODE_PROCESS_MARKERS = ['hub_grpc_server/src/server.js', 'relflowhub_node'];
 const CUTOVER_GATE_KEY = 'XHUB_ENABLE_RUST_AUTHORITY_CUTOVER';
 
+function isXHubShellProcessLine(line) {
+  const text = String(line || '');
+  return text.includes('/X-Hub.app/Contents/MacOS/XHub')
+    && !text.includes('route_authority_production_runtime_guard.js');
+}
+
+function isExternalRelFlowHubProcessLine(line) {
+  const text = String(line || '');
+  return !text.includes('/X-Hub.app/')
+    && (text.includes('/RELFlowHub.app/') || text.includes('/Volumes/RELFlowHub'));
+}
+
+function isXHubNodeBridgeProcessLine(line) {
+  const text = String(line || '');
+  return NODE_PROCESS_MARKERS.every((marker) => text.includes(marker))
+    && !isExternalRelFlowHubProcessLine(text)
+    && (text.includes('/X-Hub.app/')
+      || /\/x-hub-system(?:-github-clean)?\/x-hub\//.test(text));
+}
+
+function parsePidCommand(line) {
+  const match = String(line || '').trim().match(/^(\d+)\s+([\s\S]*)$/);
+  if (!match) return null;
+  return { pid: Number(match[1]), command: match[2] };
+}
+
+function readProcessCommandRows() {
+  return execFileSync('ps', ['ax', '-o', 'pid=,command='], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: 8 * 1024 * 1024,
+  }).split('\n');
+}
+
+function readProcessEnvCommand(pid) {
+  try {
+    return execFileSync('ps', ['eww', '-p', String(pid), '-o', 'command='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 8 * 1024 * 1024,
+    }).trim();
+  } catch {
+  }
+  try {
+    const rows = execFileSync('ps', ['axeww', '-o', 'pid=,command='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 8 * 1024 * 1024,
+    }).split('\n');
+    const found = rows.map(parsePidCommand).find((row) => row?.pid === pid);
+    return found?.command || '';
+  } catch {
+    return '';
+  }
+}
+
 const PROVIDER_MODEL_PRODUCTION_KEYS = [
   CUTOVER_GATE_KEY,
   'XHUB_RUST_HUB_ROOT',
@@ -197,25 +253,29 @@ function readLaunchctlSession() {
 }
 
 function findNodeProcess() {
-  const rows = execFileSync('ps', ['axeww', '-o', 'pid=,command='], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    maxBuffer: 8 * 1024 * 1024,
-  }).split('\n');
+  const rows = readProcessCommandRows();
   const candidates = rows
     .map((line) => line.trim())
-    .filter((line) => NODE_PROCESS_MARKERS.every((marker) => line.includes(marker)))
-    .filter((line) => !line.includes('route_authority_production_runtime_guard.js'));
-  if (candidates.length === 0) return { pid: 0, command: '' };
+    .filter((line) => isXHubNodeBridgeProcessLine(line))
+    .filter((line) => !line.includes('route_authority_production_runtime_guard.js'))
+    .map(parsePidCommand)
+    .filter(Boolean);
+  if (candidates.length === 0) return { pid: 0, command: '', envCommand: '' };
   const parsed = candidates
-    .map((line) => {
-      const match = line.match(/^(\d+)\s+([\s\S]*)$/);
-      if (!match) return null;
-      return { pid: Number(match[1]), command: match[2] };
-    })
-    .filter(Boolean)
     .sort((a, b) => b.pid - a.pid)[0];
-  return parsed || { pid: 0, command: '' };
+  if (!parsed) return { pid: 0, command: '', envCommand: '' };
+  return { ...parsed, envCommand: readProcessEnvCommand(parsed.pid) || parsed.command };
+}
+
+function findXHubShellProcess() {
+  const rows = readProcessCommandRows();
+  const candidates = rows
+    .map((line) => line.trim())
+    .filter((line) => isXHubShellProcessLine(line))
+    .map(parsePidCommand)
+    .filter(Boolean);
+  if (candidates.length === 0) return { pid: 0, command: '' };
+  return candidates.sort((a, b) => b.pid - a.pid)[0] || { pid: 0, command: '' };
 }
 
 function parseProcessEnv(line) {
@@ -289,11 +349,13 @@ function collect(config) {
   const memorySkills = memorySkillsExpected(config);
   const launchctlValues = readLaunchctlSession();
   const node = findNodeProcess();
-  const nodeValues = node.pid ? parseProcessEnv(node.command) : {};
-  const nodeXhubRustKeys = node.pid ? processXhubRustKeys(node.command) : [];
+  const shell = findXHubShellProcess();
+  const nodeValues = node.pid ? parseProcessEnv(node.envCommand || '') : {};
+  const nodeXhubRustKeys = node.pid ? processXhubRustKeys(node.envCommand || '') : [];
   return {
     launchctlProviderModel: compare(launchctlValues, providerModel),
     node,
+    shell,
     nodeProviderModel: node.pid ? compare(nodeValues, providerModel) : { present: [], missing: Object.keys(providerModel), mismatched: [] },
     launchctlScheduler: compare(launchctlValues, scheduler),
     nodeScheduler: node.pid ? compare(nodeValues, scheduler) : { present: [], missing: Object.keys(scheduler), mismatched: [] },
@@ -315,14 +377,23 @@ function compareOk(compared) {
 
 function reduce(collected, config) {
   const issues = [];
-  if (!compareOk(collected.launchctlProviderModel)) issues.push('launchctl_provider_model_production_env_not_applied');
-  if (!collected.node.pid) issues.push('xhub_node_process_not_running');
-  if (!compareOk(collected.nodeProviderModel)) issues.push('xhub_node_process_needs_relaunch_for_provider_model_production_env');
+  const nodeBridgeRunning = Number(collected.node?.pid || 0) > 0;
+  const swiftShellRunning = Number(collected.shell?.pid || 0) > 0;
+  const productShellRunning = swiftShellRunning || nodeBridgeRunning;
+  const launchctlProviderModelOk = compareOk(collected.launchctlProviderModel);
+  const nodeProviderModelOk = nodeBridgeRunning ? compareOk(collected.nodeProviderModel) : true;
+  const launchctlSchedulerOk = compareOk(collected.launchctlScheduler);
+  const nodeSchedulerOk = nodeBridgeRunning ? compareOk(collected.nodeScheduler) : true;
+  const providerModelEffective = launchctlProviderModelOk && productShellRunning && nodeProviderModelOk;
+  const schedulerEffective = launchctlSchedulerOk && productShellRunning && nodeSchedulerOk;
+  if (!launchctlProviderModelOk) issues.push('launchctl_provider_model_production_env_not_applied');
+  if (!productShellRunning) issues.push('xhub_product_shell_not_running');
+  if (nodeBridgeRunning && !nodeProviderModelOk) issues.push('xhub_node_process_needs_relaunch_for_provider_model_production_env');
   if (config.requireSchedulerAuthority && !compareOk(collected.launchctlScheduler)) issues.push('launchctl_scheduler_authority_env_not_applied');
-  if (config.requireSchedulerAuthority && !compareOk(collected.nodeScheduler)) issues.push('xhub_node_scheduler_authority_env_missing');
+  if (config.requireSchedulerAuthority && nodeBridgeRunning && !nodeSchedulerOk) issues.push('xhub_node_scheduler_authority_env_missing');
   if (config.requireMemorySkillsProduction && !compareOk(collected.launchctlMemorySkills)) issues.push('launchctl_memory_skills_production_env_not_applied');
   if (collected.launchctlUnrelatedProductionKeys.length) issues.push('launchctl_unrelated_production_env_present');
-  if (collected.nodeUnrelatedProductionKeys.length) issues.push('xhub_node_unrelated_production_env_present');
+  if (nodeBridgeRunning && collected.nodeUnrelatedProductionKeys.length) issues.push('xhub_node_unrelated_production_env_present');
   return {
     ok: issues.length === 0,
     schema_version: 'xhub.route_authority_production_runtime_guard.v1',
@@ -330,15 +401,19 @@ function reduce(collected, config) {
     rust_hub_root: config.rustHubRoot,
     http_base_url: config.httpBaseUrl,
     require_scheduler_authority: config.requireSchedulerAuthority,
-    provider_model_production_authority_effective_now: compareOk(collected.nodeProviderModel),
-    launchctl_provider_model_production_session_applied: compareOk(collected.launchctlProviderModel),
-    running_node_process_pid: collected.node.pid,
-    running_node_provider_model_production_env_applied: compareOk(collected.nodeProviderModel),
+    provider_model_production_authority_effective_now: providerModelEffective,
+    swift_product_shell_pid: Number(collected.shell?.pid || 0),
+    swift_product_shell_running: swiftShellRunning,
+    node_compatibility_layer_required: false,
+    node_compatibility_layer_running: nodeBridgeRunning,
+    launchctl_provider_model_production_session_applied: launchctlProviderModelOk,
+    running_node_process_pid: Number(collected.node?.pid || 0),
+    running_node_provider_model_production_env_applied: nodeBridgeRunning ? nodeProviderModelOk : null,
     running_node_provider_model_env_present: collected.nodeProviderModel.present,
     running_node_provider_model_env_missing: collected.nodeProviderModel.missing,
     running_node_provider_model_env_mismatched: collected.nodeProviderModel.mismatched,
-    scheduler_authority_effective_now: compareOk(collected.nodeScheduler),
-    launchctl_scheduler_authority_session_applied: compareOk(collected.launchctlScheduler),
+    scheduler_authority_effective_now: schedulerEffective,
+    launchctl_scheduler_authority_session_applied: launchctlSchedulerOk,
     running_node_scheduler_env_present: collected.nodeScheduler.present,
     running_node_scheduler_env_missing: collected.nodeScheduler.missing,
     running_node_scheduler_env_mismatched: collected.nodeScheduler.mismatched,
@@ -368,6 +443,8 @@ function reportPath() {
 }
 
 function runSelfTest() {
+  const external = '999 /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/relflowhub_node /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/hub_grpc_server/src/server.js';
+  if (isXHubNodeBridgeProcessLine(external)) throw new Error('standalone RELFlowHub must not classify as X-Hub node bridge');
   const config = {
     rustHubRoot: '/tmp/rust-hub',
     httpBaseUrl: 'http://127.0.0.1:50151',
@@ -379,9 +456,24 @@ function runSelfTest() {
   const providerModel = Object.keys(providerModelExpected(config));
   const scheduler = Object.keys(schedulerExpected(config));
   const memorySkills = Object.keys(memorySkillsExpected(config));
+  const shellOnly = reduce({
+    launchctlProviderModel: { present: providerModel, missing: [], mismatched: [] },
+    node: { pid: 0 },
+    shell: { pid: 456 },
+    nodeProviderModel: { present: [], missing: providerModel, mismatched: [] },
+    launchctlScheduler: { present: scheduler, missing: [], mismatched: [] },
+    nodeScheduler: { present: [], missing: scheduler, mismatched: [] },
+    launchctlMemorySkills: { present: [], missing: memorySkills, mismatched: [] },
+    launchctlUnrelatedProductionKeys: [],
+    nodeUnrelatedProductionKeys: [],
+  }, config);
+  if (!shellOnly.ok || shellOnly.node_compatibility_layer_required !== false) {
+    throw new Error(`expected Swift shell + Rust production authority to pass: ${shellOnly.issues.join(',')}`);
+  }
   const ok = reduce({
     launchctlProviderModel: { present: providerModel, missing: [], mismatched: [] },
     node: { pid: 123 },
+    shell: { pid: 456 },
     nodeProviderModel: { present: providerModel, missing: [], mismatched: [] },
     launchctlScheduler: { present: scheduler, missing: [], mismatched: [] },
     nodeScheduler: { present: scheduler, missing: [], mismatched: [] },
@@ -393,6 +485,7 @@ function runSelfTest() {
   const fallbackMismatch = reduce({
     launchctlProviderModel: { present: providerModel, missing: [], mismatched: ['XHUB_RUST_MODEL_ROUTE_AUTHORITY_FALLBACK_ON_ERROR'] },
     node: { pid: 123 },
+    shell: { pid: 456 },
     nodeProviderModel: { present: providerModel, missing: [], mismatched: ['XHUB_RUST_MODEL_ROUTE_AUTHORITY_FALLBACK_ON_ERROR'] },
     launchctlScheduler: { present: scheduler, missing: [], mismatched: [] },
     nodeScheduler: { present: scheduler, missing: [], mismatched: [] },
@@ -406,6 +499,7 @@ function runSelfTest() {
   const unrelated = reduce({
     launchctlProviderModel: { present: providerModel, missing: [], mismatched: [] },
     node: { pid: 123 },
+    shell: { pid: 456 },
     nodeProviderModel: { present: providerModel, missing: [], mismatched: [] },
     launchctlScheduler: { present: scheduler, missing: [], mismatched: [] },
     nodeScheduler: { present: scheduler, missing: [], mismatched: [] },
@@ -419,6 +513,7 @@ function runSelfTest() {
   const requiredMemorySkills = reduce({
     launchctlProviderModel: { present: providerModel, missing: [], mismatched: [] },
     node: { pid: 123 },
+    shell: { pid: 456 },
     nodeProviderModel: { present: providerModel, missing: [], mismatched: [] },
     launchctlScheduler: { present: scheduler, missing: [], mismatched: [] },
     nodeScheduler: { present: scheduler, missing: [], mismatched: [] },

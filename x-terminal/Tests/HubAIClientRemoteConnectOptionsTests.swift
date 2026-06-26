@@ -182,6 +182,31 @@ struct HubAIClientRemoteConnectOptionsTests {
     }
 
     @Test
+    func remoteConnectOptionsIgnorePrivateDefaultInternetHostWhenOverrideIsNotPending() throws {
+        let tempDir = try makeTempStateDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try writePairingEnv(
+            at: tempDir,
+            contents: """
+            AXHUB_HUB_HOST='192.168.10.110'
+            AXHUB_PAIRING_PORT='50053'
+            AXHUB_GRPC_PORT='50052'
+            """
+        )
+
+        try withHubRemoteDefaultsCleared {
+            let defaults = UserDefaults.standard
+            defaults.set("192.168.10.110", forKey: "xterminal_hub_internet_host")
+            defaults.set(false, forKey: "xterminal_hub_remote_endpoint_override_pending")
+
+            let options = HubAIClient.remoteConnectOptionsFromDefaults(stateDir: tempDir)
+            #expect(options.internetHost.isEmpty)
+            #expect(options.configuredEndpointIsAuthoritative == false)
+        }
+    }
+
+    @Test
     func remoteConnectOptionsPreserveStableNamedInternetHostAcrossConnectionHostChanges() throws {
         let tempDir = try makeTempStateDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -315,6 +340,35 @@ struct HubAIClientRemoteConnectOptionsTests {
         #expect(snapshot.summaryLine == "正式异网入口已验证，切网后可继续重连。")
         #expect(snapshot.stableRemoteRoute?.host == "hub.tailnet.example")
         #expect(snapshot.lastKnownGoodRoute?.routeKind == .internet)
+    }
+
+    @Test
+    func pairedRouteSetUsesAuthoritativeRustRemoteEntryCandidate() {
+        let snapshot = XTPairedRouteSetSnapshotBuilder.build(
+            input: makePairedRouteSetBuildInput(
+                cachedProfile: HubAIClient.CachedRemoteProfile(
+                    host: "192.168.0.10",
+                    internetHost: "hub.current.example",
+                    pairingPort: 50052,
+                    grpcPort: 50051,
+                    hubInstanceID: "hub_abc123",
+                    lanDiscoveryName: "axhub-lan"
+                ),
+                rustPreferredRemoteHost: "andrew.tailbe79cd.ts.net",
+                rustRemoteEntryAuthoritative: true,
+                remoteShadowReconnectSmokeSnapshot: makeRemoteShadowSmokeSnapshot(
+                    status: .succeeded,
+                    route: .internetTunnel,
+                    reasonCode: nil
+                )
+            )
+        )
+
+        #expect(snapshot.readiness == .remoteReady)
+        #expect(snapshot.readinessReasonCode == "remote_shadow_smoke_verified")
+        #expect(snapshot.stableRemoteRoute?.host == "andrew.tailbe79cd.ts.net")
+        #expect(snapshot.stableRemoteRoute?.routeKind == .internetTunnel)
+        #expect(snapshot.stableRemoteRoute?.source == .rustRemoteEntryCandidate)
     }
 
     @Test
@@ -476,7 +530,7 @@ struct HubAIClientRemoteConnectOptionsTests {
     }
 
     @Test
-    func pairedRouteSetDoesNotPromoteRawIPv4ToStableRemoteRoute() {
+    func pairedRouteSetPromotesExplicitPublicRawIPv4ToStableRemoteRoute() {
         let snapshot = XTPairedRouteSetSnapshotBuilder.build(
             input: makePairedRouteSetBuildInput(
                 cachedProfile: HubAIClient.CachedRemoteProfile(
@@ -491,9 +545,32 @@ struct HubAIClientRemoteConnectOptionsTests {
             )
         )
 
-        #expect(snapshot.stableRemoteRoute == nil)
+        #expect(snapshot.stableRemoteRoute?.host == "17.81.10.243")
+        #expect(snapshot.stableRemoteRoute?.hostKind == "raw_ip")
         #expect(snapshot.readiness == .unknown)
         #expect(snapshot.summaryLine == "尚未拿到可判定的已配对路径集合。")
+    }
+
+    @Test
+    func pairedRouteSetDoesNotPromotePrivateLanIPv4ToStableRemoteRoute() {
+        let snapshot = XTPairedRouteSetSnapshotBuilder.build(
+            input: makePairedRouteSetBuildInput(
+                cachedProfile: HubAIClient.CachedRemoteProfile(
+                    host: "192.168.10.110",
+                    internetHost: "192.168.10.110",
+                    pairingPort: 50053,
+                    grpcPort: 50052,
+                    hubInstanceID: "hub_lan_ip",
+                    lanDiscoveryName: "axhub-lan"
+                ),
+                configuredInternetHost: "192.168.10.110"
+            )
+        )
+
+        #expect(snapshot.lanRoute?.host == "192.168.10.110")
+        #expect(snapshot.stableRemoteRoute == nil)
+        #expect(snapshot.readiness == .localReady)
+        #expect(snapshot.summaryLine == "当前已完成同网首配，但还没有正式异网入口。")
     }
 
     private func makeTempStateDir() throws -> URL {
@@ -558,6 +635,8 @@ struct HubAIClientRemoteConnectOptionsTests {
         cachedProfile: HubAIClient.CachedRemoteProfile,
         configuredInternetHost: String = "",
         failureCode: String = "",
+        rustPreferredRemoteHost: String? = nil,
+        rustRemoteEntryAuthoritative: Bool = false,
         freshPairReconnectSmokeSnapshot: XTFreshPairReconnectSmokeSnapshot? = nil,
         remoteShadowReconnectSmokeSnapshot: XTRemoteShadowReconnectSmokeSnapshot? = nil
     ) -> XTPairedRouteSetBuildInput {
@@ -572,6 +651,8 @@ struct HubAIClientRemoteConnectOptionsTests {
             remoteRoute: .none,
             linking: false,
             failureCode: failureCode,
+            rustPreferredRemoteHost: rustPreferredRemoteHost,
+            rustRemoteEntryAuthoritative: rustRemoteEntryAuthoritative,
             freshPairReconnectSmokeSnapshot: freshPairReconnectSmokeSnapshot,
             remoteShadowReconnectSmokeSnapshot: remoteShadowReconnectSmokeSnapshot
         )

@@ -30,6 +30,19 @@ final class HubGRPCServerSupportInternetHostTests: XCTestCase {
     }
 
     @MainActor
+    func testPreferredXTTerminalInternetHostDoesNotAutoAdvertiseLANOrPublicInterfaceAddress() {
+        let selected = HubGRPCServerSupport.preferredXTTerminalInternetHost(
+            override: "",
+            interfaceRows: [
+                "en0: 192.168.10.110",
+                "en1: 17.81.11.80",
+            ]
+        )
+
+        XCTAssertNil(selected)
+    }
+
+    @MainActor
     func testPreferredNoDomainPrivateRemoteHostPrefersTailscaleAddress() {
         let selected = HubGRPCServerSupport.preferredNoDomainPrivateRemoteHost(
             interfaceRows: [
@@ -119,5 +132,22 @@ final class HubGRPCServerSupportInternetHostTests: XCTestCase {
             invite?.absoluteString,
             "xterminal://pair-hub?hub_host=hub.tailnet.example&pairing_port=50054&grpc_port=50053&invite_token=axhub_invite_test_123&hub_alias=ops-main&hub_instance_id=hub_deadbeefcafefeed00"
         )
+    }
+
+    @MainActor
+    func testLocalPairingInviteURLBuildsPairHubDeepLinkWithoutHubHost() {
+        let invite = HubExternalAccessInviteSupport.localPairingInviteURL(
+            alias: "axhub-deadbeef",
+            inviteToken: "axhub_invite_test_123",
+            pairingPort: 50054,
+            grpcPort: 50053,
+            hubInstanceID: "hub_deadbeefcafefeed00"
+        )
+
+        XCTAssertEqual(
+            invite?.absoluteString,
+            "xterminal://pair-hub?pairing_port=50054&grpc_port=50053&invite_token=axhub_invite_test_123&hub_alias=axhub-deadbeef&hub_instance_id=hub_deadbeefcafefeed00"
+        )
+        XCTAssertFalse(invite?.absoluteString.contains("hub_host=") ?? true)
     }
 }

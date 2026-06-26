@@ -2,6 +2,19 @@ import XCTest
 @testable import RELFlowHub
 
 final class TerminalAccessKeySupportTests: XCTestCase {
+    func testGatewayHealthAcceptsOnlyPairingService() throws {
+        let pairing = try XCTUnwrap(TerminalAccessKeyHTTPClient.decodeGatewayHealth(
+            data: Data(#"{"ok":true,"service":"pairing","now_ms":1770000000000}"#.utf8)
+        ))
+        XCTAssertTrue(pairing.isPairingGateway)
+
+        let rust = try XCTUnwrap(TerminalAccessKeyHTTPClient.decodeGatewayHealth(
+            data: Data(#"{"schema_version":"xhub.rust_hub.health.v1","ok":true,"daemon":"xhubd"}"#.utf8)
+        ))
+        XCTAssertFalse(rust.isPairingGateway)
+        XCTAssertTrue(rust.diagnosticSummary.contains("xhub.rust_hub.health.v1"))
+    }
+
     func testDraftRequestBodyIncludesQuotaAndCapabilities() throws {
         var draft = HubTerminalAccessKeyDraft()
         draft.name = "Ops Bot"

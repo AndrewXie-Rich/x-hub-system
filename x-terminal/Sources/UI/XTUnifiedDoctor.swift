@@ -221,6 +221,678 @@ struct XTUnifiedDoctorLocalStoreWriteProjection: Codable, Equatable, Sendable {
     }
 }
 
+struct XTUnifiedDoctorRustMemorySelectionRefSample: Codable, Equatable, Sendable {
+    var layer: String?
+    var sourceKind: String?
+    var scope: String?
+    var sensitivity: String?
+    var visibility: String?
+    var version: Int?
+    var chunkPresent: Bool?
+    var chunkIdentitySchema: String?
+    var chunkStartLine: Int?
+    var chunkEndLine: Int?
+    var contentIncluded: Bool?
+    var reasonCode: String?
+
+    init(ref: HubIPCClient.RustMemoryGatewaySelectedRef) {
+        self.layer = normalizedOptionalDoctorField(ref.layer)
+        self.sourceKind = normalizedOptionalDoctorField(ref.sourceKind)
+        self.scope = normalizedOptionalDoctorField(ref.scope)
+        self.sensitivity = normalizedOptionalDoctorField(ref.sensitivity)
+        self.visibility = normalizedOptionalDoctorField(ref.visibility)
+        self.version = ref.version
+        self.chunkPresent = normalizedOptionalDoctorField(ref.chunkRef) != nil
+            || normalizedOptionalDoctorField(ref.chunkId) != nil
+        self.chunkIdentitySchema = normalizedOptionalDoctorField(ref.chunkIdentitySchema)
+        self.chunkStartLine = ref.chunkStartLine
+        self.chunkEndLine = ref.chunkEndLine
+        self.contentIncluded = ref.contentIncluded
+        self.reasonCode = normalizedOptionalDoctorField(ref.reasonCode)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case layer
+        case sourceKind = "source_kind"
+        case scope
+        case sensitivity
+        case visibility
+        case version
+        case chunkPresent = "chunk_present"
+        case chunkIdentitySchema = "chunk_identity_schema"
+        case chunkStartLine = "chunk_start_line"
+        case chunkEndLine = "chunk_end_line"
+        case contentIncluded = "content_included"
+        case reasonCode = "reason_code"
+    }
+}
+
+struct XTUnifiedDoctorRustMemorySelectionEvidenceProjection: Codable, Equatable, Sendable {
+    static let schemaVersion = "xt.rust_memory_selection_evidence_projection.v1"
+
+    var schemaVersion: String
+    var source: String
+    var statusFound: Bool
+    var historyFound: Bool
+    var historySampleCount: Int
+    var droppedCrossScopeSampleCount: Int
+    var ok: Bool
+    var requestId: String
+    var requesterRole: String
+    var useMode: String
+    var scope: String
+    var servingProfileId: String?
+    var projectIdPresent: Bool
+    var planStatus: String?
+    var planSource: String?
+    var planAuthority: String?
+    var selectedCount: Int
+    var selectedRefCount: Int
+    var selectedChunkCount: Int?
+    var selectedChunkRefCount: Int?
+    var omittedCount: Int
+    var omittedRefCount: Int?
+    var omittedChunkRefCount: Int?
+    var deniedCount: Int
+    var indexSource: String?
+    var indexGranularity: String?
+    var chunkIdentitySchema: String?
+    var chunkExpandViaGetRef: Bool?
+    var skippedPolicyOrFilter: Int
+    var skippedRemoteVisibility: Int
+    var skippedSecret: Int
+    var skippedBudget: Int
+    var omittedReasonCounts: [String: Int]
+    var selectedLayerCounts: [String: Int]
+    var selectedSourceKindCounts: [String: Int]
+    var selectedSensitivityCounts: [String: Int]
+    var selectedVisibilityCounts: [String: Int]
+    var selectedRefSamples: [XTUnifiedDoctorRustMemorySelectionRefSample]
+    var contextTextIncluded: Bool
+    var promptTextIncluded: Bool
+    var wouldCallModel: Bool
+    var modelCallExecuted: Bool
+    var productionAuthorityChange: Bool
+    var recordedAtMs: Int64
+
+    init?(
+        status: HubIPCClient.RustMemoryGatewayModelCallPlanEvidence?,
+        history: HubIPCClient.RustMemoryGatewayModelCallPlanHistory?,
+        projectId: String? = nil,
+        refSampleLimit: Int = 12
+    ) {
+        let expectedProjectId = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var candidates = history?.items ?? []
+        if let status,
+           !candidates.contains(where: { $0.requestId == status.requestId && $0.recordedAtMs == status.recordedAtMs }) {
+            candidates.append(status)
+        }
+        candidates.sort { $0.recordedAtMs > $1.recordedAtMs }
+        let scoped = expectedProjectId.isEmpty
+            ? candidates
+            : candidates.filter { sample in
+                (sample.projectId ?? "").trimmingCharacters(in: .whitespacesAndNewlines) == expectedProjectId
+            }
+        let evidence = scoped.first ?? (expectedProjectId.isEmpty ? candidates.first : nil)
+        guard let evidence else { return nil }
+
+        let selectedRefs = (evidence.selectedRefs ?? []).filter { ref in
+            guard !expectedProjectId.isEmpty else { return true }
+            let refScope = ref.scope?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            let refProjectId = ref.projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return refScope == "project" && refProjectId == expectedProjectId
+        }
+        let omittedRefs = (evidence.omittedRefs ?? []).filter { ref in
+            guard !expectedProjectId.isEmpty else { return true }
+            let refScope = ref.scope?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            let refProjectId = ref.projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return refScope == "project" && refProjectId == expectedProjectId
+        }
+        let skipped = evidence.skipped
+        self.schemaVersion = Self.schemaVersion
+        self.source = status?.requestId == evidence.requestId && status?.recordedAtMs == evidence.recordedAtMs
+            ? "memory_gateway_model_call_plan_status"
+            : "memory_gateway_model_call_plan_history"
+        self.statusFound = status != nil
+        self.historyFound = history != nil
+        self.historySampleCount = history?.items.count ?? 0
+        self.droppedCrossScopeSampleCount = max(0, candidates.count - scoped.count)
+        self.ok = evidence.ok
+        self.requestId = evidence.requestId
+        self.requesterRole = evidence.requesterRole
+        self.useMode = evidence.useMode
+        self.scope = evidence.scope
+        self.servingProfileId = normalizedOptionalDoctorField(evidence.servingProfileId)
+        self.projectIdPresent = !(evidence.projectId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        self.planStatus = normalizedOptionalDoctorField(evidence.planStatus)
+        self.planSource = normalizedOptionalDoctorField(evidence.planSource)
+        self.planAuthority = normalizedOptionalDoctorField(evidence.planAuthority)
+        self.selectedCount = max(0, evidence.selectedCount ?? evidence.selectedRefCount)
+        self.selectedRefCount = max(0, evidence.selectedRefCount)
+        self.selectedChunkCount = max(0, evidence.selectedChunkCount ?? selectedRefs.count)
+        self.selectedChunkRefCount = selectedRefs.filter(Self.hasChunkIdentity).count
+        self.omittedCount = max(0, evidence.omittedCount ?? 0)
+        self.omittedRefCount = max(0, evidence.omittedRefCount ?? omittedRefs.count)
+        self.omittedChunkRefCount = omittedRefs.filter(Self.hasChunkIdentity).count
+        self.deniedCount = max(0, evidence.deniedCount ?? 0)
+        self.indexSource = normalizedOptionalDoctorField(evidence.indexSource)
+        self.indexGranularity = normalizedOptionalDoctorField(evidence.indexGranularity)
+        self.chunkIdentitySchema = normalizedOptionalDoctorField(evidence.chunkIdentitySchema)
+        self.chunkExpandViaGetRef = evidence.chunkExpandViaGetRef == true
+        self.skippedPolicyOrFilter = max(0, skipped?.policyOrFilter ?? 0)
+        self.skippedRemoteVisibility = max(0, skipped?.remoteVisibility ?? 0)
+        self.skippedSecret = max(0, skipped?.secret ?? 0)
+        self.skippedBudget = max(0, skipped?.budget ?? 0)
+        self.omittedReasonCounts = Self.normalizedCounts(evidence.omittedReasonCounts)
+        self.selectedLayerCounts = Self.counts(selectedRefs.compactMap(\.layer))
+        self.selectedSourceKindCounts = Self.counts(selectedRefs.compactMap(\.sourceKind))
+        self.selectedSensitivityCounts = Self.counts(selectedRefs.compactMap(\.sensitivity))
+        self.selectedVisibilityCounts = Self.counts(selectedRefs.compactMap(\.visibility))
+        self.selectedRefSamples = Array(selectedRefs.prefix(max(0, min(32, refSampleLimit)))).map {
+            XTUnifiedDoctorRustMemorySelectionRefSample(ref: $0)
+        }
+        self.contextTextIncluded = evidence.contextTextIncluded
+        self.promptTextIncluded = evidence.promptTextIncluded
+        self.wouldCallModel = evidence.wouldCallModel
+        self.modelCallExecuted = evidence.modelCallExecuted
+        self.productionAuthorityChange = evidence.productionAuthorityChange
+        self.recordedAtMs = evidence.recordedAtMs
+    }
+
+    var executionSafe: Bool {
+        !wouldCallModel && !modelCallExecuted && !productionAuthorityChange
+    }
+
+    var textSafe: Bool {
+        !contextTextIncluded && !promptTextIncluded
+    }
+
+    func detailLines(prefix: String = "rust_memory_selection_evidence") -> [String] {
+        [
+            "\(prefix)_schema=\(schemaVersion)",
+            "\(prefix)_source=\(source)",
+            "\(prefix)_status_found=\(statusFound)",
+            "\(prefix)_history_found=\(historyFound)",
+            "\(prefix)_history_samples=\(historySampleCount)",
+            "\(prefix)_dropped_cross_scope_samples=\(droppedCrossScopeSampleCount)",
+            "\(prefix)_ok=\(ok)",
+            "\(prefix)_requester_role=\(requesterRole)",
+            "\(prefix)_use_mode=\(useMode)",
+            "\(prefix)_scope=\(scope)",
+            "\(prefix)_serving_profile=\(servingProfileId ?? "none")",
+            "\(prefix)_project_id_present=\(projectIdPresent)",
+            "\(prefix)_plan_status=\(planStatus ?? "none")",
+            "\(prefix)_selected=\(selectedCount)",
+            "\(prefix)_selected_refs=\(selectedRefCount)",
+            "\(prefix)_selected_chunks=\(selectedChunkCount ?? 0)",
+            "\(prefix)_selected_chunk_refs=\(selectedChunkRefCount ?? 0)",
+            "\(prefix)_omitted=\(omittedCount)",
+            "\(prefix)_omitted_refs=\(omittedRefCount ?? 0)",
+            "\(prefix)_omitted_chunk_refs=\(omittedChunkRefCount ?? 0)",
+            "\(prefix)_denied=\(deniedCount)",
+            "\(prefix)_index_source=\(indexSource ?? "none")",
+            "\(prefix)_index_granularity=\(indexGranularity ?? "none")",
+            "\(prefix)_chunk_identity_schema=\(chunkIdentitySchema ?? "none")",
+            "\(prefix)_chunk_expand_via_get_ref=\(chunkExpandViaGetRef == true)",
+            "\(prefix)_skipped_policy_or_filter=\(skippedPolicyOrFilter)",
+            "\(prefix)_skipped_remote_visibility=\(skippedRemoteVisibility)",
+            "\(prefix)_skipped_secret=\(skippedSecret)",
+            "\(prefix)_skipped_budget=\(skippedBudget)",
+            "\(prefix)_omitted_reason_counts=\(Self.compactCounts(omittedReasonCounts))",
+            "\(prefix)_selected_layers=\(Self.compactCounts(selectedLayerCounts))",
+            "\(prefix)_selected_source_kinds=\(Self.compactCounts(selectedSourceKindCounts))",
+            "\(prefix)_selected_sensitivities=\(Self.compactCounts(selectedSensitivityCounts))",
+            "\(prefix)_selected_visibilities=\(Self.compactCounts(selectedVisibilityCounts))",
+            "\(prefix)_execution_safe=\(executionSafe)",
+            "\(prefix)_text_safe=\(textSafe)",
+            "\(prefix)_production_authority_change=\(productionAuthorityChange)",
+            "\(prefix)_recorded_at_ms=\(recordedAtMs)"
+        ]
+    }
+
+    private static func counts(_ values: [String]) -> [String: Int] {
+        var output: [String: Int] = [:]
+        for raw in values {
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { continue }
+            output[value, default: 0] += 1
+        }
+        return output
+    }
+
+    private static func hasChunkIdentity(_ ref: HubIPCClient.RustMemoryGatewaySelectedRef) -> Bool {
+        normalizedOptionalDoctorField(ref.chunkRef) != nil
+            || normalizedOptionalDoctorField(ref.chunkId) != nil
+    }
+
+    private static func normalizedCounts(_ counts: [String: Int]?) -> [String: Int] {
+        var output: [String: Int] = [:]
+        for (rawKey, rawValue) in counts ?? [:] {
+            let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { continue }
+            output[key, default: 0] += max(0, rawValue)
+        }
+        return output
+    }
+
+    private static func compactCounts(_ counts: [String: Int]) -> String {
+        if counts.isEmpty { return "none" }
+        return counts.keys.sorted().map { key in
+            "\(key):\(counts[key] ?? 0)"
+        }.joined(separator: ",")
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case source
+        case statusFound = "status_found"
+        case historyFound = "history_found"
+        case historySampleCount = "history_sample_count"
+        case droppedCrossScopeSampleCount = "dropped_cross_scope_sample_count"
+        case ok
+        case requestId = "request_id"
+        case requesterRole = "requester_role"
+        case useMode = "use_mode"
+        case scope
+        case servingProfileId = "serving_profile_id"
+        case projectIdPresent = "project_id_present"
+        case planStatus = "plan_status"
+        case planSource = "plan_source"
+        case planAuthority = "plan_authority"
+        case selectedCount = "selected_count"
+        case selectedRefCount = "selected_ref_count"
+        case selectedChunkCount = "selected_chunk_count"
+        case selectedChunkRefCount = "selected_chunk_ref_count"
+        case omittedCount = "omitted_count"
+        case omittedRefCount = "omitted_ref_count"
+        case omittedChunkRefCount = "omitted_chunk_ref_count"
+        case deniedCount = "denied_count"
+        case indexSource = "index_source"
+        case indexGranularity = "index_granularity"
+        case chunkIdentitySchema = "chunk_identity_schema"
+        case chunkExpandViaGetRef = "chunk_expand_via_get_ref"
+        case skippedPolicyOrFilter = "skipped_policy_or_filter"
+        case skippedRemoteVisibility = "skipped_remote_visibility"
+        case skippedSecret = "skipped_secret"
+        case skippedBudget = "skipped_budget"
+        case omittedReasonCounts = "omitted_reason_counts"
+        case selectedLayerCounts = "selected_layer_counts"
+        case selectedSourceKindCounts = "selected_source_kind_counts"
+        case selectedSensitivityCounts = "selected_sensitivity_counts"
+        case selectedVisibilityCounts = "selected_visibility_counts"
+        case selectedRefSamples = "selected_ref_samples"
+        case contextTextIncluded = "context_text_included"
+        case promptTextIncluded = "prompt_text_included"
+        case wouldCallModel = "would_call_model"
+        case modelCallExecuted = "model_call_executed"
+        case productionAuthorityChange = "production_authority_change"
+        case recordedAtMs = "recorded_at_ms"
+    }
+}
+
+struct XTUnifiedDoctorRustMemoryWritebackCandidateQueueProjection: Codable, Equatable, Sendable {
+    var schemaVersion: String
+    var ready: Bool
+    var authority: String
+    var source: String?
+    var candidateCount: Int
+    var conflictCandidateCount: Int
+    var staleReviewRequiredCount: Int
+    var staleCandidateCount: Int
+    var supersedingCandidateCount: Int
+    var supersededCandidateCount: Int
+    var archivedSupersededCount: Int
+    var plannedArchiveCount: Int
+    var plannedStaleReviewRequiredCount: Int
+    var activeReviewLockCount: Int
+    var queuePressure: String
+    var noiseScore: Int
+    var productionAuthorityChange: Bool
+
+    init(
+        schemaVersion: String = "missing",
+        ready: Bool = false,
+        authority: String = "unknown",
+        source: String? = nil,
+        candidateCount: Int = 0,
+        conflictCandidateCount: Int = 0,
+        staleReviewRequiredCount: Int = 0,
+        staleCandidateCount: Int = 0,
+        supersedingCandidateCount: Int = 0,
+        supersededCandidateCount: Int = 0,
+        archivedSupersededCount: Int = 0,
+        plannedArchiveCount: Int = 0,
+        plannedStaleReviewRequiredCount: Int = 0,
+        activeReviewLockCount: Int = 0,
+        queuePressure: String = "unknown",
+        noiseScore: Int = 0,
+        productionAuthorityChange: Bool = false
+    ) {
+        self.schemaVersion = normalizedDoctorField(schemaVersion, fallback: "missing")
+        self.ready = ready
+        self.authority = normalizedDoctorField(authority, fallback: "unknown")
+        self.source = normalizedOptionalDoctorField(source)
+        self.candidateCount = max(0, candidateCount)
+        self.conflictCandidateCount = max(0, conflictCandidateCount)
+        self.staleReviewRequiredCount = max(0, staleReviewRequiredCount)
+        self.staleCandidateCount = max(0, staleCandidateCount)
+        self.supersedingCandidateCount = max(0, supersedingCandidateCount)
+        self.supersededCandidateCount = max(0, supersededCandidateCount)
+        self.archivedSupersededCount = max(0, archivedSupersededCount)
+        self.plannedArchiveCount = max(0, plannedArchiveCount)
+        self.plannedStaleReviewRequiredCount = max(0, plannedStaleReviewRequiredCount)
+        self.activeReviewLockCount = max(0, activeReviewLockCount)
+        self.queuePressure = normalizedDoctorField(queuePressure, fallback: "unknown")
+        self.noiseScore = max(0, noiseScore)
+        self.productionAuthorityChange = productionAuthorityChange
+    }
+
+    init?(_ snapshot: RustHubMemoryReadinessSnapshot?) {
+        guard let objectStore = snapshot?.objectStore,
+              let writeback = objectStore.writebackCandidates else {
+            return nil
+        }
+        let diagnostics = writeback.diagnostics
+        self.init(
+            schemaVersion: diagnostics?.schemaVersion ?? writeback.schemaVersion ?? "missing",
+            ready: writeback.ready ?? diagnostics?.ready ?? false,
+            authority: writeback.authority ?? "unknown",
+            source: diagnostics?.source,
+            candidateCount: diagnostics?.candidateCount
+                ?? writeback.candidateObjectCount
+                ?? objectStore.candidateObjectCount
+                ?? 0,
+            conflictCandidateCount: diagnostics?.conflictCandidateCount ?? 0,
+            staleReviewRequiredCount: diagnostics?.staleReviewRequiredCount ?? 0,
+            staleCandidateCount: diagnostics?.staleCandidateCount ?? 0,
+            supersedingCandidateCount: diagnostics?.supersedingCandidateCount ?? 0,
+            supersededCandidateCount: diagnostics?.supersededCandidateCount
+                ?? diagnostics?.archivedSupersededCount
+                ?? 0,
+            archivedSupersededCount: diagnostics?.archivedSupersededCount ?? 0,
+            plannedArchiveCount: diagnostics?.plannedArchiveCount ?? 0,
+            plannedStaleReviewRequiredCount: diagnostics?.plannedStaleReviewRequiredCount ?? 0,
+            activeReviewLockCount: diagnostics?.activeReviewLockCount ?? 0,
+            queuePressure: diagnostics?.queuePressure ?? "unknown",
+            noiseScore: diagnostics?.noiseScore ?? 0,
+            productionAuthorityChange: writeback.productionAuthorityChange
+                ?? diagnostics?.productionAuthorityChange
+                ?? false
+        )
+    }
+
+    func detailLines(prefix: String = "rust_memory_writeback_candidate_queue") -> [String] {
+        [
+            "\(prefix)_schema=\(schemaVersion)",
+            "\(prefix)_ready=\(ready)",
+            "\(prefix)_authority=\(authority)",
+            "\(prefix)_candidates=\(candidateCount)",
+            "\(prefix)_conflicts=\(conflictCandidateCount)",
+            "\(prefix)_stale_review_required=\(staleReviewRequiredCount)",
+            "\(prefix)_stale=\(staleCandidateCount)",
+            "\(prefix)_superseded=\(supersededCandidateCount)",
+            "\(prefix)_pressure=\(queuePressure)",
+            "\(prefix)_noise_score=\(noiseScore)",
+            "\(prefix)_production_authority_change=\(productionAuthorityChange)",
+            "\(prefix)_planned_archive=\(plannedArchiveCount)",
+            "\(prefix)_planned_stale_review_required=\(plannedStaleReviewRequiredCount)"
+        ]
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case ready
+        case authority
+        case source
+        case candidateCount = "candidate_count"
+        case conflictCandidateCount = "conflict_candidate_count"
+        case staleReviewRequiredCount = "stale_review_required_count"
+        case staleCandidateCount = "stale_candidate_count"
+        case supersedingCandidateCount = "superseding_candidate_count"
+        case supersededCandidateCount = "superseded_candidate_count"
+        case archivedSupersededCount = "archived_superseded_count"
+        case plannedArchiveCount = "planned_archive_count"
+        case plannedStaleReviewRequiredCount = "planned_stale_review_required_count"
+        case activeReviewLockCount = "active_review_lock_count"
+        case queuePressure = "queue_pressure"
+        case noiseScore = "noise_score"
+        case productionAuthorityChange = "production_authority_change"
+    }
+}
+
+struct XTUnifiedDoctorRustMemoryObjectMutationGateProjection: Codable, Equatable, Sendable {
+    var schemaVersion: String
+    var ready: Bool
+    var authority: String
+    var archiveHTTP: Bool
+    var deleteHTTP: Bool
+    var pinHTTP: Bool
+    var unpinHTTP: Bool
+    var confirmationRequired: Bool
+    var confirmationRequiredFor: [String]
+    var immutableFailClosed: Bool
+    var deleteMode: String
+    var activeMemoryMutation: Bool
+    var productionAuthorityChange: Bool
+
+    init(
+        schemaVersion: String = "missing",
+        ready: Bool = false,
+        authority: String = "unknown",
+        archiveHTTP: Bool = false,
+        deleteHTTP: Bool = false,
+        pinHTTP: Bool = false,
+        unpinHTTP: Bool = false,
+        confirmationRequired: Bool = false,
+        confirmationRequiredFor: [String] = [],
+        immutableFailClosed: Bool = false,
+        deleteMode: String = "unknown",
+        activeMemoryMutation: Bool = false,
+        productionAuthorityChange: Bool = false
+    ) {
+        self.schemaVersion = normalizedDoctorField(schemaVersion, fallback: "missing")
+        self.ready = ready
+        self.authority = normalizedDoctorField(authority, fallback: "unknown")
+        self.archiveHTTP = archiveHTTP
+        self.deleteHTTP = deleteHTTP
+        self.pinHTTP = pinHTTP
+        self.unpinHTTP = unpinHTTP
+        self.confirmationRequired = confirmationRequired
+        self.confirmationRequiredFor = Self.normalizedTokens(confirmationRequiredFor)
+        self.immutableFailClosed = immutableFailClosed
+        self.deleteMode = normalizedDoctorField(deleteMode, fallback: "unknown")
+        self.activeMemoryMutation = activeMemoryMutation
+        self.productionAuthorityChange = productionAuthorityChange
+    }
+
+    init?(_ snapshot: RustHubMemoryReadinessSnapshot?) {
+        guard let objectStore = snapshot?.objectStore,
+              let gate = objectStore.mutationGate else {
+            return nil
+        }
+        self.init(
+            schemaVersion: gate.schemaVersion ?? "missing",
+            ready: gate.ready ?? objectStore.ready ?? false,
+            authority: gate.authority ?? "unknown",
+            archiveHTTP: gate.archiveHTTP ?? false,
+            deleteHTTP: gate.effectiveDeleteHTTP,
+            pinHTTP: gate.pinHTTP ?? false,
+            unpinHTTP: gate.unpinHTTP ?? false,
+            confirmationRequired: gate.effectiveConfirmationRequired,
+            confirmationRequiredFor: gate.confirmationRequiredFor ?? [],
+            immutableFailClosed: gate.immutableFailClosed ?? false,
+            deleteMode: gate.deleteMode ?? "unknown",
+            activeMemoryMutation: gate.activeMemoryMutation ?? false,
+            productionAuthorityChange: gate.productionAuthorityChange ?? false
+        )
+    }
+
+    func detailLines(prefix: String = "rust_memory_object_mutation_gate") -> [String] {
+        [
+            "\(prefix)_schema=\(schemaVersion)",
+            "\(prefix)_ready=\(ready)",
+            "\(prefix)_authority=\(authority)",
+            "\(prefix)_archive_http=\(archiveHTTP)",
+            "\(prefix)_delete_http=\(deleteHTTP)",
+            "\(prefix)_pin_http=\(pinHTTP)",
+            "\(prefix)_unpin_http=\(unpinHTTP)",
+            "\(prefix)_confirmation_required=\(confirmationRequired)",
+            "\(prefix)_confirmation_required_for=\(confirmationRequiredFor.isEmpty ? "none" : confirmationRequiredFor.joined(separator: ","))",
+            "\(prefix)_immutable_fail_closed=\(immutableFailClosed)",
+            "\(prefix)_delete_mode=\(deleteMode)",
+            "\(prefix)_active_memory_mutation=\(activeMemoryMutation)",
+            "\(prefix)_production_authority_change=\(productionAuthorityChange)"
+        ]
+    }
+
+    private static func normalizedTokens(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for value in values {
+            let token = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !token.isEmpty, seen.insert(token).inserted else { continue }
+            ordered.append(token)
+        }
+        return ordered
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case ready
+        case authority
+        case archiveHTTP = "archive_http"
+        case deleteHTTP = "delete_http"
+        case pinHTTP = "pin_http"
+        case unpinHTTP = "unpin_http"
+        case confirmationRequired = "confirmation_required"
+        case confirmationRequiredFor = "confirmation_required_for"
+        case immutableFailClosed = "immutable_fail_closed"
+        case deleteMode = "delete_mode"
+        case activeMemoryMutation = "active_memory_mutation"
+        case productionAuthorityChange = "production_authority_change"
+    }
+}
+
+struct XTUnifiedDoctorRustMemoryUserRevealGrantProjection: Codable, Equatable, Sendable {
+    var schemaVersion: String
+    var ready: Bool
+    var authority: String
+    var scope: String
+    var surface: String
+    var issueHTTP: Bool
+    var evaluateHTTP: Bool
+    var revokeHTTP: Bool
+    var defaultTTLMS: Int64
+    var maxTTLMS: Int64
+    var contentIncluded: Bool
+    var memoryIDsIncluded: Bool
+    var projectCoderAllowed: Bool
+    var modelContextAuthority: Bool
+    var memoryServingAuthorityChange: Bool
+    var productionAuthorityChange: Bool
+
+    init(
+        schemaVersion: String = "missing",
+        ready: Bool = false,
+        authority: String = "unknown",
+        scope: String = "user",
+        surface: String = "assistant_user_memory_inspector",
+        issueHTTP: Bool = false,
+        evaluateHTTP: Bool = false,
+        revokeHTTP: Bool = false,
+        defaultTTLMS: Int64 = 0,
+        maxTTLMS: Int64 = 0,
+        contentIncluded: Bool = false,
+        memoryIDsIncluded: Bool = false,
+        projectCoderAllowed: Bool = false,
+        modelContextAuthority: Bool = false,
+        memoryServingAuthorityChange: Bool = false,
+        productionAuthorityChange: Bool = false
+    ) {
+        self.schemaVersion = normalizedDoctorField(schemaVersion, fallback: "missing")
+        self.ready = ready
+        self.authority = normalizedDoctorField(authority, fallback: "unknown")
+        self.scope = normalizedDoctorField(scope, fallback: "user")
+        self.surface = normalizedDoctorField(surface, fallback: "assistant_user_memory_inspector")
+        self.issueHTTP = issueHTTP
+        self.evaluateHTTP = evaluateHTTP
+        self.revokeHTTP = revokeHTTP
+        self.defaultTTLMS = max(0, defaultTTLMS)
+        self.maxTTLMS = max(0, maxTTLMS)
+        self.contentIncluded = contentIncluded
+        self.memoryIDsIncluded = memoryIDsIncluded
+        self.projectCoderAllowed = projectCoderAllowed
+        self.modelContextAuthority = modelContextAuthority
+        self.memoryServingAuthorityChange = memoryServingAuthorityChange
+        self.productionAuthorityChange = productionAuthorityChange
+    }
+
+    init?(_ snapshot: RustHubMemoryReadinessSnapshot?) {
+        guard let objectStore = snapshot?.objectStore,
+              let grant = objectStore.userRevealGrant else {
+            return nil
+        }
+        self.init(
+            schemaVersion: grant.schemaVersion ?? "missing",
+            ready: grant.ready ?? objectStore.ready ?? false,
+            authority: grant.authority ?? "unknown",
+            scope: grant.scope ?? "user",
+            surface: grant.surface ?? "assistant_user_memory_inspector",
+            issueHTTP: grant.issueHTTP ?? false,
+            evaluateHTTP: grant.evaluateHTTP ?? false,
+            revokeHTTP: grant.revokeHTTP ?? false,
+            defaultTTLMS: grant.defaultTTLMS ?? 0,
+            maxTTLMS: grant.maxTTLMS ?? 0,
+            contentIncluded: grant.contentIncluded ?? false,
+            memoryIDsIncluded: grant.memoryIDsIncluded ?? false,
+            projectCoderAllowed: grant.projectCoderAllowed ?? false,
+            modelContextAuthority: grant.modelContextAuthority ?? false,
+            memoryServingAuthorityChange: grant.memoryServingAuthorityChange ?? false,
+            productionAuthorityChange: grant.productionAuthorityChange ?? false
+        )
+    }
+
+    func detailLines(prefix: String = "rust_memory_user_reveal_grant") -> [String] {
+        [
+            "\(prefix)_schema=\(schemaVersion)",
+            "\(prefix)_ready=\(ready)",
+            "\(prefix)_authority=\(authority)",
+            "\(prefix)_scope=\(scope)",
+            "\(prefix)_surface=\(surface)",
+            "\(prefix)_issue_http=\(issueHTTP)",
+            "\(prefix)_evaluate_http=\(evaluateHTTP)",
+            "\(prefix)_revoke_http=\(revokeHTTP)",
+            "\(prefix)_default_ttl_ms=\(defaultTTLMS)",
+            "\(prefix)_max_ttl_ms=\(maxTTLMS)",
+            "\(prefix)_content_included=\(contentIncluded)",
+            "\(prefix)_memory_ids_included=\(memoryIDsIncluded)",
+            "\(prefix)_project_coder_allowed=\(projectCoderAllowed)",
+            "\(prefix)_model_context_authority=\(modelContextAuthority)",
+            "\(prefix)_memory_serving_authority_change=\(memoryServingAuthorityChange)",
+            "\(prefix)_production_authority_change=\(productionAuthorityChange)"
+        ]
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case ready
+        case authority
+        case scope
+        case surface
+        case issueHTTP = "issue_http"
+        case evaluateHTTP = "evaluate_http"
+        case revokeHTTP = "revoke_http"
+        case defaultTTLMS = "default_ttl_ms"
+        case maxTTLMS = "max_ttl_ms"
+        case contentIncluded = "content_included"
+        case memoryIDsIncluded = "memory_ids_included"
+        case projectCoderAllowed = "project_coder_allowed"
+        case modelContextAuthority = "model_context_authority"
+        case memoryServingAuthorityChange = "memory_serving_authority_change"
+        case productionAuthorityChange = "production_authority_change"
+    }
+}
+
 private final class XTUnifiedDoctorSupervisorGuidanceContinuityProjectionStorage: Codable, Equatable, Sendable {
     let schemaVersion: String
     let reviewGuidanceCarrierPresent: Bool
@@ -3285,6 +3957,12 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
     var externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil
     var durableCandidateMirrorProjection: XTUnifiedDoctorDurableCandidateMirrorProjection? = nil
     var localStoreWriteProjection: XTUnifiedDoctorLocalStoreWriteProjection? = nil
+    var rustMemoryObjectMutationGateProjection: XTUnifiedDoctorRustMemoryObjectMutationGateProjection? = nil
+    var rustMemoryUserRevealGrantProjection: XTUnifiedDoctorRustMemoryUserRevealGrantProjection? = nil
+    var rustMemoryWritebackCandidateQueueProjection: XTUnifiedDoctorRustMemoryWritebackCandidateQueueProjection? = nil
+    var rustMemorySelectionEvidenceProjection: XTUnifiedDoctorRustMemorySelectionEvidenceProjection? = nil
+    var rustProductProcessSanityProjection: RustHubProductProcessSanitySnapshot? = nil
+    var rustMemoryGatewayExecutionGateProjection: RustHubMemoryGatewayModelCallExecutionGateSnapshot? = nil
     var skillDoctorTruthProjection: XTUnifiedDoctorSkillDoctorTruthProjection? = nil
 
     var id: String { kind.rawValue }
@@ -3317,6 +3995,12 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
             && lhs.externalTerminalAccessProjection == rhs.externalTerminalAccessProjection
             && lhs.durableCandidateMirrorProjection == rhs.durableCandidateMirrorProjection
             && lhs.localStoreWriteProjection == rhs.localStoreWriteProjection
+            && lhs.rustMemoryObjectMutationGateProjection == rhs.rustMemoryObjectMutationGateProjection
+            && lhs.rustMemoryUserRevealGrantProjection == rhs.rustMemoryUserRevealGrantProjection
+            && lhs.rustMemoryWritebackCandidateQueueProjection == rhs.rustMemoryWritebackCandidateQueueProjection
+            && lhs.rustMemorySelectionEvidenceProjection == rhs.rustMemorySelectionEvidenceProjection
+            && lhs.rustProductProcessSanityProjection == rhs.rustProductProcessSanityProjection
+            && lhs.rustMemoryGatewayExecutionGateProjection == rhs.rustMemoryGatewayExecutionGateProjection
             && lhs.skillDoctorTruthProjection == rhs.skillDoctorTruthProjection
     }
 
@@ -3348,6 +4032,12 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
         case externalTerminalAccessProjection
         case durableCandidateMirrorProjection
         case localStoreWriteProjection
+        case rustMemoryObjectMutationGateProjection
+        case rustMemoryUserRevealGrantProjection
+        case rustMemoryWritebackCandidateQueueProjection
+        case rustMemorySelectionEvidenceProjection
+        case rustProductProcessSanityProjection
+        case rustMemoryGatewayExecutionGateProjection
         case skillDoctorTruthProjection
     }
 
@@ -3397,6 +4087,12 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
         externalTerminalAccessProjection: XTUnifiedDoctorExternalTerminalAccessProjection? = nil,
         durableCandidateMirrorProjection: XTUnifiedDoctorDurableCandidateMirrorProjection? = nil,
         localStoreWriteProjection: XTUnifiedDoctorLocalStoreWriteProjection? = nil,
+        rustMemoryObjectMutationGateProjection: XTUnifiedDoctorRustMemoryObjectMutationGateProjection? = nil,
+        rustMemoryUserRevealGrantProjection: XTUnifiedDoctorRustMemoryUserRevealGrantProjection? = nil,
+        rustMemoryWritebackCandidateQueueProjection: XTUnifiedDoctorRustMemoryWritebackCandidateQueueProjection? = nil,
+        rustMemorySelectionEvidenceProjection: XTUnifiedDoctorRustMemorySelectionEvidenceProjection? = nil,
+        rustProductProcessSanityProjection: RustHubProductProcessSanitySnapshot? = nil,
+        rustMemoryGatewayExecutionGateProjection: RustHubMemoryGatewayModelCallExecutionGateSnapshot? = nil,
         skillDoctorTruthProjection: XTUnifiedDoctorSkillDoctorTruthProjection? = nil
     ) {
         self.kind = kind
@@ -3426,6 +4122,12 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
         self.externalTerminalAccessProjection = externalTerminalAccessProjection
         self.durableCandidateMirrorProjection = durableCandidateMirrorProjection
         self.localStoreWriteProjection = localStoreWriteProjection
+        self.rustMemoryObjectMutationGateProjection = rustMemoryObjectMutationGateProjection
+        self.rustMemoryUserRevealGrantProjection = rustMemoryUserRevealGrantProjection
+        self.rustMemoryWritebackCandidateQueueProjection = rustMemoryWritebackCandidateQueueProjection
+        self.rustMemorySelectionEvidenceProjection = rustMemorySelectionEvidenceProjection
+        self.rustProductProcessSanityProjection = rustProductProcessSanityProjection
+        self.rustMemoryGatewayExecutionGateProjection = rustMemoryGatewayExecutionGateProjection
         self.skillDoctorTruthProjection = skillDoctorTruthProjection
     }
 
@@ -3519,6 +4221,30 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
                 XTUnifiedDoctorLocalStoreWriteProjection.self,
                 forKey: .localStoreWriteProjection
             ),
+            rustMemoryObjectMutationGateProjection: try container.decodeIfPresent(
+                XTUnifiedDoctorRustMemoryObjectMutationGateProjection.self,
+                forKey: .rustMemoryObjectMutationGateProjection
+            ),
+            rustMemoryUserRevealGrantProjection: try container.decodeIfPresent(
+                XTUnifiedDoctorRustMemoryUserRevealGrantProjection.self,
+                forKey: .rustMemoryUserRevealGrantProjection
+            ),
+            rustMemoryWritebackCandidateQueueProjection: try container.decodeIfPresent(
+                XTUnifiedDoctorRustMemoryWritebackCandidateQueueProjection.self,
+                forKey: .rustMemoryWritebackCandidateQueueProjection
+            ),
+            rustMemorySelectionEvidenceProjection: try container.decodeIfPresent(
+                XTUnifiedDoctorRustMemorySelectionEvidenceProjection.self,
+                forKey: .rustMemorySelectionEvidenceProjection
+            ),
+            rustProductProcessSanityProjection: try container.decodeIfPresent(
+                RustHubProductProcessSanitySnapshot.self,
+                forKey: .rustProductProcessSanityProjection
+            ),
+            rustMemoryGatewayExecutionGateProjection: try container.decodeIfPresent(
+                RustHubMemoryGatewayModelCallExecutionGateSnapshot.self,
+                forKey: .rustMemoryGatewayExecutionGateProjection
+            ),
             skillDoctorTruthProjection: try container.decodeIfPresent(
                 XTUnifiedDoctorSkillDoctorTruthProjection.self,
                 forKey: .skillDoctorTruthProjection
@@ -3588,6 +4314,30 @@ final class XTUnifiedDoctorSection: Identifiable, Codable, Equatable, @unchecked
         )
         try container.encodeIfPresent(durableCandidateMirrorProjection, forKey: .durableCandidateMirrorProjection)
         try container.encodeIfPresent(localStoreWriteProjection, forKey: .localStoreWriteProjection)
+        try container.encodeIfPresent(
+            rustMemoryObjectMutationGateProjection,
+            forKey: .rustMemoryObjectMutationGateProjection
+        )
+        try container.encodeIfPresent(
+            rustMemoryUserRevealGrantProjection,
+            forKey: .rustMemoryUserRevealGrantProjection
+        )
+        try container.encodeIfPresent(
+            rustMemoryWritebackCandidateQueueProjection,
+            forKey: .rustMemoryWritebackCandidateQueueProjection
+        )
+        try container.encodeIfPresent(
+            rustMemorySelectionEvidenceProjection,
+            forKey: .rustMemorySelectionEvidenceProjection
+        )
+        try container.encodeIfPresent(
+            rustProductProcessSanityProjection,
+            forKey: .rustProductProcessSanityProjection
+        )
+        try container.encodeIfPresent(
+            rustMemoryGatewayExecutionGateProjection,
+            forKey: .rustMemoryGatewayExecutionGateProjection
+        )
         try container.encodeIfPresent(skillDoctorTruthProjection, forKey: .skillDoctorTruthProjection)
     }
 }
@@ -3687,6 +4437,10 @@ struct XTUnifiedDoctorReportContract: Codable, Equatable {
             "externalTerminalAccessProjection",
             "durableCandidateMirrorProjection",
             "localStoreWriteProjection",
+            "rustMemoryObjectMutationGateProjection",
+            "rustMemoryUserRevealGrantProjection",
+            "rustMemoryWritebackCandidateQueueProjection",
+            "rustMemorySelectionEvidenceProjection",
             "skillDoctorTruthProjection",
             "remotePaidAccessProjection",
             "firstPairCompletionProofSnapshot"
@@ -3769,6 +4523,10 @@ final class XTUnifiedDoctorInput: @unchecked Sendable {
     var heartbeatGovernanceSnapshot: XTProjectHeartbeatGovernanceDoctorSnapshot? = nil
     var supervisorMemoryAssemblySnapshot: SupervisorMemoryAssemblySnapshot?
     var supervisorLatestTurnContextAssembly: SupervisorTurnContextAssemblyResult? = nil
+    var rustMemoryReadinessSnapshot: RustHubMemoryReadinessSnapshot? = nil
+    var rustProductProcessSanitySnapshot: RustHubProductProcessSanitySnapshot? = nil
+    var rustMemoryGatewayExecutionGateSnapshot: RustHubMemoryGatewayModelCallExecutionGateSnapshot? = nil
+    var rustMemorySelectionEvidenceProjection: XTUnifiedDoctorRustMemorySelectionEvidenceProjection? = nil
     var doctorProjectContext: AXProjectContext? = nil
     var supervisorVoiceSmokeReport: XTSupervisorVoiceSmokeReportSummary?
     var freshPairReconnectSmokeSnapshot: XTFreshPairReconnectSmokeSnapshot? = nil
@@ -3824,6 +4582,10 @@ final class XTUnifiedDoctorInput: @unchecked Sendable {
         heartbeatGovernanceSnapshot: XTProjectHeartbeatGovernanceDoctorSnapshot? = nil,
         supervisorMemoryAssemblySnapshot: SupervisorMemoryAssemblySnapshot? = nil,
         supervisorLatestTurnContextAssembly: SupervisorTurnContextAssemblyResult? = nil,
+        rustMemoryReadinessSnapshot: RustHubMemoryReadinessSnapshot? = nil,
+        rustProductProcessSanitySnapshot: RustHubProductProcessSanitySnapshot? = nil,
+        rustMemoryGatewayExecutionGateSnapshot: RustHubMemoryGatewayModelCallExecutionGateSnapshot? = nil,
+        rustMemorySelectionEvidenceProjection: XTUnifiedDoctorRustMemorySelectionEvidenceProjection? = nil,
         doctorProjectContext: AXProjectContext? = nil,
         supervisorVoiceSmokeReport: XTSupervisorVoiceSmokeReportSummary? = nil,
         freshPairReconnectSmokeSnapshot: XTFreshPairReconnectSmokeSnapshot? = nil,
@@ -3874,6 +4636,10 @@ final class XTUnifiedDoctorInput: @unchecked Sendable {
         self.heartbeatGovernanceSnapshot = heartbeatGovernanceSnapshot
         self.supervisorMemoryAssemblySnapshot = supervisorMemoryAssemblySnapshot
         self.supervisorLatestTurnContextAssembly = supervisorLatestTurnContextAssembly
+        self.rustMemoryReadinessSnapshot = rustMemoryReadinessSnapshot
+        self.rustProductProcessSanitySnapshot = rustProductProcessSanitySnapshot
+        self.rustMemoryGatewayExecutionGateSnapshot = rustMemoryGatewayExecutionGateSnapshot
+        self.rustMemorySelectionEvidenceProjection = rustMemorySelectionEvidenceProjection
         self.doctorProjectContext = doctorProjectContext
         self.supervisorVoiceSmokeReport = supervisorVoiceSmokeReport
         self.freshPairReconnectSmokeSnapshot = freshPairReconnectSmokeSnapshot
@@ -4008,6 +4774,10 @@ enum XTUnifiedDoctorBuilder {
             heartbeatGovernanceSnapshot: input.heartbeatGovernanceSnapshot,
             memoryAssemblySnapshot: input.supervisorMemoryAssemblySnapshot,
             turnContextAssembly: input.supervisorLatestTurnContextAssembly,
+            rustMemoryReadinessSnapshot: input.rustMemoryReadinessSnapshot,
+            rustProductProcessSanitySnapshot: input.rustProductProcessSanitySnapshot,
+            rustMemoryGatewayExecutionGateSnapshot: input.rustMemoryGatewayExecutionGateSnapshot,
+            rustMemorySelectionEvidenceProjection: input.rustMemorySelectionEvidenceProjection,
             projectContext: input.doctorProjectContext
         )
         let wakeProfile = enrichVoiceSmokeSection(
@@ -5935,6 +6705,10 @@ enum XTUnifiedDoctorBuilder {
         heartbeatGovernanceSnapshot: XTProjectHeartbeatGovernanceDoctorSnapshot?,
         memoryAssemblySnapshot: SupervisorMemoryAssemblySnapshot?,
         turnContextAssembly: SupervisorTurnContextAssemblyResult?,
+        rustMemoryReadinessSnapshot: RustHubMemoryReadinessSnapshot?,
+        rustProductProcessSanitySnapshot: RustHubProductProcessSanitySnapshot?,
+        rustMemoryGatewayExecutionGateSnapshot: RustHubMemoryGatewayModelCallExecutionGateSnapshot?,
+        rustMemorySelectionEvidenceProjection: XTUnifiedDoctorRustMemorySelectionEvidenceProjection?,
         projectContext: AXProjectContext?
     ) -> XTUnifiedDoctorSection {
         let section = base
@@ -5999,6 +6773,36 @@ enum XTUnifiedDoctorBuilder {
             section.localStoreWriteProjection = localStoreWriteProjection
             detailLines.append(localStoreWriteProjection.detailLine)
         }
+        if let rustMutationGateProjection = XTUnifiedDoctorRustMemoryObjectMutationGateProjection(
+            rustMemoryReadinessSnapshot
+        ) {
+            section.rustMemoryObjectMutationGateProjection = rustMutationGateProjection
+            detailLines += rustMutationGateProjection.detailLines()
+        }
+        if let rustUserRevealGrantProjection = XTUnifiedDoctorRustMemoryUserRevealGrantProjection(
+            rustMemoryReadinessSnapshot
+        ) {
+            section.rustMemoryUserRevealGrantProjection = rustUserRevealGrantProjection
+            detailLines += rustUserRevealGrantProjection.detailLines()
+        }
+        if let rustCandidateQueueProjection = XTUnifiedDoctorRustMemoryWritebackCandidateQueueProjection(
+            rustMemoryReadinessSnapshot
+        ) {
+            section.rustMemoryWritebackCandidateQueueProjection = rustCandidateQueueProjection
+            detailLines += rustCandidateQueueProjection.detailLines()
+        }
+        if let rustMemorySelectionEvidenceProjection {
+            section.rustMemorySelectionEvidenceProjection = rustMemorySelectionEvidenceProjection
+            detailLines += rustMemorySelectionEvidenceProjection.detailLines()
+        }
+        if let rustProductProcessSanitySnapshot {
+            section.rustProductProcessSanityProjection = rustProductProcessSanitySnapshot
+            detailLines += rustProductProcessSanitySnapshot.doctorDetailLines()
+        }
+        if let rustMemoryGatewayExecutionGateSnapshot {
+            section.rustMemoryGatewayExecutionGateProjection = rustMemoryGatewayExecutionGateSnapshot
+            detailLines += rustMemoryGatewayExecutionGateSnapshot.doctorDetailLines()
+        }
         guard detailLines != base.detailLines
                 || section.projectContextPresentation != nil
                 || section.projectGovernanceRuntimeReadinessProjection != nil
@@ -6015,7 +6819,13 @@ enum XTUnifiedDoctorBuilder {
                 || section.supervisorRemoteSnapshotCacheProjection != nil
                 || section.hubMemoryPromptProjection != nil
                 || section.durableCandidateMirrorProjection != nil
-                || section.localStoreWriteProjection != nil else {
+                || section.localStoreWriteProjection != nil
+                || section.rustMemoryObjectMutationGateProjection != nil
+                || section.rustMemoryUserRevealGrantProjection != nil
+                || section.rustMemoryWritebackCandidateQueueProjection != nil
+                || section.rustMemorySelectionEvidenceProjection != nil
+                || section.rustProductProcessSanityProjection != nil
+                || section.rustMemoryGatewayExecutionGateProjection != nil else {
             return base
         }
         section.detailLines = orderedUnique(detailLines)
@@ -7596,6 +8406,30 @@ private struct XTUnifiedDoctorSectionCard: View {
         return XTDoctorDurableCandidateMirrorPresentation.summary(projection: durableCandidateMirrorProjection)
     }
 
+    private var rustMemorySelectionEvidenceProjection: XTUnifiedDoctorRustMemorySelectionEvidenceProjection? {
+        guard section.kind == .sessionRuntimeReadiness else { return nil }
+        return section.rustMemorySelectionEvidenceProjection
+    }
+
+    private var rustMemorySelectionEvidenceSummary: XTDoctorProjectionSummary? {
+        guard let rustMemorySelectionEvidenceProjection else { return nil }
+        return XTDoctorRustMemorySelectionEvidencePresentation.summary(
+            projection: rustMemorySelectionEvidenceProjection
+        )
+    }
+
+    private var rustProductProcessSanitySummary: XTDoctorProjectionSummary? {
+        guard section.kind == .sessionRuntimeReadiness,
+              let snapshot = section.rustProductProcessSanityProjection else { return nil }
+        return XTDoctorProductProcessSanityPresentation.summary(snapshot: snapshot)
+    }
+
+    private var rustMemoryGatewayExecutionGateSummary: XTDoctorProjectionSummary? {
+        guard section.kind == .sessionRuntimeReadiness,
+              let snapshot = section.rustMemoryGatewayExecutionGateProjection else { return nil }
+        return XTDoctorRustMemoryGatewayExecutionGatePresentation.summary(snapshot: snapshot)
+    }
+
     private var projectAutomationContinuitySummary: XTDoctorProjectionSummary? {
         guard section.kind == .sessionRuntimeReadiness else { return nil }
         return XTDoctorProjectAutomationContinuityPresentation.summary(detailLines: section.detailLines)
@@ -7689,6 +8523,18 @@ private struct XTUnifiedDoctorSectionCard: View {
 
             if let durableCandidateMirrorSummary {
                 XTDoctorProjectionSummaryView(summary: durableCandidateMirrorSummary)
+            }
+
+            if let rustMemorySelectionEvidenceSummary {
+                XTDoctorProjectionSummaryView(summary: rustMemorySelectionEvidenceSummary)
+            }
+
+            if let rustProductProcessSanitySummary {
+                XTDoctorProjectionSummaryView(summary: rustProductProcessSanitySummary)
+            }
+
+            if let rustMemoryGatewayExecutionGateSummary {
+                XTDoctorProjectionSummaryView(summary: rustMemoryGatewayExecutionGateSummary)
             }
 
             if !section.detailLines.isEmpty {

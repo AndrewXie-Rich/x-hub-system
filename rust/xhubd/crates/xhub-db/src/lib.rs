@@ -60,6 +60,12 @@ pub fn baseline_migrations() -> Vec<Migration> {
             description: "Rust Hub derived memory object retrieval index",
             sql: include_str!("../../../migrations/0008_memory_object_index.sql"),
         },
+        Migration {
+            id: "0009",
+            file_name: "0009_memory_object_index_chunks.sql",
+            description: "Rust Hub chunked memory object retrieval index",
+            sql: include_str!("../../../migrations/0009_memory_object_index_chunks.sql"),
+        },
     ]
 }
 
@@ -842,6 +848,10 @@ pub struct MemoryObjectIndexFilter {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryObjectIndexRecord {
     pub memory_id: String,
+    pub chunk_id: String,
+    pub chunk_ordinal: i64,
+    pub chunk_start_line: i64,
+    pub chunk_end_line: i64,
     pub object_version: i64,
     pub object_created_at_ms: i64,
     pub object_updated_at_ms: i64,
@@ -2034,11 +2044,10 @@ pub fn rebuild_memory_object_index(
             skipped_secret_count += 1;
             continue;
         }
-        insert_memory_object_index_row(
-            &tx,
-            &memory_object_index_record(&object, generated_at_ms)?,
-        )?;
-        indexed_count += 1;
+        for row in memory_object_index_records(&object, generated_at_ms)? {
+            insert_memory_object_index_row(&tx, &row)?;
+            indexed_count += 1;
+        }
     }
     tx.commit()?;
     let stale_after_count = read_memory_object_index_summary(db_path)
@@ -2125,13 +2134,14 @@ pub fn list_memory_object_index(
         format!(" WHERE {}", where_parts.join(" AND "))
     };
     let sql = format!(
-        "SELECT memory_id, object_version, object_created_at_ms, object_updated_at_ms, scope, owner_id,
+        "SELECT memory_id, chunk_id, chunk_ordinal, chunk_start_line, chunk_end_line,
+                object_version, object_created_at_ms, object_updated_at_ms, scope, owner_id,
                 run_id, project_id, agent_id, source_kind, layer, title, summary,
                 text, searchable_text, content_hash, sensitivity, visibility,
                 pinned, has_code, has_todo, has_error, has_decision, has_approval,
                 has_blocker, has_link, indexed_at_ms
          FROM rust_hub_memory_object_index{}
-         ORDER BY pinned DESC, object_updated_at_ms DESC, memory_id DESC
+         ORDER BY pinned DESC, object_updated_at_ms DESC, memory_id DESC, chunk_ordinal ASC
          LIMIT ?",
         where_sql
     );
@@ -2185,7 +2195,7 @@ pub fn read_memory_object_index_summary(
     )?;
     let stale_missing = query_i64_or_zero(
         &conn,
-        "SELECT COUNT(*) FROM rust_hub_memory_objects o
+        "SELECT COUNT(DISTINCT o.memory_id) FROM rust_hub_memory_objects o
          LEFT JOIN rust_hub_memory_object_index i ON i.memory_id = o.memory_id
          WHERE o.status = 'active'
            AND o.sensitivity != 'secret'
@@ -2348,90 +2358,185 @@ fn memory_object_index_row_from_sql(
 ) -> Result<MemoryObjectIndexRecord, rusqlite::Error> {
     Ok(MemoryObjectIndexRecord {
         memory_id: row.get(0)?,
-        object_version: row.get(1)?,
-        object_created_at_ms: row.get(2)?,
-        object_updated_at_ms: row.get(3)?,
-        scope: row.get(4)?,
-        owner_id: row.get(5)?,
-        run_id: row.get(6)?,
-        project_id: row.get(7)?,
-        agent_id: row.get(8)?,
-        source_kind: row.get(9)?,
-        layer: row.get(10)?,
-        title: row.get(11)?,
-        summary: row.get(12)?,
-        text: row.get(13)?,
-        searchable_text: row.get(14)?,
-        content_hash: row.get(15)?,
-        sensitivity: row.get(16)?,
-        visibility: row.get(17)?,
-        pinned: row.get::<_, i64>(18)? == 1,
-        has_code: row.get::<_, i64>(19)? == 1,
-        has_todo: row.get::<_, i64>(20)? == 1,
-        has_error: row.get::<_, i64>(21)? == 1,
-        has_decision: row.get::<_, i64>(22)? == 1,
-        has_approval: row.get::<_, i64>(23)? == 1,
-        has_blocker: row.get::<_, i64>(24)? == 1,
-        has_link: row.get::<_, i64>(25)? == 1,
-        indexed_at_ms: row.get(26)?,
+        chunk_id: row.get(1)?,
+        chunk_ordinal: row.get(2)?,
+        chunk_start_line: row.get(3)?,
+        chunk_end_line: row.get(4)?,
+        object_version: row.get(5)?,
+        object_created_at_ms: row.get(6)?,
+        object_updated_at_ms: row.get(7)?,
+        scope: row.get(8)?,
+        owner_id: row.get(9)?,
+        run_id: row.get(10)?,
+        project_id: row.get(11)?,
+        agent_id: row.get(12)?,
+        source_kind: row.get(13)?,
+        layer: row.get(14)?,
+        title: row.get(15)?,
+        summary: row.get(16)?,
+        text: row.get(17)?,
+        searchable_text: row.get(18)?,
+        content_hash: row.get(19)?,
+        sensitivity: row.get(20)?,
+        visibility: row.get(21)?,
+        pinned: row.get::<_, i64>(22)? == 1,
+        has_code: row.get::<_, i64>(23)? == 1,
+        has_todo: row.get::<_, i64>(24)? == 1,
+        has_error: row.get::<_, i64>(25)? == 1,
+        has_decision: row.get::<_, i64>(26)? == 1,
+        has_approval: row.get::<_, i64>(27)? == 1,
+        has_blocker: row.get::<_, i64>(28)? == 1,
+        has_link: row.get::<_, i64>(29)? == 1,
+        indexed_at_ms: row.get(30)?,
     })
 }
 
-fn memory_object_index_record(
+const MEMORY_OBJECT_INDEX_TARGET_CHARS: usize = 1600;
+const MEMORY_OBJECT_INDEX_OVERLAP_LINES: usize = 2;
+
+#[derive(Debug, Clone)]
+struct MemoryObjectIndexChunk {
+    chunk_ordinal: i64,
+    chunk_start_line: i64,
+    chunk_end_line: i64,
+    text: String,
+}
+
+fn memory_object_index_records(
     object: &MemoryObjectRecord,
     indexed_at_ms: i64,
-) -> Result<MemoryObjectIndexRecord, rusqlite::Error> {
-    let searchable_text = format!(
-        "{}\n{}\n{}\n{}",
-        object.title, object.summary, object.text, object.tags_json
-    );
-    let lower = searchable_text.to_ascii_lowercase();
-    Ok(MemoryObjectIndexRecord {
-        memory_id: object.memory_id.clone(),
-        object_version: object.version,
-        object_created_at_ms: object.created_at_ms,
-        object_updated_at_ms: object.updated_at_ms,
-        scope: object.scope.clone(),
-        owner_id: object.owner_id.clone(),
-        run_id: object.run_id.clone(),
-        project_id: object.project_id.clone(),
-        agent_id: object.agent_id.clone(),
-        source_kind: object.source_kind.clone(),
-        layer: object.layer.clone(),
-        title: object.title.clone(),
-        summary: object.summary.clone(),
-        text: object.text.clone(),
-        searchable_text: searchable_text.clone(),
-        content_hash: stable_hash16(searchable_text.as_bytes()),
-        sensitivity: object.sensitivity.clone(),
-        visibility: object.visibility.clone(),
-        pinned: object.pinned,
-        has_code: object.text.contains("```")
-            || lower.contains("fn ")
-            || lower.contains("func ")
-            || lower.contains("class ")
-            || lower.contains("struct "),
-        has_todo: lower.contains("todo")
-            || lower.contains("next step")
-            || lower.contains("next_steps"),
-        has_error: lower.contains("error")
-            || lower.contains("failed")
-            || lower.contains("exception"),
-        has_decision: lower.contains("decision")
-            || lower.contains("decided")
-            || lower.contains("choose")
-            || lower.contains("chosen"),
-        has_approval: lower.contains("approval")
-            || lower.contains("approved")
-            || lower.contains("authorized"),
-        has_blocker: lower.contains("blocker")
-            || lower.contains("blocked")
-            || lower.contains("risk"),
-        has_link: lower.contains("http://")
-            || lower.contains("https://")
-            || lower.contains("memory://"),
-        indexed_at_ms,
-    })
+) -> Result<Vec<MemoryObjectIndexRecord>, rusqlite::Error> {
+    Ok(memory_object_index_chunks(&object.text)
+        .into_iter()
+        .map(|chunk| {
+            let searchable_text = format!(
+                "{}\n{}\n{}\n{}",
+                object.title, object.summary, chunk.text, object.tags_json
+            );
+            let lower = searchable_text.to_ascii_lowercase();
+            let content_hash = stable_hash16(searchable_text.as_bytes());
+            MemoryObjectIndexRecord {
+                memory_id: object.memory_id.clone(),
+                chunk_id: format!(
+                    "object-{}-{}-{}",
+                    chunk.chunk_ordinal,
+                    chunk
+                        .chunk_end_line
+                        .saturating_sub(chunk.chunk_start_line)
+                        .saturating_add(1),
+                    content_hash
+                ),
+                chunk_ordinal: chunk.chunk_ordinal,
+                chunk_start_line: chunk.chunk_start_line,
+                chunk_end_line: chunk.chunk_end_line,
+                object_version: object.version,
+                object_created_at_ms: object.created_at_ms,
+                object_updated_at_ms: object.updated_at_ms,
+                scope: object.scope.clone(),
+                owner_id: object.owner_id.clone(),
+                run_id: object.run_id.clone(),
+                project_id: object.project_id.clone(),
+                agent_id: object.agent_id.clone(),
+                source_kind: object.source_kind.clone(),
+                layer: object.layer.clone(),
+                title: object.title.clone(),
+                summary: object.summary.clone(),
+                text: chunk.text,
+                searchable_text,
+                content_hash,
+                sensitivity: object.sensitivity.clone(),
+                visibility: object.visibility.clone(),
+                pinned: object.pinned,
+                has_code: lower.contains("```")
+                    || lower.contains("fn ")
+                    || lower.contains("func ")
+                    || lower.contains("class ")
+                    || lower.contains("struct "),
+                has_todo: lower.contains("todo")
+                    || lower.contains("next step")
+                    || lower.contains("next_steps"),
+                has_error: lower.contains("error")
+                    || lower.contains("failed")
+                    || lower.contains("exception"),
+                has_decision: lower.contains("decision")
+                    || lower.contains("decided")
+                    || lower.contains("choose")
+                    || lower.contains("chosen"),
+                has_approval: lower.contains("approval")
+                    || lower.contains("approved")
+                    || lower.contains("authorized"),
+                has_blocker: lower.contains("blocker")
+                    || lower.contains("blocked")
+                    || lower.contains("risk"),
+                has_link: lower.contains("http://")
+                    || lower.contains("https://")
+                    || lower.contains("memory://"),
+                indexed_at_ms,
+            }
+        })
+        .collect())
+}
+
+fn memory_object_index_chunks(text: &str) -> Vec<MemoryObjectIndexChunk> {
+    if text.trim().is_empty() {
+        return vec![MemoryObjectIndexChunk {
+            chunk_ordinal: 1,
+            chunk_start_line: 1,
+            chunk_end_line: 1,
+            text: String::new(),
+        }];
+    }
+    if text.chars().count() <= MEMORY_OBJECT_INDEX_TARGET_CHARS {
+        return vec![MemoryObjectIndexChunk {
+            chunk_ordinal: 1,
+            chunk_start_line: 1,
+            chunk_end_line: text.lines().count().max(1) as i64,
+            text: text.trim().to_string(),
+        }];
+    }
+
+    let lines = text.lines().collect::<Vec<_>>();
+    let mut out = Vec::new();
+    let mut current = Vec::<&str>::new();
+    let mut current_start_idx = 0usize;
+    let mut ordinal = 1_i64;
+
+    for (idx, line) in lines.iter().enumerate() {
+        current.push(*line);
+        let current_text = current.join("\n");
+        let at_boundary = line.trim().is_empty() || idx + 1 == lines.len();
+        let over_budget = current_text.chars().count() >= MEMORY_OBJECT_INDEX_TARGET_CHARS;
+        if (over_budget && at_boundary)
+            || (over_budget && current.len() >= 8)
+            || idx + 1 == lines.len()
+        {
+            let trimmed = current_text.trim();
+            if !trimmed.is_empty() {
+                out.push(MemoryObjectIndexChunk {
+                    chunk_ordinal: ordinal,
+                    chunk_start_line: current_start_idx.saturating_add(1) as i64,
+                    chunk_end_line: idx.saturating_add(1) as i64,
+                    text: trimmed.to_string(),
+                });
+                ordinal += 1;
+            }
+            let overlap_start = current
+                .len()
+                .saturating_sub(MEMORY_OBJECT_INDEX_OVERLAP_LINES);
+            current = current[overlap_start..].to_vec();
+            current_start_idx = idx.saturating_add(1).saturating_sub(current.len());
+        }
+    }
+
+    if out.is_empty() {
+        out.push(MemoryObjectIndexChunk {
+            chunk_ordinal: 1,
+            chunk_start_line: 1,
+            chunk_end_line: lines.len().max(1) as i64,
+            text: text.trim().to_string(),
+        });
+    }
+    out
 }
 
 fn insert_memory_object_index_row(
@@ -2440,18 +2545,24 @@ fn insert_memory_object_index_row(
 ) -> Result<(), rusqlite::Error> {
     conn.execute(
         "INSERT OR REPLACE INTO rust_hub_memory_object_index
-         (memory_id, object_version, object_created_at_ms, object_updated_at_ms, scope, owner_id,
+         (memory_id, chunk_id, chunk_ordinal, chunk_start_line, chunk_end_line,
+          object_version, object_created_at_ms, object_updated_at_ms, scope, owner_id,
           run_id, project_id, agent_id, source_kind, layer, title, summary,
           text, searchable_text, content_hash, sensitivity, visibility, pinned,
           has_code, has_todo, has_error, has_decision, has_approval,
           has_blocker, has_link, indexed_at_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6,
-                 ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                 ?14, ?15, ?16, ?17, ?18, ?19,
-                 ?20, ?21, ?22, ?23, ?24,
-                 ?25, ?26, ?27)",
+         VALUES (?1, ?2, ?3, ?4, ?5,
+                 ?6, ?7, ?8, ?9, ?10,
+                 ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                 ?18, ?19, ?20, ?21, ?22, ?23,
+                 ?24, ?25, ?26, ?27, ?28,
+                 ?29, ?30, ?31)",
         params![
             row.memory_id,
+            row.chunk_id,
+            row.chunk_ordinal,
+            row.chunk_start_line,
+            row.chunk_end_line,
             row.object_version,
             row.object_created_at_ms,
             row.object_updated_at_ms,
@@ -2692,11 +2803,11 @@ mod tests {
         let db_path = unique_temp_db_path("xhub_migrations");
 
         let first = apply_baseline_migrations(&db_path).expect("first migration run");
-        assert_eq!(first.len(), 8);
+        assert_eq!(first.len(), 9);
         assert!(first.iter().all(|item| item.applied));
 
         let second = apply_baseline_migrations(&db_path).expect("second migration run");
-        assert_eq!(second.len(), 8);
+        assert_eq!(second.len(), 9);
         assert!(second.iter().all(|item| !item.applied));
 
         let conn = Connection::open(&db_path).expect("open migrated db");
@@ -2931,9 +3042,119 @@ mod tests {
         .expect("list index");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].memory_id, "mem_index_decision");
+        assert!(rows[0].chunk_id.starts_with("object-1-"));
+        assert_eq!(rows[0].chunk_ordinal, 1);
+        assert_eq!(rows[0].chunk_start_line, 1);
+        assert_eq!(rows[0].chunk_end_line, 1);
         assert!(rows[0].has_decision);
         assert!(rows[0].pinned);
         assert!(rows[0].content_hash.len() >= 16);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn memory_object_index_rebuilds_long_objects_as_stable_chunks() {
+        let db_path = unique_temp_db_path("xhub_memory_object_index_chunks");
+        apply_baseline_migrations(&db_path).expect("migrate db");
+
+        let text = (0..48)
+            .map(|idx| {
+                if idx == 30 {
+                    format!(
+                        "Line {idx}: Blocker: route-specific reviewer context must expand from a stable chunk ref."
+                    )
+                } else {
+                    format!(
+                        "Line {idx}: background project memory filler for chunked object indexing and retrieval."
+                    )
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let object = MemoryObjectRecord {
+            memory_id: "mem_index_chunked".to_string(),
+            schema_version: "xhub.memory.object.v1".to_string(),
+            scope: "project".to_string(),
+            owner_id: "project-chunk".to_string(),
+            run_id: None,
+            project_id: Some("project-chunk".to_string()),
+            agent_id: Some("coder".to_string()),
+            source_kind: "project_capsule".to_string(),
+            layer: "l2_observations".to_string(),
+            title: "Chunked object".to_string(),
+            text,
+            summary: "Chunked object retrieval fixture.".to_string(),
+            tags_json: "[\"chunk\"]".to_string(),
+            sensitivity: "internal".to_string(),
+            visibility: "local_only".to_string(),
+            status: "active".to_string(),
+            pinned: false,
+            immutable: false,
+            ttl_ms: None,
+            created_at_ms: 2_000,
+            updated_at_ms: 2_000,
+            last_accessed_at_ms: 2_000,
+            version: 1,
+            provenance_json: "{}".to_string(),
+            policy_json: "{}".to_string(),
+        };
+        create_memory_object_with_event(
+            &db_path,
+            &object,
+            &MemoryEventRecord {
+                event_id: "mev_index_chunked".to_string(),
+                memory_id: object.memory_id.clone(),
+                operation: "create".to_string(),
+                actor: "test".to_string(),
+                reason: "unit_test_chunked".to_string(),
+                before_version: None,
+                after_version: Some(1),
+                before_json: None,
+                after_json: Some("{}".to_string()),
+                policy_decision: "allow".to_string(),
+                deny_code: String::new(),
+                audit_ref: "audit-index-chunked".to_string(),
+                created_at_ms: 2_001,
+            },
+        )
+        .expect("create chunked object");
+
+        let report = rebuild_memory_object_index(&db_path).expect("rebuild index");
+        assert!(report.indexed_count > 1);
+        assert_eq!(report.stale_after_count, 0);
+
+        let rows = list_memory_object_index(
+            &db_path,
+            &MemoryObjectIndexFilter {
+                project_id: Some("project-chunk".to_string()),
+                limit: 20,
+                ..Default::default()
+            },
+        )
+        .expect("list chunks");
+        assert!(rows.len() > 1);
+        assert!(
+            rows.iter()
+                .all(|row| row.memory_id == "mem_index_chunked"
+                    && row.chunk_id.starts_with("object-"))
+        );
+        assert_eq!(rows[0].chunk_ordinal, 1);
+        assert!(rows[1].chunk_start_line <= rows[0].chunk_end_line);
+        let first_chunk_id = rows[0].chunk_id.clone();
+
+        let report = rebuild_memory_object_index(&db_path).expect("rebuild index again");
+        assert_eq!(report.stale_after_count, 0);
+        let rows_again = list_memory_object_index(
+            &db_path,
+            &MemoryObjectIndexFilter {
+                project_id: Some("project-chunk".to_string()),
+                limit: 20,
+                ..Default::default()
+            },
+        )
+        .expect("list chunks again");
+        assert_eq!(rows_again[0].chunk_id, first_chunk_id);
 
         let _ = std::fs::remove_file(&db_path);
     }

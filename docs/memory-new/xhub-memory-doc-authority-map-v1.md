@@ -1,7 +1,7 @@
 # X-Hub Memory Doc Authority Map v1
 
 - Status: Active
-- Updated: 2026-04-05
+- Updated: 2026-05-23
 - Purpose: 收敛 Memory 文档阅读入口，明确哪些是当前权威文档，哪些只是 supporting / handoff / historical context，避免后续 AI 和人反复在旧摘要包与重复 overview 里打转。
 
 ## 1) Read Order
@@ -11,14 +11,18 @@
 1. `X_MEMORY.md`
 2. `docs/WORKING_INDEX.md`
 3. `docs/memory-new/xhub-memory-updates-2026q1.md`
-4. `docs/memory-new/xhub-memory-v3-execution-plan.md`
-5. `docs/memory-new/xhub-supervisor-memory-routing-and-assembly-protocol-v1.md`
-6. `docs/memory-new/xhub-role-aware-memory-serving-and-tier-coupling-v1.md`
-7. `docs/memory-new/xhub-heartbeat-and-review-evolution-protocol-v1.md`
-8. `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
-9. `docs/xhub-memory-remote-export-and-prompt-gate-v1.md`
-10. `docs/memory-new/xhub-constitution-memory-integration-v2.md`
-11. `docs/memory-new/xhub-constitution-l0-injection-v2.md`
+4. `docs/memory-new/xhub-memory-runtime-authority-and-reality-map-v1.md`
+5. `docs/memory-new/xhub-memory-writeback-candidate-lifecycle-v1.md`
+6. `docs/memory-new/xhub-role-aware-conversation-contract-v1.md`
+7. `docs/memory-new/xhub-memory-serving-profile-gateway-alignment-v1.md`
+8. `docs/memory-new/xhub-memory-v3-execution-plan.md`
+9. `docs/memory-new/xhub-supervisor-memory-routing-and-assembly-protocol-v1.md`
+10. `docs/memory-new/xhub-role-aware-memory-serving-and-tier-coupling-v1.md`
+11. `docs/memory-new/xhub-heartbeat-and-review-evolution-protocol-v1.md`
+12. `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
+13. `docs/xhub-memory-remote-export-and-prompt-gate-v1.md`
+14. `docs/memory-new/xhub-constitution-memory-integration-v2.md`
+15. `docs/memory-new/xhub-constitution-l0-injection-v2.md`
 
 ## 2) Authority Levels
 
@@ -29,6 +33,10 @@
 - `X_MEMORY.md`
 - `docs/WORKING_INDEX.md`
 - `docs/memory-new/xhub-memory-doc-authority-map-v1.md`
+- `docs/memory-new/xhub-memory-runtime-authority-and-reality-map-v1.md`
+- `docs/memory-new/xhub-memory-writeback-candidate-lifecycle-v1.md`
+- `docs/memory-new/xhub-role-aware-conversation-contract-v1.md`
+- `docs/memory-new/xhub-memory-serving-profile-gateway-alignment-v1.md`
 - `docs/memory-new/xhub-memory-updates-2026q1.md`
 
 ### B. Authoritative protocols
@@ -40,6 +48,7 @@
 - `docs/memory-new/xhub-supervisor-dual-plane-memory-assembly-v1.md`
 - `docs/memory-new/xhub-supervisor-recent-raw-context-policy-v1.md`
 - `docs/memory-new/xhub-project-ai-context-depth-policy-v1.md`
+- `docs/memory-new/xhub-memory-serving-profile-gateway-alignment-v1.md`
 - `docs/memory-new/xhub-role-aware-memory-serving-and-tier-coupling-v1.md`
 - `docs/memory-new/xhub-heartbeat-and-review-evolution-protocol-v1.md`
 - `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`

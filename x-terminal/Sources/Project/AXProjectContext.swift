@@ -1,6 +1,6 @@
 import Foundation
 
-struct AXProjectContext: Equatable {
+struct AXProjectContext: Equatable, Sendable {
     let root: URL
 
     var xterminalDir: URL {

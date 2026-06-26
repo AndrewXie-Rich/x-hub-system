@@ -49,7 +49,7 @@ final class LocalModelBenchCapabilityPolicyTests: XCTestCase {
         )
     }
 
-    func testLegacyMLXControlModeStillUsesTextOnlyBenchPolicy() throws {
+    func testLegacyControlModeUsesAdvertisedProviderTasksWhenAvailable() throws {
         let modelDir = try makeModelDir()
         let fakePython = try makeFakePython(
             """
@@ -100,11 +100,8 @@ final class LocalModelBenchCapabilityPolicyTests: XCTestCase {
             pythonPath: fakePython.path
         )
 
-        XCTAssertEqual(descriptors.map(\.taskKind), ["text_generate"])
-        XCTAssertEqual(
-            message,
-            "MLX 快速评审目前只支持文本生成。\n\n视觉理解 模型仍然可以导入 Hub，但 MLX 还没有接通 视觉理解 的 provider 原生评审链路。"
-        )
+        XCTAssertEqual(descriptors.map(\.taskKind), ["vision_understand", "text_generate"])
+        XCTAssertNil(message)
     }
 
     func testTransformersBenchableDescriptorsKeepAdvertisedTaskKinds() throws {
@@ -269,6 +266,52 @@ final class LocalModelBenchCapabilityPolicyTests: XCTestCase {
         )
 
         XCTAssertEqual(descriptors.map(\.taskKind), ["text_to_speech"])
+    }
+
+    func testMLXEmbeddingUsesAdvertisedProviderTaskKinds() throws {
+        let modelDir = try makeModelDir()
+        let model = HubModel(
+            id: "qwen3-embedding",
+            name: "Qwen3 Embedding",
+            backend: "mlx",
+            runtimeProviderID: "mlx",
+            quant: "4bit",
+            contextLength: 32768,
+            paramsB: 0.6,
+            state: .available,
+            modelPath: modelDir.path,
+            taskKinds: ["embedding"]
+        )
+        let runtimeStatus = AIRuntimeStatus(
+            pid: 1004,
+            updatedAt: Date().timeIntervalSince1970,
+            mlxOk: true,
+            providers: [
+                "mlx": AIRuntimeProviderStatus(
+                    provider: "mlx",
+                    ok: true,
+                    reasonCode: "ready",
+                    availableTaskKinds: ["text_generate", "embedding"],
+                    loadedModels: [],
+                    deviceBackend: "mps",
+                    updatedAt: Date().timeIntervalSince1970,
+                    lifecycleMode: "mlx_legacy"
+                ),
+            ]
+        )
+
+        let descriptors = LocalModelBenchCapabilityPolicy.benchableDescriptors(
+            for: model,
+            runtimeStatus: runtimeStatus
+        )
+        let message = LocalModelBenchCapabilityPolicy.unsupportedTaskMessage(
+            for: model,
+            taskKind: "embedding",
+            runtimeStatus: runtimeStatus
+        )
+
+        XCTAssertEqual(descriptors.map(\.taskKind), ["embedding"])
+        XCTAssertNil(message)
     }
 
     func testMLXVisionModelUsingMLXVLMRuntimeProviderCanBenchVisionTask() throws {

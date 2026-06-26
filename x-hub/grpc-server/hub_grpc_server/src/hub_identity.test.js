@@ -107,3 +107,19 @@ run('hub_identity keeps LAN discovery separate from internet host and can infer 
     try { fs.rmSync(stateDir, { recursive: true, force: true }); } catch {}
   }
 });
+
+run('hub_identity ignores LAN-only internet host env hints', () => {
+  const runtimeBaseDir = makeTmpDir('hub_identity_lan_only_internet_host');
+  try {
+    const internetHostHint = withEnv({
+      AXHUB_STATE_DIR: runtimeBaseDir,
+      HUB_PAIRING_PUBLIC_HOST: '192.168.10.110',
+      HUB_INTERNET_HOST: '10.0.0.8',
+      AXHUB_INTERNET_HOST: '172.20.10.9',
+    }, () => resolveHubInternetHostHint({ runtimeBaseDir }));
+
+    assert.equal(String(internetHostHint || ''), '');
+  } finally {
+    try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch {}
+  }
+});

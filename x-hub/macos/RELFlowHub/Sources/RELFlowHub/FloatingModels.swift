@@ -2,11 +2,13 @@ import Foundation
 import SwiftUI
 
 enum FloatingMode: String, Codable, CaseIterable {
+    case hidden
     case orb
     case card
 
     var title: String {
         switch self {
+        case .hidden: return HubUIStrings.Settings.FloatingMode.hidden
         case .orb: return HubUIStrings.Settings.FloatingMode.orb
         case .card: return HubUIStrings.Settings.FloatingMode.card
         }
@@ -14,9 +16,59 @@ enum FloatingMode: String, Codable, CaseIterable {
 
     var panelSize: CGSize {
         switch self {
+        // Hidden still keeps a sane backing size so switching back does not resurrect
+        // a tiny off-screen panel.
+        case .hidden: return CGSize(width: 176, height: 176)
         case .orb: return CGSize(width: 396, height: 396)
         // Fixed-size card: closer to a square widget footprint.
         case .card: return CGSize(width: 176, height: 176)
+        }
+    }
+}
+
+enum OrbParticleDensity: String, Codable, CaseIterable {
+    case low
+    case medium
+    case high
+
+    var title: String {
+        switch self {
+        case .low: return HubUIStrings.Settings.FloatingMode.Density.low
+        case .medium: return HubUIStrings.Settings.FloatingMode.Density.medium
+        case .high: return HubUIStrings.Settings.FloatingMode.Density.high
+        }
+    }
+
+    func adjustedStride(_ baseStride: Int) -> Int {
+        switch self {
+        case .low:
+            return max(1, baseStride + 2)
+        case .medium:
+            return max(1, baseStride)
+        case .high:
+            return max(1, baseStride / 2)
+        }
+    }
+}
+
+enum OrbParticleSize: String, Codable, CaseIterable {
+    case small
+    case standard
+    case large
+
+    var title: String {
+        switch self {
+        case .small: return HubUIStrings.Settings.FloatingMode.Size.small
+        case .standard: return HubUIStrings.Settings.FloatingMode.Size.standard
+        case .large: return HubUIStrings.Settings.FloatingMode.Size.large
+        }
+    }
+
+    var scale: CGFloat {
+        switch self {
+        case .small: return 0.78
+        case .standard: return 1.0
+        case .large: return 1.28
         }
     }
 }

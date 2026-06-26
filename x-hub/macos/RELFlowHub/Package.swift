@@ -17,9 +17,10 @@ let package = Package(
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .target(name: "RELFlowHubCore"),
+        .target(name: "RELFlowHubAppSupport"),
         .executableTarget(
             name: "RELFlowHub",
-            dependencies: ["RELFlowHubCore"],
+            dependencies: ["RELFlowHubCore", "RELFlowHubAppSupport"],
             resources: [
                 .process("Resources"),
             ]
@@ -30,7 +31,7 @@ let package = Package(
         ),
         .testTarget(
             name: "RELFlowHubAppTests",
-            dependencies: ["RELFlowHub", "RELFlowHubCore"]
+            dependencies: ["RELFlowHub", "RELFlowHubCore", "RELFlowHubAppSupport"]
         ),
     ]
 )

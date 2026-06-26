@@ -901,6 +901,7 @@ struct HubSetupWizardView: View {
     @StateObject private var modelManager = HubModelManager.shared
     @State private var activeFocusRequest: XTHubSetupFocusRequest?
     @State private var connectionToolsExpanded = false
+    @State private var hubDiscoveryScanConfirmPresented = false
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -924,7 +925,6 @@ struct HubSetupWizardView: View {
             }
             .onAppear {
                 processHubSetupFocusRequest(proxy)
-                appModel.maybeAutoFillHubSetupPathAndPorts(force: false)
                 modelManager.setAppModel(appModel)
                 if settingsSnapshot.hubInteractive {
                     Task {
@@ -944,6 +944,18 @@ struct HubSetupWizardView: View {
             }
         }
         .frame(minWidth: 780, minHeight: 720)
+        .confirmationDialog(
+            "确认扫描局域网 Hub",
+            isPresented: $hubDiscoveryScanConfirmPresented,
+            titleVisibility: .visible
+        ) {
+            Button("确认扫描") {
+                appModel.maybeAutoFillHubSetupPathAndPorts(force: true)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("建议先填写 Hub IP/域名、Pairing Port 和 gRPC Port。自动扫描会探测当前局域网，可能需要几秒；首次配对仍只允许同 Wi-Fi/LAN。")
+        }
     }
 
     private var headerSection: some View {
@@ -1107,13 +1119,13 @@ struct HubSetupWizardView: View {
 
                 DisclosureGroup(isExpanded: $connectionToolsExpanded) {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("自动探测失败、需要固定目标 Hub，或要清掉旧配对时，再展开这里。")
+                        Text("先填 Hub IP/域名、Pairing Port 和 gRPC Port；只有手动确认后才扫描局域网。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
                         HStack(spacing: 10) {
                             Button(settingsSnapshot.hubPortAutoDetectRunning ? "探测中..." : "自动探测") {
-                                appModel.maybeAutoFillHubSetupPathAndPorts(force: true)
+                                handleAutoDetectHubAction()
                             }
                             .buttonStyle(.bordered)
                             .disabled(settingsSnapshot.hubRemoteLinking)
@@ -1141,10 +1153,10 @@ struct HubSetupWizardView: View {
                                     .frame(width: 120)
                             }
                             GridRow {
-                                Text("正式入口")
+                                Text("Hub IP/域名")
                                     .frame(width: 130, alignment: .leading)
                                 VStack(alignment: .leading, spacing: 4) {
-                                    TextField("hub.xhubsystem.com", text: internetHostBinding)
+                                    TextField("17.81.11.80 或 hub.xhubsystem.com", text: internetHostBinding)
                                         .textFieldStyle(.roundedBorder)
                                     Text(formalEntryGuidancePresentation.message)
                                         .font(.caption)
@@ -1156,7 +1168,7 @@ struct HubSetupWizardView: View {
                                 Text("邀请令牌（首配用）")
                                     .frame(width: 130, alignment: .leading)
                                 VStack(alignment: .leading, spacing: 4) {
-                                    TextField("来自 Hub 邀请链接", text: inviteTokenBinding)
+                                    TextField("Hub 配对码/邀请链接", text: inviteTokenBinding)
                                         .textFieldStyle(.roundedBorder)
                                     Text(inviteTokenGuidancePresentation.message)
                                         .font(.caption)
@@ -1593,9 +1605,43 @@ struct HubSetupWizardView: View {
                     detail: "这里直接看发现 / 配对 / 连接的当前状态；需要手动修复时，再展开连接参数与修复工具。"
                 )
             } else {
-                appModel.startHubOneClickSetup()
+                if shouldRequireManualEndpointBeforeFirstPair {
+                    promptForManualHubEndpoint()
+                } else {
+                    appModel.startHubOneClickSetup()
+                }
             }
         }
+    }
+
+    private func handleAutoDetectHubAction() {
+        commitPendingHubEndpointEdits()
+        if settingsSnapshot.hubInternetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            promptForManualHubEndpoint()
+            hubDiscoveryScanConfirmPresented = true
+            return
+        }
+        appModel.maybeAutoFillHubSetupPathAndPorts(force: true)
+    }
+
+    private var shouldRequireManualEndpointBeforeFirstPair: Bool {
+        AppModel.shouldRequireManualEndpointBeforeFirstPair(
+            hasHubEnv: HubPairingCoordinator.hasHubEnvFast(stateDir: nil),
+            internetHost: settingsSnapshot.hubInternetHost,
+            inviteToken: settingsSnapshot.hubInviteToken,
+            inviteAlias: settingsSnapshot.hubInviteAlias,
+            inviteInstanceID: settingsSnapshot.hubInviteInstanceID
+        )
+    }
+
+    private func promptForManualHubEndpoint() {
+        connectionToolsExpanded = true
+        appModel.markHubManualEndpointRequired()
+        appModel.requestHubSetupFocus(
+            sectionId: "pair_progress",
+            title: "先填写 Hub 地址或配对码",
+            detail: "首次配对前请填写 Hub IP/域名、Pairing Port 和 gRPC Port；也可以粘贴 Hub 生成的同 Wi-Fi 配对链接。未填写时 XT 不会自动扫描；需要扫描时，点击“自动探测”并确认。"
+        )
     }
 
     private func commitPendingHubEndpointEdits() {
@@ -1777,7 +1823,7 @@ struct HubSetupWizardView: View {
         if hasStableFormalEntry {
             return "正式入口已设置；切网后 XT 会优先验证这条路径。"
         }
-        return "进入页面会先自动探测一轮；失败后再手填。"
+        return "先填 Hub IP/域名、Pairing Port 和 gRPC Port；未填不会扫描，需要时确认后再自动探测。"
     }
 
     private var formalEntryGuidancePresentation: HubRemoteAccessGuidancePresentation {
@@ -1830,6 +1876,9 @@ struct HubSetupWizardView: View {
         Binding(
             get: { settingsSnapshot.hubInviteToken },
             set: { value in
+                if appModel.applyHubPairingInviteTextIfPossible(value) {
+                    return
+                }
                 appModel.hubInviteToken = value
                 appModel.saveHubRemotePrefsNow()
             }

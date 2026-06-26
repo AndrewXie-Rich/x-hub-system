@@ -4796,10 +4796,9 @@ return jsResult
         ]
         let shortSHA = String(result.packageSHA256.prefix(12))
         if result.ok {
-            let refreshProjectId = firstNonEmptyString(
-                scope == "project" ? result.projectId : "",
-                registryProjectId
-            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            let refreshProjectId = scope == "project"
+                ? firstNonEmptyString(result.projectId, registryProjectId).trimmingCharacters(in: .whitespacesAndNewlines)
+                : ""
             if !refreshProjectId.isEmpty {
                 _ = await XTResolvedSkillsCacheStore.refreshFromHubIfPossible(
                     projectId: refreshProjectId,

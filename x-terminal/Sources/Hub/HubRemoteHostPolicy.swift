@@ -102,9 +102,13 @@ enum HubRemoteHostPolicy {
         authoritativeHost: String?,
         pairingInternetHost: String?
     ) -> Bool {
-        if let pairingInternetHost = normalizedNonEmpty(pairingInternetHost),
-           isFormalRemoteHost(pairingInternetHost) {
-            return true
+        if let pairingInternetHost = normalizedNonEmpty(pairingInternetHost) {
+            if isFormalRemoteHost(pairingInternetHost) {
+                return true
+            }
+            guard isPublicIPv4Host(pairingInternetHost) else {
+                return false
+            }
         }
         guard let pairing = normalizedHostToken(pairingHost) else { return true }
         guard let authoritative = normalizedHostToken(authoritativeHost) else { return true }

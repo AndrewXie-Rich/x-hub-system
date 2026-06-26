@@ -2427,6 +2427,8 @@ final class ModelStore: ObservableObject {
             fallbackFixtureTitle: fixtureTitle
         )
         _ = ModelBenchStorage.upsert(result)
+        let healthDetail = result.ok ? benchStatusLine(result) : benchFailureLine(result)
+        HubStore.shared.recordLocalModelBenchHealth(result: result, detail: healthDetail)
         refresh()
         lastResultByModelId[modelId] = ModelCommandResult(
             type: "model_result",
@@ -2476,6 +2478,8 @@ final class ModelStore: ObservableObject {
                 : nil
         )
         _ = ModelBenchStorage.upsert(result)
+        let healthDetail = benchFailureLine(result)
+        HubStore.shared.recordLocalModelBenchHealth(result: result, detail: healthDetail)
         refresh()
         lastResultByModelId[modelId] = ModelCommandResult(
             type: "model_result",
@@ -2780,6 +2784,10 @@ final class ModelStore: ObservableObject {
 
         var catalog = ModelCatalogStorage.load()
         var newModelIDs: [String] = []
+        var verificationModelIDs: [String] = []
+        let healthByModelID = Dictionary(
+            uniqueKeysWithValues: LocalModelHealthStorage.load().records.map { ($0.modelId, $0) }
+        )
         let helperBinaryPath = LocalHelperBridgeDiscovery.discoverHelperBinary()
 
         for rawEntry in preparedEntries {
@@ -2788,10 +2796,19 @@ final class ModelStore: ObservableObject {
                 helperBinaryPath: helperBinaryPath
             )
             if let existingIndex = catalog.models.firstIndex(where: { $0.id == entry.id }) {
+                let existing = catalog.models[existingIndex]
+                if importedCatalogEntryNeedsVerification(
+                    existing: existing,
+                    incoming: entry,
+                    health: healthByModelID[entry.id]
+                ) {
+                    verificationModelIDs.append(entry.id)
+                }
                 catalog.models[existingIndex] = entry
             } else {
                 catalog.models.append(entry)
                 newModelIDs.append(entry.id)
+                verificationModelIDs.append(entry.id)
             }
             upsertCatalogModel(entry)
         }
@@ -2806,17 +2823,34 @@ final class ModelStore: ObservableObject {
             helperBinaryPath: helperBinaryPath
         )
 
-        if !newModelIDs.isEmpty {
-            HubStore.shared.preflightLocalModelHealth(for: newModelIDs)
+        let verificationIDs = Array(NSOrderedSet(array: verificationModelIDs)) as? [String] ?? verificationModelIDs
+        if !verificationIDs.isEmpty {
+            HubStore.shared.preflightLocalModelHealth(for: verificationIDs)
         }
 
         if autoBenchNewModels {
-            for modelID in newModelIDs {
+            for modelID in verificationIDs {
                 scheduleDefaultBenchIfNeeded(forModelId: modelID)
             }
         }
 
-        return newModelIDs
+        return verificationIDs.isEmpty ? newModelIDs : verificationIDs
+    }
+
+    private func importedCatalogEntryNeedsVerification(
+        existing: ModelCatalogEntry,
+        incoming: ModelCatalogEntry,
+        health: LocalModelHealthRecord?
+    ) -> Bool {
+        if existing != incoming {
+            return true
+        }
+        switch LocalModelHealthSupport.effectiveState(for: health) {
+        case .healthy?:
+            return false
+        case .degraded?, .blockedReadiness?, .blockedRuntime?, .unknownStale?, nil:
+            return true
+        }
     }
 
     func scheduleDefaultBenchIfNeeded(forModelId modelId: String) {

@@ -22,6 +22,7 @@ enum XTPairedRouteTargetSource: String, Codable, Equatable, Sendable {
     case configuredInternetHost = "configured_internet_host"
     case freshPairReconnectSmoke = "fresh_pair_reconnect_smoke"
     case localRuntime = "local_runtime"
+    case rustRemoteEntryCandidate = "rust_remote_entry_candidate"
 }
 
 struct XTPairedRouteTargetSnapshot: Codable, Equatable, Sendable {
@@ -63,6 +64,8 @@ struct XTPairedRouteSetBuildInput: Sendable {
     var remoteRoute: HubRemoteRoute
     var linking: Bool
     var failureCode: String
+    var rustPreferredRemoteHost: String? = nil
+    var rustRemoteEntryAuthoritative: Bool = false
     var freshPairReconnectSmokeSnapshot: XTFreshPairReconnectSmokeSnapshot?
     var remoteShadowReconnectSmokeSnapshot: XTRemoteShadowReconnectSmokeSnapshot?
 }
@@ -213,8 +216,20 @@ enum XTPairedRouteSetSnapshotBuilder {
     }
 
     private static func resolveStableRemoteRoute(input: XTPairedRouteSetBuildInput) -> XTPairedRouteTargetSnapshot? {
-        if let host = normalizedNonEmpty(input.cachedProfile.internetHost),
+        if input.rustRemoteEntryAuthoritative,
+           let host = normalizedNonEmpty(input.rustPreferredRemoteHost),
            HubRemoteHostPolicy.isFormalRemoteHost(host) {
+            return makeTarget(
+                routeKind: .internetTunnel,
+                host: host,
+                pairingPort: input.pairingPort,
+                grpcPort: input.grpcPort,
+                source: .rustRemoteEntryCandidate
+            )
+        }
+
+        if let host = normalizedNonEmpty(input.cachedProfile.internetHost),
+           HubRemoteHostPolicy.isDirectInternetRemoteHost(host) {
             return makeTarget(
                 routeKind: .internet,
                 host: host,
@@ -225,13 +240,24 @@ enum XTPairedRouteSetSnapshotBuilder {
         }
 
         if let host = normalizedNonEmpty(input.configuredInternetHost),
-           HubRemoteHostPolicy.isFormalRemoteHost(host) {
+           HubRemoteHostPolicy.isDirectInternetRemoteHost(host) {
             return makeTarget(
                 routeKind: .internet,
                 host: host,
                 pairingPort: input.pairingPort,
                 grpcPort: input.grpcPort,
                 source: .configuredInternetHost
+            )
+        }
+
+        if let host = normalizedNonEmpty(input.rustPreferredRemoteHost),
+           HubRemoteHostPolicy.isFormalRemoteHost(host) {
+            return makeTarget(
+                routeKind: .internetTunnel,
+                host: host,
+                pairingPort: input.pairingPort,
+                grpcPort: input.grpcPort,
+                source: .rustRemoteEntryCandidate
             )
         }
 

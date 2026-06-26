@@ -335,6 +335,8 @@ struct SupervisorDoctorTests {
         #expect(finding?.severity == .warning)
         #expect(finding?.priority == .p1)
         #expect(finding?.detail.contains("missing_anchors=1") == true)
+        #expect(finding?.detail.contains("serving_profile_id=M1_Execute") == true)
+        #expect(finding?.detail.contains("effective_profile=M1_Execute") == true)
         #expect(finding?.verifyHint?.contains("parity_ok=true") == true)
         #expect(report.summary.memoryAssemblyWarningCount == 1)
     }
@@ -382,6 +384,9 @@ struct SupervisorDoctorTests {
         #expect(finding?.severity == .warning)
         #expect(finding?.priority == .p1)
         #expect(finding?.detail.contains("ready_for_require=false") == true)
+        #expect(finding?.detail.contains("serving_profile_id=M1_Execute") == true)
+        #expect(finding?.detail.contains("effective_profile=M1_Execute") == true)
+        #expect(finding?.detail.contains("profile_readiness_sample=M1_Execute:fresh=1,passing=0,ready=false") == true)
         #expect(finding?.detail.contains("memory_gateway_cutover_insufficient_samples") == true)
         #expect(report.summary.memoryAssemblyWarningCount == 1)
     }
@@ -426,6 +431,66 @@ struct SupervisorDoctorTests {
         )
 
         #expect(report.findings.contains(where: { $0.code.hasPrefix("memory_gateway_cutover_") }) == false)
+        #expect(report.summary.memoryAssemblyBlockingCount == 0)
+        #expect(report.summary.memoryAssemblyWarningCount == 0)
+    }
+
+    @Test
+    func rustMemoryGatewayModelCallPlanShadowMissingBlocksWhenRequired() {
+        let snapshot = makeMemorySnapshot()
+
+        let report = SupervisorDoctorChecker.run(
+            input: makeInput(
+                snapshot: snapshot,
+                rustGatewayModelCallPlanShadowRequired: true
+            )
+        )
+
+        let finding = report.findings.first { $0.code == "memory_gateway_model_call_plan_shadow_missing" }
+        #expect(finding?.area == "memory_assembly")
+        #expect(finding?.severity == .blocking)
+        #expect(finding?.priority == .p0)
+        #expect(finding?.detail.contains("status_found=false") == true)
+        #expect(report.summary.memoryAssemblyBlockingCount == 1)
+    }
+
+    @Test
+    func rustMemoryGatewayModelCallPlanUnexpectedExecutionBlocksDoctor() {
+        let snapshot = makeMemorySnapshot()
+        let evidence = makeRustMemoryGatewayModelCallPlanEvidence(
+            ok: false,
+            wouldCallModel: true,
+            modelCallExecuted: true,
+            issueCodes: ["rust_memory_gateway_model_call_plan_executed_unexpectedly"]
+        )
+
+        let report = SupervisorDoctorChecker.run(
+            input: makeInput(snapshot: snapshot, rustGatewayModelCallPlanStatus: evidence)
+        )
+
+        let finding = report.findings.first { $0.code == "memory_gateway_model_call_plan_executed_unexpectedly" }
+        #expect(finding?.area == "memory_assembly")
+        #expect(finding?.severity == .blocking)
+        #expect(finding?.priority == .p0)
+        #expect(finding?.detail.contains("would_call_model=true") == true)
+        #expect(finding?.detail.contains("model_call_executed=true") == true)
+        #expect(finding?.verifyHint?.contains("would_call_model=false") == true)
+    }
+
+    @Test
+    func rustMemoryGatewayModelCallPlanReadyEvidenceDoesNotCreateFinding() {
+        let snapshot = makeMemorySnapshot()
+        let evidence = makeRustMemoryGatewayModelCallPlanEvidence(ok: true)
+
+        let report = SupervisorDoctorChecker.run(
+            input: makeInput(
+                snapshot: snapshot,
+                rustGatewayModelCallPlanStatus: evidence,
+                rustGatewayModelCallPlanShadowRequired: true
+            )
+        )
+
+        #expect(report.findings.contains(where: { $0.code.hasPrefix("memory_gateway_model_call_plan_") }) == false)
         #expect(report.summary.memoryAssemblyBlockingCount == 0)
         #expect(report.summary.memoryAssemblyWarningCount == 0)
     }
@@ -795,7 +860,10 @@ struct SupervisorDoctorTests {
         canonicalSyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot? = nil,
         rustGatewayShadowCompare: HubIPCClient.RustMemoryGatewayShadowCompareResult? = nil,
         rustGatewayCutoverReadiness: HubIPCClient.RustMemoryGatewayCutoverReadinessReport? = nil,
-        rustGatewayRequireEnabled: Bool = false
+        rustGatewayRequireEnabled: Bool = false,
+        rustGatewayModelCallPlanStatus: HubIPCClient.RustMemoryGatewayModelCallPlanEvidence? = nil,
+        rustGatewayModelCallPlanHistory: HubIPCClient.RustMemoryGatewayModelCallPlanHistory? = nil,
+        rustGatewayModelCallPlanShadowRequired: Bool = false
     ) -> SupervisorDoctorInputBundle {
         let workspace = URL(fileURLWithPath: "/tmp/xterminal_doctor_memory_test", isDirectory: true)
         return SupervisorDoctorInputBundle(
@@ -813,7 +881,10 @@ struct SupervisorDoctorTests {
             canonicalMemorySyncSnapshot: canonicalSyncSnapshot,
             rustMemoryGatewayShadowCompare: rustGatewayShadowCompare,
             rustMemoryGatewayCutoverReadiness: rustGatewayCutoverReadiness,
-            rustMemoryGatewayRequireEnabled: rustGatewayRequireEnabled
+            rustMemoryGatewayRequireEnabled: rustGatewayRequireEnabled,
+            rustMemoryGatewayModelCallPlanStatus: rustGatewayModelCallPlanStatus,
+            rustMemoryGatewayModelCallPlanHistory: rustGatewayModelCallPlanHistory,
+            rustMemoryGatewayModelCallPlanShadowRequired: rustGatewayModelCallPlanShadowRequired
         )
     }
 
@@ -830,6 +901,9 @@ struct SupervisorDoctorTests {
             productionAuthorityChange: productionAuthorityChange,
             requesterRole: "supervisor",
             useMode: XTMemoryUseMode.supervisorOrchestration.rawValue,
+            servingProfileId: "M1_Execute",
+            selectedProfile: "M1_Execute",
+            effectiveProfile: "M1_Execute",
             projectId: "project-alpha",
             productSource: "local_ipc",
             rustSource: "rust_memory_gateway_prepare",
@@ -845,6 +919,55 @@ struct SupervisorDoctorTests {
             reasonCode: parityOk ? nil : "rust_memory_gateway_shadow_drift",
             detail: nil,
             recordedAtMs: 1_773_000_020_000
+        )
+    }
+
+    private func makeRustMemoryGatewayModelCallPlanEvidence(
+        ok: Bool,
+        schemaVersion: String = HubIPCClient.RustMemoryGatewayModelCallPlanEvidence.schemaVersion,
+        planSchemaVersion: String? = "xhub.memory.gateway_model_call_plan.v1",
+        wouldCallModel: Bool = false,
+        modelCallExecuted: Bool = false,
+        productionAuthorityChange: Bool = false,
+        contextTextIncluded: Bool = false,
+        promptTextIncluded: Bool = false,
+        issueCodes: [String] = []
+    ) -> HubIPCClient.RustMemoryGatewayModelCallPlanEvidence {
+        HubIPCClient.RustMemoryGatewayModelCallPlanEvidence(
+            schemaVersion: schemaVersion,
+            ok: ok,
+            source: "xt_rust_memory_gateway_model_call_plan_shadow",
+            mode: "shadow_preflight_no_product_cutover",
+            requestId: "doctor-model-plan-1",
+            auditRef: "xt_model_call_shadow:doctor-model-plan-1",
+            requesterRole: "chat",
+            useMode: XTMemoryUseMode.projectChat.rawValue,
+            scope: "project",
+            servingProfileId: "M1_Execute",
+            projectId: "project-alpha",
+            sessionId: "doctor-session",
+            appId: "x-terminal",
+            providerId: "doctor-provider",
+            modelId: "doctor-model",
+            taskKind: "text_generate",
+            planSchemaVersion: planSchemaVersion,
+            planStatus: "planned",
+            planSource: "rust_memory_gateway_model_call_plan",
+            planMode: "plan_only_no_model_call",
+            planAuthority: "rust_memory_gateway_plan_only",
+            contextCharCount: 128,
+            selectedRefCount: 2,
+            promptCharCount: 256,
+            messageCount: 1,
+            wouldCallModel: wouldCallModel,
+            modelCallExecuted: modelCallExecuted,
+            productionAuthorityChange: productionAuthorityChange,
+            contextTextIncluded: contextTextIncluded,
+            promptTextIncluded: promptTextIncluded,
+            issueCodes: issueCodes,
+            reasonCode: issueCodes.first,
+            detail: nil,
+            recordedAtMs: 1_773_000_040_000
         )
     }
 
@@ -868,6 +991,9 @@ struct SupervisorDoctorTests {
             generatedAtMs: 1_773_000_030_000,
             requesterRole: "supervisor",
             useMode: XTMemoryUseMode.supervisorOrchestration.rawValue,
+            servingProfileId: "M1_Execute",
+            selectedProfile: "M1_Execute",
+            effectiveProfile: "M1_Execute",
             projectId: projectId,
             requiredSampleCount: 3,
             maxAgeMs: 600_000,
@@ -882,6 +1008,28 @@ struct SupervisorDoctorTests {
             rustSourceMismatchCount: 0,
             latestRecordedAtMs: 1_773_000_029_000,
             oldestConsideredAtMs: 1_773_000_027_000,
+            profileReadinessSource: "/tmp/memory_gateway_shadow_compare_history.json",
+            profileReadinessSampleCount: ready ? 3 : 1,
+            profileDowngradeCount: 0,
+            rustDenyCount: 0,
+            profileReadiness: [
+                HubIPCClient.RustMemoryGatewayProfileReadiness(
+                    servingProfileId: "M1_Execute",
+                    totalSampleCount: ready ? 3 : 1,
+                    freshSampleCount: ready ? 3 : 1,
+                    passingSampleCount: ready ? 3 : 0,
+                    authorityViolationCount: authorityViolationCount,
+                    freshAuthorityViolationCount: authorityViolationCount,
+                    parityFailureCount: ready ? 0 : 1,
+                    freshParityFailureCount: ready ? 0 : 1,
+                    rustSourceMismatchCount: 0,
+                    freshRustSourceMismatchCount: 0,
+                    downgradeCount: 0,
+                    denyCount: 0,
+                    latestRecordedAtMs: 1_773_000_029_000,
+                    readyForRequire: ready
+                )
+            ],
             requireEnvKey: "XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE",
             statusPath: "/tmp/memory_gateway_shadow_compare_status.json",
             historyPath: "/tmp/memory_gateway_shadow_compare_history.json",

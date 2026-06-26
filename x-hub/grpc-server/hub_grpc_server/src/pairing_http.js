@@ -767,6 +767,10 @@ export function shouldRequireInviteTokenForPairingRequest({
   if (force === '1' || force.toLowerCase() === 'true') {
     return true;
   }
+  const firstPairForce = safeString(env?.HUB_PAIRING_REQUIRE_INVITE_TOKEN_FOR_FIRST_PAIR);
+  if (firstPairForce === '1' || firstPairForce.toLowerCase() === 'true') {
+    return true;
+  }
   const peerIp = safeString(peer_ip);
   const forwarded = safeString(forwarded_for);
   const policyPeerIp = forwarded && (isLoopbackIp(peerIp) || isPrivateIPv4(peerIp))
@@ -778,10 +782,15 @@ export function shouldRequireInviteTokenForPairingRequest({
 function effectivePeerIpForPairingSourcePolicy({
   peer_ip = '',
   forwarded_for = '',
+  env = process.env,
 } = {}) {
   const peerIp = safeString(peer_ip);
   const forwarded = safeString(forwarded_for);
-  if (forwarded && (isLoopbackIp(peerIp) || isPrivateIPv4(peerIp))) {
+  const trustLoopbackForwardedFor = safeString(env?.HUB_PAIRING_TRUST_LOOPBACK_FORWARDED_FOR);
+  const forwardedForTrusted = (trustLoopbackForwardedFor === '1'
+    || trustLoopbackForwardedFor.toLowerCase() === 'true')
+    && isLoopbackIp(peerIp);
+  if (forwarded && forwardedForTrusted) {
     return forwarded;
   }
   return peerIp;
@@ -816,21 +825,12 @@ export function evaluateFirstPairSameLanRequirement({
   forwarded_for = '',
   env = process.env,
 } = {}) {
-  const force = safeString(env?.HUB_PAIRING_REQUIRE_SAME_LAN);
-  const sameLanRequired = !(force === '0' || force.toLowerCase() === 'false');
   const effectivePeerIp = effectivePeerIpForPairingSourcePolicy({
     peer_ip,
     forwarded_for,
+    env,
   });
   const allowed_cidrs = resolveFirstPairSameLanAllowedCidrs(env);
-  if (!sameLanRequired) {
-    return {
-      ok: true,
-      required: false,
-      effective_peer_ip: effectivePeerIp,
-      allowed_cidrs,
-    };
-  }
   return {
     ok: peerAllowedByRules(effectivePeerIp, allowed_cidrs),
     required: true,
@@ -5928,17 +5928,17 @@ export function startPairingHTTPServer({
         forwarded_for: firstForwardedForIp(req),
         env: process.env,
       });
-      if (inviteTokenRequired) {
-        const inviteToken = safeString(
-          obj.invite_token
-          || req?.headers?.['x-hub-invite-token']
-          || req?.headers?.['x-invite-token']
-          || q.invite_token
-        );
+      const inviteToken = safeString(
+        obj.invite_token
+        || req?.headers?.['x-hub-invite-token']
+        || req?.headers?.['x-invite-token']
+        || q.invite_token
+      );
+      if (inviteTokenRequired || inviteToken) {
         const inviteRecord = loadInviteTokenRecord(runtimeBaseDir);
-        const denyCode = !inviteRecord || !inviteToken
+        const denyCode = inviteTokenRequired && (!inviteRecord || !inviteToken)
           ? 'invite_token_required'
-          : (safeTimingEqual(inviteRecord.token_secret, inviteToken) ? '' : 'invite_token_invalid');
+          : (!inviteRecord || !safeTimingEqual(inviteRecord.token_secret, inviteToken) ? 'invite_token_invalid' : '');
         if (denyCode) {
           appendIngressAudit({
             event_type: 'pairing.invite.rejected',

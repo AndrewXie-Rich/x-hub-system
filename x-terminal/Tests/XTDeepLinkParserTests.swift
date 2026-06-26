@@ -130,6 +130,34 @@ struct XTDeepLinkParserTests {
     }
 
     @Test
+    func parsesTokenOnlyLocalPairHubInviteRouteWithPrefill() throws {
+        let url = try #require(
+            URL(string: "xterminal://pair-hub?pairing_port=50054&grpc_port=50053&invite_token=axhub_invite_test_123&hub_alias=axhub-deadbeef&hub_instance_id=hub_deadbeefcafefeed00")
+        )
+        let route = try #require(XTDeepLinkParser.parse(url))
+
+        #expect(
+            route == .hubSetup(
+                XTHubSetupRoute(
+                    sectionId: "pair_hub",
+                    title: nil,
+                    detail: nil,
+                    refreshAction: nil,
+                    refreshReason: nil,
+                    pairingPrefill: XTHubPairingInvitePrefill(
+                        hubAlias: "axhub-deadbeef",
+                        internetHost: nil,
+                        pairingPort: 50054,
+                        grpcPort: 50053,
+                        inviteToken: "axhub_invite_test_123",
+                        hubInstanceID: "hub_deadbeefcafefeed00"
+                    )
+                )
+            )
+        )
+    }
+
+    @Test
     func parsesSettingsRouteWithSectionAndContext() throws {
         let url = try #require(
             URL(string: "xterminal://settings?section_id=diagnostics&title=Review%20official%20skill%20revocation&detail=Revoked%20Skill&refresh_action=recheck_official_skills&refresh_reason=official_skill_blocker")

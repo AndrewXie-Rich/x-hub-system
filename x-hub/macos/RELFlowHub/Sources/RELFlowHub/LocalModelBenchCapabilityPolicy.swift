@@ -101,9 +101,6 @@ enum LocalModelBenchCapabilityPolicy {
         for model: HubModel,
         runtimeStatus: AIRuntimeStatus?
     ) -> Set<String>? {
-        if resolvedControlMode(for: model, runtimeStatus: runtimeStatus) == .mlxLegacy {
-            return ["text_generate"]
-        }
         let providerID = normalizedProviderID(for: model)
         if let monitorProvider = runtimeStatus?.monitorSnapshot?.providers.first(where: { $0.provider == providerID }) {
             let advertisedMonitorTaskKinds = LocalTaskRoutingCatalog.supportedTaskKinds(
@@ -114,13 +111,20 @@ enum LocalModelBenchCapabilityPolicy {
             }
         }
         guard let providerStatus = runtimeStatus?.providerStatus(providerID) else {
+            if resolvedControlMode(for: model, runtimeStatus: runtimeStatus) == .mlxLegacy {
+                return ["text_generate"]
+            }
             return nil
         }
         let advertisedTaskKinds = LocalTaskRoutingCatalog.supportedTaskKinds(in: providerStatus.availableTaskKinds)
-        guard !advertisedTaskKinds.isEmpty else {
-            return nil
+        if !advertisedTaskKinds.isEmpty {
+            return Set(advertisedTaskKinds)
         }
-        return Set(advertisedTaskKinds)
+
+        if resolvedControlMode(for: model, runtimeStatus: runtimeStatus) == .mlxLegacy {
+            return ["text_generate"]
+        }
+        return nil
     }
 
     private static func resolvedControlMode(

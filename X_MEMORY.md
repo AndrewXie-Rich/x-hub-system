@@ -6,9 +6,16 @@
 
 ## Naming Map（旧名 -> 白皮书新名）
 - `RELFlowHub` / `REL Flow Hub` / `AX Flow Hub` -> **X-Hub**（产品名；当前构建产物已是 `build/X-Hub.app`，但二进制/BundleId 仍多为 `RELFlowHub*` / `com.rel.flowhub*`）
-- `AX Coder` / `AXCoder` -> **X-Terminal**（白皮书新名；代码/目录尚未迁移）
+- `AX Coder` / `AXCoder` -> **X-Terminal**（白皮书新名；当前本机 active XT 源码在 `/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal`）
 - `axhubctl`（CLI）-> 保持 `axhubctl`（已决定先不改名；未来可再迁移到 `xhubctl`）
 - `.axcoder/` -> `.xterminal/`（白皮书目标路径；目前代码仍使用 `.axcoder/`）
+
+## Active Root Guard（2026-06-15）
+- Hub app / control plane：`/Users/andrew.xie/Documents/AX/x-hub-system/x-hub/`
+- Hub Rust kernel：`/Users/andrew.xie/Documents/AX/rust/rust hub`
+- Active X-Terminal：`/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal`
+- `x-hub-system/x-terminal/` 是 legacy/read-only；XT 改动只落在那里不能算 active XT 已更新，必须迁移到 active XT 并在那里验证。
+- `x-hub/macos/RELFlowHub/` 是当前 Hub Swift 壳的历史 package 名，不是另一个旧 Hub 产品。
 
 ## Decisions（已确认 / 作为后续实现默认值）
 （2026-02-12）
@@ -43,7 +50,7 @@
   - PD（Progressive Disclosure）默认：SessionStart 注入一次 index + `/memory` 手动刷新；全文按需 Get
   - Hybrid Index v1：先 FTS-only（中文建议 trigram），向量（sqlite-vec + embeddings）后置
   - Memory v2（明确范围）：本地 embeddings + sqlite-vec + hybrid merge + 原子/增量索引（见 `docs/xhub-memory-system-spec-v2.md`）
-  - Memory Serving Profiles v1：保留 5-layer 作为真相源；在其之上新增 `Memory Serving Plane + M0..M4` 自适应供给档位（见 `docs/memory-new/xhub-memory-serving-profiles-and-adaptive-context-v1.md`）
+  - Memory Serving Profiles v1：保留 5-layer 作为真相源；在其之上新增 `Memory Serving Plane + M0..M4` 自适应供给档位（协议见 `docs/memory-new/xhub-memory-serving-profiles-and-adaptive-context-v1.md`；Rust gateway 对齐见 `docs/memory-new/xhub-memory-serving-profile-gateway-alignment-v1.md`）
   - secret 远程：**可选禁远程**（policy `remote_export.secret_mode=deny|allow_sanitized`；默认 deny）
   - paid/remote prompt 外发门禁：`export_class=prompt_bundle` 必须二次 DLP + secret_mode gate；阻断默认 `on_block=downgrade_to_local`
   - Promotion risk targets（可接受误晋升目标）：
@@ -260,6 +267,14 @@
   - `docs/memory-new/xhub-memory-control-plane-migration-impact-table-v1.md`
 - Memory doc authority map：
   - `docs/memory-new/xhub-memory-doc-authority-map-v1.md`
+- Memory runtime authority and reality map：
+  - `docs/memory-new/xhub-memory-runtime-authority-and-reality-map-v1.md`
+- Memory writeback candidate lifecycle：
+  - `docs/memory-new/xhub-memory-writeback-candidate-lifecycle-v1.md`
+- Role-aware conversation contract：
+  - `docs/memory-new/xhub-role-aware-conversation-contract-v1.md`
+- Serving profile to Rust gateway alignment：
+  - `docs/memory-new/xhub-memory-serving-profile-gateway-alignment-v1.md`
 - Legacy summary bundle removed：
   - 已删除不再维护、且仅互相引用的旧摘要包：`docs/memory-new/README-UPDATES-v2.1.md`、`docs/memory-new/QUICK-START-GUIDE-v2.1.md`、`docs/memory-new/FINAL-REPORT-v2.1.md`、`docs/memory-new/xhub-updates-summary-v2.1.md`
   - 统一改为：`X_MEMORY.md` + `docs/WORKING_INDEX.md` + `docs/memory-new/xhub-memory-updates-2026q1.md`
@@ -278,6 +293,10 @@
   - `X_MEMORY.md`
   - `docs/WORKING_INDEX.md`
   - `docs/memory-new/xhub-memory-doc-authority-map-v1.md`
+  - `docs/memory-new/xhub-memory-runtime-authority-and-reality-map-v1.md`
+  - `docs/memory-new/xhub-memory-writeback-candidate-lifecycle-v1.md`
+  - `docs/memory-new/xhub-role-aware-conversation-contract-v1.md`
+  - `docs/memory-new/xhub-memory-serving-profile-gateway-alignment-v1.md`
   - `docs/memory-new/xhub-memory-updates-2026q1.md`
   - `docs/memory-new/xhub-memory-v3-execution-plan.md`
   - `docs/memory-new/xhub-supervisor-memory-routing-and-assembly-protocol-v1.md`

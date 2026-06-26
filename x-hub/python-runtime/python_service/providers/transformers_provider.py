@@ -1851,6 +1851,7 @@ class TransformersProvider(LocalProvider):
         resource_policy = build_provider_resource_policy(
             self.provider_id(),
             catalog_models=catalog_models,
+            base_dir=base_dir,
         )
         scheduler_state = read_provider_scheduler_telemetry(
             base_dir,

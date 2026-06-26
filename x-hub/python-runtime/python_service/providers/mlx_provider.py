@@ -13,6 +13,8 @@ EMBED_TASK_KIND = "embedding"
 MAX_BATCH_TEXTS = 32
 MAX_TEXT_CHARS = 4096
 MAX_TOTAL_TEXT_CHARS = 32768
+MAX_PROMPT_CHARS = 32768
+MAX_GENERATION_TOKENS = 4096
 SECRET_TEXT_PATTERNS = [
     re.compile(r"\b(sk-|ghp_|xox[abprs]-|bearer\s+[a-z0-9\-_\.]+)", re.IGNORECASE),
     re.compile(r"\b(api[_-]?key|secret|password|token)\s*[:=]\s*\S+", re.IGNORECASE),
@@ -59,6 +61,19 @@ def _contains_sensitive_text(text: Any) -> bool:
     return any(pattern.search(value) for pattern in SECRET_TEXT_PATTERNS)
 
 
+def _ensure_runtime_ready(runtime: Any) -> tuple[bool, str]:
+    ensure = getattr(runtime, "_ensure_runtime_imported", None)
+    if callable(ensure):
+        try:
+            if bool(ensure()):
+                return True, ""
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+    ok = bool(getattr(runtime, "_mlx_ok", False))
+    import_error = _safe_str(getattr(runtime, "_import_error", ""))
+    return ok, import_error
+
+
 def _request_instance_key(request: dict[str, Any]) -> str:
     return _safe_str(request.get("instance_key") or request.get("instanceKey"))
 
@@ -103,6 +118,32 @@ def _extract_texts(request: dict[str, Any]) -> list[str]:
     if isinstance(raw_input, str):
         return [raw_input]
     return []
+
+
+def _extract_prompt(request: dict[str, Any]) -> str:
+    input_obj = request.get("input") if isinstance(request.get("input"), dict) else {}
+    messages = request.get("messages") if isinstance(request.get("messages"), list) else input_obj.get("messages")
+    if isinstance(messages, list) and messages:
+        parts: list[str] = []
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if content is None:
+                continue
+            parts.append(str(content or ""))
+        if parts:
+            return "\n".join(parts)
+    for key in ("prompt", "input_text", "inputText", "text", "query", "latest_user", "latestUser"):
+        if request.get(key) is not None:
+            return str(request.get(key) or "")
+    for key in ("prompt", "input_text", "inputText", "text", "query"):
+        if input_obj.get(key) is not None:
+            return str(input_obj.get(key) or "")
+    raw_input = request.get("input")
+    if isinstance(raw_input, str):
+        return raw_input
+    return ""
 
 
 def _model_task_kinds(model: dict[str, Any] | None) -> list[str]:
@@ -276,6 +317,7 @@ class MLXProvider(LocalProvider):
         resource_policy = build_provider_resource_policy(
             self.provider_id(),
             catalog_models=catalog_models,
+            base_dir=base_dir,
         )
         scheduler_state = read_provider_scheduler_telemetry(
             base_dir,
@@ -339,13 +381,7 @@ class MLXProvider(LocalProvider):
             }
         if task_kind == EMBED_TASK_KIND:
             return self._run_embedding_task(request)
-        return {
-            "ok": False,
-            "provider": self.provider_id(),
-            "taskKind": task_kind or TEXT_TASK_KIND,
-            "error": "delegate_to_runtime_loop:mlx",
-            "request": dict(request or {}),
-        }
+        return self._run_text_generate_task(request)
 
     def _resolve_model_info(self, request: dict[str, Any]) -> dict[str, Any]:
         model = request.get("_resolved_model") if isinstance(request.get("_resolved_model"), dict) else {}
@@ -405,6 +441,206 @@ class MLXProvider(LocalProvider):
             "input_sanitized": input_sanitized,
         }
 
+    def _validate_text_generate_request(self, request: dict[str, Any], *, model_info: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        model_id = _safe_str(model_info.get("model_id"))
+        if not model_id:
+            return "missing_model_id", {}
+        task_kinds = _safe_string_list(model_info.get("task_kinds"))
+        if task_kinds and TEXT_TASK_KIND not in task_kinds:
+            return "model_task_unsupported:text_generate", {}
+
+        prompt = _extract_prompt(request)
+        if not prompt.strip():
+            return "missing_prompt", {}
+        prompt_chars = len(prompt)
+        if prompt_chars > MAX_PROMPT_CHARS:
+            return "prompt_too_large", {}
+        input_sanitized = _safe_bool(request.get("input_sanitized") or request.get("inputSanitized"), False)
+        if not input_sanitized and _contains_sensitive_text(prompt):
+            return "policy_blocked_sensitive_text", {}
+
+        max_tokens = max(1, min(MAX_GENERATION_TOKENS, _safe_int(
+            request.get("max_tokens")
+            or request.get("maxTokens")
+            or request.get("generation_tokens")
+            or request.get("generationTokens"),
+            64,
+        )))
+        try:
+            temperature = float(request.get("temperature", 0.0))
+        except Exception:
+            temperature = 0.0
+        if temperature < 0:
+            temperature = 0.0
+        try:
+            top_p = float(request.get("top_p", request.get("topP", 1.0)))
+        except Exception:
+            top_p = 1.0
+        top_p = min(1.0, max(0.0, top_p))
+
+        return "", {
+            "prompt": prompt,
+            "prompt_chars": prompt_chars,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "input_sanitized": input_sanitized,
+        }
+
+    def _run_text_generate_task(self, request: dict[str, Any]) -> dict[str, Any]:
+        started_at = time.time()
+        model_info = self._resolve_model_info(request)
+        model_id = _safe_str(model_info.get("model_id"))
+        model_path = _safe_str(model_info.get("model_path"))
+        error_code, validated = self._validate_text_generate_request(request, model_info=model_info)
+        if error_code:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "taskKind": TEXT_TASK_KIND,
+                "modelId": model_id,
+                "modelPath": model_path,
+                "error": error_code,
+                "request": dict(request or {}),
+            }
+
+        runtime = self._runtime
+        if runtime is None or not hasattr(runtime, "generate_text"):
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "taskKind": TEXT_TASK_KIND,
+                "modelId": model_id,
+                "modelPath": model_path,
+                "error": "legacy_runtime_loop_required",
+                "request": dict(request or {}),
+            }
+        runtime_ready, import_error = _ensure_runtime_ready(runtime)
+        if not runtime_ready:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "taskKind": TEXT_TASK_KIND,
+                "modelId": model_id,
+                "modelPath": model_path,
+                "error": f"mlx_lm_unavailable:{import_error}" if import_error else "mlx_lm_unavailable",
+                "request": dict(request or {}),
+            }
+        if not model_path:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "taskKind": TEXT_TASK_KIND,
+                "modelId": model_id,
+                "error": "missing_model_path",
+                "request": dict(request or {}),
+            }
+
+        instance_key = _request_instance_key(request)
+        load_profile_hash = _request_load_profile_hash(request)
+        effective_context_length = _request_effective_context_length(request)
+        effective_load_profile = _request_effective_load_profile(request)
+
+        try:
+            is_loaded = bool(
+                runtime.is_loaded(
+                    model_id,
+                    instance_key=instance_key,
+                    load_profile_hash=load_profile_hash,
+                )
+            )
+        except Exception:
+            is_loaded = False
+        if not is_loaded:
+            try:
+                ok_load, msg_load, _ = runtime.load(
+                    model_id,
+                    model_path,
+                    instance_key=instance_key,
+                    load_profile_hash=load_profile_hash,
+                    effective_context_length=effective_context_length,
+                    effective_load_profile=effective_load_profile,
+                    task_kinds=[TEXT_TASK_KIND],
+                )
+            except TypeError:
+                ok_load, msg_load, _ = runtime.load(
+                    model_id,
+                    model_path,
+                    instance_key=instance_key,
+                    load_profile_hash=load_profile_hash,
+                    effective_context_length=effective_context_length,
+                    effective_load_profile=effective_load_profile,
+                )
+            if not ok_load:
+                return {
+                    "ok": False,
+                    "provider": self.provider_id(),
+                    "taskKind": TEXT_TASK_KIND,
+                    "modelId": model_id,
+                    "modelPath": model_path,
+                    "error": _safe_str(msg_load) or "load_failed",
+                    "request": dict(request or {}),
+                }
+
+        try:
+            ok_generate, text, meta = runtime.generate_text(
+                model_id,
+                str(validated.get("prompt") or ""),
+                instance_key=instance_key,
+                load_profile_hash=load_profile_hash,
+                effective_context_length=effective_context_length,
+                max_tokens=int(validated.get("max_tokens") or 64),
+                temperature=float(validated.get("temperature") or 0.0),
+                top_p=float(validated.get("top_p") or 1.0),
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "taskKind": TEXT_TASK_KIND,
+                "modelId": model_id,
+                "modelPath": model_path,
+                "error": "generate_runtime_failed",
+                "errorDetail": f"{type(exc).__name__}: {exc}",
+                "request": dict(request or {}),
+            }
+        meta_obj = meta if isinstance(meta, dict) else {}
+        if not ok_generate:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "taskKind": TEXT_TASK_KIND,
+                "modelId": model_id,
+                "modelPath": model_path,
+                "error": _safe_str(meta_obj.get("error")) or "generate_failed",
+                "request": dict(request or {}),
+            }
+
+        latency_ms = max(0, int(round((time.time() - started_at) * 1000.0)))
+        prompt_tokens = max(0, _safe_int(meta_obj.get("promptTokens") or meta_obj.get("prompt_tokens"), 0))
+        generation_tokens = max(0, _safe_int(meta_obj.get("generationTokens") or meta_obj.get("generation_tokens"), 0))
+        return {
+            "ok": True,
+            "provider": self.provider_id(),
+            "taskKind": TEXT_TASK_KIND,
+            "modelId": model_id,
+            "modelPath": model_path,
+            "text": str(text or ""),
+            "latencyMs": latency_ms,
+            "deviceBackend": "mps",
+            "fallbackMode": "",
+            "instanceKey": _safe_str(meta_obj.get("instanceKey") or instance_key),
+            "loadProfileHash": _safe_str(meta_obj.get("loadProfileHash") or load_profile_hash),
+            "effectiveContextLength": max(0, _safe_int(meta_obj.get("effectiveContextLength") or effective_context_length, 0)),
+            "usage": {
+                "promptChars": int(validated.get("prompt_chars") or 0),
+                "inputSanitized": bool(validated.get("input_sanitized")),
+                "promptTokens": prompt_tokens,
+                "generationTokens": generation_tokens,
+                "totalTokens": prompt_tokens + generation_tokens,
+            },
+        }
+
     def _run_embedding_task(self, request: dict[str, Any]) -> dict[str, Any]:
         started_at = time.time()
         model_info = self._resolve_model_info(request)
@@ -433,8 +669,8 @@ class MLXProvider(LocalProvider):
                 "error": "legacy_runtime_loop_required",
                 "request": dict(request or {}),
             }
-        if not bool(getattr(runtime, "_mlx_ok", False)):
-            import_error = _safe_str(getattr(runtime, "_import_error", ""))
+        runtime_ready, import_error = _ensure_runtime_ready(runtime)
+        if not runtime_ready:
             return {
                 "ok": False,
                 "provider": self.provider_id(),

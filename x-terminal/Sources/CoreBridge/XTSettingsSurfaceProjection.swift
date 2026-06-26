@@ -28,6 +28,7 @@ struct XTSettingsSurfaceProjectionSnapshot: Equatable {
     var hubInviteAlias: String
     var hubInviteInstanceID: String
     var hubAxhubctlPath: String
+    var hubProfilesSnapshot: XTHubProfilesSnapshot
     var serverRunning: Bool
     var localServerEnabled: Bool
     var localServerPort: Int
@@ -202,6 +203,7 @@ enum XTSettingsSurfaceProjectionBuilder {
             hubInviteAlias: snapshot.hubInviteAlias,
             hubInviteInstanceID: snapshot.hubInviteInstanceID,
             hubAxhubctlPath: snapshot.hubAxhubctlPath,
+            hubProfilesSnapshot: snapshot.hubProfilesSnapshot,
             serverRunning: snapshot.serverRunning,
             localServerEnabled: snapshot.localServerEnabled,
             localServerPort: snapshot.localServerPort,

@@ -362,6 +362,16 @@ struct VoicePlaybackActivity: Equatable, Sendable {
         return nativeTTSUsed ? "原生 TTS" : "兼容回退"
     }
 
+    var executionModeToken: String {
+        guard let nativeTTSUsed else {
+            if actualSource == .systemSpeech {
+                return hasFallbackContext ? "system_speech_fallback" : "system_speech"
+            }
+            return "unknown"
+        }
+        return nativeTTSUsed ? "native_tts" : "compat_fallback"
+    }
+
     var fallbackReasonDisplayName: String {
         Self.normalized(fallbackReasonCode) ?? "无"
     }
@@ -386,7 +396,7 @@ struct VoicePlaybackActivity: Equatable, Sendable {
         }
 
         if shouldDisplayExecutionMode {
-            parts.append("mode=\(executionModeDisplayName.replacingOccurrences(of: " ", with: "_").lowercased())")
+            parts.append("mode=\(executionModeToken)")
         }
 
         if let reason = Self.normalized(fallbackReasonCode) {
@@ -453,7 +463,7 @@ struct VoicePlaybackActivity: Equatable, Sendable {
             return "可以先点“试听语音”，用当前设置捕获实际播放后端。"
         case .played:
             if let nativeTTSUsed {
-                let mode = nativeTTSUsed ? "原生合成" : "兼容回退"
+                let mode = nativeTTSUsed ? "native synthesis / 原生合成" : "compat fallback / 兼容回退"
                 return "实际输出使用 \(actualSourceDisplayName)，引擎为 \(engineDisplayName)（\(mode)）。"
             }
             return "实际输出使用 \(actualSourceDisplayName)，引擎为 \(engineDisplayName)。"

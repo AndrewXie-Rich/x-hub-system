@@ -65,6 +65,7 @@ struct SupervisorHeartbeatVoiceTests {
         )
         let appModel = AppModel()
         appModel.registry = registry(with: [project])
+        appModel.unifiedDoctorReport = .empty
         appModel.settingsStore.settings = configuredSettings(
             from: appModel.settingsStore.settings,
             autoReportMode: .blockersOnly

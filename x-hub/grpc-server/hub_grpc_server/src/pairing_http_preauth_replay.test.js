@@ -370,6 +370,13 @@ run('CRK-W1-20/invite token policy treats forwarded public peers as external', (
     peer_ip: '100.96.10.8',
     forwarded_for: '',
   }), false);
+  assert.equal(shouldRequireInviteTokenForPairingRequest({
+    peer_ip: '192.168.0.55',
+    forwarded_for: '',
+    env: {
+      HUB_PAIRING_REQUIRE_INVITE_TOKEN_FOR_FIRST_PAIR: '1',
+    },
+  }), true);
 });
 
 run('XPF-02-C/first pair same-lan policy strips broad private rules and keeps explicit LAN cidrs', () => {
@@ -385,6 +392,7 @@ run('XPF-02-C/first pair same-lan policy strips broad private rules and keeps ex
     forwarded_for: '192.168.0.55',
     env: {
       HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS: 'loopback,192.168.0.0/24',
+      HUB_PAIRING_TRUST_LOOPBACK_FORWARDED_FOR: '1',
     },
   });
   assert.equal(local.ok, true);
@@ -395,10 +403,33 @@ run('XPF-02-C/first pair same-lan policy strips broad private rules and keeps ex
     forwarded_for: '203.0.113.8',
     env: {
       HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS: 'loopback,192.168.0.0/24',
+      HUB_PAIRING_TRUST_LOOPBACK_FORWARDED_FOR: '1',
+      HUB_PAIRING_REQUIRE_SAME_LAN: '0',
     },
   });
   assert.equal(remote.ok, false);
+  assert.equal(remote.required, true);
   assert.equal(String(remote.effective_peer_ip || ''), '203.0.113.8');
+
+  const tailscale = evaluateFirstPairSameLanRequirement({
+    peer_ip: '100.122.237.57',
+    forwarded_for: '',
+    env: {
+      HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS: 'loopback,192.168.0.0/24',
+    },
+  });
+  assert.equal(tailscale.ok, false);
+  assert.equal(String(tailscale.effective_peer_ip || ''), '100.122.237.57');
+
+  const spoofed = evaluateFirstPairSameLanRequirement({
+    peer_ip: '10.1.2.3',
+    forwarded_for: '192.168.0.55',
+    env: {
+      HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS: '192.168.0.0/24',
+    },
+  });
+  assert.equal(spoofed.ok, false);
+  assert.equal(String(spoofed.effective_peer_ip || ''), '10.1.2.3');
 });
 
 await runAsync('CRK-W1-07/webhook replay duplicate signature second send is rejected', async () => {
@@ -468,6 +499,25 @@ await runAsync('CRK-W1-19/pairing discovery keeps LAN host hint and exposes sepa
       assert.equal(String(out.json?.xt_contract_schema_version || ''), 'xhub.rust_hub.xt_contract.v1');
       assert.equal(String(out.json?.hub_product_boundary || ''), 'swift_shell_rust_kernel');
       assert.equal(out.json?.rust_kernel_contract_bridge, true);
+    });
+  } finally {
+    try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+await runAsync('CRK-W1-19/pairing discovery does not expose LAN-only internet host hint', async () => {
+  const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pairing_discovery_lan_only_hint_'));
+  try {
+    await withPairingServer({
+      env: {
+        HUB_RUNTIME_BASE_DIR: runtimeBaseDir,
+        HUB_PAIRING_PUBLIC_HOST: '192.168.10.110',
+      },
+    }, async ({ baseUrl }) => {
+      const out = await requestJson({ url: `${baseUrl}/pairing/discovery` });
+      assert.equal(out.status, 200);
+      assert.equal(out.json?.ok, true);
+      assert.equal(Object.prototype.hasOwnProperty.call(out.json || {}, 'internet_host_hint'), false);
     });
   } finally {
     try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch {}
@@ -550,11 +600,73 @@ await runAsync('CRK-W1-20/pairing request requires valid invite token when gate 
   }
 });
 
+await runAsync('CRK-W1-20/pairing request validates supplied invite token even when same-lan does not require one', async () => {
+  const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pairing_invite_token_optional_'));
+  const dbPath = path.join(runtimeBaseDir, 'hub.db');
+  try {
+    fs.writeFileSync(
+      path.join(runtimeBaseDir, 'hub_external_invite_token.json'),
+      JSON.stringify({
+        schema_version: 'hub.external_invite_token.v1',
+        token_id: 'invite_test_1',
+        token_secret: 'axhub_invite_test_123',
+        created_at_ms: Date.now(),
+      }),
+      'utf8'
+    );
+
+    await withEnvAsync({
+      HUB_MEMORY_KEK_FILE: path.join(runtimeBaseDir, 'hub_memory_kek.json'),
+    }, async () => {
+      const db = new HubDB({ dbPath });
+      try {
+        await withPairingServer({
+          db,
+          env: {
+            REL_FLOW_HUB_BASE_DIR: runtimeBaseDir,
+          },
+        }, async ({ baseUrl }) => {
+          const invalid = await requestJson({
+            method: 'POST',
+            url: `${baseUrl}/pairing/requests`,
+            body: {
+              app_id: 'ax_terminal',
+              device_name: 'XT Local',
+              pairing_secret: 'secret_secret_1234',
+              invite_token: 'wrong_token',
+            },
+          });
+          assert.equal(invalid.status, 403);
+          assert.equal(String(invalid.json?.error?.code || ''), 'invite_token_invalid');
+
+          const missingOptional = await requestJson({
+            method: 'POST',
+            url: `${baseUrl}/pairing/requests`,
+            body: {
+              app_id: 'ax_terminal',
+              device_name: 'XT Local',
+              pairing_secret: 'secret_secret_5678',
+            },
+          });
+          assert.equal(missingOptional.status, 201);
+          assert.equal(!!missingOptional.json?.ok, true);
+        });
+      } finally {
+        db.close();
+      }
+    });
+  } finally {
+    cleanupDbArtifacts(dbPath);
+    try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch {}
+  }
+});
+
 await runAsync('XPF-02-C/pairing request rejects first pair outside same lan before invite flow', async () => {
   await withPairingServer({
     env: {
       HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS: 'loopback,192.168.0.0/24',
       HUB_PAIRING_REQUIRE_INVITE_TOKEN: '1',
+      HUB_PAIRING_TRUST_LOOPBACK_FORWARDED_FOR: '1',
     },
   }, async ({ baseUrl, db }) => {
     const rejected = await requestJson({
@@ -591,6 +703,7 @@ await runAsync('XPF-02-C/pairing request accepts first pair from allowed same-la
           db,
           env: {
             HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS: 'loopback,192.168.0.0/24',
+            HUB_PAIRING_TRUST_LOOPBACK_FORWARDED_FOR: '1',
           },
         }, async ({ baseUrl }) => {
           const accepted = await requestJson({
@@ -634,6 +747,7 @@ await runAsync('XPF-02-C/approved pairing status exposes pairing profile epoch a
             HUB_PAIRING_PUBLIC_HOST: 'hub.tailnet.example',
             HUB_ADMIN_TOKEN: 'admin-pairing-meta',
             HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS: 'loopback,192.168.0.0/24',
+            HUB_PAIRING_TRUST_LOOPBACK_FORWARDED_FOR: '1',
           },
         }, async ({ baseUrl }) => {
           const requested = await requestJson({

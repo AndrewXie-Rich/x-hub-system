@@ -159,6 +159,9 @@ refresh_rust_hub_package() {
   mkdir -p "$dst"
   rsync -a --delete \
     --exclude '.DS_Store' \
+    --exclude 'reports/' \
+    --exclude 'logs/' \
+    --exclude 'run/' \
     "$package_dir/" \
     "$dst/"
   cat > "$dst/embedded_manifest.json" <<EOF

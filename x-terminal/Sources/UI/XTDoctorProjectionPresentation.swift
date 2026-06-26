@@ -258,6 +258,131 @@ enum XTDoctorDurableCandidateMirrorPresentation {
     }
 }
 
+enum XTDoctorProductProcessSanityPresentation {
+    static func summary(snapshot: RustHubProductProcessSanitySnapshot) -> XTDoctorProjectionSummary {
+        let mountedCount = snapshot.mountedAppProcessCount ?? 0
+        let targetXhubdCount = snapshot.targetXhubdProcessCount ?? 0
+        let cpuOverBudget = snapshot.productCpuOverBudget == true
+        let issues = Set((snapshot.issues ?? []).map { $0.lowercased() })
+
+        var lines = [
+            "当前进程：xhubd \(snapshot.xhubdProcessCount ?? 0) · 产品壳 \(snapshot.productShellProcessCount ?? 0) · 产品进程 \(snapshot.productProcessCount ?? 0)",
+            "CPU：总 \(percentText(snapshot.productTotalCpuPercent)) · 峰值 \(percentText(snapshot.productMaxCpuPercent)) · 阈值 \(thresholdText(snapshot.maxProductCpuPercent))"
+        ]
+
+        if mountedCount > 0 || issues.contains("stale_mounted_app_process_present") {
+            lines.append("陈旧挂载：发现 \(mountedCount) 个 /Volumes App 或 sidecar，先关闭旧挂载进程再继续重测。")
+        } else {
+            lines.append("陈旧挂载：未发现 /Volumes App 或 sidecar。")
+        }
+
+        if targetXhubdCount > 0 || issues.contains("target_xhubd_process_present") {
+            lines.append("临时 daemon：发现 \(targetXhubdCount) 个 target/debug 或 target/release xhubd，生产诊断前应停止。")
+        }
+
+        if cpuOverBudget || issues.contains("product_process_cpu_over_budget") {
+            lines.append("流畅度：产品进程 CPU 超过预算，先暂停重 gate 或长跑检查。")
+        } else {
+            lines.append("流畅度：产品进程 CPU 在预算内。")
+        }
+
+        return XTDoctorProjectionSummary(
+            title: snapshot.ok ? "Hub 进程健康" : "Hub 进程健康需处理",
+            lines: lines
+        )
+    }
+
+    private static func percentText(_ value: Double?) -> String {
+        String(format: "%.1f%%", max(0, value ?? 0))
+    }
+
+    private static func thresholdText(_ value: Double?) -> String {
+        let threshold = max(0, value ?? 0)
+        guard threshold > 0 else { return "未限制" }
+        return percentText(threshold)
+    }
+}
+
+enum XTDoctorRustMemoryGatewayExecutionGatePresentation {
+    static func summary(
+        snapshot: RustHubMemoryGatewayModelCallExecutionGateSnapshot
+    ) -> XTDoctorProjectionSummary {
+        let blockers = snapshot.blockers ?? []
+        let plan = snapshot.plan
+        let guards = snapshot.guards
+        let textRedacted = plan?.contextTextIncluded != true
+            && plan?.promptTextIncluded != true
+            && guards?.contextTextRedactedFromGate != false
+            && guards?.promptTextRedactedFromGate != false
+        let executionBlocked = snapshot.readyForExecution != true
+            && snapshot.wouldCallModel != true
+            && snapshot.modelCallExecuted != true
+            && blockers.contains("memory_gateway_model_call_execution_not_enabled")
+        let title = executionBlocked && textRedacted
+            ? "Rust Memory 执行 Gate 已阻断"
+            : "Rust Memory 执行 Gate 需处理"
+
+        return XTDoctorProjectionSummary(
+            title: title,
+            lines: [
+                "状态：\(displayToken(snapshot.status ?? "unknown")) · authority \(displayToken(snapshot.authority ?? "unknown")) · mode \(displayToken(snapshot.mode ?? "unknown"))",
+                "执行：requested \(boolText(snapshot.executionRequested)) · enabled \(boolText(snapshot.executionEnabled)) · ready \(boolText(snapshot.readyForExecution))",
+                "模型调用：would_call \(boolText(snapshot.wouldCallModel)) · executed \(boolText(snapshot.modelCallExecuted)) · production_change \(boolText(snapshot.productionAuthorityChange))",
+                "计划：\(displayToken(plan?.source ?? "unknown")) / \(displayToken(plan?.mode ?? "unknown")) · refs \(plan?.selectedRefCount ?? 0) · route \(displayToken(plan?.routeIntent ?? "unknown"))",
+                "安全边界：\(textRedacted ? "prompt/context 未导出" : "检测到正文导出标记") · \(executionBlocked ? "真实模型调用保持阻断" : "执行阻断证据不完整")",
+                "阻断原因：\(blockerText(blockers))"
+            ]
+        )
+    }
+
+    private static func boolText(_ value: Bool?) -> String {
+        value == true ? "true" : "false"
+    }
+
+    private static func blockerText(_ blockers: [String]) -> String {
+        guard !blockers.isEmpty else { return "none" }
+        return blockers.map(displayToken).joined(separator: ", ")
+    }
+}
+
+enum XTDoctorRustMemorySelectionEvidencePresentation {
+    static func summary(
+        projection: XTUnifiedDoctorRustMemorySelectionEvidenceProjection
+    ) -> XTDoctorProjectionSummary {
+        XTDoctorProjectionSummary(
+            title: "Rust Memory 装配证据",
+            lines: [
+                "缓存来源：\(sourceText(projection.source)) · 样本 \(projection.historySampleCount) 条",
+                "选择结果：selected \(projection.selectedCount) / refs \(projection.selectedRefCount) · omitted \(projection.omittedCount) · denied \(projection.deniedCount)",
+                "分块证据：selected_chunks \(projection.selectedChunkCount ?? 0) · chunk_refs \(projection.selectedChunkRefCount ?? 0) · omitted_refs \(projection.omittedRefCount ?? 0) · index \(displayToken(projection.indexGranularity ?? "unknown")) · expand_get_ref \(projection.chunkExpandViaGetRef == true)",
+                "跳过原因：policy/filter \(projection.skippedPolicyOrFilter) · remote \(projection.skippedRemoteVisibility) · secret \(projection.skippedSecret) · budget \(projection.skippedBudget)",
+                "Omitted reason codes：\(countsText(projection.omittedReasonCounts))",
+                "选中层级：\(countsText(projection.selectedLayerCounts))",
+                "对象来源：\(countsText(projection.selectedSourceKindCounts))",
+                "安全边界：\(projection.textSafe ? "未导出 prompt/context 正文" : "检测到正文导出标记") · \(projection.executionSafe ? "未执行模型调用" : "检测到执行/authority 变化标记")"
+            ]
+        )
+    }
+
+    private static func sourceText(_ raw: String) -> String {
+        switch normalizedToken(raw) {
+        case "memory_gateway_model_call_plan_status":
+            return "latest status"
+        case "memory_gateway_model_call_plan_history":
+            return "bounded history"
+        default:
+            return displayToken(raw)
+        }
+    }
+
+    private static func countsText(_ counts: [String: Int]) -> String {
+        guard !counts.isEmpty else { return "none" }
+        return counts.keys.sorted().map { key in
+            "\(key)=\(counts[key] ?? 0)"
+        }.joined(separator: ", ")
+    }
+}
+
 enum XTDoctorHubMemoryPromptProjectionPresentation {
     static func summary(
         projection: HubMemoryPromptProjectionSnapshot

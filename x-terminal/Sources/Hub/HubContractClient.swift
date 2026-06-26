@@ -292,7 +292,7 @@ enum HubContractClient {
     }
 
     private static func pairedHubShellBaseURL(stateDir: URL?) -> URL? {
-        let base = stateDir ?? XTProcessPaths.defaultAxhubStateDir()
+        let base = stateDir ?? XTProcessPaths.activeAxhubStateDir()
         let pairingEnv = readEnvExports(from: base.appendingPathComponent("pairing.env"))
         let hubEnv = readEnvExports(from: base.appendingPathComponent("hub.env"))
 

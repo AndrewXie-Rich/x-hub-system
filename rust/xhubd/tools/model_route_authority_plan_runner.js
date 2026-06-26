@@ -228,6 +228,48 @@ function runSelfTest() {
   if (plan.ready !== true || plan.production_authority_change !== false) {
     throw new Error('self-test plan failed');
   }
+  const rustKernelPlan = buildAuthorityPlan({
+    config: parsed,
+    evidenceResult: {
+      exit_code: 2,
+      parsed: true,
+      payload: {
+        ok: false,
+        report_path: fileURLToPath(import.meta.url),
+        readiness: {
+          ready: false,
+          decision: 'not_ready',
+          schema_version: 'xhub.model_route_candidate_evidence_readiness.v1',
+          remote: { readiness_ready: false, total: 0, model_mismatch: 1, route_kind_mismatch: 1, fallback: 0, secret_leak: 0 },
+          local: { readiness_ready: false, total: 0, model_mismatch: 1, route_kind_mismatch: 1, fallback: 0, secret_leak: 0 },
+          checks: [],
+        },
+      },
+      stderr: '',
+      parse_error: '',
+    },
+    modelRouteHttpSmokeResult: {
+      exit_code: 0,
+      parsed: true,
+      payload: {
+        ok: true,
+        schema_version: 'xhub.model_route_http_smoke.v1',
+        remote_selected_route_kind: 'remote',
+        remote_selected_model_id: parsed.remoteModelId,
+        local_selected_route_kind: 'local',
+        local_selected_model_id: parsed.localModelId,
+      },
+      stderr: '',
+      parse_error: '',
+    },
+  });
+  if (
+    rustKernelPlan.ready !== true
+    || rustKernelPlan.authority_mode !== 'rust_kernel_direct_http'
+    || rustKernelPlan.node_remains_model_selection_authority !== false
+  ) {
+    throw new Error('self-test rust-kernel direct plan failed');
+  }
 }
 
 function parseLastJsonObject(stdout, expectedEvent = 'stop') {
@@ -301,6 +343,43 @@ function runCandidateEvidence(config) {
   };
 }
 
+function runModelRouteHttpSmoke(config) {
+  const filePath = path.join(SCRIPT_DIR, 'model_route_http_smoke.command');
+  let stdout = '';
+  let stderr = '';
+  let exitCode = 0;
+  try {
+    stdout = execFileSync(filePath, [
+      '--timeout-ms',
+      String(config.timeoutMs),
+    ], {
+      encoding: 'utf8',
+      timeout: config.timeoutMs + 30000,
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch (error) {
+    exitCode = Number(error.status || 1);
+    stdout = String(error.stdout || '');
+    stderr = String(error.stderr || error.message || '');
+  }
+  let payload = null;
+  let parseError = '';
+  try {
+    payload = parseLastJsonObject(stdout, null);
+  } catch (error) {
+    parseError = String(error.message || error);
+  }
+  return {
+    exit_code: exitCode,
+    parsed: !!payload,
+    parse_error: parseError,
+    payload,
+    stderr: stderr ? stderr.slice(0, 4000) : '',
+  };
+}
+
 function check(name, ok, actual, threshold, detail) {
   return { name, ok: ok === true, actual, threshold, detail };
 }
@@ -317,7 +396,7 @@ function fileExists(filePath) {
   }
 }
 
-function buildAuthorityPlan({ config, evidenceResult }) {
+function buildAuthorityPlan({ config, evidenceResult, modelRouteHttpSmokeResult = null }) {
   const payload = evidenceResult.payload || {};
   const readiness = payload.readiness || {};
   const remote = readiness.remote || {};
@@ -325,20 +404,34 @@ function buildAuthorityPlan({ config, evidenceResult }) {
   const evidenceReady = readiness.ready === true;
   const runnerOk = evidenceResult.exit_code === 0 && evidenceResult.parsed === true && payload.ok === true;
   const reportPath = safeString(payload.report_path || config.reportPath);
+  const httpSmokePayload = modelRouteHttpSmokeResult?.payload || {};
+  const rustKernelHttpSmokeOk = modelRouteHttpSmokeResult?.exit_code === 0
+    && modelRouteHttpSmokeResult?.parsed === true
+    && httpSmokePayload?.ok === true
+    && httpSmokePayload?.schema_version === 'xhub.model_route_http_smoke.v1'
+    && safeString(httpSmokePayload?.remote_selected_route_kind) === 'remote'
+    && safeString(httpSmokePayload?.remote_selected_model_id) === config.remoteModelId
+    && safeString(httpSmokePayload?.local_selected_route_kind) === 'local'
+    && safeString(httpSmokePayload?.local_selected_model_id) === config.localModelId;
+  const legacyCandidateAuditReady = runnerOk
+    && evidenceReady
+    && remote.readiness_ready === true
+    && local.readiness_ready === true;
+  const rustKernelDirectReady = !legacyCandidateAuditReady && rustKernelHttpSmokeOk;
   const checks = [
     check(
       'candidate_evidence_runner_ok',
-      runnerOk,
+      runnerOk || rustKernelDirectReady,
       evidenceResult.exit_code,
       0,
-      'combined remote/local candidate evidence runner must complete and parse'
+      'combined remote/local candidate evidence runner must complete, unless Rust-kernel direct HTTP route smoke is ready'
     ),
     check(
       'candidate_evidence_ready',
-      evidenceReady,
+      evidenceReady || rustKernelDirectReady,
       evidenceReady ? 1 : 0,
       1,
-      'combined remote/local candidate evidence readiness must be ready'
+      'combined remote/local candidate evidence readiness must be ready, unless Rust-kernel direct HTTP route smoke is ready'
     ),
     check(
       'candidate_evidence_report_exists',
@@ -349,17 +442,24 @@ function buildAuthorityPlan({ config, evidenceResult }) {
     ),
     check(
       'remote_candidate_ready',
-      remote.readiness_ready === true,
+      remote.readiness_ready === true || rustKernelDirectReady,
       remote.readiness_ready === true ? 1 : 0,
       1,
-      'remote model route candidate path must be ready'
+      'remote model route candidate path must be ready, unless Rust-kernel direct HTTP route smoke is ready'
     ),
     check(
       'local_candidate_ready',
-      local.readiness_ready === true,
+      local.readiness_ready === true || rustKernelDirectReady,
       local.readiness_ready === true ? 1 : 0,
       1,
-      'local model route candidate path must be ready'
+      'local model route candidate path must be ready, unless Rust-kernel direct HTTP route smoke is ready'
+    ),
+    check(
+      'rust_kernel_model_route_http_smoke',
+      legacyCandidateAuditReady || rustKernelHttpSmokeOk,
+      (legacyCandidateAuditReady || rustKernelHttpSmokeOk) ? 1 : 0,
+      1,
+      'Rust kernel /model/route must select expected remote and local models when Node candidate audit evidence is unavailable'
     ),
     check(
       'production_authority_disabled',
@@ -370,13 +470,14 @@ function buildAuthorityPlan({ config, evidenceResult }) {
     ),
     check(
       'node_match_gate_required',
-      true,
+      legacyCandidateAuditReady || rustKernelDirectReady,
+      legacyCandidateAuditReady ? 1 : 0,
       1,
-      1,
-      'any prep trial must keep Node/Rust selected model and route-kind matching fail-closed'
+      'legacy prep keeps Node/Rust matching fail-closed; Rust-kernel product mode proves route selection via direct HTTP smoke'
     ),
   ];
   const ready = checks.every((item) => item.ok === true);
+  const authorityMode = rustKernelDirectReady ? 'rust_kernel_direct_http' : 'node_bridge_candidate_audit';
   const requiredEnv = [
     envRow('XHUB_RUST_HUB_ROOT', ROOT_DIR, 'point Node Hub bridges at this Rust Hub package'),
     envRow('XHUB_RUST_MODEL_ROUTE_AUTHORITY_PREP', '1', 'enable readiness-gated Rust model route prep checks only'),
@@ -419,17 +520,18 @@ function buildAuthorityPlan({ config, evidenceResult }) {
     mode: 'dry_run_only',
     decision: ready ? 'ready_for_manual_prep_trial' : 'not_ready',
     ready,
+    authority_mode: authorityMode,
     generated_at_ms: Date.now(),
     remote_model_id: config.remoteModelId,
     local_model_id: config.localModelId,
     provider: config.provider,
     production_authority_change: false,
-    node_remains_model_selection_authority: true,
-    bridge_payload_model_authority_remains_node: true,
-    local_runtime_ipc_model_authority_remains_node: true,
+    node_remains_model_selection_authority: !rustKernelDirectReady,
+    bridge_payload_model_authority_remains_node: !rustKernelDirectReady,
+    local_runtime_ipc_model_authority_remains_node: !rustKernelDirectReady,
     production_cutover_implemented: false,
     rust_can_prepare_model_route_decision: ready,
-    selected_model_authority_enabled: false,
+    selected_model_authority_enabled: rustKernelDirectReady,
     evidence_report_path: reportPath,
     readiness_summary: {
       runner_ok: runnerOk,
@@ -438,10 +540,28 @@ function buildAuthorityPlan({ config, evidenceResult }) {
       schema_version: safeString(readiness.schema_version),
       remote: remote || null,
       local: local || null,
+      legacy_candidate_audit_ready: legacyCandidateAuditReady,
+      rust_kernel_direct_ready: rustKernelDirectReady,
+      rust_kernel_model_route_http_smoke: modelRouteHttpSmokeResult ? {
+        exit_code: modelRouteHttpSmokeResult.exit_code,
+        parsed: modelRouteHttpSmokeResult.parsed,
+        parse_error: modelRouteHttpSmokeResult.parse_error,
+        ok: rustKernelHttpSmokeOk,
+        schema_version: safeString(httpSmokePayload?.schema_version),
+        remote_selected_route_kind: safeString(httpSmokePayload?.remote_selected_route_kind),
+        remote_selected_model_id: safeString(httpSmokePayload?.remote_selected_model_id),
+        local_selected_route_kind: safeString(httpSmokePayload?.local_selected_route_kind),
+        local_selected_model_id: safeString(httpSmokePayload?.local_selected_model_id),
+        stderr: safeString(modelRouteHttpSmokeResult.stderr),
+      } : null,
     },
     required_env_for_manual_prep_trial: ready ? requiredEnv : [],
     env_to_unset_for_rollback: rollbackEnv,
-    blocked_until_explicit_future_cutover: [
+    blocked_until_explicit_future_cutover: rustKernelDirectReady ? [
+      'keep Rust /model/route direct HTTP smoke green for both remote and local route kinds',
+      'do not reintroduce Node as a required product authority for model selection',
+      'do not persist or expose provider secrets in Rust model route evidence',
+    ] : [
       'do not let Rust selected_model_id override Node actual_model_id',
       'do not change Bridge payload model_id for remote paid execution',
       'do not change local runtime ai_requests model_id',
@@ -494,7 +614,14 @@ function main() {
   }));
 
   const evidenceResult = runCandidateEvidence(config);
-  const plan = buildAuthorityPlan({ config, evidenceResult });
+  const candidateReady = evidenceResult.exit_code === 0
+    && evidenceResult.parsed === true
+    && evidenceResult.payload?.ok === true
+    && evidenceResult.payload?.readiness?.ready === true
+    && evidenceResult.payload?.readiness?.remote?.readiness_ready === true
+    && evidenceResult.payload?.readiness?.local?.readiness_ready === true;
+  const modelRouteHttpSmokeResult = candidateReady ? null : runModelRouteHttpSmoke(config);
+  const plan = buildAuthorityPlan({ config, evidenceResult, modelRouteHttpSmokeResult });
   const planPath = writeJsonAtomic(config.planPath, plan);
   const ok = config.expectReady ? plan.ready === true : true;
   const finalPayload = {
@@ -509,6 +636,15 @@ function main() {
       parse_error: evidenceResult.parse_error,
       stderr: evidenceResult.stderr,
       report_path: safeString(evidenceResult.payload?.report_path),
+    },
+    model_route_http_smoke: modelRouteHttpSmokeResult ? {
+      exit_code: modelRouteHttpSmokeResult.exit_code,
+      parsed: modelRouteHttpSmokeResult.parsed,
+      parse_error: modelRouteHttpSmokeResult.parse_error,
+      stderr: modelRouteHttpSmokeResult.stderr,
+    } : {
+      skipped: true,
+      reason: 'legacy_candidate_audit_ready',
     },
   };
   console.log(JSON.stringify(finalPayload, null, 2));

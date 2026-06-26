@@ -70,9 +70,17 @@ struct AppModelHubStartupAutoPairingTests {
             inviteAlias: "",
             inviteInstanceID: ""
         )
+        let plainAliasOnlyDisposition = AppModel.startupAutomaticConnectDisposition(
+            hasHubEnv: false,
+            internetHost: "",
+            inviteToken: "axhub_invite_test_123",
+            inviteAlias: "ops-main",
+            inviteInstanceID: ""
+        )
 
         #expect(hostOnlyDisposition == .none)
         #expect(tokenOnlyDisposition == .none)
+        #expect(plainAliasOnlyDisposition == .none)
     }
 
     @Test

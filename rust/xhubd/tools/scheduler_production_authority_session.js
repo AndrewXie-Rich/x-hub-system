@@ -15,6 +15,64 @@ const NODE_PROCESS_MARKERS = [
   'relflowhub_node',
 ];
 
+function isXHubShellProcessLine(line) {
+  const text = String(line || '');
+  return text.includes('/X-Hub.app/Contents/MacOS/XHub')
+    && !text.includes('scheduler_production_authority_session.js');
+}
+
+function isExternalRelFlowHubProcessLine(line) {
+  const text = String(line || '');
+  return !text.includes('/X-Hub.app/')
+    && (text.includes('/RELFlowHub.app/') || text.includes('/Volumes/RELFlowHub'));
+}
+
+function isXHubNodeBridgeProcessLine(line) {
+  const text = String(line || '');
+  return NODE_PROCESS_MARKERS.every((marker) => text.includes(marker))
+    && !isExternalRelFlowHubProcessLine(text)
+    && (text.includes('/X-Hub.app/')
+      || /\/x-hub-system(?:-github-clean)?\/x-hub\//.test(text));
+}
+
+function parsePidCommand(line) {
+  const match = String(line || '').trim().match(/^(\d+)\s+([\s\S]*)$/);
+  if (!match) return null;
+  return { pid: Number(match[1]), command: match[2] };
+}
+
+function readProcessCommandRows() {
+  return execFileSync('ps', ['ax', '-o', 'pid=,command='], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: 8 * 1024 * 1024,
+  }).split('\n');
+}
+
+function readProcessEnvCommand(pid) {
+  try {
+    return execFileSync('ps', ['eww', '-p', String(pid), '-o', 'command='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 8 * 1024 * 1024,
+    }).trim();
+  } catch {
+    // Some ps variants reject eww with -p; fall back to env-wide ps only after
+    // selecting the pid from the non-env command snapshot.
+  }
+  try {
+    const rows = execFileSync('ps', ['axeww', '-o', 'pid=,command='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 8 * 1024 * 1024,
+    }).split('\n');
+    const found = rows.map(parsePidCommand).find((row) => row?.pid === pid);
+    return found?.command || '';
+  } catch {
+    return '';
+  }
+}
+
 const KEYS = [
   'XHUB_ENABLE_RUST_AUTHORITY_CUTOVER',
   'XHUB_RUST_HUB_ROOT',
@@ -181,16 +239,21 @@ function inspect(config) {
   }
   const launchctlApplied = mismatches.length === 0;
   const nodeProcess = inspectRunningNodeProcess(config, desired);
+  const shellProcess = inspectRunningXHubShellProcess();
   return {
     applied: launchctlApplied,
     launchctl_session_applied: launchctlApplied,
     authority_enabled: launchctlApplied || nodeProcess.authority_enabled,
-    production_authority_effective_now: nodeProcess.authority_enabled,
+    production_authority_effective_now: nodeProcess.authority_enabled
+      || (launchctlApplied && shellProcess.pid > 0),
     session_env_persistent_for_future_launches: launchctlApplied,
     rust_hub_root: current.XHUB_RUST_HUB_ROOT || '',
     http_base_url: current.XHUB_RUST_SCHEDULER_AUTHORITY_HTTP_BASE_URL || '',
     managed_key_count_present: Object.values(current).filter((value) => value !== '').length,
     mismatch_keys: mismatches,
+    swift_product_shell_pid: shellProcess.pid,
+    swift_product_shell_running: shellProcess.pid > 0,
+    node_compatibility_layer_required: false,
     running_node_process_pid: nodeProcess.pid,
     running_node_process_authority_enabled: nodeProcess.authority_enabled,
     running_node_process_env_present: nodeProcess.present_keys,
@@ -199,6 +262,20 @@ function inspect(config) {
     running_node_process_checked: nodeProcess.checked,
     running_node_process_check_error: nodeProcess.error,
   };
+}
+
+function inspectRunningXHubShellProcess() {
+  try {
+    const candidates = readProcessCommandRows()
+      .map((line) => line.trim())
+      .filter((line) => isXHubShellProcessLine(line))
+      .map(parsePidCommand)
+      .filter(Boolean);
+    if (candidates.length === 0) return { pid: 0, command: '' };
+    return candidates.sort((a, b) => b.pid - a.pid)[0] || { pid: 0, command: '' };
+  } catch {
+    return { pid: 0, command: '' };
+  }
 }
 
 function inspectRunningNodeProcess(config, desired) {
@@ -214,27 +291,18 @@ function inspectRunningNodeProcess(config, desired) {
     XHUB_RUST_SCHEDULER_LEASE_SHADOW_HTTP: desired.XHUB_RUST_SCHEDULER_LEASE_SHADOW_HTTP,
   };
   try {
-    const rows = execFileSync('ps', ['axeww', '-o', 'pid=,command='], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      maxBuffer: 8 * 1024 * 1024,
-    }).split('\n');
-    const candidates = rows
+    const candidates = readProcessCommandRows()
       .map((line) => line.trim())
-      .filter((line) => NODE_PROCESS_MARKERS.every((marker) => line.includes(marker)))
-      .filter((line) => !line.includes('scheduler_production_authority_session.js'));
+      .filter((line) => isXHubNodeBridgeProcessLine(line))
+      .filter((line) => !line.includes('scheduler_production_authority_session.js'))
+      .map(parsePidCommand)
+      .filter(Boolean);
     if (candidates.length === 0) {
       return emptyNodeProcess('not_found', true);
     }
-    const parsed = candidates
-      .map((line) => {
-        const match = line.match(/^(\d+)\s+([\s\S]*)$/);
-        if (!match) return null;
-        return { pid: Number(match[1]), command: match[2] };
-      })
-      .filter(Boolean)
-      .sort((a, b) => b.pid - a.pid)[0];
-    const values = parseManagedEnvFromProcessLine(parsed.command);
+    const parsed = candidates.sort((a, b) => b.pid - a.pid)[0];
+    const envCommand = readProcessEnvCommand(parsed.pid) || parsed.command;
+    const values = parseManagedEnvFromProcessLine(envCommand);
     const present = [];
     const missing = [];
     const mismatched = [];
@@ -312,6 +380,10 @@ function runSelfTest() {
   if (env.XHUB_ENABLE_RUST_AUTHORITY_CUTOVER !== '1') throw new Error('rust authority cutover gate missing');
   if (env.XHUB_RUST_SCHEDULER_AUTHORITY !== '1') throw new Error('authority env missing');
   if (env.XHUB_RUST_HUB_ROOT !== '/tmp/rust-hub') throw new Error('root override failed');
+  const external = '999 /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/relflowhub_node /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/hub_grpc_server/src/server.js';
+  if (isXHubNodeBridgeProcessLine(external)) throw new Error('standalone RELFlowHub must not classify as X-Hub node bridge');
+  const shell = '123 /Applications/X-Hub.app/Contents/MacOS/XHub';
+  if (!isXHubShellProcessLine(shell)) throw new Error('X-Hub Swift shell must classify as product shell');
 }
 
 async function main() {

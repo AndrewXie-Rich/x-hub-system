@@ -1,6 +1,6 @@
 import Foundation
 
-struct AXMemory: Codable, Equatable {
+struct AXMemory: Codable, Equatable, Sendable {
     static let currentSchemaVersion = 1
 
     var schemaVersion: Int
@@ -50,7 +50,7 @@ struct AXMemory: Codable, Equatable {
     }
 }
 
-struct AXMemoryDelta: Codable, Equatable {
+struct AXMemoryDelta: Codable, Equatable, Sendable {
     static let currentSchemaVersion = 1
 
     var schemaVersion: Int

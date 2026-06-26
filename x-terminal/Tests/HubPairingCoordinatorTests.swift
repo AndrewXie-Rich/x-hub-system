@@ -184,7 +184,7 @@ struct HubPairingCoordinatorTests {
             AXHUB_DEVICE_NAME='Andrew.Xie Laptop'
             AXHUB_PAIRING_REQUEST_ID='req-1'
             AXHUB_PAIRING_SECRET='secret-1'
-            AXHUB_INTERNET_HOST='192.168.10.109'
+            AXHUB_INTERNET_HOST='hub.example.com'
             AXHUB_HUB_INSTANCE_ID='hub_33bdbcae9a4fa1cb9c27'
             AXHUB_LAN_DISCOVERY_NAME='axhub-33bdbcae9a'
             AXHUB_PAIRING_PROFILE_EPOCH='13'
@@ -221,12 +221,12 @@ struct HubPairingCoordinatorTests {
 
         let logLines = await HubPairingCoordinator.shared.synchronizeAuthoritativeRemoteEndpointArtifactsForTesting(
             stateDir: stateDir,
-            host: "192.168.10.109",
+            host: "hub.example.com",
             pairingPort: 50053,
             grpcPort: 50052
         )
 
-        #expect(logLines.contains { $0.contains("realigned to authoritative remote endpoint 192.168.10.109:50052") })
+        #expect(logLines.contains { $0.contains("realigned to authoritative remote endpoint hub.example.com:50052") })
 
         let pairingEnv = try String(
             contentsOf: stateDir.appendingPathComponent("pairing.env"),
@@ -241,13 +241,13 @@ struct HubPairingCoordinatorTests {
             encoding: .utf8
         )
 
-        #expect(pairingEnv.contains("AXHUB_HUB_HOST='192.168.10.109'"))
-        #expect(pairingEnv.contains("AXHUB_INTERNET_HOST='192.168.10.109'"))
+        #expect(pairingEnv.contains("AXHUB_HUB_HOST='hub.example.com'"))
+        #expect(pairingEnv.contains("AXHUB_INTERNET_HOST='hub.example.com'"))
         #expect(pairingEnv.contains("AXHUB_PAIRING_SECRET='secret-1'"))
-        #expect(hubEnv.contains("export HUB_HOST='192.168.10.109'"))
+        #expect(hubEnv.contains("export HUB_HOST='hub.example.com'"))
         #expect(hubEnv.contains("export HUB_GRPC_TLS_CA_CERT_PATH='/tmp/ca.pem'"))
         let connection = try connectionJSONObject(from: connectionJSON)
-        #expect(connection["hub_host"] as? String == "192.168.10.109")
+        #expect(connection["hub_host"] as? String == "hub.example.com")
         #expect(connection["pairing_profile_epoch"] as? Int == 13)
     }
 
@@ -323,7 +323,7 @@ struct HubPairingCoordinatorTests {
         )
 
         #expect(pairingEnv.contains("AXHUB_HUB_HOST='192.168.10.109'"))
-        #expect(pairingEnv.contains("AXHUB_INTERNET_HOST='192.168.10.109'"))
+        #expect(pairingEnv.contains("AXHUB_INTERNET_HOST=''"))
         #expect(hubEnv.contains("export HUB_HOST='192.168.10.109'"))
         #expect(hubEnv.contains("export HUB_GRPC_TLS_MODE='tls'"))
         #expect(hubEnv.contains("export HUB_GRPC_TLS_SERVER_NAME='axhub'"))
@@ -828,6 +828,20 @@ struct HubPairingCoordinatorTests {
         )
 
         #expect(allowed == true)
+    }
+
+    @Test
+    func lanSubnetFallbackScanSkipsTokenOnlyInviteIdentity() {
+        let allowed = HubPairingCoordinator.shouldAttemptLANSubnetFallbackScanForTesting(
+            configuredInternetHost: "",
+            cachedHost: nil,
+            cachedPairingPort: nil,
+            cachedGrpcPort: nil,
+            inviteInstanceID: "hub_92bfecdb8b539c67ab26",
+            allowConfiguredHostRepair: true
+        )
+
+        #expect(allowed == false)
     }
 
     @Test

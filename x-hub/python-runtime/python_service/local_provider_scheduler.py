@@ -331,11 +331,110 @@ def _task_concurrency_limit(task_kind: str, *, preferred_device: str, memory_flo
     return 1
 
 
+def _policy_int(obj: dict[str, Any], *keys: str, fallback: int = 0) -> int:
+    for key in keys:
+        if obj.get(key) is not None:
+            return _safe_int(obj.get(key), fallback)
+    return int(fallback)
+
+
+def _model_concurrency_policy_path(base_dir: str | None) -> str:
+    explicit = _safe_str(
+        os.environ.get("XHUB_MODEL_CONCURRENCY_POLICY_PATH")
+        or os.environ.get("HUB_MODEL_CONCURRENCY_POLICY_PATH")
+    )
+    if explicit:
+        return explicit
+    base = _safe_str(base_dir) or _safe_str(os.environ.get("REL_FLOW_HUB_BASE_DIR"))
+    return os.path.join(base, "model_concurrency_policy.json") if base else ""
+
+
+def _load_model_concurrency_policy(base_dir: str | None) -> dict[str, Any]:
+    path = _model_concurrency_policy_path(base_dir)
+    if not path:
+        return {}
+    obj = _read_json(path)
+    return obj if isinstance(obj, dict) else {}
+
+
+def _provider_policy_override(policy: dict[str, Any], provider: str) -> dict[str, Any]:
+    provider_key = _normalize_provider_id(provider)
+    raw = (
+        policy.get("providerPolicies")
+        if isinstance(policy.get("providerPolicies"), dict)
+        else policy.get("provider_policies")
+        if isinstance(policy.get("provider_policies"), dict)
+        else {}
+    )
+    candidates = [
+        raw.get(provider_key),
+        raw.get(provider),
+        raw.get(provider_key.replace(".", "_")),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
+def _apply_model_concurrency_policy_overrides(
+    resource_policy: dict[str, Any],
+    *,
+    base_dir: str | None,
+) -> dict[str, Any]:
+    policy = _load_model_concurrency_policy(base_dir)
+    if not policy:
+        return resource_policy
+
+    out = dict(resource_policy)
+    provider_override = _provider_policy_override(policy, _safe_str(out.get("provider")))
+    local_default_limit = _policy_int(
+        policy,
+        "localDefaultConcurrencyLimit",
+        "local_default_concurrency_limit",
+        fallback=0,
+    )
+    provider_limit = _policy_int(
+        provider_override,
+        "concurrencyLimit",
+        "concurrency_limit",
+        fallback=0,
+    )
+    selected_limit = provider_limit or local_default_limit
+    if selected_limit > 0:
+        selected_limit = max(1, min(64, int(selected_limit)))
+        out["concurrencyLimit"] = selected_limit
+        out["selectedTaskLimit"] = selected_limit
+
+    raw_task_limits = (
+        provider_override.get("taskLimits")
+        if isinstance(provider_override.get("taskLimits"), dict)
+        else provider_override.get("task_limits")
+        if isinstance(provider_override.get("task_limits"), dict)
+        else {}
+    )
+    if raw_task_limits:
+        task_limits = dict(out.get("taskLimits") if isinstance(out.get("taskLimits"), dict) else {})
+        for raw_task, raw_limit in raw_task_limits.items():
+            task = _normalize_task_kind(raw_task)
+            limit = max(1, min(64, _safe_int(raw_limit, 0)))
+            if task and limit > 0:
+                task_limits[task] = limit
+        out["taskLimits"] = task_limits
+        selected_task = _normalize_task_kind(out.get("selectedTaskKind"))
+        if selected_task and selected_task in task_limits:
+            out["selectedTaskLimit"] = max(1, int(task_limits[selected_task]))
+
+    out["policySource"] = "model_concurrency_policy"
+    return out
+
+
 def build_provider_resource_policy(
     provider_id: str,
     *,
     catalog_models: list[dict[str, Any]],
     request: dict[str, Any] | None = None,
+    base_dir: str | None = None,
 ) -> dict[str, Any]:
     provider = _normalize_provider_id(provider_id)
     provider_models = _provider_models(provider, catalog_models)
@@ -372,7 +471,7 @@ def build_provider_resource_policy(
     }
     concurrency_limit = min(task_limits.values()) if task_limits else 1
     selected_task_limit = task_limits.get(requested_task_kind, concurrency_limit)
-    return {
+    return _apply_model_concurrency_policy_overrides({
         "provider": provider,
         "preferredDevice": preferred_device,
         "memoryFloorMB": memory_floor_mb,
@@ -384,7 +483,7 @@ def build_provider_resource_policy(
         "queueingSupported": True,
         "queueMode": "opt_in_wait",
         "defaultQueuePollMs": DEFAULT_QUEUE_POLL_MS,
-    }
+    }, base_dir=base_dir)
 
 
 def read_provider_scheduler_telemetry(
@@ -472,7 +571,12 @@ def acquire_provider_slot(
     provider = _normalize_provider_id(provider_id)
     request_obj = request if isinstance(request, dict) else {}
     catalog = catalog_models if isinstance(catalog_models, list) else []
-    policy = build_provider_resource_policy(provider, catalog_models=catalog, request=request_obj)
+    policy = build_provider_resource_policy(
+        provider,
+        catalog_models=catalog,
+        request=request_obj,
+        base_dir=base_dir,
+    )
     limit = max(1, _safe_int(policy.get("selectedTaskLimit"), policy.get("concurrencyLimit")))
     queue_if_busy = _safe_bool(request_obj.get("queue_if_busy") if request_obj.get("queue_if_busy") is not None else request_obj.get("queueIfBusy"), False)
     queue_timeout_ms = max(0, _safe_int(request_obj.get("queue_timeout_ms") if request_obj.get("queue_timeout_ms") is not None else request_obj.get("queueTimeoutMs"), 0))

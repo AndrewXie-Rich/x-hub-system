@@ -751,6 +751,7 @@ actor HubAIClient {
     private var activeRemoteGenerateRequestIDs: Set<String> = []
     private var remoteModelsCache: ModelStateSnapshot = .empty()
     private var remotePaidAccessSnapshotCache: HubRemotePaidAccessSnapshot?
+    private var remoteModelsCacheScopeID: String = ""
     private var remoteModelsLastFetchAt: Date = .distantPast
     private var remoteModelsLastFetchSucceeded: Bool = false
 
@@ -866,6 +867,9 @@ actor HubAIClient {
                 ?? defaults.string(forKey: legacyHubInternetHostKey)
                 ?? ""
         )
+        let reusableExplicitInternetHost = explicitInternetHost.flatMap { host in
+            HubRemoteHostPolicy.isDirectInternetRemoteHost(host) ? host : nil
+        }
         let endpointOverridePending: Bool = {
             if defaults.object(forKey: hubRemoteEndpointOverridePendingKey) != nil {
                 return defaults.bool(forKey: hubRemoteEndpointOverridePendingKey)
@@ -890,7 +894,7 @@ actor HubAIClient {
                 return explicitInternetHost
             }
             return cachedProfile.internetHost
-                ?? explicitInternetHost
+                ?? reusableExplicitInternetHost
                 ?? inferredReusableInternetHost(
                     from: cachedProfile.host,
                     hubInstanceID: cachedProfile.hubInstanceID,
@@ -969,7 +973,7 @@ actor HubAIClient {
     }
 
     private static func defaultAxhubStateDir() -> URL {
-        XTProcessPaths.defaultAxhubStateDir()
+        XTProcessPaths.activeAxhubStateDir()
     }
 
     private static func readEnvValue(from fileURL: URL, key: String) -> String? {
@@ -1509,6 +1513,8 @@ actor HubAIClient {
             preferredModelId: resolvedPreferredModelId,
             explicitModelId: resolvedExplicitModelId,
             appId: appId,
+            projectId: projectId,
+            sessionId: sessionId,
             maxTokens: maxTokens,
             temperature: temperature,
             topP: topP,
@@ -1523,6 +1529,8 @@ actor HubAIClient {
         preferredModelId: String?,
         explicitModelId: String?,
         appId: String,
+        projectId: String?,
+        sessionId: String?,
         maxTokens: Int,
         temperature: Double,
         topP: Double,
@@ -1567,6 +1575,18 @@ actor HubAIClient {
             auto_load: autoLoad
         )
         req.provider_key = providerKey
+
+        HubIPCClient.scheduleRustMemoryGatewayModelCallPlanShadowIfEnabled(
+            requestId: rid,
+            prompt: prompt,
+            taskType: taskType,
+            appId: appId,
+            projectId: projectId,
+            sessionId: sessionId,
+            providerId: providerKey?.provider ?? "local",
+            modelId: effectiveModelId,
+            timeoutSec: 0.25
+        )
 
         let reqDir = HubPaths.reqDir()
         let respDir = HubPaths.respDir()
@@ -1677,6 +1697,8 @@ actor HubAIClient {
 
     private func loadRemoteModelsThrottled() async -> ModelStateSnapshot? {
         let now = Date()
+        let reconnectOptions = loadRemoteConnectOptions()
+        resetRemoteModelCachesIfScopeChanged(remoteCacheScopeID(for: reconnectOptions))
         let refreshInterval: TimeInterval = remoteModelsLastFetchSucceeded ? 20.0 : 12.0
         if now.timeIntervalSince(remoteModelsLastFetchAt) < refreshInterval {
             if !remoteModelsCache.models.isEmpty || remotePaidAccessSnapshotCache != nil {
@@ -1686,7 +1708,6 @@ actor HubAIClient {
         }
 
         remoteModelsLastFetchAt = now
-        let reconnectOptions = loadRemoteConnectOptions()
         let cachedProfile = Self.cachedRemoteProfile(stateDir: reconnectOptions.stateDir)
         let primaryReconnectPlan = Self.automaticRemoteReconnectPlan(
             cachedProfile: cachedProfile,
@@ -1735,6 +1756,7 @@ actor HubAIClient {
             let snap = ModelStateSnapshot(models: report.models, updatedAt: Date().timeIntervalSince1970)
             remoteModelsCache = snap
             remotePaidAccessSnapshotCache = report.paidAccessSnapshot
+            remoteModelsCacheScopeID = remoteCacheScopeID(for: reconnectOptions)
             return snap
         }
 
@@ -1749,6 +1771,7 @@ actor HubAIClient {
     func currentRemotePaidAccessSnapshot(
         refreshIfNeeded: Bool = true
     ) async -> HubRemotePaidAccessSnapshot? {
+        resetRemoteModelCachesIfScopeChanged(remoteCacheScopeID(for: loadRemoteConnectOptions()))
         if refreshIfNeeded {
             let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
             if hasRemote {
@@ -1756,6 +1779,34 @@ actor HubAIClient {
             }
         }
         return remotePaidAccessSnapshotCache
+    }
+
+    func resetRemoteCachesForActiveHubChange() {
+        remoteModelsCache = .empty()
+        remotePaidAccessSnapshotCache = nil
+        remoteModelsCacheScopeID = remoteCacheScopeID(for: loadRemoteConnectOptions())
+        remoteModelsLastFetchAt = .distantPast
+        remoteModelsLastFetchSucceeded = false
+    }
+
+    private func resetRemoteModelCachesIfScopeChanged(_ scopeID: String) {
+        guard remoteModelsCacheScopeID.isEmpty || remoteModelsCacheScopeID == scopeID else {
+            remoteModelsCache = .empty()
+            remotePaidAccessSnapshotCache = nil
+            remoteModelsLastFetchAt = .distantPast
+            remoteModelsLastFetchSucceeded = false
+            remoteModelsCacheScopeID = scopeID
+            return
+        }
+        if remoteModelsCacheScopeID.isEmpty {
+            remoteModelsCacheScopeID = scopeID
+        }
+    }
+
+    private func remoteCacheScopeID(for options: HubRemoteConnectOptions) -> String {
+        let profileID = XTHubProfilesStorage.activeCacheScopeID()
+        let stateDir = options.stateDir?.path.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return stateDir.isEmpty ? profileID : "\(profileID)@\(stateDir)"
     }
 
     func currentRemoteSingleRequestBudgetTokens(
@@ -2120,6 +2171,8 @@ actor HubAIClient {
                                 preferredModelId: pending.preferredModelId,
                                 explicitModelId: pending.explicitModelId,
                                 appId: pending.appId,
+                                projectId: pending.projectId,
+                                sessionId: pending.sessionId,
                                 maxTokens: pending.maxTokens,
                                 temperature: pending.temperature,
                                 topP: pending.topP,
@@ -2202,6 +2255,18 @@ actor HubAIClient {
             projectId: pending.projectId,
             sessionId: pending.sessionId,
             failClosedOnDowngrade: false
+        )
+        let planModelId = modelId ?? pending.explicitModelId ?? pending.preferredModelId
+        HubIPCClient.scheduleRustMemoryGatewayModelCallPlanShadowIfEnabled(
+            requestId: reqId,
+            prompt: effectiveRemotePrompt,
+            taskType: pending.taskType,
+            appId: pending.appId,
+            projectId: pending.projectId,
+            sessionId: pending.sessionId,
+            providerId: "remote_hub",
+            modelId: planModelId,
+            timeoutSec: min(0.25, pending.timeoutSec)
         )
         if let override = Self.withTestingOverrideLock({ Self.remoteGenerateOverrideForTesting }) {
             return await override(invocation)

@@ -91,11 +91,33 @@ function isLoopbackHost(value) {
   return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
 }
 
+function ipv4Octets(value) {
+  const host = normalizeHostOnly(value);
+  const parts = host.split('.');
+  if (parts.length !== 4) return null;
+  const octets = parts.map((part) => Number(part));
+  if (octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+  return octets;
+}
+
+function isLanOnlyIPv4Host(value) {
+  const octets = ipv4Octets(value);
+  if (!octets) return false;
+  const [a, b] = octets;
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  return false;
+}
+
 function isUsableInternetHost(value) {
   const host = normalizeHostOnly(value);
   if (!host) return false;
   if (host === '0.0.0.0') return false;
   if (host.endsWith('.local')) return false;
+  if (isLanOnlyIPv4Host(host)) return false;
   return !isLoopbackHost(host);
 }
 

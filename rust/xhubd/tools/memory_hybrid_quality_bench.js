@@ -20,6 +20,8 @@ function parseArgs(argv) {
   const out = {
     timeoutMs: 30000,
     port: 59000 + (process.pid % 1000),
+    profile: 'quick',
+    noiseCount: 72,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -31,6 +33,17 @@ function parseArgs(argv) {
         break;
       case '--port':
         out.port = parseIntInRange(next, out.port, 1024, 65535);
+        i += 1;
+        break;
+      case '--profile':
+        if (!['quick', 'large'].includes(String(next || '').trim())) {
+          throw new Error(`invalid --profile: ${next}`);
+        }
+        out.profile = String(next).trim();
+        i += 1;
+        break;
+      case '--noise-count':
+        out.noiseCount = parseIntInRange(next, out.noiseCount, 0, 500);
         i += 1;
         break;
       case '--help':
@@ -51,6 +64,8 @@ function usage() {
     'Options:',
     '  --timeout-ms <ms>    Command timeout, default 30000',
     '  --port <port>        Local xhubd HTTP port',
+    '  --profile <name>     quick|large, default quick',
+    '  --noise-count <n>    Large-profile distractor objects, default 72',
   ].join('\n');
 }
 
@@ -162,8 +177,8 @@ async function waitForHealth(baseUrl, child, output, timeoutMs) {
   throw new Error(`xhubd health timeout\nstdout=${safeTail(output.stdout)}\nstderr=${safeTail(output.stderr)}`);
 }
 
-function fixtureObjects() {
-  return [
+function fixtureObjects({ profile = 'quick', noiseCount = 72 } = {}) {
+  const base = [
     {
       memory_id: 'mem_quality_decision',
       source_kind: 'decision_track',
@@ -226,10 +241,90 @@ function fixtureObjects() {
       sensitivity: 'private',
     },
   ];
+  if (profile !== 'large') {
+    return base;
+  }
+  return [
+    ...base,
+    ...largeProfileTargetObjects(),
+    ...largeProfileNoiseObjects(noiseCount),
+  ];
 }
 
-function benchCases() {
+function largeProfileTargetObjects() {
   return [
+    {
+      memory_id: 'mem_quality_cn_domain',
+      source_kind: 'decision_track',
+      layer: 'l1_canonical',
+      title: '中文域名远程入口决策',
+      text: 'Decision: 中文 远程 入口 使用 稳定 域名 和 sanitized references，避免 raw evidence 进入远程 bundle。',
+      tags: ['cn', 'remote_domain', 'decision'],
+      visibility: 'sanitized_remote_ok',
+      sensitivity: 'internal',
+      pinned: true,
+    },
+    {
+      memory_id: 'mem_quality_review_guidance',
+      source_kind: 'recommendation',
+      layer: 'l2_observations',
+      title: 'Reviewer guidance trace',
+      text: 'Recommendation: reviewer notes should appear as redacted retrieval trace evidence, not as prompt body.',
+      tags: ['reviewer', 'trace'],
+      visibility: 'local_only',
+      sensitivity: 'internal',
+    },
+    {
+      memory_id: 'mem_quality_old_state',
+      source_kind: 'current_state',
+      layer: 'l2_observations',
+      title: 'Older retrieval state',
+      text: 'Current state: older memory retrieval implementation used only lexical scoring before BM25.',
+      tags: ['older_state'],
+      visibility: 'local_only',
+      sensitivity: 'internal',
+    },
+  ];
+}
+
+function largeProfileNoiseObjects(noiseCount) {
+  const layers = ['l1_canonical', 'l2_observations', 'l3_working_set'];
+  const sourceKinds = ['project_requirement', 'open_question', 'current_state', 'recommendation'];
+  const themes = [
+    'provider route inventory snapshot',
+    'remote access setup note',
+    'memory board presentation draft',
+    'scheduler heartbeat observation',
+    'model runtime repair note',
+    'XT pairing UX followup',
+    'domain setup validation record',
+    'review workflow context',
+  ];
+  const rows = [];
+  for (let i = 0; i < noiseCount; i += 1) {
+    const layer = layers[i % layers.length];
+    const sourceKind = sourceKinds[i % sourceKinds.length];
+    const theme = themes[i % themes.length];
+    rows.push({
+      memory_id: `mem_quality_noise_${String(i).padStart(3, '0')}`,
+      source_kind: sourceKind,
+      layer,
+      title: `Noise ${i}: ${theme}`,
+      text: [
+        `Noise record ${i} for ${theme}.`,
+        'It intentionally shares generic route, memory, provider, domain, reviewer, and retrieval words.',
+        'It must not outrank the targeted canonical object when the query contains precise intent.',
+      ].join(' '),
+      tags: ['noise', sourceKind, layer],
+      visibility: i % 5 === 0 ? 'sanitized_remote_ok' : 'local_only',
+      sensitivity: i % 7 === 0 ? 'private' : 'internal',
+    });
+  }
+  return rows;
+}
+
+function benchCases(profile = 'quick') {
+  const quickCases = [
     {
       name: 'project_chat_decision',
       route_profile: 'project_chat',
@@ -301,10 +396,68 @@ function benchCases() {
       require_omitted_reason: 'sensitivity_filter',
     },
   ];
+  if (profile !== 'large') {
+    return quickCases;
+  }
+  const largeBaseCases = quickCases.map((testCase) => ({
+    ...testCase,
+    request: {
+      ...testCase.request,
+      max_results: 10,
+    },
+  }));
+  return [
+    ...largeBaseCases,
+    {
+      name: 'large_profile_cn_domain_remote_bundle',
+      route_profile: 'remote_prompt_bundle',
+      request: {
+        scope: 'project',
+        project_id: PROJECT_ID,
+        query: '中文 远程 入口 稳定 域名 sanitized references',
+        visibility: 'sanitized_remote_ok',
+        sensitivity_max: 'internal',
+        max_results: 10,
+        explain: true,
+      },
+      expect_top: 'mem_quality_cn_domain',
+      require_selected_trace: true,
+      require_omitted_reason: 'visibility_filter',
+    },
+    {
+      name: 'large_profile_review_guidance_trace',
+      route_profile: 'supervisor_orchestration',
+      request: {
+        scope: 'project',
+        project_id: PROJECT_ID,
+        query: 'reviewer notes redacted retrieval trace evidence',
+        requested_layers: ['l2_observations'],
+        max_results: 10,
+        explain: true,
+      },
+      expect_top: 'mem_quality_review_guidance',
+      require_selected_trace: true,
+    },
+    {
+      name: 'large_profile_source_kind_filter',
+      route_profile: 'supervisor_orchestration',
+      request: {
+        scope: 'project',
+        project_id: PROJECT_ID,
+        query: 'reviewer notes redacted retrieval trace evidence',
+        requested_kinds: ['recommendation'],
+        max_results: 10,
+        explain: true,
+      },
+      expect_top: 'mem_quality_review_guidance',
+      require_selected_trace: true,
+      require_omitted_reason: 'source_kind_filter',
+    },
+  ];
 }
 
-async function createFixture(baseUrl) {
-  for (const object of fixtureObjects()) {
+async function createFixture(baseUrl, objects) {
+  for (const object of objects) {
     const created = await httpJson('POST', `${baseUrl}/memory/objects`, {
       requester_role: 'chat',
       use_mode: 'project_chat',
@@ -320,6 +473,9 @@ async function createFixture(baseUrl) {
 
 function summarizeCase(testCase, response) {
   const results = Array.isArray(response?.results) ? response.results : [];
+  const expectedFound = testCase.expect_top
+    ? results.some((item) => item?.memory_id === testCase.expect_top)
+    : true;
   return {
     name: testCase.name,
     route_profile: testCase.route_profile,
@@ -327,7 +483,11 @@ function summarizeCase(testCase, response) {
     top_memory_id: results[0]?.memory_id || '',
     result_count: results.length,
     expected_top: testCase.expect_top || '',
+    expected_found: expectedFound,
+    empty_expected: testCase.expect_empty === true,
     index_source: response?.retrieval_engine?.index_source || '',
+    fts: response?.retrieval_engine?.fts || '',
+    bm25_used: response?.retrieval_engine?.bm25_used === true,
     matched_count: Number(response?.retrieval_engine?.matched_count || 0),
     omitted_count: Number(response?.retrieval_trace?.omitted_count || 0),
   };
@@ -338,6 +498,8 @@ function validateCase(testCase, response) {
   assertOk(response?.source === 'rust_memory_objects_hybrid_v1', `${testCase.name}: source mismatch`, response);
   assertOk(response?.production_authority_change === false, `${testCase.name}: production authority changed`, response);
   assertOk(response?.retrieval_engine?.index_source === 'rust_hub_memory_object_index', `${testCase.name}: did not use derived index`, response?.retrieval_engine || {});
+  assertOk(response?.retrieval_engine?.fts === 'derived_index_bm25_rust', `${testCase.name}: did not use Rust BM25 derived-index scorer`, response?.retrieval_engine || {});
+  assertOk(response?.retrieval_engine?.bm25_used === true, `${testCase.name}: bm25_used was not true`, response?.retrieval_engine || {});
   assertOk(response?.retrieval_engine?.semantic_used === false, `${testCase.name}: semantic search should be off`, response?.retrieval_engine || {});
   assertOk(response?.retrieval_engine?.rerank_used === false, `${testCase.name}: rerank should be off`, response?.retrieval_engine || {});
   assertOk(response?.retrieval_trace?.schema_version === 'xhub.memory.retrieval_trace.v1', `${testCase.name}: retrieval trace missing`, response);
@@ -345,6 +507,9 @@ function validateCase(testCase, response) {
   const results = Array.isArray(response?.results) ? response.results : [];
   if (testCase.expect_top) {
     assertOk(results[0]?.memory_id === testCase.expect_top, `${testCase.name}: top result mismatch`, { expected: testCase.expect_top, results });
+  }
+  if (testCase.expect_empty) {
+    assertOk(results.length === 0, `${testCase.name}: expected no results`, { results });
   }
   if (testCase.require_selected_trace) {
     assertOk(response.retrieval_trace.selected?.[0]?.memory_id === testCase.expect_top, `${testCase.name}: selected trace mismatch`, response.retrieval_trace);
@@ -360,14 +525,14 @@ function validateCase(testCase, response) {
   }
 }
 
-async function runBench(baseUrl) {
+async function runBench(baseUrl, { profile, objects }) {
   const reindex = await httpJson('POST', `${baseUrl}/memory/reindex`, {}, 3000);
   assertOk(reindex?.ok === true, 'memory reindex failed before quality bench', reindex);
   assertOk(reindex?.production_authority_change === false, 'memory reindex changed production authority', reindex);
-  assertOk(Number(reindex?.index?.row_count || 0) === fixtureObjects().length, 'memory reindex row count mismatch', reindex);
+  assertOk(Number(reindex?.index?.row_count || 0) === objects.length, 'memory reindex row count mismatch', reindex);
 
   const cases = [];
-  for (const testCase of benchCases()) {
+  for (const testCase of benchCases(profile)) {
     const response = await httpJson('POST', `${baseUrl}/memory/retrieve`, testCase.request, 1500);
     validateCase(testCase, response);
     cases.push(summarizeCase(testCase, response));
@@ -375,7 +540,36 @@ async function runBench(baseUrl) {
   return {
     reindex,
     cases,
+    metrics: qualityMetrics(cases),
   };
+}
+
+function qualityMetrics(cases) {
+  const topCases = cases.filter((item) => item.expected_top);
+  const precisionAt1 = topCases.length
+    ? topCases.filter((item) => item.top_memory_id === item.expected_top).length / topCases.length
+    : 1;
+  const recallAtK = topCases.length
+    ? topCases.filter((item) => item.expected_found).length / topCases.length
+    : 1;
+  const filterCases = cases.filter((item) => item.omitted_count > 0 || item.empty_expected);
+  const filterPassRate = filterCases.length
+    ? filterCases.filter((item) => item.ok).length / filterCases.length
+    : 1;
+  const traceCoverage = cases.length
+    ? cases.filter((item) => item.omitted_count > 0 || item.result_count > 0).length / cases.length
+    : 1;
+  return {
+    schema_version: 'xhub.rust_hub.memory_hybrid_quality_metrics.v1',
+    precision_at_1: round4(precisionAt1),
+    recall_at_k: round4(recallAtK),
+    filter_pass_rate: round4(filterPassRate),
+    trace_coverage: round4(traceCoverage),
+  };
+}
+
+function round4(value) {
+  return Math.round(Number(value || 0) * 10000) / 10000;
 }
 
 async function waitForExit(child, timeoutMs) {
@@ -426,14 +620,17 @@ async function main() {
     child = started.child;
     await waitForHealth(baseUrl, child, started.output, args.timeoutMs);
 
-    await createFixture(baseUrl);
-    const bench = await runBench(baseUrl);
+    const objects = fixtureObjects({ profile: args.profile, noiseCount: args.noiseCount });
+    await createFixture(baseUrl, objects);
+    const bench = await runBench(baseUrl, { profile: args.profile, objects });
     const report = {
       ok: true,
       schema_version: 'xhub.rust_hub.memory_hybrid_quality_bench.v1',
       command: 'memory-hybrid-quality-bench',
       http_base_url: baseUrl,
+      profile: args.profile,
       project_id: PROJECT_ID,
+      fixture_object_count: objects.length,
       case_count: bench.cases.length,
       passed_count: bench.cases.filter((item) => item.ok).length,
       derived_index_source: 'rust_hub_memory_object_index',
@@ -441,7 +638,9 @@ async function main() {
       stale_index_count: bench.reindex.index.stale_count,
       semantic_used: false,
       rerank_used: false,
+      bm25_used: true,
       production_authority_change: false,
+      metrics: bench.metrics,
       cases: bench.cases,
     };
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);

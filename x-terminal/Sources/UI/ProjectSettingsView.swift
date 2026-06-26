@@ -13,6 +13,15 @@ func xtProjectSettingsInlineMessage(
     return "\(normalizedTitle) · \(normalizedDetail)"
 }
 
+private struct XTMemoryInspectorPendingMutation: Identifiable, Equatable {
+    var action: XTMemoryInspectorObjectMutationAction
+    var object: HubIPCClient.MemoryWritebackCandidateObject
+
+    var id: String {
+        "\(object.memoryId):\(action.rawValue)"
+    }
+}
+
 struct ProjectSettingsView: View {
     let ctx: AXProjectContext
     let initialGovernanceDestination: XTProjectGovernanceDestination
@@ -23,6 +32,8 @@ struct ProjectSettingsView: View {
     @EnvironmentObject private var navigationFocusStore: XTNavigationFocusStore
     @Environment(\.dismiss) private var dismiss
     @StateObject private var modelManager = HubModelManager.shared
+    @StateObject private var memoryInspectorStore = XTMemoryInspectorStore()
+    @StateObject private var memoryWritebackCandidateQueueStore = XTMemoryWritebackCandidateQueueStore()
     private let supervisorManager = SupervisorManager.shared
     @StateObject private var projectModelUpdateFeedback = XTTransientUpdateFeedbackState()
     @State private var trustedAutomationDeviceIdDraft: String = ""
@@ -37,6 +48,15 @@ struct ProjectSettingsView: View {
     @State private var projectModelChangeNotice: XTSettingsChangeNotice?
     @State private var projectConfigSnapshot: AXProjectConfig
     @State private var projectSkillsCompatibilitySnapshot: AXSkillsDoctorSnapshot = .empty
+    @State private var memoryInspectorStatusFilter = "active"
+    @State private var memoryInspectorLayerFilter = "all"
+    @State private var memoryInspectorSensitivityFilter = "all"
+    @State private var memoryInspectorSourceKindFilter = ""
+    @State private var memoryInspectorHistoryExpandedIds = Set<String>()
+    @State private var memoryInspectorPendingMutation: XTMemoryInspectorPendingMutation?
+    @State private var memoryInspectorMutatingObjectIds = Set<String>()
+    @State private var memoryWritebackConflictResolutionReasons: [String: String] = [:]
+    @State private var memoryWritebackMergeReviewExpandedIds = Set<String>()
 
     init(
         ctx: AXProjectContext,
@@ -67,6 +87,12 @@ struct ProjectSettingsView: View {
             Task {
                 await modelManager.fetchModels()
             }
+            Task {
+                await refreshMemoryInspector()
+            }
+            Task {
+                await refreshMemoryWritebackCandidateQueue()
+            }
         }
         .onChange(of: initialGovernanceDestination) { value in
             selectedGovernanceDestination = value
@@ -93,6 +119,37 @@ struct ProjectSettingsView: View {
         }
         .onDisappear {
             resetProjectModelRoutingFeedback()
+        }
+        .confirmationDialog(
+            "Confirm Memory Change",
+            isPresented: Binding(
+                get: { memoryInspectorPendingMutation != nil },
+                set: { shown in
+                    if !shown {
+                        memoryInspectorPendingMutation = nil
+                    }
+                }
+            )
+        ) {
+            if let pending = memoryInspectorPendingMutation {
+                Button(
+                    pending.action == .delete ? "Delete" : pending.action.label,
+                    role: pending.action.destructive ? .destructive : nil
+                ) {
+                    let selected = pending
+                    memoryInspectorPendingMutation = nil
+                    Task {
+                        await performMemoryInspectorMutation(selected)
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if let pending = memoryInspectorPendingMutation {
+                Text(memoryInspectorMutationConfirmationMessage(for: pending))
+            } else {
+                Text("")
+            }
         }
     }
 
@@ -176,6 +233,8 @@ struct ProjectSettingsView: View {
                     )
 
                     hubMemorySection
+                    memoryInspectorSection
+                    memoryWritebackCandidateQueueSection
                     contextAssemblySection
                         .id(XTProjectSettingsOverviewAnchor.contextAssembly.rawValue)
                     automationSelfIterateSection
@@ -375,13 +434,15 @@ struct ProjectSettingsView: View {
     @MainActor
     private func refreshProjectSkillGovernanceSurface(force: Bool = false) async {
         refreshProjectSkillsCompatibilitySnapshot()
-        _ = await XTResolvedSkillsCacheStore.refreshFromHubIfPossible(
+        if let resolvedSnapshot = await XTResolvedSkillsCacheStore.refreshFromHubIfPossible(
             projectId: skillGovernanceProjectID,
             projectName: skillGovernanceProjectName,
             context: ctx,
             hubBaseDir: skillGovernanceHubBaseDir,
             force: force
-        )
+        ) {
+            appModel.recordActiveHubSkillsUpdated(resolvedSnapshot)
+        }
         refreshProjectSkillsCompatibilitySnapshot()
     }
 
@@ -756,6 +817,536 @@ struct ProjectSettingsView: View {
             }
             .padding(8)
         }
+    }
+
+    private var memoryInspectorSection: some View {
+        let snapshot = memoryInspectorStore.snapshot
+        let selectionEvidence = memoryInspectorStore.selectionEvidenceSnapshot
+
+        return GroupBox("Project Memory Inspector") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Label(
+                        XTMemoryInspectorPresentation.statusText(snapshot: snapshot),
+                        systemImage: snapshot.lastError == nil ? "list.bullet.rectangle" : "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(snapshot.lastError == nil ? Color.secondary : Color.red)
+
+                    Spacer()
+
+                    Button {
+                        Task {
+                            await refreshMemoryInspector()
+                        }
+                    } label: {
+                        Label("刷新", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(snapshot.loading)
+                }
+
+                HStack(spacing: 8) {
+                    Picker("状态", selection: $memoryInspectorStatusFilter) {
+                        ForEach(XTMemoryInspectorPresentation.statusOptions, id: \.self) { status in
+                            Text(status).tag(status)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    Picker("层级", selection: $memoryInspectorLayerFilter) {
+                        ForEach(XTMemoryInspectorPresentation.layerOptions, id: \.self) { layer in
+                            Text(layer).tag(layer)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    Picker("敏感度", selection: $memoryInspectorSensitivityFilter) {
+                        ForEach(XTMemoryInspectorPresentation.sensitivityOptions, id: \.self) { sensitivity in
+                            Text(sensitivity).tag(sensitivity)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    TextField("source_kind", text: $memoryInspectorSourceKindFilter)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                        .frame(maxWidth: 180)
+                }
+
+                Text("只读 Rust Hub truth · scope=project · project_id=\(AXProjectRegistryStore.projectId(forRoot: ctx.root))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+
+                if let mutationStatus = XTMemoryInspectorPresentation.mutationStatusText(snapshot.lastMutationResult) {
+                    Text(mutationStatus)
+                        .font(.caption2)
+                        .foregroundStyle(snapshot.lastMutationResult?.ok == true ? Color.secondary : Color.red)
+                        .lineLimit(1)
+                        .textSelection(.enabled)
+                }
+
+                memorySelectionEvidencePanel(selectionEvidence)
+
+                if snapshot.objects.isEmpty {
+                    Text(snapshot.loading ? "正在读取 Rust memory objects。" : "当前过滤条件下没有项目记忆对象。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(snapshot.objects.prefix(8).enumerated()), id: \.element.id) { index, object in
+                            memoryInspectorObjectRow(object)
+                            if index < min(snapshot.objects.count, 8) - 1 {
+                                Divider()
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(8)
+        }
+    }
+
+    private func memorySelectionEvidencePanel(
+        _ snapshot: XTMemorySelectionEvidenceSnapshot
+    ) -> some View {
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Label(
+                    XTMemorySelectionEvidencePresentation.statusText(snapshot: snapshot),
+                    systemImage: snapshot.lastError == nil ? "checklist" : "exclamationmark.triangle"
+                )
+                .font(.caption2)
+                .foregroundStyle(snapshot.lastError == nil ? Color.secondary : Color.orange)
+
+                Spacer()
+
+                Text("model-call-plan cache")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let latest = snapshot.latest {
+                Text(XTMemorySelectionEvidencePresentation.summaryLine(for: latest))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+
+                Text(XTMemorySelectionEvidencePresentation.countLine(for: latest))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+
+                let skipped = XTMemorySelectionEvidencePresentation.skippedLine(for: latest)
+                if !skipped.isEmpty {
+                    Text(skipped)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .textSelection(.enabled)
+                }
+
+                let omittedReasons = XTMemorySelectionEvidencePresentation.omittedReasonLine(for: latest)
+                if !omittedReasons.isEmpty {
+                    Text("omitted reasons: \(omittedReasons)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .textSelection(.enabled)
+                }
+
+                let refs = XTMemorySelectionEvidencePresentation.visibleSelectedRefs(
+                    for: latest,
+                    projectId: projectId,
+                    limit: 8
+                )
+                if refs.isEmpty {
+                    Text("selected refs unavailable in current cache sample")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(refs.enumerated()), id: \.offset) { _, ref in
+                        Text(XTMemorySelectionEvidencePresentation.refLine(for: ref))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func memoryInspectorObjectRow(
+        _ object: HubIPCClient.MemoryWritebackCandidateObject
+    ) -> some View {
+        let history = memoryInspectorStore.snapshot.histories[object.memoryId]
+        let historyExpanded = memoryInspectorHistoryExpandedIds.contains(object.memoryId)
+
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(object.title.isEmpty ? object.memoryId : object.title)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .lineLimit(2)
+
+                Spacer()
+
+                Button {
+                    if historyExpanded {
+                        memoryInspectorHistoryExpandedIds.remove(object.memoryId)
+                    } else {
+                        memoryInspectorHistoryExpandedIds.insert(object.memoryId)
+                        if history == nil {
+                            Task {
+                                await memoryInspectorStore.loadHistory(
+                                    object: object,
+                                    ctx: ctx
+                                )
+                            }
+                        }
+                    }
+                } label: {
+                    Label("历史", systemImage: "clock.arrow.circlepath")
+                }
+                .buttonStyle(.bordered)
+                .disabled(history?.loading == true)
+
+                ForEach(XTMemoryInspectorPresentation.mutationActions(for: object)) { action in
+                    Button {
+                        requestMemoryInspectorMutation(action, object: object)
+                    } label: {
+                        Image(systemName: action.systemImage)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help(action.helpText)
+                    .accessibilityLabel(action.label)
+                    .disabled(
+                        memoryInspectorStore.snapshot.loading ||
+                        memoryInspectorMutatingObjectIds.contains(object.memoryId)
+                    )
+                }
+
+                Text(object.status ?? "object")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            let metadata = XTMemoryInspectorPresentation.metadataLine(for: object)
+            if !metadata.isEmpty {
+                Text(metadata)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Text(XTMemoryInspectorPresentation.bodyPreview(for: object))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+
+            if historyExpanded {
+                memoryInspectorHistoryPanel(history)
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func memoryInspectorHistoryPanel(
+        _ history: XTMemoryInspectorObjectHistorySnapshot?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(XTMemoryInspectorPresentation.historyStatusText(history))
+                .font(.caption2)
+                .foregroundStyle(history?.lastError == nil ? Color.secondary : Color.red)
+
+            if let history {
+                ForEach(history.events.prefix(5)) { event in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(XTMemoryInspectorPresentation.historyLine(for: event))
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                            .lineLimit(1)
+                        let detail = XTMemoryInspectorPresentation.historyDetailLine(for: event)
+                        if !detail.isEmpty {
+                            Text(detail)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .padding(.vertical, 3)
+                }
+            }
+        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var memoryWritebackCandidateQueueSection: some View {
+        let snapshot = memoryWritebackCandidateQueueStore.snapshot
+
+        return GroupBox("Memory 写回候选") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Label(
+                        XTMemoryWritebackCandidateQueuePresentation.statusText(snapshot: snapshot),
+                        systemImage: snapshot.lastError == nil ? "tray.full" : "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(snapshot.lastError == nil ? Color.secondary : Color.red)
+
+                    Spacer()
+
+                    Button {
+                        Task {
+                            await memoryWritebackCandidateQueueStore.previewMaintenance(ctx: ctx)
+                        }
+                    } label: {
+                        Label("预检", systemImage: "stethoscope")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(snapshot.loading || snapshot.maintenanceInFlight)
+
+                    Button {
+                        Task {
+                            await memoryWritebackCandidateQueueStore.applyMaintenance(ctx: ctx)
+                        }
+                    } label: {
+                        Label("维护", systemImage: "wrench.and.screwdriver")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(
+                        snapshot.loading
+                            || snapshot.maintenanceInFlight
+                            || snapshot.lastMaintenance?.dryRun != true
+                            || snapshot.plannedMaintenanceCount == 0
+                    )
+
+                    Button {
+                        Task {
+                            await refreshMemoryWritebackCandidateQueue()
+                        }
+                    } label: {
+                        Label("刷新", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(snapshot.loading)
+                }
+
+                Text(XTMemoryWritebackCandidateQueuePresentation.maintenanceStatusText(snapshot: snapshot))
+                    .font(.caption2)
+                    .foregroundStyle(snapshot.lastMaintenance?.ok == false ? Color.red : Color.secondary)
+                    .textSelection(.enabled)
+
+                if snapshot.candidates.isEmpty {
+                    Text("暂无待审候选。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(snapshot.candidates.prefix(8).enumerated()), id: \.element.id) { index, candidate in
+                            memoryWritebackCandidateRow(candidate)
+                            if index < min(snapshot.candidates.count, 8) - 1 {
+                                Divider()
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(8)
+        }
+    }
+
+    private func memoryWritebackCandidateRow(
+        _ candidate: HubIPCClient.MemoryWritebackCandidateObject
+    ) -> some View {
+        let metadata = XTMemoryWritebackCandidateQueuePresentation.metadataLine(for: candidate)
+        let preview = XTMemoryWritebackCandidateQueuePresentation.bodyPreview(for: candidate)
+        let stale = XTMemoryWritebackCandidateQueuePresentation.stalenessLabel(for: candidate)
+        let referenceIds = XTMemoryWritebackCandidateQueuePresentation.mergeReferenceIds(for: candidate)
+        let mergeReview = memoryWritebackCandidateQueueStore.snapshot.mergeReviews[candidate.memoryId]
+        let mergeReviewExpanded = memoryWritebackMergeReviewExpandedIds.contains(candidate.memoryId)
+        let inFlight = memoryWritebackCandidateQueueStore.snapshot.inFlightMemoryId == candidate.memoryId
+        let conflictResolutionReason = memoryWritebackConflictResolutionReason(for: candidate)
+        let approveDisabled = inFlight || (candidate.hasConflict && conflictResolutionReason.isEmpty)
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(candidate.title.isEmpty ? candidate.memoryId : candidate.title)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .lineLimit(2)
+
+                if let stale {
+                    Text(stale)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+
+                Spacer()
+
+                if !referenceIds.isEmpty {
+                    Button {
+                        if mergeReviewExpanded {
+                            memoryWritebackMergeReviewExpandedIds.remove(candidate.memoryId)
+                        } else {
+                            memoryWritebackMergeReviewExpandedIds.insert(candidate.memoryId)
+                            if mergeReview == nil {
+                                Task {
+                                    await memoryWritebackCandidateQueueStore.loadMergeReview(
+                                        candidate: candidate,
+                                        ctx: ctx
+                                    )
+                                }
+                            }
+                        }
+                    } label: {
+                        Label("对比", systemImage: "rectangle.split.2x1")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(mergeReview?.loading == true)
+                }
+
+                Button {
+                    Task {
+                        await memoryWritebackCandidateQueueStore.approve(
+                            candidate: candidate,
+                            ctx: ctx,
+                            conflictResolutionReason: candidate.hasConflict ? conflictResolutionReason : nil
+                        )
+                    }
+                } label: {
+                    Label("批准", systemImage: "checkmark.circle")
+                }
+                .buttonStyle(.bordered)
+                .disabled(approveDisabled)
+
+                Button {
+                    Task {
+                        await memoryWritebackCandidateQueueStore.reject(
+                            candidate: candidate,
+                            ctx: ctx
+                        )
+                    }
+                } label: {
+                    Label("拒绝", systemImage: "xmark.circle")
+                }
+                .buttonStyle(.bordered)
+                .disabled(inFlight)
+            }
+
+            if !metadata.isEmpty {
+                Text(metadata)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            if candidate.hasConflict {
+                TextField(
+                    "冲突批准理由",
+                    text: memoryWritebackConflictResolutionReasonBinding(for: candidate.memoryId)
+                )
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .disabled(inFlight)
+            }
+
+            Text(preview)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+
+            if mergeReviewExpanded {
+                memoryWritebackMergeReviewPanel(mergeReview, referenceIds: referenceIds)
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func memoryWritebackMergeReviewPanel(
+        _ review: XTMemoryWritebackCandidateMergeReviewSnapshot?,
+        referenceIds: [String]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(XTMemoryWritebackCandidateQueuePresentation.mergeReviewStatusText(review))
+                .font(.caption2)
+                .foregroundStyle(review?.lastError == nil ? Color.secondary : Color.red)
+
+            if review == nil {
+                Text(referenceIds.prefix(4).joined(separator: ", "))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+            }
+
+            if let review {
+                ForEach(review.objects.prefix(4), id: \.memoryId) { object in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(object.title.isEmpty ? object.memoryId : object.title)
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                            .lineLimit(1)
+                        let line = XTMemoryWritebackCandidateQueuePresentation.mergeReviewLine(for: object)
+                        if !line.isEmpty {
+                            Text(line)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Text(XTMemoryWritebackCandidateQueuePresentation.bodyPreview(for: object))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                            .textSelection(.enabled)
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                if !review.missingIds.isEmpty {
+                    Text("missing: \(review.missingIds.prefix(4).joined(separator: ", "))")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func memoryWritebackConflictResolutionReason(for candidate: HubIPCClient.MemoryWritebackCandidateObject) -> String {
+        (memoryWritebackConflictResolutionReasons[candidate.memoryId] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func memoryWritebackConflictResolutionReasonBinding(for memoryId: String) -> Binding<String> {
+        Binding(
+            get: {
+                memoryWritebackConflictResolutionReasons[memoryId] ?? ""
+            },
+            set: { value in
+                memoryWritebackConflictResolutionReasons[memoryId] = value
+            }
+        )
     }
 
     private var contextAssemblySection: some View {
@@ -2165,6 +2756,79 @@ struct ProjectSettingsView: View {
     private func updateProjectHubMemoryPreference(_ enabled: Bool) {
         appModel.setProjectHubMemoryPreference(for: ctx, enabled: enabled)
         reloadProjectConfigSnapshot()
+    }
+
+    private func refreshMemoryInspector() async {
+        await memoryInspectorStore.refreshSelectionEvidence(ctx: ctx)
+        await memoryInspectorStore.refreshProject(
+            ctx: ctx,
+            filter: XTMemoryInspectorFilter(
+                status: memoryInspectorStatusFilter,
+                layer: memoryInspectorLayerFilter,
+                sourceKind: memoryInspectorSourceKindFilter,
+                sensitivity: memoryInspectorSensitivityFilter,
+                limit: 50
+            )
+        )
+    }
+
+    private func requestMemoryInspectorMutation(
+        _ action: XTMemoryInspectorObjectMutationAction,
+        object: HubIPCClient.MemoryWritebackCandidateObject
+    ) {
+        guard !memoryInspectorMutatingObjectIds.contains(object.memoryId) else { return }
+        guard XTMemoryInspectorPresentation.mutationActions(for: object).contains(action) else { return }
+        if action.confirmationRequired {
+            memoryInspectorPendingMutation = XTMemoryInspectorPendingMutation(action: action, object: object)
+            return
+        }
+        Task {
+            await performMemoryInspectorMutation(
+                XTMemoryInspectorPendingMutation(action: action, object: object)
+            )
+        }
+    }
+
+    @MainActor
+    private func performMemoryInspectorMutation(
+        _ pending: XTMemoryInspectorPendingMutation
+    ) async {
+        guard !memoryInspectorMutatingObjectIds.contains(pending.object.memoryId) else { return }
+        memoryInspectorMutatingObjectIds.insert(pending.object.memoryId)
+        defer {
+            memoryInspectorMutatingObjectIds.remove(pending.object.memoryId)
+        }
+
+        let result = await memoryInspectorStore.mutateProjectObject(
+            ctx: ctx,
+            object: pending.object,
+            action: pending.action.rawValue,
+            payload: XTMemoryInspectorPresentation.mutationPayload(action: pending.action)
+        )
+        if result.ok {
+            memoryInspectorHistoryExpandedIds.remove(pending.object.memoryId)
+            await refreshMemoryInspector()
+        }
+    }
+
+    private func memoryInspectorMutationConfirmationMessage(
+        for pending: XTMemoryInspectorPendingMutation
+    ) -> String {
+        switch pending.action {
+        case .archive:
+            return "Archive this Rust memory object. Rust will clear pinned state, write an event, and remove it from active views after refresh."
+        case .delete:
+            return "Delete this Rust memory object by tombstone. Rust keeps event history; the row is not physically removed."
+        case .pin, .unpin:
+            return pending.action.helpText
+        }
+    }
+
+    private func refreshMemoryWritebackCandidateQueue() async {
+        await memoryWritebackCandidateQueueStore.refresh(
+            projectId: AXProjectRegistryStore.projectId(forRoot: ctx.root),
+            limit: 50
+        )
     }
 
     private func updateProjectContextAssembly(

@@ -111,6 +111,11 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
     var externalTerminalAccessSnapshot: XTUnifiedDoctorExternalTerminalAccessProjection?
     var durableCandidateMirrorSnapshot: XHubDoctorOutputDurableCandidateMirrorSnapshot?
     var localStoreWriteSnapshot: XHubDoctorOutputLocalStoreWriteSnapshot?
+    var rustMemoryObjectMutationGateSnapshot: XTUnifiedDoctorRustMemoryObjectMutationGateProjection?
+    var rustMemoryUserRevealGrantSnapshot: XTUnifiedDoctorRustMemoryUserRevealGrantProjection?
+    var rustMemorySelectionEvidenceSnapshot: XTUnifiedDoctorRustMemorySelectionEvidenceProjection?
+    var rustProductProcessSanitySnapshot: RustHubProductProcessSanitySnapshot?
+    var rustMemoryGatewayModelCallExecutionGateSnapshot: RustHubMemoryGatewayModelCallExecutionGateSnapshot?
     var skillDoctorTruthSnapshot: XTUnifiedDoctorSkillDoctorTruthProjection?
     var freshPairReconnectSmokeSnapshot: XHubDoctorOutputFreshPairReconnectSmokeSnapshot?
     var observedAtMs: Int64
@@ -150,6 +155,11 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
         externalTerminalAccessSnapshot: XTUnifiedDoctorExternalTerminalAccessProjection? = nil,
         durableCandidateMirrorSnapshot: XHubDoctorOutputDurableCandidateMirrorSnapshot? = nil,
         localStoreWriteSnapshot: XHubDoctorOutputLocalStoreWriteSnapshot? = nil,
+        rustMemoryObjectMutationGateSnapshot: XTUnifiedDoctorRustMemoryObjectMutationGateProjection? = nil,
+        rustMemoryUserRevealGrantSnapshot: XTUnifiedDoctorRustMemoryUserRevealGrantProjection? = nil,
+        rustMemorySelectionEvidenceSnapshot: XTUnifiedDoctorRustMemorySelectionEvidenceProjection? = nil,
+        rustProductProcessSanitySnapshot: RustHubProductProcessSanitySnapshot? = nil,
+        rustMemoryGatewayModelCallExecutionGateSnapshot: RustHubMemoryGatewayModelCallExecutionGateSnapshot? = nil,
         skillDoctorTruthSnapshot: XTUnifiedDoctorSkillDoctorTruthProjection? = nil,
         freshPairReconnectSmokeSnapshot: XHubDoctorOutputFreshPairReconnectSmokeSnapshot? = nil
     ) {
@@ -184,6 +194,11 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
         self.externalTerminalAccessSnapshot = externalTerminalAccessSnapshot
         self.durableCandidateMirrorSnapshot = durableCandidateMirrorSnapshot
         self.localStoreWriteSnapshot = localStoreWriteSnapshot
+        self.rustMemoryObjectMutationGateSnapshot = rustMemoryObjectMutationGateSnapshot
+        self.rustMemoryUserRevealGrantSnapshot = rustMemoryUserRevealGrantSnapshot
+        self.rustMemorySelectionEvidenceSnapshot = rustMemorySelectionEvidenceSnapshot
+        self.rustProductProcessSanitySnapshot = rustProductProcessSanitySnapshot
+        self.rustMemoryGatewayModelCallExecutionGateSnapshot = rustMemoryGatewayModelCallExecutionGateSnapshot
         self.skillDoctorTruthSnapshot = skillDoctorTruthSnapshot
         self.freshPairReconnectSmokeSnapshot = freshPairReconnectSmokeSnapshot
         self.observedAtMs = observedAtMs
@@ -221,6 +236,11 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
         case externalTerminalAccessSnapshot = "external_terminal_access_snapshot"
         case durableCandidateMirrorSnapshot = "durable_candidate_mirror_snapshot"
         case localStoreWriteSnapshot = "local_store_write_snapshot"
+        case rustMemoryObjectMutationGateSnapshot = "rust_memory_object_mutation_gate_snapshot"
+        case rustMemoryUserRevealGrantSnapshot = "rust_memory_user_reveal_grant_snapshot"
+        case rustMemorySelectionEvidenceSnapshot = "rust_memory_selection_evidence_snapshot"
+        case rustProductProcessSanitySnapshot = "rust_product_process_sanity_snapshot"
+        case rustMemoryGatewayModelCallExecutionGateSnapshot = "rust_memory_gateway_model_call_execution_gate_snapshot"
         case skillDoctorTruthSnapshot = "skill_doctor_truth_snapshot"
         case freshPairReconnectSmokeSnapshot = "fresh_pair_reconnect_smoke_snapshot"
         case observedAtMs = "observed_at_ms"
@@ -2339,6 +2359,11 @@ private extension XHubDoctorOutputCheckResult {
             externalTerminalAccessSnapshot: section.externalTerminalAccessProjection,
             durableCandidateMirrorSnapshot: XHubDoctorOutputDurableCandidateMirrorSnapshot(section: section),
             localStoreWriteSnapshot: XHubDoctorOutputLocalStoreWriteSnapshot(section: section),
+            rustMemoryObjectMutationGateSnapshot: section.rustMemoryObjectMutationGateProjection,
+            rustMemoryUserRevealGrantSnapshot: section.rustMemoryUserRevealGrantProjection,
+            rustMemorySelectionEvidenceSnapshot: section.rustMemorySelectionEvidenceProjection,
+            rustProductProcessSanitySnapshot: section.rustProductProcessSanityProjection,
+            rustMemoryGatewayModelCallExecutionGateSnapshot: section.rustMemoryGatewayExecutionGateProjection,
             skillDoctorTruthSnapshot: section.skillDoctorTruthProjection,
             freshPairReconnectSmokeSnapshot: XHubDoctorOutputFreshPairReconnectSmokeSnapshot(section: section)
         )

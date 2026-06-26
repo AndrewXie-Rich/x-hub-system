@@ -42,6 +42,56 @@ const AUTHORITY_READ_KEYS = [
   ...ROUTE_PREP_KEYS,
 ];
 
+function isExternalRelFlowHubProcessLine(line) {
+  const text = String(line || '');
+  return !text.includes('/X-Hub.app/')
+    && (text.includes('/RELFlowHub.app/') || text.includes('/Volumes/RELFlowHub'));
+}
+
+function isXHubNodeBridgeProcessLine(line) {
+  const text = String(line || '');
+  return NODE_PROCESS_MARKERS.every((marker) => text.includes(marker))
+    && !isExternalRelFlowHubProcessLine(text)
+    && (text.includes('/X-Hub.app/')
+      || /\/x-hub-system(?:-github-clean)?\/x-hub\//.test(text));
+}
+
+function parsePidCommand(line) {
+  const match = String(line || '').trim().match(/^(\d+)\s+([\s\S]*)$/);
+  if (!match) return null;
+  return { pid: Number(match[1]), command: match[2] };
+}
+
+function readProcessCommandRows() {
+  return execFileSync('ps', ['ax', '-o', 'pid=,command='], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: 8 * 1024 * 1024,
+  }).split('\n');
+}
+
+function readProcessEnvCommand(pid) {
+  try {
+    return execFileSync('ps', ['eww', '-p', String(pid), '-o', 'command='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 8 * 1024 * 1024,
+    }).trim();
+  } catch {
+  }
+  try {
+    const rows = execFileSync('ps', ['axeww', '-o', 'pid=,command='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 8 * 1024 * 1024,
+    }).split('\n');
+    const found = rows.map(parsePidCommand).find((row) => row?.pid === pid);
+    return found?.command || '';
+  } catch {
+    return '';
+  }
+}
+
 function parseArgs(argv) {
   const out = {
     targetRoot: ROOT_DIR,
@@ -117,28 +167,21 @@ function readLaunchctlRoot() {
 function findNodeProcess() {
   let rows = [];
   try {
-    rows = execFileSync('ps', ['axeww', '-o', 'pid=,command='], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      maxBuffer: 8 * 1024 * 1024,
-    }).split('\n');
+    rows = readProcessCommandRows();
   } catch {
-    return { pid: 0, command: '', envRoot: '' };
+    return { pid: 0, command: '', envCommand: '', envRoot: '' };
   }
   const candidates = rows
     .map((line) => line.trim())
-    .filter((line) => NODE_PROCESS_MARKERS.every((marker) => line.includes(marker)))
-    .filter((line) => !line.includes('active_root_upgrade_plan.js'));
-  if (candidates.length === 0) return { pid: 0, command: '', envRoot: '' };
+    .filter((line) => isXHubNodeBridgeProcessLine(line))
+    .filter((line) => !line.includes('active_root_upgrade_plan.js'))
+    .map(parsePidCommand)
+    .filter(Boolean);
+  if (candidates.length === 0) return { pid: 0, command: '', envCommand: '', envRoot: '' };
   const parsed = candidates
-    .map((line) => {
-      const match = line.match(/^(\d+)\s+([\s\S]*)$/);
-      if (!match) return null;
-      return { pid: Number(match[1]), command: match[2] };
-    })
-    .filter(Boolean)
     .sort((a, b) => b.pid - a.pid)[0];
-  return { ...parsed, envRoot: extractEnvValue(parsed.command, ROOT_KEY) };
+  const envCommand = readProcessEnvCommand(parsed.pid) || parsed.command;
+  return { ...parsed, envCommand, envRoot: extractEnvValue(envCommand, ROOT_KEY) };
 }
 
 function extractEnvValue(text, key) {
@@ -174,11 +217,11 @@ function enabledNodeKeys(command, keys) {
 function collectAuthority(node) {
   const launchctlValues = readLaunchctlValues(AUTHORITY_READ_KEYS);
   const providerLaunchctlKeys = enabledLaunchctlKeys(launchctlValues, PROVIDER_MODEL_PRODUCTION_KEYS);
-  const providerNodeKeys = enabledNodeKeys(node?.command || '', PROVIDER_MODEL_PRODUCTION_KEYS);
+  const providerNodeKeys = enabledNodeKeys(node?.envCommand || '', PROVIDER_MODEL_PRODUCTION_KEYS);
   const memoryLaunchctlKeys = enabledLaunchctlKeys(launchctlValues, MEMORY_SKILLS_PRODUCTION_KEYS);
-  const memoryNodeKeys = enabledNodeKeys(node?.command || '', MEMORY_SKILLS_PRODUCTION_KEYS);
+  const memoryNodeKeys = enabledNodeKeys(node?.envCommand || '', MEMORY_SKILLS_PRODUCTION_KEYS);
   const prepLaunchctlKeys = enabledLaunchctlKeys(launchctlValues, ROUTE_PREP_KEYS);
-  const prepNodeKeys = enabledNodeKeys(node?.command || '', ROUTE_PREP_KEYS);
+  const prepNodeKeys = enabledNodeKeys(node?.envCommand || '', ROUTE_PREP_KEYS);
   return {
     providerModelProductionActive: providerLaunchctlKeys.length > 0 || providerNodeKeys.length > 0,
     memorySkillsProductionActive: memoryLaunchctlKeys.length > 0 || memoryNodeKeys.length > 0,
@@ -315,6 +358,8 @@ function reportPath() {
 }
 
 function runSelfTest() {
+  const external = '999 /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/relflowhub_node /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/hub_grpc_server/src/server.js';
+  if (isXHubNodeBridgeProcessLine(external)) throw new Error('standalone RELFlowHub must not classify as X-Hub node bridge');
   const result = reduce({
     launchctlRoot: '/tmp/current',
     node: { pid: 1, envRoot: '/tmp/current' },

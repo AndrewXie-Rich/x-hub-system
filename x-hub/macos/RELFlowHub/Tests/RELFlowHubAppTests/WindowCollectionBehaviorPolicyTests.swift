@@ -1,6 +1,6 @@
 import AppKit
+import RELFlowHubAppSupport
 import XCTest
-@testable import RELFlowHub
 
 final class WindowCollectionBehaviorPolicyTests: XCTestCase {
     func testMainPanelBehaviorAvoidsInvalidFlagCombination() {

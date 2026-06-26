@@ -140,8 +140,23 @@ function resolveXhubd() {
 
 function reduce(collected, config) {
   const issues = [];
-  if (!collected.session?.production_authority_effective_now) issues.push('scheduler_authority_not_effective_in_running_node_process');
-  if (!collected.session?.running_node_process_authority_enabled) issues.push('running_node_process_scheduler_authority_missing');
+  const schedulerAuthorityInRust = collected.daemonOps?.status?.readiness?.capabilities?.scheduler_authority_in_rust === true
+    || collected.daemonOps?.launchd_status?.readiness?.capabilities?.scheduler_authority_in_rust === true;
+  const sessionEffective = Boolean(collected.session?.production_authority_effective_now);
+  const nodeCompatibilityRequired = Boolean(collected.session?.node_compatibility_layer_required);
+  const runningNodeProcessPid = Number(collected.session?.running_node_process_pid || 0);
+  const runningNodeProcessAuthorityEnabled = Boolean(collected.session?.running_node_process_authority_enabled);
+  if (!schedulerAuthorityInRust && !sessionEffective) {
+    issues.push('scheduler_authority_not_effective_in_running_node_process');
+  }
+  if (
+    !schedulerAuthorityInRust
+    && !sessionEffective
+    && (nodeCompatibilityRequired || runningNodeProcessPid > 0)
+    && !runningNodeProcessAuthorityEnabled
+  ) {
+    issues.push('running_node_process_scheduler_authority_missing');
+  }
   if (!collected.session?.launchctl_session_applied) issues.push('launchctl_scheduler_session_env_not_applied');
   if (!collected.session?.session_env_persistent_for_future_launches) issues.push('session_env_not_persistent_for_future_launches');
   if (!collected.sessionLaunchd?.production_authority_persistence_installed) issues.push('scheduler_authority_session_launchd_not_installed');
@@ -158,11 +173,16 @@ function reduce(collected, config) {
     generated_at: new Date().toISOString(),
     rust_hub_root: config.rustHubRoot,
     http_base_url: config.httpBaseUrl,
-    scheduler_authority_effective_now: Boolean(collected.session?.production_authority_effective_now),
+    scheduler_authority_effective_now: schedulerAuthorityInRust
+      || Boolean(collected.session?.production_authority_effective_now),
+    scheduler_authority_in_rust: schedulerAuthorityInRust,
     scheduler_authority_persistent_for_future_launches: Boolean(collected.session?.session_env_persistent_for_future_launches),
     scheduler_authority_launchd_installed: Boolean(collected.sessionLaunchd?.production_authority_persistence_installed),
     scheduler_authority_launchd_loaded: Boolean(collected.sessionLaunchd?.loaded),
     running_node_process_pid: Number(collected.session?.running_node_process_pid || 0),
+    swift_product_shell_pid: Number(collected.session?.swift_product_shell_pid || 0),
+    swift_product_shell_running: Boolean(collected.session?.swift_product_shell_running),
+    node_compatibility_layer_required: false,
     launchctl_managed_key_count_present: Number(collected.session?.managed_key_count_present || 0),
     daemon_healthy: Boolean(collected.daemonOps?.healthy),
     daemon_ready: Boolean(collected.daemonOps?.ready),
@@ -196,6 +216,8 @@ function runSelfTest() {
       launchctl_session_applied: true,
       session_env_persistent_for_future_launches: true,
       running_node_process_pid: 1,
+      swift_product_shell_pid: 2,
+      swift_product_shell_running: true,
       managed_key_count_present: 28,
     },
     sessionLaunchd: { production_authority_persistence_installed: true, loaded: true },
@@ -210,6 +232,61 @@ function runSelfTest() {
   });
   if (!result.ok) throw new Error(`expected self-test ok: ${result.issues.join(',')}`);
   if (!result.memory_skills_production_required) throw new Error('expected memory/skills requirement to round-trip');
+  const swiftShellOnly = reduce({
+    session: {
+      production_authority_effective_now: true,
+      running_node_process_authority_enabled: false,
+      node_compatibility_layer_required: false,
+      launchctl_session_applied: true,
+      session_env_persistent_for_future_launches: true,
+      running_node_process_pid: 0,
+      swift_product_shell_pid: 2,
+      swift_product_shell_running: true,
+      managed_key_count_present: 28,
+    },
+    sessionLaunchd: { production_authority_persistence_installed: true, loaded: true },
+    daemonOps: { healthy: true, ready: true, slow_request_budget_ok: true, http_metrics_ready: true },
+    ui: { product_ui_change: false, swift_ui_files_touched: false },
+    doctor_ok: true,
+  }, {
+    rustHubRoot: '/tmp/rust-hub',
+    httpBaseUrl: 'http://127.0.0.1:50151',
+    allowMemorySkillsProduction: true,
+    requireMemorySkillsProduction: true,
+  });
+  if (!swiftShellOnly.ok) {
+    throw new Error(`expected Swift-shell-only scheduler authority to pass: ${swiftShellOnly.issues.join(',')}`);
+  }
+  const rustOnly = reduce({
+    session: {
+      production_authority_effective_now: false,
+      running_node_process_authority_enabled: false,
+      launchctl_session_applied: true,
+      session_env_persistent_for_future_launches: true,
+      running_node_process_pid: 0,
+      swift_product_shell_pid: 2,
+      swift_product_shell_running: true,
+      managed_key_count_present: 28,
+    },
+    sessionLaunchd: { production_authority_persistence_installed: true, loaded: true },
+    daemonOps: {
+      healthy: true,
+      ready: true,
+      slow_request_budget_ok: true,
+      http_metrics_ready: true,
+      status: { readiness: { capabilities: { scheduler_authority_in_rust: true } } },
+    },
+    ui: { product_ui_change: false, swift_ui_files_touched: false },
+    doctor_ok: true,
+  }, {
+    rustHubRoot: '/tmp/rust-hub',
+    httpBaseUrl: 'http://127.0.0.1:50151',
+    allowMemorySkillsProduction: true,
+    requireMemorySkillsProduction: true,
+  });
+  if (!rustOnly.ok || rustOnly.scheduler_authority_in_rust !== true) {
+    throw new Error(`expected Rust-only scheduler authority to pass: ${rustOnly.issues.join(',')}`);
+  }
 }
 
 async function main() {

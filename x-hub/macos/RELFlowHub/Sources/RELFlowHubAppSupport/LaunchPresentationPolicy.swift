@@ -1,10 +1,10 @@
 import Foundation
 
-enum LaunchPresentationPolicy: Equatable {
+public enum LaunchPresentationPolicy: Equatable {
     case foreground
     case background
 
-    static func from(
+    public static func from(
         arguments: [String],
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Self {

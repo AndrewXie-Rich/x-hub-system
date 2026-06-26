@@ -73,6 +73,46 @@ struct AppModelHubSetupFocusTests {
     }
 
     @Test
+    func tokenOnlyLocalPairingInviteDoesNotRequireManualEndpoint() {
+        #expect(
+            AppModel.shouldRequireManualEndpointBeforeFirstPair(
+                hasHubEnv: false,
+                internetHost: "",
+                inviteToken: "axhub_invite_test_123",
+                inviteAlias: "axhub-deadbeef",
+                inviteInstanceID: "hub_deadbeefcafefeed00"
+            ) == false
+        )
+        #expect(
+            AppModel.shouldRequireManualEndpointBeforeFirstPair(
+                hasHubEnv: false,
+                internetHost: "",
+                inviteToken: "axhub_invite_test_123",
+                inviteAlias: "",
+                inviteInstanceID: ""
+            ) == true
+        )
+    }
+
+    @Test
+    func applyHubPairingInviteTextAcceptsLocalPairingCodeWithoutHubHost() {
+        let appModel = AppModel()
+        appModel.hubInternetHost = ""
+
+        let applied = appModel.applyHubPairingInviteTextIfPossible(
+            "xterminal://pair-hub?pairing_port=50054&grpc_port=50053&invite_token=axhub_invite_test_123&hub_alias=axhub-deadbeef&hub_instance_id=hub_deadbeefcafefeed00"
+        )
+
+        #expect(applied == true)
+        #expect(appModel.hubInternetHost == "")
+        #expect(appModel.hubPairingPort == 50054)
+        #expect(appModel.hubGrpcPort == 50053)
+        #expect(appModel.hubInviteToken == "axhub_invite_test_123")
+        #expect(appModel.hubInviteAlias == "axhub-deadbeef")
+        #expect(appModel.hubInviteInstanceID == "hub_deadbeefcafefeed00")
+    }
+
+    @Test
     func applyHubPairingInvitePrefillIgnoresMissingValues() {
         let appModel = AppModel()
 
@@ -100,6 +140,24 @@ struct AppModelHubSetupFocusTests {
         #expect(appModel.hubInviteToken == "axhub_invite_existing")
         #expect(appModel.hubInviteAlias == "ops-current")
         #expect(appModel.hubInviteInstanceID == "hub_existing")
+    }
+
+    @Test
+    func manualHubEndpointRequiredMarksSetupWithoutStartingScan() {
+        let appModel = AppModel()
+        appModel.hubSetupDiscoverState = .success
+        appModel.hubSetupBootstrapState = .running
+        appModel.hubSetupConnectState = .running
+
+        let report = appModel.markHubManualEndpointRequired()
+
+        #expect(report.ok == false)
+        #expect(report.reasonCode == "hub_manual_endpoint_required")
+        #expect(appModel.hubSetupDiscoverState == .failed)
+        #expect(appModel.hubSetupBootstrapState == .idle)
+        #expect(appModel.hubSetupConnectState == .idle)
+        #expect(appModel.hubPortAutoDetectRunning == false)
+        #expect(appModel.hubPortAutoDetectMessage.contains("未填写不会自动扫描"))
     }
 
     @Test

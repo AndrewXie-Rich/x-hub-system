@@ -92,6 +92,98 @@ struct XTDoctorProjectionPresentationTests {
     }
 
     @Test
+    func productProcessSanitySummaryHighlightsStaleMountedAppAndCpuBudget() {
+        let summary = XTDoctorProductProcessSanityPresentation.summary(
+            snapshot: RustHubProductProcessSanitySnapshot(
+                schemaVersion: "xhub.product_process_sanity.v1",
+                ok: false,
+                generatedAtMs: 1_234,
+                authority: "diagnostics_only",
+                requireXhubd: true,
+                requireProductShell: false,
+                requireNoTargetXhubd: true,
+                maxProductCpuPercent: 80,
+                processSnapshotOK: true,
+                processSnapshotError: "",
+                productProcessCount: 4,
+                productShellProcessCount: 1,
+                xhubdProcessCount: 1,
+                targetXhubdProcessCount: 1,
+                mountedAppProcessCount: 1,
+                highCpuProductProcessCount: 1,
+                productTotalCpuPercent: 97.5,
+                productMaxCpuPercent: 97.5,
+                productCpuOverBudget: true,
+                issues: [
+                    "stale_mounted_app_process_present",
+                    "target_xhubd_process_present",
+                    "product_process_cpu_over_budget"
+                ],
+                recommendations: []
+            )
+        )
+
+        #expect(summary.title == "Hub 进程健康需处理")
+        #expect(summary.lines.contains("当前进程：xhubd 1 · 产品壳 1 · 产品进程 4"))
+        #expect(summary.lines.contains("CPU：总 97.5% · 峰值 97.5% · 阈值 80.0%"))
+        #expect(summary.lines.contains(where: { $0.contains("陈旧挂载：发现 1 个 /Volumes App") }))
+        #expect(summary.lines.contains(where: { $0.contains("临时 daemon：发现 1 个 target/debug") }))
+        #expect(summary.lines.contains("流畅度：产品进程 CPU 超过预算，先暂停重 gate 或长跑检查。"))
+    }
+
+    @Test
+    func rustMemoryGatewayExecutionGateSummaryShowsBlockedNonExecutingBoundary() {
+        let summary = XTDoctorRustMemoryGatewayExecutionGatePresentation.summary(
+            snapshot: RustHubMemoryGatewayModelCallExecutionGateSnapshot(
+                schemaVersion: "xhub.memory.gateway_model_call_execution_gate.v1",
+                ok: true,
+                status: "blocked",
+                source: "rust_memory_gateway_model_call_execution_gate",
+                authority: "rust_memory_gateway_execution_gate_only",
+                mode: "gate_only_no_model_call",
+                productionAuthorityChange: false,
+                executionAuthorityInRust: false,
+                executionEnabled: false,
+                readyForExecution: false,
+                wouldCallModel: false,
+                modelCallExecuted: false,
+                executionRequested: true,
+                requestID: "xt-doctor-smoke",
+                auditRef: "xt_doctor_memory_gateway_execution_gate",
+                blockers: ["memory_gateway_model_call_execution_not_enabled"],
+                plan: RustHubMemoryGatewayModelCallExecutionGateSnapshot.Plan(
+                    ok: true,
+                    schemaVersion: "xhub.memory.gateway_model_call_plan.v1",
+                    source: "rust_memory_gateway_model_call_plan",
+                    mode: "plan_only_no_model_call",
+                    authority: "rust_memory_gateway_plan_only",
+                    status: "planned",
+                    contextTextIncluded: false,
+                    contextCharCount: 0,
+                    selectedRefCount: 2,
+                    promptTextIncluded: false,
+                    promptCharCount: 0,
+                    messageCount: 1,
+                    routeIntent: "route_required_before_execute"
+                ),
+                guards: RustHubMemoryGatewayModelCallExecutionGateSnapshot.Guards(
+                    localMLExecuteHTTPNotInvoked: true,
+                    providerRouteNotMutated: true,
+                    nodeNotAuthority: true,
+                    contextTextRedactedFromGate: true,
+                    promptTextRedactedFromGate: true
+                )
+            )
+        )
+
+        #expect(summary.title == "Rust Memory 执行 Gate 已阻断")
+        #expect(summary.lines.contains("执行：requested true · enabled false · ready false"))
+        #expect(summary.lines.contains("模型调用：would_call false · executed false · production_change false"))
+        #expect(summary.lines.contains("安全边界：prompt/context 未导出 · 真实模型调用保持阻断"))
+        #expect(summary.lines.contains("阻断原因：memory_gateway_model_call_execution_not_enabled"))
+    }
+
+    @Test
     func routeTruthSummaryMakesPartialProjectionBoundaryExplicit() {
         let summary = XTDoctorRouteTruthPresentation.summary(
             projection: AXModelRouteTruthProjection(

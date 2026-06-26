@@ -42,7 +42,8 @@ final class HubSecureRemoteSetupPackBuilderTests: XCTestCase {
 
         XCTAssertTrue(text.contains("xterminal://pair-hub?hub_host=100.96.10.8"))
         XCTAssertTrue(text.contains("\"$AXHUBCTL\" bootstrap --hub '100.96.10.8'"))
-        XCTAssertTrue(text.contains("Uses stable DNS/Tailscale/relay host: 100.96.10.8"))
+        XCTAssertTrue(text.contains("Uses configured remote host: 100.96.10.8"))
+        XCTAssertTrue(text.contains("Secure non-Tailscale path"))
     }
 
     func testBuildReturnsSecurePackForExplicitPrivateRoutedIPHost() throws {
@@ -60,7 +61,7 @@ final class HubSecureRemoteSetupPackBuilderTests: XCTestCase {
 
         XCTAssertTrue(text.contains("xterminal://pair-hub?hub_host=10.7.0.12"))
         XCTAssertTrue(text.contains("\"$AXHUBCTL\" bootstrap --hub '10.7.0.12'"))
-        XCTAssertTrue(text.contains("Uses stable DNS/Tailscale/relay host: 10.7.0.12"))
+        XCTAssertTrue(text.contains("Uses configured remote host: 10.7.0.12"))
     }
 
     func testBuildReturnsSecurePackForStableNamedHost() throws {

@@ -9,6 +9,62 @@ const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const REPORT_DIR = path.join(ROOT_DIR, 'reports');
 const NODE_PROCESS_MARKERS = ['hub_grpc_server/src/server.js', 'relflowhub_node'];
 
+function isXHubShellProcessLine(line) {
+  const text = String(line || '');
+  return text.includes('/X-Hub.app/Contents/MacOS/XHub')
+    && !text.includes('route_authority_prep_runtime_guard.js');
+}
+
+function isExternalRelFlowHubProcessLine(line) {
+  const text = String(line || '');
+  return !text.includes('/X-Hub.app/')
+    && (text.includes('/RELFlowHub.app/') || text.includes('/Volumes/RELFlowHub'));
+}
+
+function isXHubNodeBridgeProcessLine(line) {
+  const text = String(line || '');
+  return NODE_PROCESS_MARKERS.every((marker) => text.includes(marker))
+    && !isExternalRelFlowHubProcessLine(text)
+    && (text.includes('/X-Hub.app/')
+      || /\/x-hub-system(?:-github-clean)?\/x-hub\//.test(text));
+}
+
+function parsePidCommand(line) {
+  const match = String(line || '').trim().match(/^(\d+)\s+([\s\S]*)$/);
+  if (!match) return null;
+  return { pid: Number(match[1]), command: match[2] };
+}
+
+function readProcessCommandRows() {
+  return execFileSync('ps', ['ax', '-o', 'pid=,command='], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: 8 * 1024 * 1024,
+  }).split('\n');
+}
+
+function readProcessEnvCommand(pid) {
+  try {
+    return execFileSync('ps', ['eww', '-p', String(pid), '-o', 'command='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 8 * 1024 * 1024,
+    }).trim();
+  } catch {
+  }
+  try {
+    const rows = execFileSync('ps', ['axeww', '-o', 'pid=,command='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 8 * 1024 * 1024,
+    }).split('\n');
+    const found = rows.map(parsePidCommand).find((row) => row?.pid === pid);
+    return found?.command || '';
+  } catch {
+    return '';
+  }
+}
+
 const SAFE_KEYS = [
   'XHUB_RUST_HUB_ROOT',
   'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PREP',
@@ -119,25 +175,29 @@ function readLaunchctlSession() {
 }
 
 function findNodeProcess() {
-  const rows = execFileSync('ps', ['axeww', '-o', 'pid=,command='], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    maxBuffer: 8 * 1024 * 1024,
-  }).split('\n');
+  const rows = readProcessCommandRows();
   const candidates = rows
     .map((line) => line.trim())
-    .filter((line) => NODE_PROCESS_MARKERS.every((marker) => line.includes(marker)))
-    .filter((line) => !line.includes('route_authority_prep_runtime_guard.js'));
-  if (candidates.length === 0) return { pid: 0, command: '' };
+    .filter((line) => isXHubNodeBridgeProcessLine(line))
+    .filter((line) => !line.includes('route_authority_prep_runtime_guard.js'))
+    .map(parsePidCommand)
+    .filter(Boolean);
+  if (candidates.length === 0) return { pid: 0, command: '', envCommand: '' };
   const parsed = candidates
-    .map((line) => {
-      const match = line.match(/^(\d+)\s+([\s\S]*)$/);
-      if (!match) return null;
-      return { pid: Number(match[1]), command: match[2] };
-    })
-    .filter(Boolean)
     .sort((a, b) => b.pid - a.pid)[0];
-  return parsed || { pid: 0, command: '' };
+  if (!parsed) return { pid: 0, command: '', envCommand: '' };
+  return { ...parsed, envCommand: readProcessEnvCommand(parsed.pid) || parsed.command };
+}
+
+function findXHubShellProcess() {
+  const rows = readProcessCommandRows();
+  const candidates = rows
+    .map((line) => line.trim())
+    .filter((line) => isXHubShellProcessLine(line))
+    .map(parsePidCommand)
+    .filter(Boolean);
+  if (candidates.length === 0) return { pid: 0, command: '' };
+  return candidates.sort((a, b) => b.pid - a.pid)[0] || { pid: 0, command: '' };
 }
 
 function parseProcessEnv(line) {
@@ -182,11 +242,13 @@ function collect(config) {
   const launchctlValues = readLaunchctlSession();
   const launchctl = compare(launchctlValues, expectedValues);
   const node = findNodeProcess();
-  const nodeValues = node.pid ? parseProcessEnv(node.command) : {};
+  const shell = findXHubShellProcess();
+  const nodeValues = node.pid ? parseProcessEnv(node.envCommand || '') : {};
   const nodeEnv = node.pid ? compare(nodeValues, expectedValues) : { present: [], missing: SAFE_KEYS, mismatched: [] };
   return {
     launchctl,
     node,
+    shell,
     nodeEnv,
     launchctlForbiddenProductionKeys: presentKeys(launchctlValues, FORBIDDEN_PRODUCTION_KEYS),
     nodeForbiddenProductionKeys: presentKeys(nodeValues, FORBIDDEN_PRODUCTION_KEYS),
@@ -195,18 +257,29 @@ function collect(config) {
 
 function reduce(collected) {
   const issues = [];
+  const nodeBridgeRunning = Number(collected.node?.pid || 0) > 0;
+  const swiftShellRunning = Number(collected.shell?.pid || 0) > 0;
+  const productShellRunning = swiftShellRunning || nodeBridgeRunning;
   if (collected.launchctl.missing.length || collected.launchctl.mismatched.length) issues.push('launchctl_prep_session_env_not_applied');
-  if (!collected.node.pid) issues.push('xhub_node_process_not_running');
-  if (collected.nodeEnv.missing.length || collected.nodeEnv.mismatched.length) issues.push('xhub_node_process_needs_relaunch_for_prep_env');
+  if (!productShellRunning) issues.push('xhub_product_shell_not_running');
+  if (nodeBridgeRunning && (collected.nodeEnv.missing.length || collected.nodeEnv.mismatched.length)) {
+    issues.push('xhub_node_process_needs_relaunch_for_prep_env');
+  }
   if (collected.launchctlForbiddenProductionKeys.length) issues.push('launchctl_provider_model_production_env_present');
-  if (collected.nodeForbiddenProductionKeys.length) issues.push('xhub_node_provider_model_production_env_present');
+  if (nodeBridgeRunning && collected.nodeForbiddenProductionKeys.length) issues.push('xhub_node_provider_model_production_env_present');
   return {
     ok: issues.length === 0,
     schema_version: 'xhub.route_authority_prep_runtime_guard.v1',
     generated_at: new Date().toISOString(),
+    swift_product_shell_pid: Number(collected.shell?.pid || 0),
+    swift_product_shell_running: swiftShellRunning,
+    node_compatibility_layer_required: false,
+    node_compatibility_layer_running: nodeBridgeRunning,
     launchctl_prep_session_applied: collected.launchctl.missing.length === 0 && collected.launchctl.mismatched.length === 0,
-    running_node_process_pid: collected.node.pid,
-    running_node_prep_env_applied: collected.nodeEnv.missing.length === 0 && collected.nodeEnv.mismatched.length === 0,
+    running_node_process_pid: Number(collected.node?.pid || 0),
+    running_node_prep_env_applied: nodeBridgeRunning
+      ? collected.nodeEnv.missing.length === 0 && collected.nodeEnv.mismatched.length === 0
+      : null,
     running_node_env_present: collected.nodeEnv.present,
     running_node_env_missing: collected.nodeEnv.missing,
     running_node_env_mismatched: collected.nodeEnv.mismatched,
@@ -230,9 +303,23 @@ function reportPath() {
 }
 
 function runSelfTest() {
+  const external = '999 /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/relflowhub_node /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/hub_grpc_server/src/server.js';
+  if (isXHubNodeBridgeProcessLine(external)) throw new Error('standalone RELFlowHub must not classify as X-Hub node bridge');
+  const shellOnly = reduce({
+    launchctl: { present: SAFE_KEYS, missing: [], mismatched: [] },
+    node: { pid: 0 },
+    shell: { pid: 456 },
+    nodeEnv: { present: [], missing: SAFE_KEYS, mismatched: [] },
+    launchctlForbiddenProductionKeys: [],
+    nodeForbiddenProductionKeys: [],
+  });
+  if (!shellOnly.ok || shellOnly.node_compatibility_layer_required !== false) {
+    throw new Error(`expected Swift shell + Rust prep authority to pass: ${shellOnly.issues.join(',')}`);
+  }
   const result = reduce({
     launchctl: { present: SAFE_KEYS, missing: [], mismatched: [] },
     node: { pid: 123 },
+    shell: { pid: 456 },
     nodeEnv: { present: SAFE_KEYS, missing: [], mismatched: [] },
     launchctlForbiddenProductionKeys: [],
     nodeForbiddenProductionKeys: [],
@@ -241,6 +328,7 @@ function runSelfTest() {
   const forbidden = reduce({
     launchctl: { present: SAFE_KEYS, missing: [], mismatched: [] },
     node: { pid: 123 },
+    shell: { pid: 456 },
     nodeEnv: { present: SAFE_KEYS, missing: [], mismatched: [] },
     launchctlForbiddenProductionKeys: [],
     nodeForbiddenProductionKeys: ['XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PRODUCTION'],

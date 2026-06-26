@@ -2,10 +2,14 @@ import Foundation
 
 actor HubRemoteMemorySnapshotCache {
     struct Key: Hashable, Sendable {
+        var hubProfileID: String
         var mode: String
         var projectId: String?
 
-        init(mode: String, projectId: String?) {
+        init(hubProfileID: String = "hub-default", mode: String, projectId: String?) {
+            let trimmedHubProfileID = hubProfileID.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.hubProfileID = trimmedHubProfileID.isEmpty ? "hub-default" : trimmedHubProfileID
+
             let trimmedMode = mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             self.mode = trimmedMode.isEmpty ? "project" : trimmedMode
 
@@ -19,6 +23,7 @@ actor HubRemoteMemorySnapshotCache {
     }
 
     struct Metadata: Equatable, Sendable {
+        var hubProfileID: String
         var mode: String
         var projectId: String?
         var source: String
@@ -29,7 +34,7 @@ actor HubRemoteMemorySnapshotCache {
         var invalidationReason: XTMemoryRemoteSnapshotInvalidationReason?
 
         var scope: String {
-            "mode=\(mode) project_id=\(projectId ?? "(none)")"
+            "hub=\(hubProfileID) mode=\(mode) project_id=\(projectId ?? "(none)")"
         }
 
         var upstreamTruthClass: String {
@@ -126,20 +131,40 @@ actor HubRemoteMemorySnapshotCache {
 
     func invalidate(
         projectId: String?,
+        hubProfileID: String? = nil,
         reason: XTMemoryRemoteSnapshotInvalidationReason
     ) {
+        let trimmedHubProfileID = hubProfileID?.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedProjectId = projectId?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let trimmedProjectId, !trimmedProjectId.isEmpty else {
-            recordInvalidation(
-                for: Array(entries.keys),
-                reason: reason
-            )
-            entries.removeAll(keepingCapacity: true)
+            let keys = entries.keys.filter { key in
+                guard let trimmedHubProfileID, !trimmedHubProfileID.isEmpty else { return true }
+                return key.hubProfileID == trimmedHubProfileID
+            }
+            recordInvalidation(for: keys, reason: reason)
+            if let trimmedHubProfileID, !trimmedHubProfileID.isEmpty {
+                entries = entries.filter { $0.key.hubProfileID != trimmedHubProfileID }
+            } else {
+                entries.removeAll(keepingCapacity: true)
+            }
             return
         }
-        let invalidatedKeys = entries.keys.filter { $0.projectId == trimmedProjectId }
+        let invalidatedKeys = entries.keys.filter { key in
+            guard key.projectId == trimmedProjectId else { return false }
+            guard let trimmedHubProfileID, !trimmedHubProfileID.isEmpty else { return true }
+            return key.hubProfileID == trimmedHubProfileID
+        }
         recordInvalidation(for: invalidatedKeys, reason: reason)
-        entries = entries.filter { $0.key.projectId != trimmedProjectId }
+        entries = entries.filter { item in
+            guard item.key.projectId == trimmedProjectId else { return true }
+            guard let trimmedHubProfileID, !trimmedHubProfileID.isEmpty else { return false }
+            return item.key.hubProfileID != trimmedHubProfileID
+        }
+    }
+
+    func invalidateAll(reason: XTMemoryRemoteSnapshotInvalidationReason) {
+        recordInvalidation(for: Array(entries.keys), reason: reason)
+        entries.removeAll(keepingCapacity: true)
     }
 
     func invalidate(
@@ -156,6 +181,7 @@ actor HubRemoteMemorySnapshotCache {
 
     private func metadata(for key: Key, entry: Entry, now: Date) -> Metadata {
         Metadata(
+            hubProfileID: key.hubProfileID,
             mode: key.mode,
             projectId: key.projectId,
             source: entry.snapshot.source,

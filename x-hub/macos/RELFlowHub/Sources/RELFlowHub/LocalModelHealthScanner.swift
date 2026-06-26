@@ -39,7 +39,7 @@ enum LocalModelHealthScanner {
         }
 
         if mode == .preflightOnly {
-            let priorState = previous?.state
+            let priorState = LocalModelHealthSupport.effectiveState(for: previous)
             let state: LocalModelHealthState = priorState == .healthy ? .healthy : .degraded
             return LocalModelHealthRecord(
                 modelId: model.id,

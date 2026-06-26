@@ -421,6 +421,8 @@ async function main() {
     assertOk(Number(objectRetrieve?.retrieval_engine?.index_row_count || 0) >= 1, 'hybrid object retrieval index row count was empty', objectRetrieve);
     assertOk(objectRetrieve?.retrieval_engine?.stale_index_count === 0, 'hybrid object retrieval index was stale', objectRetrieve);
     assertOk(objectRetrieve?.retrieval_engine?.index_rebuilt === true, 'hybrid object retrieval did not rebuild missing derived index', objectRetrieve);
+    assertOk(objectRetrieve?.retrieval_engine?.fts === 'derived_index_bm25_rust', 'hybrid object retrieval did not use Rust BM25 derived-index scorer', objectRetrieve);
+    assertOk(objectRetrieve?.retrieval_engine?.bm25_used === true, 'hybrid object retrieval bm25_used was not true', objectRetrieve);
     assertOk(objectRetrieve?.retrieval_engine?.semantic_used === false, 'hybrid object retrieval unexpectedly used semantic search', objectRetrieve);
     assertOk(objectRetrieve?.production_authority_change === false, 'hybrid object retrieval changed production authority', objectRetrieve);
     assertOk(Array.isArray(objectRetrieve.results) && objectRetrieve.results[0]?.memory_id === 'mem_hybrid_smoke_decision', 'hybrid object retrieval missed fixture object', objectRetrieve);
@@ -497,6 +499,7 @@ async function main() {
       object_hybrid_index_source: objectRetrieve.retrieval_engine.index_source,
       object_hybrid_index_rebuilt: objectRetrieve.retrieval_engine.index_rebuilt,
       object_hybrid_trace_ok: true,
+      object_hybrid_bm25_ok: true,
     };
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } finally {

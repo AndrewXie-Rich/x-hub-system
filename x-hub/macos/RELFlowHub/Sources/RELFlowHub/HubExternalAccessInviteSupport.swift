@@ -104,6 +104,37 @@ enum HubExternalAccessInviteSupport {
         return components.url
     }
 
+    static func localPairingInviteURL(
+        alias: String?,
+        inviteToken: String?,
+        pairingPort: Int,
+        grpcPort: Int,
+        hubInstanceID: String?
+    ) -> URL? {
+        guard let inviteToken = normalizedNonEmpty(inviteToken) else { return nil }
+        let normalizedAlias = normalizedExternalHubAlias(alias)
+        let normalizedInstanceID = normalizedNonEmpty(hubInstanceID)
+        guard normalizedAlias != nil || normalizedInstanceID != nil else { return nil }
+
+        var components = URLComponents()
+        components.scheme = "xterminal"
+        components.host = "pair-hub"
+
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "pairing_port", value: String(max(1, min(65_535, pairingPort)))),
+            URLQueryItem(name: "grpc_port", value: String(max(1, min(65_535, grpcPort)))),
+            URLQueryItem(name: "invite_token", value: inviteToken),
+        ]
+        if let normalizedAlias {
+            queryItems.append(URLQueryItem(name: "hub_alias", value: normalizedAlias))
+        }
+        if let normalizedInstanceID {
+            queryItems.append(URLQueryItem(name: "hub_instance_id", value: normalizedInstanceID))
+        }
+        components.queryItems = queryItems
+        return components.url
+    }
+
     static func externalInviteUnavailableReason(
         externalHost: String?,
         hasInviteToken: Bool

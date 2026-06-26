@@ -3861,6 +3861,25 @@ function parseIntInRange(v, fallback, minValue, maxValue) {
   return Math.max(minValue, Math.min(maxValue, n));
 }
 
+function readModelConcurrencyPolicy(env = process.env) {
+  const explicitPath = String(env.XHUB_MODEL_CONCURRENCY_POLICY_PATH || env.HUB_MODEL_CONCURRENCY_POLICY_PATH || '').trim();
+  const runtimeBase = String(env.HUB_RUNTIME_BASE_DIR || env.REL_FLOW_HUB_BASE_DIR || '').trim();
+  const policyPath = explicitPath || (runtimeBase ? path.join(runtimeBase, 'model_concurrency_policy.json') : '');
+  if (!policyPath) return {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(policyPath, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function policyInt(policy, camelKey, snakeKey, fallback) {
+  if (policy && Object.prototype.hasOwnProperty.call(policy, camelKey)) return policy[camelKey];
+  if (policy && Object.prototype.hasOwnProperty.call(policy, snakeKey)) return policy[snakeKey];
+  return fallback;
+}
+
 function firstMetadataValue(call, key) {
   const k = String(key || '').trim().toLowerCase();
   if (!k) return '';
@@ -4726,10 +4745,35 @@ export function makeServices({
 
   // Paid-model requests are routed through Bridge. Keep a fair in-memory queue so
   // one busy project cannot monopolize all Bridge AI slots.
-  const paidAIGlobalConcurrency = parseIntInRange(process.env.HUB_PAID_AI_GLOBAL_CONCURRENCY, 6, 1, 64);
-  const paidAIPerProjectConcurrency = parseIntInRange(process.env.HUB_PAID_AI_PER_PROJECT_CONCURRENCY, 2, 1, 16);
-  const paidAIQueueLimit = parseIntInRange(process.env.HUB_PAID_AI_QUEUE_LIMIT, 128, 1, 4096);
-  const paidAIQueueTimeoutMs = parseIntInRange(process.env.HUB_PAID_AI_QUEUE_TIMEOUT_MS, 20000, 1000, 300000);
+  function paidAIConfig() {
+    const modelConcurrencyPolicy = readModelConcurrencyPolicy();
+    return {
+      globalConcurrency: parseIntInRange(
+        process.env.HUB_PAID_AI_GLOBAL_CONCURRENCY,
+        policyInt(modelConcurrencyPolicy, 'paidModelGlobalConcurrencyLimit', 'paid_model_global_concurrency_limit', 6),
+        1,
+        64
+      ),
+      perProjectConcurrency: parseIntInRange(
+        process.env.HUB_PAID_AI_PER_PROJECT_CONCURRENCY,
+        policyInt(modelConcurrencyPolicy, 'paidModelPerProjectConcurrencyLimit', 'paid_model_per_project_concurrency_limit', 2),
+        1,
+        16
+      ),
+      queueLimit: parseIntInRange(
+        process.env.HUB_PAID_AI_QUEUE_LIMIT,
+        policyInt(modelConcurrencyPolicy, 'paidModelQueueLimit', 'paid_model_queue_limit', 128),
+        1,
+        4096
+      ),
+      queueTimeoutMs: parseIntInRange(
+        process.env.HUB_PAID_AI_QUEUE_TIMEOUT_MS,
+        policyInt(modelConcurrencyPolicy, 'paidModelQueueTimeoutMs', 'paid_model_queue_timeout_ms', 20000),
+        1000,
+        300000
+      ),
+    };
+  }
 
   let paidAIInFlightTotal = 0;
   const paidAIInFlightByScope = new Map(); // scopeKey -> number
@@ -4749,8 +4793,9 @@ export function makeServices({
   }
 
   function paidAIHasCapacityForScope(scopeKey) {
-    if (paidAIInFlightTotal >= paidAIGlobalConcurrency) return false;
-    return paidAICurrentInFlightForScope(scopeKey) < paidAIPerProjectConcurrency;
+    const config = paidAIConfig();
+    if (paidAIInFlightTotal >= config.globalConcurrency) return false;
+    return paidAICurrentInFlightForScope(scopeKey) < config.perProjectConcurrency;
   }
 
   function paidAIAcquireScope(scopeKey) {
@@ -4806,11 +4851,12 @@ export function makeServices({
 
   function paidAIDrainQueue() {
     if (paidAIQueue.length <= 0) return;
+    const config = paidAIConfig();
 
     let guard = paidAIQueue.length + 4;
     while (guard > 0) {
       guard -= 1;
-      if (paidAIInFlightTotal >= paidAIGlobalConcurrency) break;
+      if (paidAIInFlightTotal >= config.globalConcurrency) break;
       if (paidAIQueue.length <= 0) break;
 
       let picked = -1;
@@ -4900,10 +4946,12 @@ export function makeServices({
     requestId,
     project_id,
     device_id,
-    waitMs = paidAIQueueTimeoutMs,
+    waitMs,
     shouldAbort,
     onQueued,
   }) {
+    const config = paidAIConfig();
+    const effectiveWaitMs = waitMs == null ? config.queueTimeoutMs : waitMs;
     const rid = String(requestId || '').trim();
     const scopeKey = paidAIScopeKey({ project_id, device_id });
     const shouldStop = typeof shouldAbort === 'function' ? shouldAbort : () => false;
@@ -4919,7 +4967,7 @@ export function makeServices({
         scopeKey,
         project_id,
         device_id,
-        waitMs,
+        waitMs: effectiveWaitMs,
         shouldAbort: shouldStop,
         onQueued,
       });
@@ -4946,7 +4994,7 @@ export function makeServices({
       };
     }
 
-    if (paidAIQueue.length >= paidAIQueueLimit) {
+    if (paidAIQueue.length >= config.queueLimit) {
       throw new Error('hub_ai_queue_full');
     }
 
@@ -4971,7 +5019,7 @@ export function makeServices({
         device_id,
       });
 
-      const timeoutMs = parseIntInRange(waitMs, paidAIQueueTimeoutMs, 1000, 300000);
+      const timeoutMs = parseIntInRange(effectiveWaitMs, config.queueTimeoutMs, 1000, 300000);
       entry.timer = setTimeout(() => {
         if (entry.settled) return;
         paidAIRemoveQueueEntry(entry);
@@ -5307,6 +5355,7 @@ export function makeServices({
   }
 
   function buildPaidAISchedulerSnapshot({ includeQueueItems = true, queueItemsLimit = 100 } = {}) {
+    const config = paidAIConfig();
     const now = Date.now();
     const queueByScope = new Map();
     const queueItems = [];
@@ -5346,10 +5395,10 @@ export function makeServices({
     const wantedQueueLimit = parseIntInRange(queueItemsLimit, 100, 1, 500);
     return {
       updated_at_ms: now,
-      global_concurrency: paidAIGlobalConcurrency,
-      per_project_concurrency: paidAIPerProjectConcurrency,
-      queue_limit: paidAIQueueLimit,
-      queue_timeout_ms: paidAIQueueTimeoutMs,
+      global_concurrency: config.globalConcurrency,
+      per_project_concurrency: config.perProjectConcurrency,
+      queue_limit: config.queueLimit,
+      queue_timeout_ms: config.queueTimeoutMs,
       in_flight_total: paidAIInFlightTotal,
       queue_depth: queueItems.length,
       oldest_queued_ms: oldestQueuedMs,
@@ -8674,7 +8723,6 @@ function effectiveClientIdentity(raw, auth) {
             requestId: request_id,
             project_id,
             device_id,
-            waitMs: paidAIQueueTimeoutMs,
             shouldAbort: () => cancelState.canceled,
             onQueued: () => {
               bus.emitHubEvent(bus.requestStatus({ request_id, status: 'queued', error: null, client }));
@@ -8757,6 +8805,7 @@ function effectiveClientIdentity(raw, auth) {
           if (lower.includes('queue_full')) code = 'hub_ai_queue_full';
           else if (lower.includes('queue_timeout')) code = 'hub_ai_queue_timeout';
           const error = { code, message: raw || code, retryable: true };
+          const paidConfig = paidAIConfig();
           const auditRef = db.appendAudit({
             event_type: 'ai.generate.failed',
             created_at_ms: nowMs(),
@@ -8777,8 +8826,8 @@ function effectiveClientIdentity(raw, auth) {
               created_at_ms,
               queue_wait_ms: paidAIQueueWaitMs,
               queue_depth: paidAIQueue.length,
-              queue_limit: paidAIQueueLimit,
-              queue_timeout_ms: paidAIQueueTimeoutMs,
+              queue_limit: paidConfig.queueLimit,
+              queue_timeout_ms: paidConfig.queueTimeoutMs,
             }, {
               event_kind: 'ai.generate.failed',
               op: 'generate',

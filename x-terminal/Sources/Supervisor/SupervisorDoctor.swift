@@ -284,6 +284,9 @@ struct SupervisorDoctorInputBundle {
     var rustMemoryGatewayShadowCompare: HubIPCClient.RustMemoryGatewayShadowCompareResult? = nil
     var rustMemoryGatewayCutoverReadiness: HubIPCClient.RustMemoryGatewayCutoverReadinessReport? = nil
     var rustMemoryGatewayRequireEnabled: Bool = false
+    var rustMemoryGatewayModelCallPlanStatus: HubIPCClient.RustMemoryGatewayModelCallPlanEvidence? = nil
+    var rustMemoryGatewayModelCallPlanHistory: HubIPCClient.RustMemoryGatewayModelCallPlanHistory? = nil
+    var rustMemoryGatewayModelCallPlanShadowRequired: Bool = false
 }
 
 struct SupervisorDoctorGateDecision {
@@ -358,7 +361,10 @@ enum SupervisorDoctorChecker {
                 canonicalSyncSnapshot: input.canonicalMemorySyncSnapshot,
                 rustGatewayShadowCompare: input.rustMemoryGatewayShadowCompare,
                 rustGatewayCutoverReadiness: input.rustMemoryGatewayCutoverReadiness,
-                rustGatewayRequireEnabled: input.rustMemoryGatewayRequireEnabled
+                rustGatewayRequireEnabled: input.rustMemoryGatewayRequireEnabled,
+                rustGatewayModelCallPlanStatus: input.rustMemoryGatewayModelCallPlanStatus,
+                rustGatewayModelCallPlanHistory: input.rustMemoryGatewayModelCallPlanHistory,
+                rustGatewayModelCallPlanShadowRequired: input.rustMemoryGatewayModelCallPlanShadowRequired
             )
         )
 
@@ -432,7 +438,9 @@ enum SupervisorDoctorChecker {
         memoryAssemblySnapshot: SupervisorMemoryAssemblySnapshot? = nil,
         canonicalMemorySyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot? = nil,
         rustMemoryGatewayShadowCompare: HubIPCClient.RustMemoryGatewayShadowCompareResult? = nil,
-        rustMemoryGatewayCutoverReadiness: HubIPCClient.RustMemoryGatewayCutoverReadinessReport? = nil
+        rustMemoryGatewayCutoverReadiness: HubIPCClient.RustMemoryGatewayCutoverReadinessReport? = nil,
+        rustMemoryGatewayModelCallPlanStatus: HubIPCClient.RustMemoryGatewayModelCallPlanEvidence? = nil,
+        rustMemoryGatewayModelCallPlanHistory: HubIPCClient.RustMemoryGatewayModelCallPlanHistory? = nil
     ) -> SupervisorDoctorInputBundle {
         let configURL = URL(fileURLWithPath: env["XTERMINAL_SUPERVISOR_DOCTOR_CONFIG"] ?? "")
         let hasCustomConfigURL = !(env["XTERMINAL_SUPERVISOR_DOCTOR_CONFIG"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -474,6 +482,9 @@ enum SupervisorDoctorChecker {
         let rustGatewayRequireEnabled = boolEnv(
             env["XHUB_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE"]
         )
+        let rustGatewayModelCallPlanShadowRequired = boolEnv(
+            env["XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW"]
+        )
 
         return SupervisorDoctorInputBundle(
             workspaceRoot: workspaceRoot,
@@ -493,7 +504,12 @@ enum SupervisorDoctorChecker {
                     memoryAssemblySnapshot: memoryAssemblySnapshot,
                     requireEnabled: rustGatewayRequireEnabled
                 ),
-            rustMemoryGatewayRequireEnabled: rustGatewayRequireEnabled
+            rustMemoryGatewayRequireEnabled: rustGatewayRequireEnabled,
+            rustMemoryGatewayModelCallPlanStatus: rustMemoryGatewayModelCallPlanStatus
+                ?? HubIPCClient.rustMemoryGatewayModelCallPlanStatus(),
+            rustMemoryGatewayModelCallPlanHistory: rustMemoryGatewayModelCallPlanHistory
+                ?? HubIPCClient.rustMemoryGatewayModelCallPlanHistory(limit: 16),
+            rustMemoryGatewayModelCallPlanShadowRequired: rustGatewayModelCallPlanShadowRequired
         )
     }
 
@@ -1092,14 +1108,20 @@ enum SupervisorDoctorChecker {
         canonicalSyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot?,
         rustGatewayShadowCompare: HubIPCClient.RustMemoryGatewayShadowCompareResult?,
         rustGatewayCutoverReadiness: HubIPCClient.RustMemoryGatewayCutoverReadinessReport?,
-        rustGatewayRequireEnabled: Bool
+        rustGatewayRequireEnabled: Bool,
+        rustGatewayModelCallPlanStatus: HubIPCClient.RustMemoryGatewayModelCallPlanEvidence?,
+        rustGatewayModelCallPlanHistory: HubIPCClient.RustMemoryGatewayModelCallPlanHistory?,
+        rustGatewayModelCallPlanShadowRequired: Bool
     ) -> [SupervisorDoctorFinding] {
         SupervisorMemoryAssemblyDiagnostics.evaluate(
             snapshot: snapshot,
             canonicalSyncSnapshot: canonicalSyncSnapshot,
             rustGatewayShadowCompare: rustGatewayShadowCompare,
             rustGatewayCutoverReadiness: rustGatewayCutoverReadiness,
-            rustGatewayRequireEnabled: rustGatewayRequireEnabled
+            rustGatewayRequireEnabled: rustGatewayRequireEnabled,
+            rustGatewayModelCallPlanStatus: rustGatewayModelCallPlanStatus,
+            rustGatewayModelCallPlanHistory: rustGatewayModelCallPlanHistory,
+            rustGatewayModelCallPlanShadowRequired: rustGatewayModelCallPlanShadowRequired
         ).issues.map { issue in
             finding(
                 code: issue.code,
@@ -1168,6 +1190,16 @@ enum SupervisorDoctorChecker {
             return .p0
         case "memory_gateway_cutover_readiness_not_ready":
             return issue.severity == .blocking ? .p0 : .p1
+        case "memory_gateway_model_call_plan_shadow_missing":
+            return .p0
+        case "memory_gateway_model_call_plan_shadow_invalid":
+            return issue.severity == .blocking ? .p0 : .p1
+        case "memory_gateway_model_call_plan_shadow_schema_mismatch":
+            return issue.severity == .blocking ? .p0 : .p1
+        case "memory_gateway_model_call_plan_executed_unexpectedly":
+            return .p0
+        case "memory_gateway_model_call_plan_text_leak":
+            return .p0
         case "memory_scoped_hidden_project_recovery_missing":
             return issue.severity == .blocking ? .p0 : .p1
         case "memory_review_floor_not_met":
@@ -1195,6 +1227,16 @@ enum SupervisorDoctorChecker {
             return "require gate 已打开但 Doctor 没拿到 readiness 证据时，无法证明当前 Rust memory gateway 可以安全替代兼容路径。"
         case "memory_gateway_cutover_readiness_not_ready":
             return "没有持续、同 scope、fresh 的 parity 证据时，直接打开 require gate 可能让 Coder/Supervisor 看到不同的 memory context 或被错误阻断。"
+        case "memory_gateway_model_call_plan_shadow_missing":
+            return "model-call shadow 是写前安全证据；缺少它时，无法证明 Rust memory gateway 只生成调用计划、不会执行模型或写入明文 prompt/context。"
+        case "memory_gateway_model_call_plan_shadow_invalid":
+            return "model-call shadow 未通过时，Rust memory gateway 的写前计划路径还不能作为 live 生产切换的安全证明。"
+        case "memory_gateway_model_call_plan_shadow_schema_mismatch":
+            return "schema 不匹配会让 Doctor / release gate 对写前安全字段的判断失真，必须先统一 evidence contract。"
+        case "memory_gateway_model_call_plan_executed_unexpectedly":
+            return "写前 shadow 只能规划 model call；如果它执行了模型，就破坏了不影响产品答案路径和不卡顿的边界。"
+        case "memory_gateway_model_call_plan_text_leak":
+            return "写前 shadow 只能记录安全元数据；如果写入 prompt/context 明文，就不满足 memory gateway 的最小披露要求。"
         case "memory_scoped_hidden_project_recovery_missing":
             return "用户已经显式聚焦 hidden project，但 memory assembly 仍没补回该项目自己的工作集、recent events 或最近对话时，Supervisor 会在缺少项目真上下文的情况下做判断。"
         case "memory_review_floor_not_met":
@@ -1249,6 +1291,31 @@ enum SupervisorDoctorChecker {
                 "继续收集同一 requester_role/use_mode/project_id 的 shadow parity history。",
                 "只有 `memory_gateway_cutover_readiness.json` 显示 ready_for_require=true 后，才把 require gate 作为生产切换开关。"
             ]
+        case "memory_gateway_model_call_plan_shadow_missing":
+            return [
+                "打开 `XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW=1`，让 XT 在生成路径旁路记录 model-call plan shadow。",
+                "确认 `memory_gateway_model_call_plan_status.json` 和 history 都写到当前 live base dir 后，再运行 strict ops gate。"
+            ]
+        case "memory_gateway_model_call_plan_shadow_invalid":
+            return [
+                "检查 `memory_gateway_model_call_plan_status.json` 的 issue_codes、plan_source、plan_mode、plan_authority。",
+                "修复 Rust `/memory/gateway/model-call-plan`，直到 evidence_ok=true、execution_safe=true、text_safe=true。"
+            ]
+        case "memory_gateway_model_call_plan_shadow_schema_mismatch":
+            return [
+                "同步 XT evidence schema 与 Rust model-call plan response schema。",
+                "重新记录一条 `xt.rust_memory_gateway_model_call_plan_shadow.v1` 证据，并确认 plan_schema_version=xhub.memory.gateway_model_call_plan.v1。"
+            ]
+        case "memory_gateway_model_call_plan_executed_unexpectedly":
+            return [
+                "立即保持 model-call plan shadow 在 plan_only_no_model_call 模式，不接入任何真实 provider/model 执行。",
+                "确认 status 中 would_call_model=false 且 model_call_executed=false 后，再继续 live cutover gate。"
+            ]
+        case "memory_gateway_model_call_plan_text_leak":
+            return [
+                "停止把 prompt/context 明文写入 shadow evidence，只保留长度、计数、hash/引用等安全元数据。",
+                "确认 context_text_included=false 且 prompt_text_included=false 后重新跑 live smoke。"
+            ]
         case "memory_scoped_hidden_project_recovery_missing":
             return [
                 "重新对该 hidden project 发起一次显式聚焦回合，确认 focused project / focus pointer 命中后再生成 memory assembly。",
@@ -1299,6 +1366,16 @@ enum SupervisorDoctorChecker {
             return "Doctor 能读取 memory_gateway_cutover_readiness.json"
         case "memory_gateway_cutover_readiness_not_ready":
             return "memory_gateway_cutover_readiness.json 中 ready_for_require=true"
+        case "memory_gateway_model_call_plan_shadow_missing":
+            return "Doctor 能读取 memory_gateway_model_call_plan_status.json / history"
+        case "memory_gateway_model_call_plan_shadow_invalid":
+            return "model-call plan shadow evidence_ok=true 且无 issue_codes"
+        case "memory_gateway_model_call_plan_shadow_schema_mismatch":
+            return "schema_version=xt.rust_memory_gateway_model_call_plan_shadow.v1 且 plan_schema_version=xhub.memory.gateway_model_call_plan.v1"
+        case "memory_gateway_model_call_plan_executed_unexpectedly":
+            return "would_call_model=false 且 model_call_executed=false"
+        case "memory_gateway_model_call_plan_text_leak":
+            return "context_text_included=false 且 prompt_text_included=false"
         case "memory_scoped_hidden_project_recovery_missing":
             return "snapshot.scopedPromptRecoverySections 不再为空，并补回 focused project 的项目范围上下文"
         case "memory_review_floor_not_met":
@@ -1444,6 +1521,7 @@ enum SupervisorDoctorChecker {
                 requesterRole: "supervisor",
                 useMode: XTMemoryUseMode.supervisorOrchestration.rawValue,
                 projectId: focusedProjectId.isEmpty ? nil : focusedProjectId,
+                servingProfileId: memoryAssemblySnapshot?.resolvedProfile,
                 recordReport: false
             )
         }

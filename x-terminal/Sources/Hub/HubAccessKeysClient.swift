@@ -343,7 +343,7 @@ enum HubAccessKeysClient {
     }
 
     static func resolveSessionContext(stateDir: URL? = nil) -> SessionContext? {
-        let base = stateDir ?? XTProcessPaths.defaultAxhubStateDir()
+        let base = stateDir ?? XTProcessPaths.activeAxhubStateDir()
         let pairingEnv = readEnvExports(from: base.appendingPathComponent("pairing.env"))
         let hubEnv = readEnvExports(from: base.appendingPathComponent("hub.env"))
 

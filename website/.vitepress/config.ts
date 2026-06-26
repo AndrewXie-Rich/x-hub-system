@@ -1,5 +1,8 @@
 import { defineConfig } from 'vitepress'
 
+const repoUrl = 'https://github.com/AndrewXie-Rich/x-hub-system'
+const releasesUrl = `${repoUrl}/releases`
+
 const enNav = [
   { text: 'Overview', link: '/' },
   { text: 'Use Cases', link: '/scenarios' },
@@ -29,8 +32,8 @@ const enNav = [
     items: [
       { text: 'Get Started', link: '/get-started' },
       { text: 'Status & Roadmap', link: '/status-roadmap' },
-      { text: 'GitHub', link: 'https://github.com/AndrewXie-Rich/x-hub-system' },
-      { text: 'Releases', link: 'https://github.com/AndrewXie-Rich/x-hub-system/releases' }
+      { text: 'GitHub', link: repoUrl },
+      { text: 'Releases', link: releasesUrl }
     ]
   },
   { text: 'Docs', link: '/docs' }
@@ -65,8 +68,8 @@ const zhNav = [
     items: [
       { text: '开始使用', link: '/zh-CN/get-started' },
       { text: '状态与路线图', link: '/zh-CN/status-roadmap' },
-      { text: 'GitHub', link: 'https://github.com/AndrewXie-Rich/x-hub-system' },
-      { text: 'Releases', link: 'https://github.com/AndrewXie-Rich/x-hub-system/releases' }
+      { text: 'GitHub', link: repoUrl },
+      { text: 'Releases', link: releasesUrl }
     ]
   },
   { text: '阅读路径', link: '/zh-CN/docs' }
@@ -218,6 +221,9 @@ export default defineConfig({
   themeConfig: {
     siteTitle: 'X-Hub-System',
     logo: '/favicon.svg',
+    socialLinks: [
+      { icon: 'github', link: repoUrl }
+    ],
     search: {
       provider: 'local'
     }

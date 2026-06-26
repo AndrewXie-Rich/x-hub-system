@@ -159,6 +159,19 @@ final class AppModel: ObservableObject {
         var projection: XTUnifiedDoctorSkillDoctorTruthProjection
     }
 
+    private var rustMemoryReadinessDoctorSnapshot: RustHubMemoryReadinessSnapshot?
+    private var rustMemoryReadinessDoctorLastFetchAt: Date = .distantPast
+    private var rustMemoryReadinessDoctorFetchInFlight = false
+    private var rustProductProcessSanityDoctorSnapshot: RustHubProductProcessSanitySnapshot?
+    private var rustProductProcessSanityDoctorLastFetchAt: Date = .distantPast
+    private var rustProductProcessSanityDoctorFetchInFlight = false
+    private var rustMemoryGatewayExecutionGateDoctorSnapshot: RustHubMemoryGatewayModelCallExecutionGateSnapshot?
+    private var rustMemoryGatewayExecutionGateDoctorLastFetchAt: Date = .distantPast
+    private var rustMemoryGatewayExecutionGateDoctorFetchInFlight = false
+    private var rustRemoteEntryCandidatesDoctorSnapshot: RustHubRemoteEntryCandidatesSnapshot?
+    private var rustRemoteEntryCandidatesDoctorLastFetchAt: Date = .distantPast
+    private var rustRemoteEntryCandidatesDoctorFetchInFlight = false
+
     @Published var settingsStore: SettingsStore {
         didSet {
             refreshControlSurfaceSnapshot()
@@ -439,6 +452,9 @@ final class AppModel: ObservableObject {
     @Published var hubAxhubctlPath: String = "" {
         didSet { refreshSettingsCenterSnapshot() }
     }
+    @Published private(set) var hubProfilesSnapshot: XTHubProfilesSnapshot = .empty {
+        didSet { refreshSettingsCenterSnapshot() }
+    }
 
     var hubInteractive: Bool {
         hubConnectionSnapshot.interactive
@@ -713,6 +729,7 @@ final class AppModel: ObservableObject {
             hubInviteAlias: hubInviteAlias,
             hubInviteInstanceID: hubInviteInstanceID,
             hubAxhubctlPath: hubAxhubctlPath,
+            hubProfilesSnapshot: hubProfilesSnapshot,
             serverRunning: serverRunning,
             localServerEnabled: localServerEnabled,
             localServerPort: localServerPort,
@@ -1340,6 +1357,40 @@ final class AppModel: ObservableObject {
         }
     }
 
+    @discardableResult
+    func markHubManualEndpointRequired() -> HubRemoteConnectReport {
+        let reason = "hub_manual_endpoint_required"
+        let summary = "enter Hub endpoint before first pairing"
+        let message = "请先填写 Hub IP/域名、Pairing Port 和 gRPC Port；未填写不会自动扫描。需要扫描时，请点击“自动探测”并确认。"
+        hubRemoteLinking = false
+        hubRemoteConnected = false
+        hubRemoteRoute = .none
+        hubRemotePaidAccessSnapshot = nil
+        hubRemoteSummary = summary
+        hubRemoteLog = [
+            "[config] \(reason)",
+            "Enter Hub IP/domain, pairing port, and gRPC port before first pairing.",
+            "Automatic LAN scan is disabled until the user explicitly confirms scanning.",
+        ].joined(separator: "\n")
+        hubSetupDiscoverState = .failed
+        hubSetupBootstrapState = .idle
+        hubSetupConnectState = .idle
+        hubSetupFailureCode = reason
+        hubPortAutoDetectMessage = message
+        hubDiscoveredCandidates = []
+        hubLastError = "hub_remote_connect_failed (\(summary))"
+        refreshUnifiedDoctorReport(force: true)
+        let report = HubRemoteConnectReport(
+            ok: false,
+            route: .none,
+            summary: summary,
+            logLines: hubRemoteLog.components(separatedBy: "\n"),
+            reasonCode: reason
+        )
+        recordActiveHubProfileConnectionResult(report)
+        return report
+    }
+
     func startHubReconnectOnly() {
         Task { @MainActor in
             await runRemoteConnectFlow(
@@ -1734,6 +1785,9 @@ final class AppModel: ObservableObject {
 
     func applyHubPairingInvitePrefill(_ prefill: XTHubPairingInvitePrefill) {
         var endpointChanged = false
+        let incomingInviteToken = normalizedDeepLinkToken(prefill.inviteToken)
+        let incomingInviteAlias = normalizedDeepLinkToken(prefill.hubAlias)
+        let incomingInviteInstanceID = normalizedDeepLinkToken(prefill.hubInstanceID)
         if let pairingPort = prefill.pairingPort {
             hubPairingPort = max(1, min(65_535, pairingPort))
             endpointChanged = true
@@ -1746,16 +1800,40 @@ final class AppModel: ObservableObject {
             hubInternetHost = internetHost
             endpointChanged = true
         }
-        if let inviteToken = normalizedDeepLinkToken(prefill.inviteToken) {
+        if let inviteToken = incomingInviteToken {
             hubInviteToken = inviteToken
         }
-        if let inviteAlias = normalizedDeepLinkToken(prefill.hubAlias) {
+        if let inviteAlias = incomingInviteAlias {
             hubInviteAlias = inviteAlias
         }
-        if let inviteInstanceID = normalizedDeepLinkToken(prefill.hubInstanceID) {
+        if let inviteInstanceID = incomingInviteInstanceID {
             hubInviteInstanceID = inviteInstanceID
         }
+        if normalizedDeepLinkToken(prefill.internetHost) == nil,
+           Self.hasTokenOnlyLocalPairingInvite(
+            inviteToken: incomingInviteToken ?? "",
+            inviteAlias: incomingInviteAlias ?? "",
+            inviteInstanceID: incomingInviteInstanceID ?? ""
+           ) {
+            hubInternetHost = ""
+            endpointChanged = true
+        }
         saveHubRemotePrefsNow(markEndpointOverride: endpointChanged)
+    }
+
+    @discardableResult
+    func applyHubPairingInviteTextIfPossible(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let url = URL(string: trimmed) else {
+            return false
+        }
+        guard let parsed = XTDeepLinkParser.parse(url),
+              case let .hubSetup(route) = parsed,
+              let prefill = route.pairingPrefill else {
+            return false
+        }
+        applyHubPairingInvitePrefill(prefill)
+        return true
     }
 
     func setLocalServerEnabled(_ enabled: Bool) {
@@ -3972,13 +4050,15 @@ final class AppModel: ObservableObject {
                selectedProjectId != AXProjectRegistry.globalHomeId,
                let ctx = projectContext {
                 let selectedProjectName = registry.project(for: selectedProjectId)?.displayName
-                _ = await XTResolvedSkillsCacheStore.refreshFromHubIfPossible(
+                if let resolvedSnapshot = await XTResolvedSkillsCacheStore.refreshFromHubIfPossible(
                     projectId: selectedProjectId,
                     projectName: selectedProjectName,
                     context: ctx,
                     hubBaseDir: hubBaseDir ?? HubPaths.baseDir(),
                     force: true
-                )
+                ) {
+                    recordActiveHubSkillsUpdated(resolvedSnapshot)
+                }
             } else {
                 refreshResolvedSkillsCacheForCurrentSelection()
             }
@@ -4108,13 +4188,15 @@ final class AppModel: ObservableObject {
               let ctx = projectContext else { return }
         let projectName = registry.project(for: selectedProjectId)?.displayName
         Task {
-            _ = await XTResolvedSkillsCacheStore.refreshFromHubIfPossible(
+            if let resolvedSnapshot = await XTResolvedSkillsCacheStore.refreshFromHubIfPossible(
                 projectId: selectedProjectId,
                 projectName: projectName,
                 context: ctx,
                 hubBaseDir: hubBaseDir ?? HubPaths.baseDir(),
                 force: true
-            )
+            ) {
+                recordActiveHubSkillsUpdated(resolvedSnapshot)
+            }
         }
     }
 
@@ -6102,9 +6184,25 @@ final class AppModel: ObservableObject {
         hubInviteAlias = inviteAlias
         hubInviteInstanceID = inviteInstanceID
         hubAxhubctlPath = ctl.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let storedProfiles = XTHubProfilesStorage.load(defaults: d),
+           let activeProfile = storedProfiles.activeProfile {
+            hubProfilesSnapshot = storedProfiles
+            applyHubProfileFields(activeProfile)
+        } else {
+            let profile = currentHubProfile(displayName: nil).selectedNow()
+            let seeded = XTHubProfilesSnapshot(
+                schemaVersion: XTHubProfilesSnapshot.schemaVersion,
+                activeProfileID: profile.id,
+                profiles: [profile]
+            )
+            .normalized()
+            hubProfilesSnapshot = seeded
+            XTHubProfilesStorage.save(seeded, defaults: d)
+        }
     }
 
-    private func saveHubRemotePrefs() {
+    private func saveHubRemotePrefs(updateActiveProfile: Bool = true) {
         let d = UserDefaults.standard
         d.set(hubPairingPort, forKey: hubPairingPortKey)
         d.set(hubPairingPort, forKey: legacyHubPairingPortKey)
@@ -6120,6 +6218,272 @@ final class AppModel: ObservableObject {
         d.set(hubInviteInstanceID, forKey: legacyHubInviteInstanceIDKey)
         d.set(hubAxhubctlPath, forKey: hubAxhubctlPathKey)
         d.set(hubAxhubctlPath, forKey: legacyHubAxhubctlPathKey)
+
+        guard updateActiveProfile else { return }
+        let activeProfile = hubProfilesSnapshot.activeProfile
+        let profile = activeProfile?
+            .replacingConnection(
+                displayName: activeProfile?.displayName,
+                pairingPort: hubPairingPort,
+                grpcPort: hubGrpcPort,
+                internetHost: hubInternetHost,
+                inviteToken: hubInviteToken,
+                inviteAlias: hubInviteAlias,
+                hubInstanceID: hubInviteInstanceID,
+                axhubctlPath: hubAxhubctlPath,
+                stateDirPath: activeProfile?.stateDirPath
+            )
+            ?? currentHubProfile(displayName: nil)
+        let next = XTHubProfilesStorage.upserting(
+            profile,
+            into: hubProfilesSnapshot,
+            makeActive: true
+        )
+        hubProfilesSnapshot = next
+        XTHubProfilesStorage.save(next, defaults: d)
+    }
+
+    private func currentHubProfile(displayName: String?) -> XTHubProfile {
+        let resolvedDisplayName = (displayName ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackDisplayName = !hubInviteAlias.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? hubInviteAlias
+            : hubInternetHost
+        return XTHubProfile(
+            id: XTHubProfile.generatedID(
+                hubInstanceID: hubInviteInstanceID,
+                internetHost: hubInternetHost,
+                grpcPort: hubGrpcPort
+            ),
+            displayName: resolvedDisplayName.isEmpty ? fallbackDisplayName : resolvedDisplayName,
+            pairingPort: hubPairingPort,
+            grpcPort: hubGrpcPort,
+            internetHost: hubInternetHost,
+            inviteToken: hubInviteToken,
+            inviteAlias: hubInviteAlias,
+            hubInstanceID: hubInviteInstanceID,
+            axhubctlPath: hubAxhubctlPath,
+            stateDirPath: hubProfilesSnapshot.activeProfile?.stateDirPath
+        )
+    }
+
+    private func applyHubProfileFields(_ profile: XTHubProfile) {
+        hubPairingPort = profile.pairingPort
+        hubGrpcPort = profile.grpcPort
+        hubInternetHost = profile.internetHost
+        hubInviteToken = profile.inviteToken
+        hubInviteAlias = profile.inviteAlias
+        hubInviteInstanceID = profile.hubInstanceID
+        hubAxhubctlPath = profile.axhubctlPath
+    }
+
+    func saveCurrentHubProfileFromUser() {
+        let activeProfile = hubProfilesSnapshot.activeProfile
+        let profile = activeProfile?
+            .replacingConnection(
+                displayName: activeProfile?.displayName,
+                pairingPort: hubPairingPort,
+                grpcPort: hubGrpcPort,
+                internetHost: hubInternetHost,
+                inviteToken: hubInviteToken,
+                inviteAlias: hubInviteAlias,
+                hubInstanceID: hubInviteInstanceID,
+                axhubctlPath: hubAxhubctlPath,
+                stateDirPath: activeProfile?.stateDirPath
+            )
+            ?? currentHubProfile(displayName: nil)
+        let next = XTHubProfilesStorage.upserting(profile, into: hubProfilesSnapshot, makeActive: true)
+        hubProfilesSnapshot = next
+        XTHubProfilesStorage.save(next)
+        saveHubRemotePrefs(updateActiveProfile: false)
+        scheduleHubRemotePrefsDoctorRefresh()
+    }
+
+    func renameActiveHubProfileFromUser(_ displayName: String) {
+        let next = XTHubProfilesStorage.upsertingActiveProfile(
+            in: hubProfilesSnapshot
+        ) { profile in
+            profile.renamed(displayName: displayName)
+        }
+        guard next != hubProfilesSnapshot else { return }
+        hubProfilesSnapshot = next
+        XTHubProfilesStorage.save(next)
+    }
+
+    func activeHubProfileExportPackageText() -> String? {
+        guard let profile = hubProfilesSnapshot.activeProfile else { return nil }
+        return try? XTHubProfileExportPackage(profile: profile).encodedString()
+    }
+
+    func importHubProfilePackageTextFromUser(_ rawText: String) -> Bool {
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let package = try? XTHubProfileExportPackage.decode(from: trimmed) else {
+            return false
+        }
+
+        saveHubRemotePrefs(updateActiveProfile: true)
+
+        let preferredID = XTHubProfile.generatedID(
+            hubInstanceID: package.profile.hubInstanceID,
+            internetHost: package.profile.internetHost,
+            grpcPort: package.profile.grpcPort
+        )
+        let uniqueID = XTHubProfilesStorage.uniqueProfileID(
+            preferredID: preferredID,
+            in: hubProfilesSnapshot
+        )
+        let displayName = XTHubProfilesStorage.uniqueDisplayName(
+            preferredName: package.profile.displayName,
+            in: hubProfilesSnapshot
+        )
+        let profile = package.profile.importedProfile(
+            id: uniqueID,
+            displayName: displayName,
+            stateDirPath: XTHubProfilesStorage.profileStateDirPath(profileID: uniqueID)
+        )
+        .selectedNow()
+
+        let next = XTHubProfilesStorage.upserting(profile, into: hubProfilesSnapshot, makeActive: true)
+        hubProfilesSnapshot = next
+        applyHubProfileFields(profile)
+        XTHubProfilesStorage.save(next)
+        saveHubRemotePrefs(updateActiveProfile: false)
+        noteActiveHubProfileChanged(summary: "imported Hub profile selected; pair or connect this Hub.")
+        setHubRemoteEndpointOverridePending(true)
+        scheduleHubRemotePrefsDoctorRefresh()
+        return true
+    }
+
+    func recordActiveHubModelInventoryUpdated(modelCount: Int, updatedAt: Double) {
+        let updatedAtMs = updatedAt > 0
+            ? Int64((updatedAt * 1000.0).rounded())
+            : Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+        updateActiveHubProfileMetadata { profile in
+            profile.recordingModelInventory(modelCount: modelCount, updatedAtMs: updatedAtMs)
+        }
+    }
+
+    func recordActiveHubSkillsUpdated(_ snapshot: XTResolvedSkillsCacheSnapshot) {
+        updateActiveHubProfileMetadata { profile in
+            profile.recordingSkills(
+                skillCount: snapshot.items.count,
+                updatedAtMs: snapshot.resolvedAtMs
+            )
+        }
+    }
+
+    func createNewHubProfileFromUser() {
+        saveHubRemotePrefs(updateActiveProfile: true)
+
+        let nextIndex = hubProfilesSnapshot.profiles.count + 1
+        let rawID = UUID().uuidString.lowercased()
+        let normalizedID = XTHubProfile.generatedID(
+            hubInstanceID: rawID,
+            internetHost: "",
+            grpcPort: hubGrpcPort
+        )
+        let profile = XTHubProfile(
+            id: normalizedID,
+            displayName: "Hub \(nextIndex)",
+            pairingPort: hubPairingPort,
+            grpcPort: hubGrpcPort,
+            internetHost: "",
+            inviteToken: "",
+            inviteAlias: "",
+            hubInstanceID: "",
+            axhubctlPath: hubAxhubctlPath,
+            stateDirPath: XTHubProfilesStorage.profileStateDirPath(profileID: normalizedID)
+        )
+        let next = XTHubProfilesStorage.upserting(profile, into: hubProfilesSnapshot, makeActive: true)
+        hubProfilesSnapshot = next
+        applyHubProfileFields(profile)
+        XTHubProfilesStorage.save(next)
+        saveHubRemotePrefs(updateActiveProfile: false)
+        noteActiveHubProfileChanged(summary: "new Hub profile selected; pair or connect this Hub.")
+        setHubRemoteEndpointOverridePending(true)
+        scheduleHubRemotePrefsDoctorRefresh()
+    }
+
+    func selectHubProfile(_ profileID: String) {
+        let trimmed = profileID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let target = hubProfilesSnapshot.profiles.first(where: { $0.id == trimmed }) else {
+            return
+        }
+        saveHubRemotePrefs(updateActiveProfile: true)
+        let selected = target.selectedNow()
+        var next = XTHubProfilesStorage.upserting(selected, into: hubProfilesSnapshot, makeActive: true)
+        next.activeProfileID = selected.id
+        next = next.normalized()
+        hubProfilesSnapshot = next
+        applyHubProfileFields(selected)
+        XTHubProfilesStorage.save(next)
+        saveHubRemotePrefs(updateActiveProfile: false)
+        noteActiveHubProfileChanged(summary: "Hub profile changed; refreshing route ...")
+        setHubRemoteEndpointOverridePending(true)
+        scheduleHubRemotePrefsDoctorRefresh()
+    }
+
+    func removeSelectedHubProfileFromUser() {
+        let activeID = hubProfilesSnapshot.activeProfileID
+        guard !activeID.isEmpty, hubProfilesSnapshot.profiles.count > 1 else { return }
+        var next = XTHubProfilesStorage.removing(activeID, from: hubProfilesSnapshot)
+        if let active = next.activeProfile {
+            next.activeProfileID = active.id
+            hubProfilesSnapshot = next.normalized()
+            applyHubProfileFields(active)
+        } else {
+            hubProfilesSnapshot = next.normalized()
+        }
+        XTHubProfilesStorage.save(hubProfilesSnapshot)
+        saveHubRemotePrefs(updateActiveProfile: false)
+        noteActiveHubProfileChanged(summary: "Hub profile changed; refreshing route ...")
+        setHubRemoteEndpointOverridePending(true)
+        scheduleHubRemotePrefsDoctorRefresh()
+    }
+
+    private func noteActiveHubProfileChanged(summary: String) {
+        hubConnected = false
+        hubStatus = nil
+        hubRemoteConnected = false
+        hubRemoteRoute = .none
+        hubRemotePaidAccessSnapshot = nil
+        hubRemoteLinking = false
+        hubRemoteSummary = summary
+        hubRemoteLog = ""
+        hubRemoteShadowReconnectSmokeSnapshot = nil
+        modelsState = .empty()
+        Task {
+            await HubAIClient.shared.resetRemoteCachesForActiveHubChange()
+            await ProviderKeyManager.shared.resetForHubProfileChange()
+            await HubIPCClient.invalidateAllRemoteMemorySnapshotCaches(reason: .routeOrModelPreferenceChanged)
+        }
+        Task { @MainActor in
+            HubModelManager.shared.resetForHubProfileChange()
+        }
+    }
+
+    private func recordActiveHubProfileConnectionResult(_ report: HubRemoteConnectReport) {
+        updateActiveHubProfileMetadata { profile in
+            profile.recordingConnectionResult(
+                ok: report.ok,
+                route: report.route.rawValue,
+                summary: report.summary
+            )
+        }
+    }
+
+    private func updateActiveHubProfileMetadata(
+        _ transform: (XTHubProfile) -> XTHubProfile
+    ) {
+        let next = XTHubProfilesStorage.upsertingActiveProfile(
+            in: hubProfilesSnapshot,
+            transform: transform
+        )
+        guard next != hubProfilesSnapshot else { return }
+        hubProfilesSnapshot = next
+        XTHubProfilesStorage.save(next)
     }
 
     private func hasHubRemoteEndpointOverridePending() -> Bool {
@@ -6839,6 +7203,56 @@ final class AppModel: ObservableObject {
         return hasHubEnv
     }
 
+    nonisolated static func hasTokenOnlyLocalPairingInvite(
+        inviteToken: String,
+        inviteAlias: String,
+        inviteInstanceID: String
+    ) -> Bool {
+        guard normalizedStartupAutomaticFirstPairHint(inviteToken) != nil else { return false }
+        if looksLikeHubPairingInstanceID(inviteInstanceID) {
+            return true
+        }
+        guard let alias = normalizedStartupAutomaticFirstPairHint(inviteAlias) else { return false }
+        let lowered = alias.lowercased()
+        return lowered.hasPrefix("axhub-")
+            || lowered.hasSuffix(".local")
+            || lowered.contains(".")
+            || HubRemoteHostPolicy.isIPv4Host(lowered)
+    }
+
+    private nonisolated static func looksLikeHubPairingInstanceID(_ raw: String) -> Bool {
+        guard let value = normalizedStartupAutomaticFirstPairHint(raw)?.lowercased(),
+              value.hasPrefix("hub_") else {
+            return false
+        }
+        let suffix = value.dropFirst(4)
+        let hexCount = suffix.reduce(0) { count, character in
+            switch character {
+            case "0"..."9", "a"..."f":
+                return count + 1
+            default:
+                return count
+            }
+        }
+        return hexCount >= 10
+    }
+
+    nonisolated static func shouldRequireManualEndpointBeforeFirstPair(
+        hasHubEnv: Bool,
+        internetHost: String,
+        inviteToken: String,
+        inviteAlias: String,
+        inviteInstanceID: String
+    ) -> Bool {
+        guard !hasHubEnv else { return false }
+        guard internetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return !hasTokenOnlyLocalPairingInvite(
+            inviteToken: inviteToken,
+            inviteAlias: inviteAlias,
+            inviteInstanceID: inviteInstanceID
+        )
+    }
+
     nonisolated static func shouldAttemptStartupAutomaticFirstPair(
         internetHost: String,
         inviteToken: String,
@@ -6848,10 +7262,14 @@ final class AppModel: ObservableObject {
         guard normalizedStartupAutomaticFirstPairHint(inviteToken) != nil else { return false }
 
         let hasRouteHint = normalizedStartupAutomaticFirstPairHint(internetHost) != nil
-        let hasIdentityHint =
-            normalizedStartupAutomaticFirstPairHint(inviteAlias) != nil
-            || normalizedStartupAutomaticFirstPairHint(inviteInstanceID) != nil
-        return hasRouteHint || hasIdentityHint
+        if hasRouteHint {
+            return true
+        }
+        return hasTokenOnlyLocalPairingInvite(
+            inviteToken: inviteToken,
+            inviteAlias: inviteAlias,
+            inviteInstanceID: inviteInstanceID
+        )
     }
 
     nonisolated static func startupAutomaticConnectDisposition(
@@ -6950,7 +7368,7 @@ final class AppModel: ObservableObject {
             inviteInstanceID: hubInviteInstanceID,
             axhubctlPath: hubAxhubctlPath,
             configuredEndpointIsAuthoritative: hasHubRemoteEndpointOverridePending(),
-            stateDir: stateDir
+            stateDir: stateDir ?? XTProcessPaths.activeAxhubStateDir()
         )
     }
 
@@ -6993,12 +7411,33 @@ final class AppModel: ObservableObject {
         probeIncidentSnapshot: XTHubConnectivityIncidentSnapshot? = nil
     ) async -> HubRemoteConnectReport? {
         if hubRemoteLinking { return nil }
+        if allowBootstrap,
+           Self.shouldRequireManualEndpointBeforeFirstPair(
+            hasHubEnv: HubPairingCoordinator.hasHubEnvFast(stateDir: nil),
+            internetHost: hubInternetHost,
+            inviteToken: hubInviteToken,
+            inviteAlias: hubInviteAlias,
+            inviteInstanceID: hubInviteInstanceID
+           ) {
+            let report = markHubManualEndpointRequired()
+            if openHubSetupOnFailure {
+                routeAutomaticFirstPairFailureToHubSetup(report)
+            }
+            if showAlertOnFinish {
+                showHubRemoteConnectAlert(for: report)
+            }
+            return report
+        }
         hubRemoteLinking = true
         hubReconnectLastAttemptAt = Date()
         if updateSetupProgress {
             hubRemoteSummary = initialSummary ?? Self.defaultHubRemoteSetupSummary(allowBootstrap: allowBootstrap)
             hubRemoteLog = ""
             resetHubSetupProgress(allowBootstrap: allowBootstrap)
+        }
+        if repairOwner == .user,
+           !hubInternetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            setHubRemoteEndpointOverridePending(true)
         }
         refreshHubRemotePrefsFromPersistedStateIfNeeded()
         saveHubRemotePrefs()
@@ -7052,6 +7491,7 @@ final class AppModel: ObservableObject {
         hubRemoteConnected = report.ok
         hubRemoteRoute = report.route
         hubRemoteSummary = report.summary
+        recordActiveHubProfileConnectionResult(report)
         if report.ok {
             nextRemotePresenceRefreshAt = .distantPast
             await maybeRefreshRemotePresence(force: true)
@@ -7163,6 +7603,13 @@ final class AppModel: ObservableObject {
         let normalizedReason = UITroubleshootKnowledgeBase.normalizedFailureCode(trimmedReason)
         let hostClassification = XTHubRemoteAccessHostClassification.classify(internetHost)
         let host = hostClassification.displayHost ?? "未设置"
+
+        if normalizedReason.contains("hub_manual_endpoint_required") {
+            return (
+                "先填写 Hub IP 和端口",
+                "首次配对前请先填写 Hub IP/域名、Pairing Port 和 gRPC Port。XT 不会在缺少地址时自动扫描；确实需要扫描时，先展开连接参数与修复工具，再点击“自动探测”并确认。当前目标：\(host)。reason=\(trimmedReason)"
+            )
+        }
 
         if normalizedReason.contains("first_pair_requires_same_lan") {
             let detail: String
@@ -7492,6 +7939,7 @@ final class AppModel: ObservableObject {
 
     private func currentPairedRouteSetSnapshot() -> XTPairedRouteSetSnapshot {
         let cachedProfile = HubAIClient.cachedRemoteProfile(stateDir: nil)
+        let rustPreferredRemoteHost = rustRemoteEntryCandidatesDoctorSnapshot?.preferredStableRemoteHost
         return XTPairedRouteSetSnapshotBuilder.build(
             input: XTPairedRouteSetBuildInput(
                 cachedProfile: cachedProfile,
@@ -7504,6 +7952,8 @@ final class AppModel: ObservableObject {
                 remoteRoute: hubRemoteRoute,
                 linking: hubRemoteLinking,
                 failureCode: hubSetupFailureCode,
+                rustPreferredRemoteHost: rustPreferredRemoteHost,
+                rustRemoteEntryAuthoritative: rustPreferredRemoteHost != nil,
                 freshPairReconnectSmokeSnapshot: hubFreshPairReconnectSmokeSnapshot,
                 remoteShadowReconnectSmokeSnapshot: hubRemoteShadowReconnectSmokeSnapshot
             )
@@ -7527,6 +7977,10 @@ final class AppModel: ObservableObject {
         Task {
             _ = await HubProviderKeyImportSnapshotStore.refreshFromHub()
         }
+        refreshRustMemoryReadinessDoctorSnapshotIfNeeded()
+        refreshRustProductProcessSanityDoctorSnapshotIfNeeded()
+        refreshRustMemoryGatewayExecutionGateDoctorSnapshotIfNeeded()
+        refreshRustRemoteEntryCandidatesDoctorSnapshotIfNeeded()
 
         refreshExternalTerminalAccessDoctorProjectionIfNeeded(force: false)
         let externalTerminalAccessDoctorProjection = self.externalTerminalAccessDoctorProjection
@@ -7605,6 +8059,17 @@ final class AppModel: ObservableObject {
             config: doctorProjectConfig,
             hubBaseDir: hubBaseDir ?? HubPaths.baseDir()
         )
+        let rustMemorySelectionEvidenceProjection: XTUnifiedDoctorRustMemorySelectionEvidenceProjection? = {
+            guard let doctorProjectContext else {
+                return nil
+            }
+            return XTUnifiedDoctorRustMemorySelectionEvidenceProjection(
+                status: HubIPCClient.rustMemoryGatewayModelCallPlanStatus(),
+                history: HubIPCClient.rustMemoryGatewayModelCallPlanHistory(limit: 16),
+                projectId: AXProjectRegistryStore.projectId(forRoot: doctorProjectContext.root),
+                refSampleLimit: 12
+            )
+        }()
         let calendarReminderSnapshot = XTUnifiedDoctorCalendarReminderSnapshot(
             enabled: calendarReminderPreferences.enabled,
             headsUpMinutes: calendarReminderPreferences.headsUpMinutes,
@@ -7672,6 +8137,10 @@ final class AppModel: ObservableObject {
             heartbeatGovernanceSnapshot: heartbeatGovernanceSnapshot,
             supervisorMemoryAssemblySnapshot: supervisor.supervisorMemoryAssemblySnapshot,
             supervisorLatestTurnContextAssembly: supervisor.supervisorLatestTurnContextAssembly,
+            rustMemoryReadinessSnapshot: rustMemoryReadinessDoctorSnapshot,
+            rustProductProcessSanitySnapshot: rustProductProcessSanityDoctorSnapshot,
+            rustMemoryGatewayExecutionGateSnapshot: rustMemoryGatewayExecutionGateDoctorSnapshot,
+            rustMemorySelectionEvidenceProjection: rustMemorySelectionEvidenceProjection,
             doctorProjectContext: doctorProjectContext,
             supervisorVoiceSmokeReport: loadSupervisorVoiceSmokeReportSummary(),
             freshPairReconnectSmokeSnapshot: hubFreshPairReconnectSmokeSnapshot,
@@ -7692,6 +8161,101 @@ final class AppModel: ObservableObject {
         }
         nextUnifiedDoctorRefreshAt = now.addingTimeInterval(Self.backgroundUnifiedDoctorRefreshIntervalSec)
         traceOutcome = "updated sections=\(report.sections.count)"
+    }
+
+    private func refreshRustMemoryReadinessDoctorSnapshotIfNeeded() {
+        let now = Date()
+        guard !rustMemoryReadinessDoctorFetchInFlight else { return }
+        guard rustMemoryReadinessDoctorSnapshot == nil
+                || now.timeIntervalSince(rustMemoryReadinessDoctorLastFetchAt) > 10 else {
+            return
+        }
+        rustMemoryReadinessDoctorFetchInFlight = true
+        Task { [weak self] in
+            let result = await RustHubReadinessClient.fetchMemoryReadiness(timeout: 0.8)
+            await MainActor.run {
+                guard let self else { return }
+                self.rustMemoryReadinessDoctorFetchInFlight = false
+                self.rustMemoryReadinessDoctorLastFetchAt = Date()
+                let nextSnapshot = result.snapshot
+                if self.rustMemoryReadinessDoctorSnapshot != nextSnapshot {
+                    self.rustMemoryReadinessDoctorSnapshot = nextSnapshot
+                    self.refreshUnifiedDoctorReport(force: true)
+                }
+            }
+        }
+    }
+
+    private func refreshRustProductProcessSanityDoctorSnapshotIfNeeded() {
+        let now = Date()
+        guard !rustProductProcessSanityDoctorFetchInFlight else { return }
+        guard rustProductProcessSanityDoctorSnapshot == nil
+                || now.timeIntervalSince(rustProductProcessSanityDoctorLastFetchAt) > 10 else {
+            return
+        }
+        rustProductProcessSanityDoctorFetchInFlight = true
+        Task { [weak self] in
+            let result = await RustHubReadinessClient.fetchProductProcessSanity(
+                maxProductCpuPercent: 80,
+                timeout: 0.8
+            )
+            await MainActor.run {
+                guard let self else { return }
+                self.rustProductProcessSanityDoctorFetchInFlight = false
+                self.rustProductProcessSanityDoctorLastFetchAt = Date()
+                let nextSnapshot = result.snapshot
+                if self.rustProductProcessSanityDoctorSnapshot != nextSnapshot {
+                    self.rustProductProcessSanityDoctorSnapshot = nextSnapshot
+                    self.refreshUnifiedDoctorReport(force: true)
+                }
+            }
+        }
+    }
+
+    private func refreshRustMemoryGatewayExecutionGateDoctorSnapshotIfNeeded() {
+        let now = Date()
+        guard !rustMemoryGatewayExecutionGateDoctorFetchInFlight else { return }
+        guard rustMemoryGatewayExecutionGateDoctorSnapshot == nil
+                || now.timeIntervalSince(rustMemoryGatewayExecutionGateDoctorLastFetchAt) > 10 else {
+            return
+        }
+        rustMemoryGatewayExecutionGateDoctorFetchInFlight = true
+        Task { [weak self] in
+            let result = await RustHubReadinessClient.fetchMemoryGatewayModelCallExecutionGate(timeout: 0.8)
+            await MainActor.run {
+                guard let self else { return }
+                self.rustMemoryGatewayExecutionGateDoctorFetchInFlight = false
+                self.rustMemoryGatewayExecutionGateDoctorLastFetchAt = Date()
+                let nextSnapshot = result.snapshot
+                if self.rustMemoryGatewayExecutionGateDoctorSnapshot != nextSnapshot {
+                    self.rustMemoryGatewayExecutionGateDoctorSnapshot = nextSnapshot
+                    self.refreshUnifiedDoctorReport(force: true)
+                }
+            }
+        }
+    }
+
+    private func refreshRustRemoteEntryCandidatesDoctorSnapshotIfNeeded() {
+        let now = Date()
+        guard !rustRemoteEntryCandidatesDoctorFetchInFlight else { return }
+        guard rustRemoteEntryCandidatesDoctorSnapshot == nil
+                || now.timeIntervalSince(rustRemoteEntryCandidatesDoctorLastFetchAt) > 10 else {
+            return
+        }
+        rustRemoteEntryCandidatesDoctorFetchInFlight = true
+        Task { [weak self] in
+            let result = await RustHubRemoteEntryCandidatesClient.fetch(timeout: 0.8)
+            await MainActor.run {
+                guard let self else { return }
+                self.rustRemoteEntryCandidatesDoctorFetchInFlight = false
+                self.rustRemoteEntryCandidatesDoctorLastFetchAt = Date()
+                let nextSnapshot = result.snapshot
+                if self.rustRemoteEntryCandidatesDoctorSnapshot != nextSnapshot {
+                    self.rustRemoteEntryCandidatesDoctorSnapshot = nextSnapshot
+                    self.refreshUnifiedDoctorReport(force: true)
+                }
+            }
+        }
     }
 
     private func refreshExternalTerminalAccessDoctorProjectionIfNeeded(force: Bool) {
@@ -8539,6 +9103,12 @@ final class AppModel: ObservableObject {
         let trimmedAxhubctlPath = hubAxhubctlPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedInternetHost = hubInternetHost.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedDetectMessage = hubPortAutoDetectMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !force, trimmedInternetHost.isEmpty {
+            if trimmedDetectMessage.isEmpty {
+                hubPortAutoDetectMessage = "请先填写 Hub IP/域名、Pairing Port 和 gRPC Port；未填写不会自动扫描。"
+            }
+            return
+        }
         if !force,
            !trimmedAxhubctlPath.isEmpty,
            !trimmedInternetHost.isEmpty,
@@ -8598,8 +9168,9 @@ final class AppModel: ObservableObject {
         setHubRemoteEndpointOverridePending(resetPlan.preserveEndpointOverride)
         saveHubRemotePrefs()
         if resetPlan.shouldAutoDetect {
-            hubPortAutoDetectMessage = "pairing state reset; probing ports..."
-            await autoDetectHubPortsNow()
+            _ = markHubManualEndpointRequired()
+            hubPortAutoDetectMessage = "配对状态已清除。请先填写 Hub IP/域名、Pairing Port 和 gRPC Port；需要扫描时再点击“自动探测”并确认。"
+            return
         } else {
             hubPortAutoDetectMessage = "pairing state reset; using configured hub endpoint ..."
         }

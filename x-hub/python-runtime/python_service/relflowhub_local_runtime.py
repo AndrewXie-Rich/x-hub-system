@@ -1946,6 +1946,36 @@ def _load_request_arg(raw: str) -> dict[str, Any]:
     return obj if isinstance(obj, dict) else {}
 
 
+def _request_needs_mlx_direct_runtime(request: dict[str, Any], *, base_dir: str) -> bool:
+    row = request if isinstance(request, dict) else {}
+    provider_id = _safe_str(row.get("provider") or row.get("backend")).lower()
+    model_id = _resolve_request_model_id(row)
+    if not provider_id and model_id:
+        catalog_model = _find_catalog_model(model_id, catalog_models=read_catalog_models(base_dir))
+        if isinstance(catalog_model, dict):
+            provider_id = _safe_str(
+                catalog_model.get("runtimeProviderID")
+                or catalog_model.get("runtime_provider_id")
+                or catalog_model.get("backend")
+            ).lower()
+    task_kind = _safe_str(row.get("task_kind") or row.get("taskKind")).lower()
+    if provider_id == "mlx":
+        return task_kind in {"", "text_generate", "embedding"}
+    return not provider_id and task_kind in {"text_generate", "embedding"}
+
+
+def _attach_mlx_direct_runtime_for_cli(request: dict[str, Any], *, base_dir: str) -> None:
+    if not _request_needs_mlx_direct_runtime(request, base_dir=base_dir):
+        return
+    try:
+        from relflowhub_mlx_runtime import MLXRuntime
+
+        build_registry(base_dir=base_dir, runtime=MLXRuntime())
+    except Exception:
+        # Preserve fail-closed provider errors from run_local_task/run_local_bench.
+        return
+
+
 def _status_payload(base_dir: str) -> dict[str, Any]:
     providers = provider_status_snapshot(base_dir)
     provider_packs = provider_pack_inventory(providers.keys(), base_dir=base_dir)
@@ -2026,6 +2056,7 @@ def main(argv: list[str] | None = None) -> int:
                     timeout_sec=60.0,
                 )
             else:
+                _attach_mlx_direct_runtime_for_cli(request, base_dir=base_dir)
                 result = run_local_task(request, base_dir=base_dir)
             print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
             return 0
@@ -2039,6 +2070,7 @@ def main(argv: list[str] | None = None) -> int:
                     timeout_sec=90.0,
                 )
             else:
+                _attach_mlx_direct_runtime_for_cli(request, base_dir=base_dir)
                 result = run_local_bench(request, base_dir=base_dir)
             print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
             return 0

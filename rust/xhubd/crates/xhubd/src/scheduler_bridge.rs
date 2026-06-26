@@ -1,6 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use serde_json::Value;
 use xhub_core::{json_escape, now_ms, HubConfig};
 use xhub_db::{
     apply_baseline_migrations, read_shadow_compare_report_summary, write_shadow_compare_report,
@@ -13,6 +17,122 @@ use xhub_scheduler::{
 
 const SCHEMA_VERSION: &str = "xhub.scheduler_bridge.v1";
 static COMPARE_REPORT_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+pub fn effective_scheduler_config(config: &HubConfig) -> SchedulerConfig {
+    let policy = load_model_concurrency_policy(config);
+    let fallback = SchedulerConfig::default();
+    SchedulerConfig {
+        global_concurrency: env_u32(
+            &[
+                "HUB_PAID_AI_GLOBAL_CONCURRENCY",
+                "XHUB_PAID_MODEL_GLOBAL_CONCURRENCY",
+            ],
+            policy_u32(
+                &policy,
+                &[
+                    "paidModelGlobalConcurrencyLimit",
+                    "paid_model_global_concurrency_limit",
+                ],
+                fallback.global_concurrency,
+            ),
+            1,
+            64,
+        ),
+        per_scope_concurrency: env_u32(
+            &[
+                "HUB_PAID_AI_PER_PROJECT_CONCURRENCY",
+                "XHUB_PAID_MODEL_PER_PROJECT_CONCURRENCY",
+            ],
+            policy_u32(
+                &policy,
+                &[
+                    "paidModelPerProjectConcurrencyLimit",
+                    "paid_model_per_project_concurrency_limit",
+                ],
+                fallback.per_scope_concurrency,
+            ),
+            1,
+            16,
+        ),
+        queue_limit: env_u32(
+            &["HUB_PAID_AI_QUEUE_LIMIT", "XHUB_PAID_MODEL_QUEUE_LIMIT"],
+            policy_u32(
+                &policy,
+                &["paidModelQueueLimit", "paid_model_queue_limit"],
+                fallback.queue_limit,
+            ),
+            1,
+            4096,
+        ),
+        queue_timeout_ms: env_u64(
+            &[
+                "HUB_PAID_AI_QUEUE_TIMEOUT_MS",
+                "XHUB_PAID_MODEL_QUEUE_TIMEOUT_MS",
+            ],
+            policy_u64(
+                &policy,
+                &["paidModelQueueTimeoutMs", "paid_model_queue_timeout_ms"],
+                fallback.queue_timeout_ms,
+            ),
+            1_000,
+            300_000,
+        ),
+    }
+}
+
+fn load_model_concurrency_policy(config: &HubConfig) -> Value {
+    let explicit_path = env::var("XHUB_MODEL_CONCURRENCY_POLICY_PATH")
+        .ok()
+        .or_else(|| env::var("HUB_MODEL_CONCURRENCY_POLICY_PATH").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let fallback_path = if config.runtime_base_dir.as_os_str().is_empty() {
+        None
+    } else {
+        Some(
+            config
+                .runtime_base_dir
+                .join("model_concurrency_policy.json"),
+        )
+    };
+    let Some(path) = explicit_path.or(fallback_path) else {
+        return Value::Null;
+    };
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|body| serde_json::from_str::<Value>(&body).ok())
+        .unwrap_or(Value::Null)
+}
+
+fn policy_u32(policy: &Value, keys: &[&str], fallback: u32) -> u32 {
+    keys.iter()
+        .find_map(|key| policy.get(*key).and_then(|value| value.as_u64()))
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(fallback)
+}
+
+fn policy_u64(policy: &Value, keys: &[&str], fallback: u64) -> u64 {
+    keys.iter()
+        .find_map(|key| policy.get(*key).and_then(|value| value.as_u64()))
+        .unwrap_or(fallback)
+}
+
+fn env_u32(keys: &[&str], fallback: u32, min_value: u32, max_value: u32) -> u32 {
+    keys.iter()
+        .find_map(|key| env::var(key).ok())
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(fallback)
+        .clamp(min_value, max_value)
+}
+
+fn env_u64(keys: &[&str], fallback: u64, min_value: u64, max_value: u64) -> u64 {
+    keys.iter()
+        .find_map(|key| env::var(key).ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(fallback)
+        .clamp(min_value, max_value)
+}
 
 pub fn run(config: &HubConfig, args: &[String]) -> Result<(), String> {
     let body = dispatch_json(config, args)?;
@@ -28,7 +148,7 @@ pub fn dispatch_json(config: &HubConfig, args: &[String]) -> Result<String, Stri
 
     apply_baseline_migrations(&config.db_path)
         .map_err(|err| format!("scheduler bridge migration failed: {err}"))?;
-    let scheduler = SchedulerStore::new(config.db_path.clone(), SchedulerConfig::default());
+    let scheduler = SchedulerStore::new(config.db_path.clone(), effective_scheduler_config(config));
 
     match command {
         "enqueue" => enqueue_json(&scheduler, FlagArgs::parse(&args[1..])?),
@@ -297,7 +417,7 @@ pub fn status_json_from_parts(
 ) -> Result<String, String> {
     apply_baseline_migrations(&config.db_path)
         .map_err(|err| format!("scheduler status migration failed: {err}"))?;
-    let scheduler = SchedulerStore::new(config.db_path.clone(), SchedulerConfig::default());
+    let scheduler = SchedulerStore::new(config.db_path.clone(), effective_scheduler_config(config));
     status_json_from_scheduler(&scheduler, include_queue_items, queue_items_limit)
 }
 
@@ -401,7 +521,7 @@ pub fn cutover_readiness_json_from_parts(
 ) -> Result<String, String> {
     apply_baseline_migrations(&config.db_path)
         .map_err(|err| format!("scheduler readiness migration failed: {err}"))?;
-    let scheduler = SchedulerStore::new(config.db_path.clone(), SchedulerConfig::default());
+    let scheduler = SchedulerStore::new(config.db_path.clone(), effective_scheduler_config(config));
     cutover_readiness_json_from_scheduler(config, &scheduler, params)
 }
 

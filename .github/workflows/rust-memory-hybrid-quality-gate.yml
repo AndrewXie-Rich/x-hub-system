@@ -1,0 +1,51 @@
+name: Rust Memory Hybrid Quality Gate
+
+on:
+  pull_request:
+    paths:
+      - "rust/xhubd/**"
+      - "scripts/ci/rust_memory_hybrid_quality_gate.sh"
+      - "docs/memory-new/xhub-universal-memory-layer-work-orders-v1.md"
+      - ".github/workflows/rust-memory-hybrid-quality-gate.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "rust/xhubd/**"
+      - "scripts/ci/rust_memory_hybrid_quality_gate.sh"
+      - "docs/memory-new/xhub-universal-memory-layer-work-orders-v1.md"
+      - ".github/workflows/rust-memory-hybrid-quality-gate.yml"
+  workflow_dispatch:
+
+jobs:
+  rust-memory-hybrid-quality-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Show Rust toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Run Rust memory hybrid quality gate
+        run: |
+          bash ./scripts/ci/rust_memory_hybrid_quality_gate.sh
+
+      - name: Upload Rust memory hybrid quality reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-memory-hybrid-quality-gate-reports
+          path: |
+            ./build/reports/rust_memory_hybrid_quality_gate_summary.v1.json
+            ./build/reports/rust_memory_hybrid_quality_bench_quick.v1.json
+            ./build/reports/rust_memory_hybrid_quality_gate_logs
+          if-no-files-found: warn

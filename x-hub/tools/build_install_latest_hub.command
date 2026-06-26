@@ -21,6 +21,15 @@ ENABLE_XT_LIVE_CUTOVER="${XHUB_ENABLE_RUST_XT_LIVE_CUTOVER:-$ENABLE_AUTHORITY_CU
 ENABLE_MEMORY_SKILLS_PRODUCTION="${XHUB_ENABLE_RUST_MEMORY_SKILLS_PRODUCTION:-$ENABLE_AUTHORITY_CUTOVER}"
 ENABLE_MEMORY_CONTEXT_GATEWAY="${XHUB_ENABLE_RUST_MEMORY_CONTEXT_GATEWAY:-$ENABLE_MEMORY_SKILLS_PRODUCTION}"
 ENABLE_MEMORY_CONTEXT_GATEWAY_REQUIRE="${XHUB_ENABLE_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE:-0}"
+ENABLE_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW="${XHUB_ENABLE_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW:-$ENABLE_MEMORY_CONTEXT_GATEWAY}"
+ENABLE_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW_REQUIRE="${XHUB_ENABLE_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW_REQUIRE:-0}"
+ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTION_ADMISSION="${XHUB_ENABLE_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTION_ADMISSION:-$ENABLE_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW}"
+ENABLE_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR="${XHUB_ENABLE_RUST_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR:-0}"
+ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_APPLY="${XHUB_ENABLE_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_APPLY:-0}"
+ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_ONLY="${XHUB_ENABLE_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_ONLY:-$ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_APPLY}"
+MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_PROJECT_ID="${XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_PROJECT_ID:-xt-memory-gateway-live-canary}"
+MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_REQUEST_PREFIX="${XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_REQUEST_PREFIX:-memory_gateway_live_canary_}"
+MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_AUDIT_PREFIX="${XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_AUDIT_PREFIX:-memory_gateway_live_canary:}"
 MEMORY_CONTEXT_GATEWAY_PARITY_MAX_AGE_MS="${XHUB_RUST_MEMORY_CONTEXT_GATEWAY_PARITY_MAX_AGE_MS:-600000}"
 ENABLE_PROVIDER_KEY_SNAPSHOT="${XHUB_ENABLE_RUST_PROVIDER_KEY_SNAPSHOT:-$ENABLE_PROVIDER_MODEL_PRODUCTION}"
 ENABLE_PROVIDER_QUOTA_APPLY="${XHUB_ENABLE_RUST_PROVIDER_QUOTA_APPLY:-$ENABLE_PROVIDER_KEY_SNAPSHOT}"
@@ -370,7 +379,16 @@ activate_embedded_rust_root() {
   fi
   local memory_gateway_guard_args=()
   if is_enabled "$ENABLE_MEMORY_CONTEXT_GATEWAY_REQUIRE"; then
-    memory_gateway_guard_args=(--require-memory-gateway-cutover-ready)
+    memory_gateway_guard_args+=(--require-memory-gateway-cutover-ready)
+  fi
+  if is_enabled "$ENABLE_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW_REQUIRE"; then
+    memory_gateway_guard_args+=(--require-memory-gateway-model-call-plan-shadow)
+  fi
+  if is_enabled "$ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTION_ADMISSION"; then
+    memory_gateway_guard_args+=(
+      --memory-gateway-model-call-execute-smoke-base-dir "$ACTIVE_ROOT"
+      --require-memory-gateway-model-call-execute-smoke
+    )
   fi
 
   run_step "Set safe Rust Hub active-root session env" set_safe_rust_session_env
@@ -409,11 +427,11 @@ activate_embedded_rust_root() {
           --timeout-ms "$CUTOVER_PREP_SUSTAINED_TIMEOUT_MS" \
           --rust-hub-root "$ACTIVE_ROOT" \
           --max-slow-requests "$CUTOVER_MAX_SLOW_REQUESTS" \
-          --max-cycle-ms "$CUTOVER_MAX_CYCLE_MS" \
-          --model-remote-runs 1 \
-          --model-local-runs 1 \
-          --scheduler-gate-mode applied \
-          "${memory_skills_guard_args[@]}"
+	          --max-cycle-ms "$CUTOVER_MAX_CYCLE_MS" \
+	          --model-remote-runs 1 \
+	          --model-local-runs 1 \
+	          --scheduler-gate-mode applied \
+	          ${memory_skills_guard_args[@]+"${memory_skills_guard_args[@]}"}
 
       local prep_sustained_report=""
       prep_sustained_report="$(latest_prep_sustained_report "$ACTIVE_ROOT")"
@@ -448,10 +466,10 @@ activate_embedded_rust_root() {
     if is_enabled "$ENABLE_PROVIDER_MODEL_PRODUCTION"; then
       run_step "Verify provider/model/scheduler Rust production runtime" \
         bash "$ACTIVE_ROOT/tools/route_authority_production_runtime_guard.command" \
-          --rust-hub-root "$ACTIVE_ROOT" \
-          --http-base-url "http://127.0.0.1:50151" \
-          --allow-xt-file-ipc-production \
-          "${memory_skills_guard_args[@]}"
+	          --rust-hub-root "$ACTIVE_ROOT" \
+	          --http-base-url "http://127.0.0.1:50151" \
+	          --allow-xt-file-ipc-production \
+	          ${memory_skills_guard_args[@]+"${memory_skills_guard_args[@]}"}
     fi
 
     if is_enabled "$ENABLE_XT_LIVE_CUTOVER"; then
@@ -461,9 +479,9 @@ activate_embedded_rust_root() {
           --interval-ms 2000 \
           --max-status-age-ms 5000 \
           --status-read-timeout-ms 3000 \
-          --live-base-dir "$XT_LIVE_BASE_DIR" \
-          --http-base-url "http://127.0.0.1:50151" \
-          "${memory_skills_guard_args[@]}"
+	          --live-base-dir "$XT_LIVE_BASE_DIR" \
+	          --http-base-url "http://127.0.0.1:50151" \
+	          ${memory_skills_guard_args[@]+"${memory_skills_guard_args[@]}"}
     fi
 
     if is_enabled "$ENABLE_MEMORY_CONTEXT_GATEWAY_REQUIRE"; then
@@ -473,11 +491,27 @@ activate_embedded_rust_root() {
           --required-samples 3
     fi
 
-    run_step "Verify daemon ops after Rust authority cutover" \
-      bash "$ACTIVE_ROOT/tools/daemon_ops_gate.command" \
-        --max-slow-requests "$CUTOVER_MAX_SLOW_REQUESTS" \
-        "${memory_skills_guard_args[@]}" \
-        "${memory_gateway_guard_args[@]}"
+    if is_enabled "$ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTION_ADMISSION"; then
+      local model_call_execute_smoke_args=(
+        --http-base-url "http://127.0.0.1:50151"
+        --hub-base-dir "$ACTIVE_ROOT"
+        --require-admission-ready
+      )
+      local model_call_execute_smoke_access_key_file=""
+      model_call_execute_smoke_access_key_file="$(default_daemon_access_key_file "$(detect_rust_daemon_profile)" "$(default_daemon_install_plist_path "$(detect_rust_daemon_profile)")" "$(default_daemon_runtime_root "$(detect_rust_daemon_profile)")")"
+      if [ -n "$model_call_execute_smoke_access_key_file" ] && [ -f "$model_call_execute_smoke_access_key_file" ]; then
+        model_call_execute_smoke_args+=(--access-key-file "$model_call_execute_smoke_access_key_file")
+      fi
+      run_step "Verify Memory Gateway model-call execution admission guard" \
+        bash "$ACTIVE_ROOT/tools/memory_gateway_model_call_execute_smoke.command" \
+          "${model_call_execute_smoke_args[@]}"
+    fi
+
+	    run_step "Verify daemon ops after Rust authority cutover" \
+	      bash "$ACTIVE_ROOT/tools/daemon_ops_gate.command" \
+	        --max-slow-requests "$CUTOVER_MAX_SLOW_REQUESTS" \
+	        ${memory_skills_guard_args[@]+"${memory_skills_guard_args[@]}"} \
+	        ${memory_gateway_guard_args[@]+"${memory_gateway_guard_args[@]}"}
   elif is_enabled "$OPEN_AFTER_INSTALL"; then
     run_step "Open installed X-Hub.app" open "$APP_DEST"
   fi
@@ -654,6 +688,70 @@ set_safe_rust_session_env() {
     done
   fi
 
+  if is_enabled "$ENABLE_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW"; then
+    launchctl setenv XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW "1"
+    if is_enabled "$ENABLE_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW_REQUIRE"; then
+      launchctl setenv XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW_REQUIRE "1"
+    else
+      launchctl unsetenv XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW_REQUIRE 2>/dev/null || true
+    fi
+  else
+    for key in \
+      XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW \
+      XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW_REQUIRE
+    do
+      launchctl unsetenv "$key" 2>/dev/null || true
+    done
+  fi
+
+  if is_enabled "$ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTION_ADMISSION"; then
+    launchctl setenv XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTION_ADMISSION "1"
+    launchctl setenv XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_ADMISSION "1"
+  else
+    for key in \
+      XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTION_ADMISSION \
+      XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_ADMISSION
+    do
+      launchctl unsetenv "$key" 2>/dev/null || true
+    done
+  fi
+
+  if is_enabled "$ENABLE_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR"; then
+    launchctl setenv XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR "1"
+  else
+    launchctl unsetenv XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR 2>/dev/null || true
+  fi
+
+  if is_enabled "$ENABLE_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR" \
+    && is_enabled "$ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_APPLY"; then
+    launchctl setenv XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_APPLY "1"
+    if is_enabled "$ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_ONLY"; then
+      launchctl setenv XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_ONLY "1"
+      launchctl setenv XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_PROJECT_ID "$MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_PROJECT_ID"
+      launchctl setenv XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_REQUEST_PREFIX "$MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_REQUEST_PREFIX"
+      launchctl setenv XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_AUDIT_PREFIX "$MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_AUDIT_PREFIX"
+    else
+      for key in \
+        XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_ONLY \
+        XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_PROJECT_ID \
+        XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_REQUEST_PREFIX \
+        XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_AUDIT_PREFIX
+      do
+        launchctl unsetenv "$key" 2>/dev/null || true
+      done
+    fi
+  else
+    launchctl unsetenv XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_APPLY 2>/dev/null || true
+    for key in \
+      XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_ONLY \
+      XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_PROJECT_ID \
+      XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_REQUEST_PREFIX \
+      XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_AUDIT_PREFIX
+    do
+      launchctl unsetenv "$key" 2>/dev/null || true
+    done
+  fi
+
   if ! is_enabled "$ENABLE_PROVIDER_MODEL_PRODUCTION"; then
     for key in \
       XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY \
@@ -764,6 +862,12 @@ echo "[config] Authority cutover: $ENABLE_AUTHORITY_CUTOVER"
 echo "[config] Provider/model production: $ENABLE_PROVIDER_MODEL_PRODUCTION"
 echo "[config] Memory context gateway primary: $ENABLE_MEMORY_CONTEXT_GATEWAY"
 echo "[config] Memory context gateway require: $ENABLE_MEMORY_CONTEXT_GATEWAY_REQUIRE"
+echo "[config] Memory gateway model-call plan shadow: $ENABLE_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW"
+echo "[config] Memory gateway model-call plan require: $ENABLE_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW_REQUIRE"
+echo "[config] Memory gateway model-call execution admission: $ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTION_ADMISSION"
+echo "[config] Memory gateway model-call local executor: $ENABLE_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR"
+echo "[config] Memory gateway model-call execute apply: $ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_APPLY"
+echo "[config] Memory gateway model-call execute canary only: $ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_ONLY"
 echo "[config] Provider key snapshot in Rust: $ENABLE_PROVIDER_KEY_SNAPSHOT"
 echo "[config] Provider quota apply in Rust: $ENABLE_PROVIDER_QUOTA_APPLY"
 echo "[config] Provider quota scheduler in Rust: $ENABLE_PROVIDER_QUOTA_SCHEDULER"

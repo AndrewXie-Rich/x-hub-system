@@ -50,3 +50,26 @@ addresses are not presented as stable remote entries.
 
 - `cargo test -p xhubd network_bridge`: ok
 - `cargo test -p xhubd public_base_url_readiness`: ok
+
+## Implementation Update 2026-06-02
+
+XT now consumes the Rust `GET /network/remote-entry-candidates` decision through
+a lightweight background client. The paired-route snapshot can mark the stable
+remote route source as `rust_remote_entry_candidate`, so stale cached profile
+hosts no longer have to be the only source of the formal remote entry.
+
+The XT refresh is intentionally non-blocking:
+
+- fetch timeout: 0.8s;
+- refresh throttle: 10s;
+- route snapshot reads cached data only;
+- raw public IP candidates remain ignored unless explicitly handled by the
+  older manual endpoint path.
+
+Verification:
+
+- `swift test --filter 'HubAIClientRemoteConnectOptionsTests|RustHubRemoteEntryCandidatesClientTests|HubRemoteHostPolicyTests'`: ok
+- live remote-entry preferred host: `andrew.tailbe79cd.ts.net`
+- live domain smoke: `/health` 200, unauthenticated `/ready` 401,
+  authenticated `/ready` 200 with `cross_network_ready=true`
+- rebuilt XT bundle: `build/X-Terminal.app`

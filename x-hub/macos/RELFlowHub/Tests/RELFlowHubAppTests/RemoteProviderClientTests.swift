@@ -277,6 +277,69 @@ final class RemoteProviderClientTests: XCTestCase {
         XCTAssertEqual(imported.source, .explicitProvider)
     }
 
+    func testProviderConfigImportHandlesTomlQuotesAndInlineComments() throws {
+        let text = """
+        model_provider = 'crs' # active provider
+        model = "gpt-5.4" # preferred model
+
+        [model_providers.crs]
+        base_url = 'https://wxs.lat/openai' # keep exact host/path
+        wire_api = "responses" # use responses API
+        requires_openai_auth = true # selected for import
+        """
+
+        let imported = try ProviderConfigImport.parse(text: text)
+
+        XCTAssertEqual(imported.providerName, "crs")
+        XCTAssertEqual(imported.backend, "openai_compatible")
+        XCTAssertEqual(imported.baseURL, "https://wxs.lat/openai")
+        XCTAssertEqual(imported.apiKeyRef, "openai_compatible:wxs.lat")
+        XCTAssertEqual(imported.preferredModelID, "gpt-5.4")
+        XCTAssertEqual(imported.wireAPI, "responses")
+    }
+
+    func testAddRemoteImportBehaviorPreservesExistingKeyWhenConfigHasCompanionCredential() {
+        XCTAssertTrue(
+            AddRemoteModelImportBehavior.shouldPreserveExistingAPIKeyOnConfigImport(
+                currentAPIKey: "sk-user-key",
+                importedAPIKey: "ey-chatgpt-access-token-that-is-much-longer"
+            )
+        )
+        XCTAssertFalse(
+            AddRemoteModelImportBehavior.shouldPreserveExistingAPIKeyOnConfigImport(
+                currentAPIKey: "",
+                importedAPIKey: "sk-imported"
+            )
+        )
+        XCTAssertFalse(
+            AddRemoteModelImportBehavior.shouldPreserveExistingAPIKeyOnConfigImport(
+                currentAPIKey: "sk-same",
+                importedAPIKey: "sk-same"
+            )
+        )
+    }
+
+    func testAddRemoteImportBehaviorPreservesExistingBaseWhenAuthHasNoExplicitBaseURL() {
+        XCTAssertTrue(
+            AddRemoteModelImportBehavior.shouldPreserveExistingBaseURLOnAuthImport(
+                existingBaseURL: "https://wxs.lat/openai",
+                rawCredentialBaseURL: ""
+            )
+        )
+        XCTAssertFalse(
+            AddRemoteModelImportBehavior.shouldPreserveExistingBaseURLOnAuthImport(
+                existingBaseURL: "",
+                rawCredentialBaseURL: ""
+            )
+        )
+        XCTAssertFalse(
+            AddRemoteModelImportBehavior.shouldPreserveExistingBaseURLOnAuthImport(
+                existingBaseURL: "https://wxs.lat/openai",
+                rawCredentialBaseURL: "https://api.openai.com/v1"
+            )
+        )
+    }
+
     func testProviderConfigImportAcceptsSelectedOpenAICompatibleProviderWithoutRequiresFlag() throws {
         let text = """
         model_provider = "flu"

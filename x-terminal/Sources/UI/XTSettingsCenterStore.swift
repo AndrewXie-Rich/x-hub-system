@@ -26,6 +26,7 @@ struct XTSettingsCenterSnapshot: Equatable {
     var hubInviteAlias: String
     var hubInviteInstanceID: String
     var hubAxhubctlPath: String
+    var hubProfilesSnapshot: XTHubProfilesSnapshot
     var serverRunning: Bool
     var localServerEnabled: Bool
     var localServerPort: Int
@@ -73,6 +74,7 @@ struct XTSettingsCenterSnapshot: Equatable {
         hubInviteAlias: "",
         hubInviteInstanceID: "",
         hubAxhubctlPath: "",
+        hubProfilesSnapshot: .empty,
         serverRunning: false,
         localServerEnabled: false,
         localServerPort: 8080,

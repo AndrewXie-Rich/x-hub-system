@@ -2,476 +2,38 @@ import SwiftUI
 import AppKit
 import RELFlowHubCore
 
-private struct RemoteModelSignalVisual: Identifiable {
-    let title: String
-    let systemName: String
-    let tint: Color
-
-    var id: String { title }
-}
-
-private enum ModelResourcePoolKind: Equatable {
-    case local
-    case provider
-}
-
-private struct ModelResourcePoolSummary: Identifiable {
-    let id: String
-    let kind: ModelResourcePoolKind
-    let vendorKey: String
-    let title: String
-    let subtitle: String
-    let statusText: String
-    let badgeText: String
-    let systemName: String
-    let tint: Color
-    let accountText: String
-    let quotaText: String
-    let modelText: String
-    let detailText: String
-    let models: [String]
-    let hiddenModelCount: Int
-    let usageWindows: [ProviderKeyUsageWindow]
-}
-
-private enum TerminalAccessExampleKind: String, CaseIterable, Identifiable {
-    case shell
-    case python
-    case node
-    case curl
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .shell:
-            return "Shell"
-        case .python:
-            return "Python"
-        case .node:
-            return "Node"
-        case .curl:
-            return "curl"
-        }
-    }
-
-    var blockTitle: String {
-        "\(title) 接入示例"
-    }
-
-    var copyButtonTitle: String {
-        "复制\(title)示例"
-    }
-
-    var tint: Color {
-        switch self {
-        case .shell:
-            return .teal
-        case .python:
-            return .blue
-        case .node:
-            return .orange
-        case .curl:
-            return .green
-        }
-    }
-}
-
-private enum RemoteQuotaConsumerFilter: String, CaseIterable, Identifiable {
-    case all
-    case xt
-    case terminal
-    case risk
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .all:
-            return "全部"
-        case .xt:
-            return "XT"
-        case .terminal:
-            return "Terminal"
-        case .risk:
-            return "风险"
-        }
-    }
-}
-
-private enum RemoteQuotaVendorFilter: String, CaseIterable, Identifiable {
-    case all
-    case risk
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .all:
-            return "全部"
-        case .risk:
-            return "风险"
-        }
-    }
-}
-
-private enum RemoteQuotaUserFilter: String, CaseIterable, Identifiable {
-    case all
-    case risk
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .all:
-            return "全部"
-        case .risk:
-            return "风险"
-        }
-    }
-}
-
-private struct ProviderKeyVendorInventorySummary: Identifiable {
-    let vendorKey: String
-    let displayName: String
-    let pools: [ProviderKeyPoolSnapshot]
-    let spotlightUsers: [ProviderKeyVendorUserSpotlight]
-    let spotlightConsumers: [ProviderKeyVendorConsumerSpotlight]
-    let providerDisplayNames: [String]
-    let providerHosts: [String]
-    let familyKeys: [String]
-    let familyDisplayNames: [String]
-    let coveredUserCount: Int
-    let coveredConsumerCount: Int
-    let coveredUnlimitedConsumerCount: Int
-    let coveredFamilyCount: Int
-    let poolCount: Int
-    let totalAccounts: Int
-    let readyAccounts: Int
-    let cooldownAccounts: Int
-    let blockedAccounts: Int
-    let disabledAccounts: Int
-    let staleAccounts: Int
-    let totalDailyTokenCap: Int64
-    let totalDailyTokensUsed: Int64
-    let totalDailyTokensRemaining: Int64
-    let totalTokensUsed: Int64
-    let assignedDailyTokenBudget: Int64
-    let observedFamilyTokensUsed: Int64
-    let allocationHeadroom: Int64
-    let oversubscribedFamilyCount: Int
-    let hotPoolCount: Int
-
-    var id: String { vendorKey }
-}
-
-private struct ProviderKeyVendorUserSpotlight: Identifiable {
-    let user: RemoteQuotaCenterUserProjection
-    let vendorObservedDailyTokensUsed: Int64
-
-    var id: String { user.id }
-}
-
-private struct ProviderKeyVendorConsumerSpotlight: Identifiable {
-    let consumer: RemoteQuotaCenterClientProjection
-    let vendorObservedDailyTokensUsed: Int64
-
-    var id: String { consumer.id }
-}
-
-private struct ProviderKeyFamilyInventorySummary: Identifiable {
-    let familyProjection: RemoteQuotaCenterFamilyProjection
-    let coveredUserCount: Int
-    let assignedConsumers: [RemoteQuotaCenterClientProjection]
-    let assignedDailyTokenBudget: Int64
-    let unlimitedBudgetConsumerCount: Int
-    let connectedAssignedConsumerCount: Int
-    let observedDailyTokensUsed: Int64
-
-    var id: String { familyProjection.id }
-    var familyKey: String { familyProjection.familyKey }
-    var displayName: String { familyProjection.displayName }
-    var quotaPool: ProviderQuotaPoolSnapshot { familyProjection.quotaPool }
-    var combinedDailyTokenCap: Int64 { familyProjection.combinedDailyTokenCap }
-    var combinedDailyTokensUsed: Int64 { familyProjection.combinedDailyTokensUsed }
-    var combinedDailyTokensRemaining: Int64 { familyProjection.combinedDailyTokensRemaining }
-    var assignedClientCount: Int { assignedConsumers.count }
-    var assignedClients: [RemoteQuotaCenterClientProjection] { assignedConsumers }
-    var isOversubscribed: Bool {
-        combinedDailyTokenCap > 0 && assignedDailyTokenBudget > combinedDailyTokenCap
-    }
-}
-
-private struct ProviderKeyScopeOverview {
-    let focusedUser: RemoteQuotaCenterUserProjection?
-    let focusedVendorDisplayName: String?
-    let userCount: Int
-    let consumerCount: Int
-    let connectedConsumerCount: Int
-    let xtConsumerCount: Int
-    let terminalConsumerCount: Int
-    let allocatedDailyTokenBudget: Int64
-    let unlimitedBudgetConsumerCount: Int
-    let observedConsumerTokensUsed: Int64
-    let oversubscribedFamilyCount: Int
-}
-
-private struct ProviderKeySectionSnapshot {
-    let keyPools: [ProviderKeyPoolSnapshot]
-    let overview: RemoteQuotaCenterOverview
-    let totalFamilyCount: Int
-    let totalConsumerCount: Int
-    let consumerLedgerTotalCount: Int
-    let users: [RemoteQuotaCenterUserProjection]
-    let focusedUser: RemoteQuotaCenterUserProjection?
-    let scopedUsers: [RemoteQuotaCenterUserProjection]
-    let scopedConsumers: [RemoteQuotaCenterClientProjection]
-    let vendorSummaries: [ProviderKeyVendorInventorySummary]
-    let filteredVendors: [ProviderKeyVendorInventorySummary]
-    let filteredFamilies: [ProviderKeyFamilyInventorySummary]
-    let filteredUsers: [RemoteQuotaCenterUserProjection]
-    let filteredConsumers: [RemoteQuotaCenterClientProjection]
-    let focusedVendor: ProviderKeyVendorInventorySummary?
-    let flowChains: [ProviderKeyFlowChainSummary]
-    let scopeOverview: ProviderKeyScopeOverview
-    let riskVendorCount: Int
-    let riskFamilyCount: Int
-    let overallTrendCard: ProviderKeyTrendCardSummary?
-    let vendorTrendCards: [ProviderKeyTrendCardSummary]
-    let familyTrendCards: [ProviderKeyTrendCardSummary]
-    let userTrendCards: [ProviderKeyTrendCardSummary]
-    let consumerTrendCards: [ProviderKeyTrendCardSummary]
-    let trendCardCount: Int
-    let operationalTint: Color
-}
-
-private struct SettingsLocalModelSnapshot {
-    let models: [HubModel]
-    let loadedCount: Int
-
-    static let empty = SettingsLocalModelSnapshot(
-        models: [],
-        loadedCount: 0
-    )
-
-    static func build(from catalogModels: [HubModel]) -> SettingsLocalModelSnapshot {
-        let models = LocalModelRuntimeActionPlanner.localModels(from: catalogModels)
-        return SettingsLocalModelSnapshot(
-            models: models,
-            loadedCount: models.filter { $0.state == .loaded }.count
-        )
-    }
-}
-
-private struct ProviderKeyTrendCardSummary: Identifiable {
-    let id: String
-    let title: String
-    let subtitle: String
-    let footnote: String
-    let systemName: String
-    let tint: Color
-    let aggregate: RemoteQuotaTrendAggregate
-}
-
-private enum ProviderKeyFlowLinkKind: Int, Comparable {
-    case dedicated = 0
-    case shared = 1
-    case elastic = 2
-
-    static func < (lhs: ProviderKeyFlowLinkKind, rhs: ProviderKeyFlowLinkKind) -> Bool {
-        lhs.rawValue < rhs.rawValue
-    }
-
-    var title: String {
-        switch self {
-        case .dedicated:
-            return "专属链路"
-        case .shared:
-            return "共享链路"
-        case .elastic:
-            return "弹性全家族"
-        }
-    }
-
-    var tint: Color {
-        switch self {
-        case .dedicated:
-            return .green
-        case .shared:
-            return .blue
-        case .elastic:
-            return .orange
-        }
-    }
-}
-
-private struct ProviderKeyFlowChainSummary: Identifiable {
-    let vendor: ProviderKeyVendorInventorySummary
-    let user: RemoteQuotaCenterUserProjection
-    let consumer: RemoteQuotaCenterClientProjection
-    let linkKind: ProviderKeyFlowLinkKind
-    let matchedFamilyCount: Int
-    let vendorObservedDailyTokensUsed: Int64
-
-    var id: String {
-        "\(vendor.id)::\(user.id)::\(consumer.id)"
-    }
-}
-
-private struct RemoteQuotaBudgetEditorTarget: Identifiable, Equatable {
-    let consumerKind: RemoteQuotaCenterConsumerKind
-    let referenceID: String
-    let title: String
-    let subtitle: String
-    let currentDailyTokenLimit: Int
-    let todayUsed: Int64
-
-    var id: String { "\(consumerKind.rawValue):\(referenceID)" }
-}
-
-private enum HubSettingsPage: String, CaseIterable, Identifiable {
-    case overview
-    case access
-    case models
-    case runtime
-    case integrations
-    case diagnostics
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .overview:
-            return "总览"
-        case .access:
-            return "接入"
-        case .models:
-            return "模型与额度"
-        case .runtime:
-            return "运行时基础设施"
-        case .integrations:
-            return "集成"
-        case .diagnostics:
-            return "诊断与高级"
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .overview:
-            return "先看 Hub 当前是否健康、是否可服务。"
-        case .access:
-            return "管理 XT、Terminal 和远程接入。"
-        case .models:
-            return "并排管理本地模型能力、付费模型能力与共享额度。"
-        case .runtime:
-            return "管理本地 runtime provider、队列、实例与任务路由。"
-        case .integrations:
-            return "管理 Operator、Skills 和扩展能力。"
-        case .diagnostics:
-            return "排障、导出、恢复与底层配置。"
-        }
-    }
-
-    var systemName: String {
-        switch self {
-        case .overview:
-            return "square.grid.2x2.fill"
-        case .access:
-            return "link.badge.plus"
-        case .models:
-            return "shippingbox.fill"
-        case .runtime:
-            return "cpu.fill"
-        case .integrations:
-            return "bolt.horizontal.circle.fill"
-        case .diagnostics:
-            return "stethoscope"
-        }
-    }
-
-    var tint: Color {
-        switch self {
-        case .overview:
-            return .blue
-        case .access:
-            return .teal
-        case .models:
-            return .indigo
-        case .runtime:
-            return .orange
-        case .integrations:
-            return .green
-        case .diagnostics:
-            return .red
-        }
-    }
-}
-
-private struct HubSettingsMetric: Identifiable {
-    let title: String
-    let value: String
-    let detail: String
-    let tint: Color
-
-    var id: String { "\(title)::\(value)::\(detail)" }
-}
-
-private enum CLIProxyOAuthInventoryState {
-    case ready
-    case cooling
-    case blocked
-    case disabled
-    case refreshing
-    case waiting
-}
-
-private struct CLIProxyOAuthProviderInventorySummary: Identifiable {
-    let providerKey: String
-    let displayName: String
-    let totalCount: Int
-    let readyCount: Int
-    let coolingCount: Int
-    let blockedCount: Int
-    let disabledCount: Int
-    let refreshingCount: Int
-    let waitingCount: Int
-
-    var id: String { providerKey }
-}
-
 struct SettingsSheetView: View {
     @EnvironmentObject var store: HubStore
     @Environment(\.dismiss) private var dismiss
 
-    @ObservedObject private var grpc = HubGRPCServerSupport.shared
-    @ObservedObject private var modelStore = ModelStore.shared
-    @ObservedObject private var servingPower = HubServingPowerManager.shared
-    @ObservedObject private var remoteRouteProbe = HubRemoteAccessRouteProbe.shared
+    @ObservedObject var grpc = HubGRPCServerSupport.shared
+    @ObservedObject var modelStore = ModelStore.shared
+    @ObservedObject var servingPower = HubServingPowerManager.shared
+    @ObservedObject var remoteRouteProbe = HubRemoteAccessRouteProbe.shared
 
-    @State private var remoteModels: [RemoteModelEntry] = sortedRemoteModels(RemoteModelStorage.load().models)
-    @State private var providerKeySnapshot: ProviderKeyStoreSnapshot = ProviderKeyStorage.load()
-    @State private var providerKeyDerivedSnapshot: ProviderKeyStoreDerivedSnapshot = ProviderKeyStorage.derivedSnapshot(
+    @State var remoteModels: [RemoteModelEntry] = sortedRemoteModels(RemoteModelStorage.load().models)
+    @State var providerKeySnapshot: ProviderKeyStoreSnapshot = ProviderKeyStorage.load()
+    @State var providerKeyDerivedSnapshot: ProviderKeyStoreDerivedSnapshot = ProviderKeyStorage.derivedSnapshot(
         from: ProviderKeyStorage.load()
     )
-    @State private var localModelSnapshot: SettingsLocalModelSnapshot = SettingsLocalModelSnapshot.build(
+    @State var localModelSnapshot: SettingsLocalModelSnapshot = SettingsLocalModelSnapshot.build(
         from: ModelStore.shared.snapshot.models
     )
-    @State private var showDiscoverModels: Bool = false
-    @State private var showAddModel: Bool = false
-    @State private var showAddRemoteModel: Bool = false
-    @State private var showImportRemoteCatalog: Bool = false
-    @State private var editingRemoteModelGroup: RemoteModelKeyGroup? = nil
-    @State private var networkPolicies: [HubNetworkPolicyRule] = HubNetworkPolicyStorage.load().policies
-    @State private var showAddNetworkPolicy: Bool = false
-    @State private var showAddGRPCClient: Bool = false
-    @State private var editingGRPCClient: HubGRPCClientEntry? = nil
-    @State private var editingGRPCClientFocusCapabilityKey: String? = nil
-    @State private var deletingGRPCClient: HubGRPCClientEntry? = nil
-    @State private var grpcClientListFilter: GRPCClientListFilter = .all
-    @State private var grpcDevicesStatus: GRPCDevicesStatusSnapshot = GRPCDevicesStatusStorage.load()
-    @State private var grpcDeniedAttempts: GRPCDeniedAttemptsSnapshot = GRPCDeniedAttemptsStorage.load()
-    @State private var hubLaunchStatus: HubLaunchStatusSnapshot? = HubLaunchStatusStorage.load()
+    @State var showDiscoverModels: Bool = false
+    @State var showAddModel: Bool = false
+    @State var showAddRemoteModel: Bool = false
+    @State var showImportRemoteCatalog: Bool = false
+    @State var editingRemoteModelGroup: RemoteModelKeyGroup? = nil
+    @State var networkPolicies: [HubNetworkPolicyRule] = HubNetworkPolicyStorage.load().policies
+    @State var showAddNetworkPolicy: Bool = false
+    @State var showAddGRPCClient: Bool = false
+    @State var editingGRPCClient: HubGRPCClientEntry? = nil
+    @State var editingGRPCClientFocusCapabilityKey: String? = nil
+    @State var deletingGRPCClient: HubGRPCClientEntry? = nil
+    @State var grpcClientListFilter: GRPCClientListFilter = .all
+    @State var grpcDevicesStatus: GRPCDevicesStatusSnapshot = GRPCDevicesStatusStorage.load()
+    @State var grpcDeniedAttempts: GRPCDeniedAttemptsSnapshot = GRPCDeniedAttemptsStorage.load()
+    @State var hubLaunchStatus: HubLaunchStatusSnapshot? = HubLaunchStatusStorage.load()
     @State private var hubLaunchHistory: HubLaunchHistorySnapshot = HubLaunchHistoryStorage.load()
     @State private var diagnosticsBundleIsExporting: Bool = false
     @State private var diagnosticsBundleArchivePath: String = ""
@@ -489,127 +51,127 @@ struct SettingsSheetView: View {
     @State private var diagnosticsActionResultText: String = ""
     @State private var diagnosticsActionErrorText: String = ""
     @State private var settingsScrollTarget: String? = nil
-    @State private var highlightedProviderKeySourceRef: String? = nil
-    @State private var highlightedProviderKeyVendorKey: String? = nil
+    @State var highlightedProviderKeySourceRef: String? = nil
+    @State var highlightedProviderKeyVendorKey: String? = nil
     @State private var expandedProviderKeyPoolIssueIDs: Set<String> = []
     @State private var expandedProviderKeyMemberIssueIDs: Set<String> = []
-    @State private var remoteQuotaActionText: String = ""
-    @State private var remoteQuotaErrorText: String = ""
+    @State var remoteQuotaActionText: String = ""
+    @State var remoteQuotaErrorText: String = ""
 
-    @State private var skillsIndex: HubSkillsStoreStorage.SkillsIndexSnapshot = HubSkillsStoreStorage.loadSkillsIndex()
-    @State private var skillsPins: HubSkillsStoreStorage.SkillPinsSnapshot = HubSkillsStoreStorage.loadSkillPins()
-    @State private var skillsSources: HubSkillsStoreStorage.SkillSourcesSnapshot = HubSkillsStoreStorage.loadSkillSources()
-    @State private var skillsSearchQuery: String = ""
-    @State private var skillsResolveUserId: String = ""
-    @State private var skillsResolveProjectId: String = ""
-    @State private var skillsLastActionText: String = ""
-    @State private var skillsLastErrorText: String = ""
-    @State private var axConstitutionVersion: String = ""
-    @State private var axConstitutionEnabledClauseIds: [String] = []
-    @State private var axConstitutionErrorText: String = ""
+    @State var skillsIndex: HubSkillsStoreStorage.SkillsIndexSnapshot = HubSkillsStoreStorage.loadSkillsIndex()
+    @State var skillsPins: HubSkillsStoreStorage.SkillPinsSnapshot = HubSkillsStoreStorage.loadSkillPins()
+    @State var skillsSources: HubSkillsStoreStorage.SkillSourcesSnapshot = HubSkillsStoreStorage.loadSkillSources()
+    @State var skillsSearchQuery: String = ""
+    @State var skillsResolveUserId: String = ""
+    @State var skillsResolveProjectId: String = ""
+    @State var skillsLastActionText: String = ""
+    @State var skillsLastErrorText: String = ""
+    @State var axConstitutionVersion: String = ""
+    @State var axConstitutionEnabledClauseIds: [String] = []
+    @State var axConstitutionErrorText: String = ""
     @State private var operatorChannelProviderReadiness: [HubOperatorChannelOnboardingDeliveryReadiness] = []
     @State private var operatorChannelProviderRuntimeStatus: [HubOperatorChannelProviderRuntimeStatus] = []
     @State private var operatorChannelProviderReadinessError: String = ""
     @State private var operatorChannelProviderReadinessInFlight: Bool = false
     @State private var operatorChannelProviderReadinessActionText: String = ""
-    @State private var terminalAccessKeys: [HubTerminalAccessKey] = []
-    @State private var terminalAccessDraft: HubTerminalAccessKeyDraft = .init()
-    @State private var terminalAccessLastSecret: HubTerminalAccessKeySecretEnvelope? = nil
-    @State private var terminalAccessActionText: String = ""
-    @State private var terminalAccessErrorText: String = ""
-    @State private var terminalAccessReloadInFlight: Bool = false
-    @State private var terminalAccessMutationInFlight: Bool = false
-    @State private var terminalAccessPendingRevokeAccessKeyID: String = ""
-    @State private var terminalAccessExampleKind: TerminalAccessExampleKind = .python
-    @State private var cliproxyRuntimeSettings: CLIProxyRuntimeSupport.Settings = CLIProxyRuntimeSupport.loadSettings()
-    @State private var cliproxyRuntimeProbe: CLIProxyRuntimeSupport.Probe = .init()
-    @State private var cliproxyRuntimeRefreshing: Bool = false
-    @State private var cliproxyRuntimeLaunching: Bool = false
-    @State private var cliproxyRuntimeConfigApplying: Bool = false
-    @State private var cliproxyRuntimeKeyRotating: Bool = false
-    @State private var cliproxyRuntimeConfigAudit: CLIProxyRuntimeSupport.ConfigAudit = .empty
-    @State private var cliproxyRuntimeActionText: String = ""
-    @State private var cliproxyRuntimeErrorText: String = ""
-    @State private var cliproxyRuntimeLastProbeAtMs: Int64 = 0
+    @State var terminalAccessKeys: [HubTerminalAccessKey] = []
+    @State var terminalAccessDraft: HubTerminalAccessKeyDraft = .init()
+    @State var terminalAccessLastSecret: HubTerminalAccessKeySecretEnvelope? = nil
+    @State var terminalAccessActionText: String = ""
+    @State var terminalAccessErrorText: String = ""
+    @State var terminalAccessReloadInFlight: Bool = false
+    @State var terminalAccessMutationInFlight: Bool = false
+    @State var terminalAccessPendingRevokeAccessKeyID: String = ""
+    @State var terminalAccessExampleKind: TerminalAccessExampleKind = .python
+    @State var cliproxyRuntimeSettings: CLIProxyRuntimeSupport.Settings = CLIProxyRuntimeSupport.loadSettings()
+    @State var cliproxyRuntimeProbe: CLIProxyRuntimeSupport.Probe = .init()
+    @State var cliproxyRuntimeRefreshing: Bool = false
+    @State var cliproxyRuntimeLaunching: Bool = false
+    @State var cliproxyRuntimeConfigApplying: Bool = false
+    @State var cliproxyRuntimeKeyRotating: Bool = false
+    @State var cliproxyRuntimeConfigAudit: CLIProxyRuntimeSupport.ConfigAudit = .empty
+    @State var cliproxyRuntimeActionText: String = ""
+    @State var cliproxyRuntimeErrorText: String = ""
+    @State var cliproxyRuntimeLastProbeAtMs: Int64 = 0
     @State private var cliproxyRuntimeFastProbeUntilMs: Int64 = 0
-    @State private var rustHubRuntimeSnapshot: RustHubRuntimeSnapshot = RustHubRuntimeSupport.localSnapshot()
-    @State private var rustHubRuntimeRefreshing: Bool = false
+    @State var rustHubRuntimeSnapshot: RustHubRuntimeSnapshot = RustHubRuntimeSupport.localSnapshot()
+    @State var rustHubRuntimeRefreshing: Bool = false
     @State private var rustHubRuntimeLastRefreshAt: Date = .distantPast
-    @State private var rustLocalModelRepairPlan: RustLocalModelRepairPlan? = nil
+    @State var rustLocalModelRepairPlan: RustLocalModelRepairPlan? = nil
     @State private var rustLocalModelRepairPlanRefreshing: Bool = false
     @State private var rustLocalModelRepairPlanLastRefreshAt: Date = .distantPast
     @State private var rustLocalModelRepairApplyDialogPresented: Bool = false
     @State private var rustLocalModelRepairApplyPendingPlan: RustLocalModelRepairPlan? = nil
-    @State private var rustLocalModelRepairApplyInFlight: Bool = false
-    @State private var rustLocalModelRepairApplyResult: RustLocalModelRepairApplyResult? = nil
-    @State private var rustLocalModelRepairExecutorInFlight: Bool = false
-    @State private var rustLocalModelRepairExecutorResult: RustLocalModelRepairExecutorResult? = nil
-    @State private var rustLocalModelRepairApplyErrorText: String = ""
-    @State private var rustLocalModelRepairJobsSnapshot: RustLocalModelRepairJobsSnapshot = .empty
+    @State var rustLocalModelRepairApplyInFlight: Bool = false
+    @State var rustLocalModelRepairApplyResult: RustLocalModelRepairApplyResult? = nil
+    @State var rustLocalModelRepairExecutorInFlight: Bool = false
+    @State var rustLocalModelRepairExecutorResult: RustLocalModelRepairExecutorResult? = nil
+    @State var rustLocalModelRepairApplyErrorText: String = ""
+    @State var rustLocalModelRepairJobsSnapshot: RustLocalModelRepairJobsSnapshot = .empty
     @State private var rustLocalModelRepairJobsRefreshing: Bool = false
     @State private var rustLocalModelRepairJobsLastRefreshAt: Date = .distantPast
     @State private var rustHubRemoteEntryCandidates: RustHubRemoteEntryCandidates = .empty
-    @State private var rustHubRemoteEntryRefreshing: Bool = false
+    @State var rustHubRemoteEntryRefreshing: Bool = false
     @State private var rustHubRemoteEntryLastRefreshAt: Date = .distantPast
-    @State private var cliproxyOAuthSettings: CLIProxyOAuthSourceSupport.Settings = CLIProxyOAuthSourceSupport.loadSettings()
-    @State private var cliproxyOAuthManagementKey: String = CLIProxyOAuthSourceSupport.loadManagementKey(
+    @State var cliproxyOAuthSettings: CLIProxyOAuthSourceSupport.Settings = CLIProxyOAuthSourceSupport.loadSettings()
+    @State var cliproxyOAuthManagementKey: String = CLIProxyOAuthSourceSupport.loadManagementKey(
         baseURL: CLIProxyOAuthSourceSupport.loadSettings().baseURL
     )
-    @State private var cliproxyOAuthRemoteAuths: [CLIProxyOAuthSourceSupport.RemoteAuthFile] = []
-    @State private var cliproxyOAuthActionText: String = ""
-    @State private var cliproxyOAuthErrorText: String = ""
-    @State private var cliproxyOAuthRefreshing: Bool = false
-    @State private var cliproxyOAuthSyncing: Bool = false
-    @State private var cliproxyOAuthActiveState: String = ""
-    @State private var cliproxyOAuthActiveProvider: HubProviderOAuthHTTPClient.Provider? = nil
-    @State private var cliproxyOAuthLastRemoteFetchAtMs: Int64 = 0
+    @State var cliproxyOAuthRemoteAuths: [CLIProxyOAuthSourceSupport.RemoteAuthFile] = []
+    @State var cliproxyOAuthActionText: String = ""
+    @State var cliproxyOAuthErrorText: String = ""
+    @State var cliproxyOAuthRefreshing: Bool = false
+    @State var cliproxyOAuthSyncing: Bool = false
+    @State var cliproxyOAuthActiveState: String = ""
+    @State var cliproxyOAuthActiveProvider: HubProviderOAuthHTTPClient.Provider? = nil
+    @State var cliproxyOAuthLastRemoteFetchAtMs: Int64 = 0
     @State private var cliproxyOAuthLastAutoSyncAtMs: Int64 = 0
     @State private var remoteQuotaBudgetEditorTarget: RemoteQuotaBudgetEditorTarget? = nil
-    @State private var remoteQuotaFocusedUserGroupingKey: String = ""
-    @State private var remoteQuotaFocusedVendorKey: String = ""
-    @State private var remoteQuotaVendorFilter: RemoteQuotaVendorFilter = .all
-    @State private var remoteQuotaUserFilter: RemoteQuotaUserFilter = .all
-    @State private var remoteQuotaConsumerFilter: RemoteQuotaConsumerFilter = .all
+    @State var remoteQuotaFocusedUserGroupingKey: String = ""
+    @State var remoteQuotaFocusedVendorKey: String = ""
+    @State var remoteQuotaVendorFilter: RemoteQuotaVendorFilter = .all
+    @State var remoteQuotaUserFilter: RemoteQuotaUserFilter = .all
+    @State var remoteQuotaConsumerFilter: RemoteQuotaConsumerFilter = .all
     @State private var selectedSettingsPage: HubSettingsPage = .overview
-    @State private var modelCatalogDetailsExpanded: Bool = false
-    @State private var modelsAutoScanExpanded: Bool = false
-    @State private var providerQuotaOperationsExpanded: Bool = false
-    @State private var runtimeRoutingExpanded: Bool = false
+    @State var modelCatalogDetailsExpanded: Bool = false
+    @State var modelsAutoScanExpanded: Bool = false
+    @State var providerQuotaOperationsExpanded: Bool = false
+    @State var runtimeRoutingExpanded: Bool = false
     @State private var integrationsAuxExpanded: Bool = false
     @State private var diagnosticsLaunchExpanded: Bool = false
     @State private var diagnosticsNetworkExpanded: Bool = false
     @State private var diagnosticsAdvancedExpanded: Bool = false
-    @State private var expandedGRPCClientDetailIDs: Set<String> = []
-    @State private var expandedTerminalAccessKeyDetailIDs: Set<String> = []
-    @State private var expandedProviderKeyVendorIDs: Set<String> = []
-    @State private var expandedProviderKeyPoolIDs: Set<String> = []
-    @State private var terminalAccessIssueExpanded: Bool = false
-    @State private var terminalAccessLastSecretExpanded: Bool = false
-    @State private var expandedRemoteModelGroupIDs: Set<String> = []
-    @State private var remoteModelCatalogExpanded: Bool = false
+    @State var expandedGRPCClientDetailIDs: Set<String> = []
+    @State var expandedTerminalAccessKeyDetailIDs: Set<String> = []
+    @State var expandedProviderKeyVendorIDs: Set<String> = []
+    @State var expandedProviderKeyPoolIDs: Set<String> = []
+    @State var terminalAccessIssueExpanded: Bool = false
+    @State var terminalAccessLastSecretExpanded: Bool = false
+    @State var expandedRemoteModelGroupIDs: Set<String> = []
+    @State var remoteModelCatalogExpanded: Bool = false
     @State private var remoteModelGroupsSnapshot: [RemoteModelKeyGroup] = []
-    @State private var providerImportSourcesExpanded: Bool = false
-    @State private var providerVendorLedgerExpanded: Bool = false
-    @State private var providerFamilyLedgerExpanded: Bool = false
-    @State private var providerPhysicalPoolsExpanded: Bool = false
-    @State private var providerUserLedgerExpanded: Bool = false
-    @State private var providerConsumerLedgerExpanded: Bool = false
-    @State private var providerOAuthExpanded: Bool = false
-    @State private var providerFlowExpanded: Bool = false
-    @State private var providerTrendExpanded: Bool = false
+    @State var providerImportSourcesExpanded: Bool = false
+    @State var providerVendorLedgerExpanded: Bool = false
+    @State var providerFamilyLedgerExpanded: Bool = false
+    @State var providerPhysicalPoolsExpanded: Bool = false
+    @State var providerUserLedgerExpanded: Bool = false
+    @State var providerConsumerLedgerExpanded: Bool = false
+    @State var providerOAuthExpanded: Bool = false
+    @State var providerFlowExpanded: Bool = false
+    @State var providerTrendExpanded: Bool = false
     @State private var remoteModelGroupsBuildTask: Task<Void, Never>? = nil
     @State private var providerKeyReloadTask: Task<Void, Never>? = nil
     @State private var remoteQuotaProjectionSnapshot: RemoteQuotaCenterProjection = Self.emptyRemoteQuotaProjection()
     @State private var remoteQuotaProjectionBuildTask: Task<Void, Never>? = nil
-    @State private var providerKeySectionSnapshot: ProviderKeySectionSnapshot = Self.emptyProviderKeySectionSnapshot()
+    @State var providerKeySectionSnapshot: ProviderKeySectionSnapshot = Self.emptyProviderKeySectionSnapshot()
     @State private var lastProviderKeyPeriodicRefreshAt: Date = .distantPast
     @State private var lastRemoteQuotaProjectionPeriodicRefreshAt: Date = .distantPast
 
-    private var axTrusted: Bool {
+    var axTrusted: Bool {
         DockBadgeReader.ensureAccessibilityTrusted(prompt: false)
     }
 
-    private var xhubLocalServiceRecoveryGuidance: XHubLocalServiceRecoveryGuidance? {
+    var xhubLocalServiceRecoveryGuidance: XHubLocalServiceRecoveryGuidance? {
         XHubLocalServiceRecoveryGuidanceBuilder.build(
             status: store.aiRuntimeStatusSnapshot,
             blockedCapabilities: hubLaunchStatus?.degraded.blockedCapabilities ?? []
@@ -627,11 +189,11 @@ struct SettingsSheetView: View {
         LocalRuntimeRepairSurfaceSummaryBuilder.build(rustRepairPlan: rustLocalModelRepairPlan)
     }
 
-    private var effectiveRuntimeRepairSurfaceSummary: LocalRuntimeRepairSurfaceSummary? {
+    var effectiveRuntimeRepairSurfaceSummary: LocalRuntimeRepairSurfaceSummary? {
         rustLocalModelRepairSurfaceSummary ?? runtimeRepairSurfaceSummary
     }
 
-    private var grpcRemoteAccessHealthSummary: HubRemoteAccessHealthSummary {
+    var grpcRemoteAccessHealthSummary: HubRemoteAccessHealthSummary {
         HubRemoteAccessHealthSummaryBuilder.build(
             autoStartEnabled: grpc.autoStart,
             serverRunning: grpc.isServingAvailable,
@@ -642,19 +204,19 @@ struct SettingsSheetView: View {
         )
     }
 
-    private var noDomainPrivateRemoteHost: String? {
+    var noDomainPrivateRemoteHost: String? {
         rustHubRemoteEntryCandidates.preferredNoDomainPrivateHost
             ?? grpc.noDomainPrivateRemoteHost
     }
 
-    private var noDomainPrivateRemoteHostSourceText: String {
+    var noDomainPrivateRemoteHostSourceText: String {
         if rustHubRemoteEntryCandidates.preferredNoDomainPrivateHost != nil {
             return HubUIStrings.Settings.GRPC.noDomainRustCoreSource
         }
         return HubUIStrings.Settings.GRPC.noDomainSwiftFallbackSource
     }
 
-    private var isUsingNoDomainPrivateRemoteHost: Bool {
+    var isUsingNoDomainPrivateRemoteHost: Bool {
         grpc.isUsingNoDomainPrivateRemoteHost(noDomainPrivateRemoteHost)
     }
 
@@ -662,7 +224,7 @@ struct SettingsSheetView: View {
         remoteQuotaProjectionSnapshot
     }
 
-    private func quitApp() {
+    func quitApp() {
         // Some LSUIElement apps can get into a state where `terminate` is ignored.
         // Use forceTerminate as a fallback so users don't need Terminal.
         let app = NSRunningApplication.current
@@ -1000,27 +562,27 @@ struct SettingsSheetView: View {
         }
     }
 
-    private var providerKeySectionAnchorID: String {
+    var providerKeySectionAnchorID: String {
         "provider_keys_section"
     }
 
-    private func providerKeyVendorAnchorID(_ vendorKey: String) -> String {
+    func providerKeyVendorAnchorID(_ vendorKey: String) -> String {
         "provider_key_vendor_" + providerKeyCanonicalVendorKey(vendorKey)
     }
 
-    private var providerKeyUserLedgerAnchorID: String {
+    var providerKeyUserLedgerAnchorID: String {
         "provider_key_user_ledger"
     }
 
-    private var providerKeyConsumerLedgerAnchorID: String {
+    var providerKeyConsumerLedgerAnchorID: String {
         "provider_key_consumer_ledger"
     }
 
-    private var terminalAccessSectionAnchorID: String {
+    var terminalAccessSectionAnchorID: String {
         "terminal_access_section"
     }
 
-    private func providerKeyImportSourceAnchorID(
+    func providerKeyImportSourceAnchorID(
         _ source: ProviderKeyImportSourceStatus
     ) -> String {
         providerKeyImportSourceAnchorID(
@@ -1028,12 +590,12 @@ struct SettingsSheetView: View {
         ) ?? providerKeySectionAnchorID
     }
 
-    private func providerKeyImportSourceAnchorID(sourceRef: String?) -> String? {
+    func providerKeyImportSourceAnchorID(sourceRef: String?) -> String? {
         guard let normalizedSourceRef = hubNormalizedProviderKeySourceRef(sourceRef) else { return nil }
         return "provider_key_source::\(normalizedSourceRef)"
     }
 
-    private func presentGRPCClientEditor(
+    func presentGRPCClientEditor(
         _ client: HubGRPCClientEntry?,
         capabilityFocusKey: String? = nil
     ) {
@@ -1041,7 +603,7 @@ struct SettingsSheetView: View {
         editingGRPCClient = client
     }
 
-    private func presentRemoteQuotaConsumerManager(
+    func presentRemoteQuotaConsumerManager(
         _ consumer: RemoteQuotaCenterClientProjection
     ) {
         if let client = consumer.grpcClient {
@@ -1060,7 +622,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func presentRemoteQuotaUserManager(
+    func presentRemoteQuotaUserManager(
         _ user: RemoteQuotaCenterUserProjection
     ) {
         if user.consumers.count == 1, let consumer = user.consumers.first {
@@ -1085,7 +647,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func selectSettingsPage(_ page: HubSettingsPage) {
+    func selectSettingsPage(_ page: HubSettingsPage) {
         selectedSettingsPage = page
         settingsScrollTarget = nil
     }
@@ -1105,7 +667,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func focusProviderKeyVendor(
+    func focusProviderKeyVendor(
         _ rawVendorKey: String,
         displayName: String? = nil
     ) {
@@ -1140,7 +702,7 @@ struct SettingsSheetView: View {
         scheduleProviderKeyVendorHighlightClear(vendorKey)
     }
 
-    private func focusProviderKeyVendorUser(
+    func focusProviderKeyVendorUser(
         _ user: RemoteQuotaCenterUserProjection,
         vendor: ProviderKeyVendorInventorySummary
     ) {
@@ -1251,7 +813,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func refreshRustHubRuntimeSnapshot(force: Bool = false) {
+    func refreshRustHubRuntimeSnapshot(force: Bool = false) {
         let now = Date()
         if rustHubRuntimeRefreshing { return }
         if !force && now.timeIntervalSince(rustHubRuntimeLastRefreshAt) < 10.0 { return }
@@ -1266,7 +828,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func refreshRustLocalModelRepairPlan(force: Bool = false) {
+    func refreshRustLocalModelRepairPlan(force: Bool = false) {
         let now = Date()
         if rustLocalModelRepairPlanRefreshing { return }
         if !force && now.timeIntervalSince(rustLocalModelRepairPlanLastRefreshAt) < 10.0 { return }
@@ -1281,7 +843,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func refreshRustLocalModelRepairJobs(force: Bool = false) {
+    func refreshRustLocalModelRepairJobs(force: Bool = false) {
         let now = Date()
         if rustLocalModelRepairJobsRefreshing { return }
         if !force && now.timeIntervalSince(rustLocalModelRepairJobsLastRefreshAt) < 5.0 { return }
@@ -1296,7 +858,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func presentRustLocalModelRepairApplyDialog() {
+    func presentRustLocalModelRepairApplyDialog() {
         guard !rustLocalModelRepairApplyInFlight,
               let plan = rustLocalModelRepairPlan,
               plan.isActionableRepair else {
@@ -1353,7 +915,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func refreshRustHubRemoteEntryCandidates(force: Bool = false) {
+    func refreshRustHubRemoteEntryCandidates(force: Bool = false) {
         let now = Date()
         if rustHubRemoteEntryRefreshing { return }
         if !force && now.timeIntervalSince(rustHubRemoteEntryLastRefreshAt) < 10.0 { return }
@@ -1551,19 +1113,19 @@ struct SettingsSheetView: View {
         return store.aiRuntimeStatusSnapshot?.providers.count ?? 0
     }
 
-    private var loadedRuntimeInstanceCount: Int {
+    var loadedRuntimeInstanceCount: Int {
         store.aiRuntimeStatusSnapshot?.monitorSnapshot?.loadedInstances.count ?? 0
     }
 
-    private var localCatalogModels: [HubModel] {
+    var localCatalogModels: [HubModel] {
         localModelSnapshot.models
     }
 
-    private var localCatalogModelCount: Int {
+    var localCatalogModelCount: Int {
         localCatalogModels.count
     }
 
-    private var loadedLocalModelCount: Int {
+    var loadedLocalModelCount: Int {
         localModelSnapshot.loadedCount
     }
 
@@ -1575,7 +1137,7 @@ struct SettingsSheetView: View {
         )
     }
 
-    private var localAvailableModelCount: Int {
+    var localAvailableModelCount: Int {
         localModelHealthSummary?.availableCount ?? 0
     }
 
@@ -1595,7 +1157,7 @@ struct SettingsSheetView: View {
         localModelHealthSummary?.scanningCount ?? 0
     }
 
-    private var localPendingModelCount: Int {
+    var localPendingModelCount: Int {
         localReviewModelCount + localDiscouragedModelCount + localUnscannedModelCount
     }
 
@@ -1607,7 +1169,7 @@ struct SettingsSheetView: View {
         operatorChannelProviderReadiness.filter(\.ready).count
     }
 
-    private var runtimeHeartbeatText: String {
+    var runtimeHeartbeatText: String {
         guard let status = store.aiRuntimeStatusSnapshot else {
             return "等待心跳"
         }
@@ -1831,7 +1393,7 @@ struct SettingsSheetView: View {
         return "库存当前可用，可以继续给 XT 或普通 terminal 分配 Hub access key + URL。"
     }
 
-    private var cliproxyOAuthOverviewNoticeTint: Color {
+    var cliproxyOAuthOverviewNoticeTint: Color {
         let trimmedRuntimeError = cliproxyRuntimeErrorText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedRuntimeError.isEmpty {
             return .red
@@ -2116,7 +1678,7 @@ struct SettingsSheetView: View {
         ]
     }
 
-    private var routingSummaryText: String {
+    var routingSummaryText: String {
         let defaults = store.routingSettings.hubDefaultModelIdByTaskKind
             .values
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -2250,7 +1812,7 @@ struct SettingsSheetView: View {
         return "\(parent)/\(last)"
     }
 
-    private func expansionBinding(
+    func expansionBinding(
         _ id: String,
         in set: Binding<Set<String>>
     ) -> Binding<Bool> {
@@ -2268,7 +1830,7 @@ struct SettingsSheetView: View {
         )
     }
 
-    private func grpcClientDetailSummary(_ status: GRPCDeviceStatusEntry?) -> String {
+    func grpcClientDetailSummary(_ status: GRPCDeviceStatusEntry?) -> String {
         guard let status else {
             return "未收到设备状态快照"
         }
@@ -2288,7 +1850,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func terminalAccessDetailSummary(
+    func terminalAccessDetailSummary(
         _ accessKey: HubTerminalAccessKey,
         remaining: Int64,
         hasSecret: Bool
@@ -2303,7 +1865,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func providerKeyPoolMemberDisclosureSummary(_ pool: ProviderKeyPoolSnapshot) -> String {
+    func providerKeyPoolMemberDisclosureSummary(_ pool: ProviderKeyPoolSnapshot) -> String {
         let totalMembers = pool.members.count
         let riskCount = pool.members.filter { member in
             let state = member.state.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -2319,7 +1881,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func remoteModelGroupDisclosureSummary(_ group: RemoteModelKeyGroup) -> String {
+    func remoteModelGroupDisclosureSummary(_ group: RemoteModelKeyGroup) -> String {
         var parts: [String] = ["\(group.models.count) 个模型"]
         if group.loadedCount > 0 {
             parts.append("\(group.loadedCount) 已加载")
@@ -2333,7 +1895,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func providerKeyImportSourcesSummaryText(
+    func providerKeyImportSourcesSummaryText(
         _ sources: [ProviderKeyImportSourceStatus]
     ) -> String {
         let readyCount = sources.filter { $0.state == "ready" }.count
@@ -2352,7 +1914,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func providerKeyVendorLedgerSummaryText(
+    func providerKeyVendorLedgerSummaryText(
         _ vendors: [ProviderKeyVendorInventorySummary],
         focusedUser: RemoteQuotaCenterUserProjection?,
         focusedVendor: ProviderKeyVendorInventorySummary?
@@ -2375,7 +1937,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func providerKeyFamilyLedgerSummaryText(
+    func providerKeyFamilyLedgerSummaryText(
         _ families: [ProviderKeyFamilyInventorySummary],
         focusedUser: RemoteQuotaCenterUserProjection?
     ) -> String {
@@ -2396,7 +1958,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func providerKeyPhysicalPoolsSummaryText(
+    func providerKeyPhysicalPoolsSummaryText(
         _ keyPools: [ProviderKeyPoolSnapshot]
     ) -> String {
         let readyAccounts = keyPools.reduce(0) { $0 + max(0, $1.readyAccounts) }
@@ -2415,7 +1977,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private var cliproxyOAuthDisclosureSummaryText: String {
+    var cliproxyOAuthDisclosureSummaryText: String {
         let runtimeSegment = cliproxyRuntimeDisclosureSummarySegment.trimmingCharacters(in: .whitespacesAndNewlines)
         let parts = [
             runtimeSegment,
@@ -2428,7 +1990,7 @@ struct SettingsSheetView: View {
         )
     }
 
-    private func providerKeyUserLedgerDisclosureSummary(
+    func providerKeyUserLedgerDisclosureSummary(
         _ users: [RemoteQuotaCenterUserProjection],
         totalUsers: Int,
         focusedUser: RemoteQuotaCenterUserProjection?
@@ -2448,7 +2010,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func providerKeyFlowSummaryText(
+    func providerKeyFlowSummaryText(
         flowChains: [ProviderKeyFlowChainSummary],
         focusedUser: RemoteQuotaCenterUserProjection?,
         focusedVendor: ProviderKeyVendorInventorySummary?
@@ -2499,7 +2061,7 @@ struct SettingsSheetView: View {
             + consumerTrendCards.count
     }
 
-    private func providerKeyTrendSummaryText(
+    func providerKeyTrendSummaryText(
         focusedUser: RemoteQuotaCenterUserProjection?,
         focusedVendor: ProviderKeyVendorInventorySummary?,
         overallTrendCard: ProviderKeyTrendCardSummary?,
@@ -2542,7 +2104,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func providerKeyOperationalBadgeText(
+    func providerKeyOperationalBadgeText(
         focusedUser: RemoteQuotaCenterUserProjection?,
         focusedVendor: ProviderKeyVendorInventorySummary?
     ) -> String {
@@ -2558,7 +2120,7 @@ struct SettingsSheetView: View {
         return "全局视角"
     }
 
-    private func providerKeyOperationalSummaryText(
+    func providerKeyOperationalSummaryText(
         scopeOverview: ProviderKeyScopeOverview,
         overview: RemoteQuotaCenterOverview,
         focusedUser: RemoteQuotaCenterUserProjection?,
@@ -2578,7 +2140,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func providerKeyOperationalTint(
+    func providerKeyOperationalTint(
         focusedUser: RemoteQuotaCenterUserProjection?,
         focusedVendor: ProviderKeyVendorInventorySummary?,
         riskVendorCount: Int,
@@ -2596,7 +2158,7 @@ struct SettingsSheetView: View {
         return .blue
     }
 
-    private func providerKeyConsumerLedgerDisclosureSummary(
+    func providerKeyConsumerLedgerDisclosureSummary(
         _ consumers: [RemoteQuotaCenterClientProjection],
         totalConsumers: Int,
         focusedUser: RemoteQuotaCenterUserProjection?
@@ -2620,7 +2182,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private var terminalAccessDraftSummaryText: String {
+    var terminalAccessDraftSummaryText: String {
         let name = terminalAccessDraft.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let userID = terminalAccessDraft.userID.trimmingCharacters(in: .whitespacesAndNewlines)
         let appID = terminalAccessDraft.appID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2639,7 +2201,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func terminalAccessLastSecretSummaryText(_ secret: HubTerminalAccessKeySecretEnvelope) -> String {
+    func terminalAccessLastSecretSummaryText(_ secret: HubTerminalAccessKeySecretEnvelope) -> String {
         let deliveryPack = secret.deliveryPack
         var parts: [String] = [secret.accessKey.resolvedName]
         if !deliveryPack.authDisplayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -2653,7 +2215,7 @@ struct SettingsSheetView: View {
     }
 
     @ViewBuilder
-    private func settingsActionChipLabel(
+    func settingsActionChipLabel(
         title: String,
         systemName: String,
         tint: Color,
@@ -2678,7 +2240,7 @@ struct SettingsSheetView: View {
     }
 
     @ViewBuilder
-    private func settingsOperationsPanelCard<Content: View>(
+    func settingsOperationsPanelCard<Content: View>(
         systemName: String,
         title: String,
         summary: String,
@@ -2753,7 +2315,7 @@ struct SettingsSheetView: View {
     }
 
     @ViewBuilder
-    private func settingsInlineDisclosureLabel(
+    func settingsInlineDisclosureLabel(
         systemName: String,
         title: String,
         summary: String,
@@ -2808,7 +2370,7 @@ struct SettingsSheetView: View {
     }
 
     @ViewBuilder
-    private func settingsInlineDisclosureGroup<Content: View>(
+    func settingsInlineDisclosureGroup<Content: View>(
         systemName: String,
         title: String,
         summary: String,
@@ -2833,7 +2395,7 @@ struct SettingsSheetView: View {
     }
 
     @ViewBuilder
-    private func settingsCollapsedSectionCard(
+    func settingsCollapsedSectionCard(
         title: String,
         summary: String,
         badge: String,
@@ -3458,7 +3020,7 @@ struct SettingsSheetView: View {
         )
     }
 
-    private func settingsMetricCard(_ metric: HubSettingsMetric, compact: Bool) -> some View {
+    func settingsMetricCard(_ metric: HubSettingsMetric, compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: compact ? 4 : 6) {
             Text(metric.title)
                 .font(.caption.weight(.semibold))
@@ -3742,7 +3304,7 @@ struct SettingsSheetView: View {
         remoteModels.filter { $0.enabled }.count
     }
 
-    private var localModelsCapabilitySummaryText: String {
+    var localModelsCapabilitySummaryText: String {
         guard localCatalogModelCount > 0 else {
             return "先扫描并导入本地模型。这里和付费模型并列管理本地文本、多模态、OCR 与 TTS 能力。"
         }
@@ -3760,7 +3322,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private var localModelsCapabilityBadgeText: String {
+    var localModelsCapabilityBadgeText: String {
         guard localCatalogModelCount > 0 else { return "未发现" }
         if store.localModelHealthScanInFlight || localScanningModelCount > 0 {
             return "扫描中"
@@ -3780,7 +3342,7 @@ struct SettingsSheetView: View {
         return "待准备"
     }
 
-    private var localModelsCapabilityTint: Color {
+    var localModelsCapabilityTint: Color {
         guard localCatalogModelCount > 0 else { return .secondary }
         if runtimeHeartbeatText != "在线" && loadedLocalModelCount == 0 {
             return .orange
@@ -3800,7 +3362,7 @@ struct SettingsSheetView: View {
         return .secondary
     }
 
-    private var localModelsCapabilityMetrics: [HubSettingsMetric] {
+    var localModelsCapabilityMetrics: [HubSettingsMetric] {
         [
             HubSettingsMetric(
                 title: "模型库",
@@ -3841,7 +3403,7 @@ struct SettingsSheetView: View {
         ]
     }
 
-    private var localModelsCapabilityNoticeText: String? {
+    var localModelsCapabilityNoticeText: String? {
         guard localCatalogModelCount > 0 else { return nil }
         if runtimeHeartbeatText != "在线" {
             return "当前本地 runtime \(runtimeHeartbeatText)，本地模型暂时不能稳定承接任务。先到“运行时基础设施”恢复 provider 心跳和实例。"
@@ -3861,7 +3423,7 @@ struct SettingsSheetView: View {
         return nil
     }
 
-    private var localModelsCapabilityNoticeTint: Color {
+    var localModelsCapabilityNoticeTint: Color {
         if runtimeHeartbeatText != "在线" {
             return .orange
         }
@@ -3874,7 +3436,7 @@ struct SettingsSheetView: View {
         return .blue
     }
 
-    private var localModelsCapabilityNoticeSystemName: String {
+    var localModelsCapabilityNoticeSystemName: String {
         if runtimeHeartbeatText != "在线" {
             return "exclamationmark.triangle"
         }
@@ -3899,7 +3461,7 @@ struct SettingsSheetView: View {
         remoteModelGroups.reduce(0) { $0 + $1.needsSetupCount }
     }
 
-    private var remoteModelGroupCount: Int {
+    var remoteModelGroupCount: Int {
         remoteModelGroups.count
     }
 
@@ -3907,7 +3469,7 @@ struct SettingsSheetView: View {
         Set(remoteModels.compactMap { remoteModelEndpointHost($0) }).count
     }
 
-    private var remoteModelsSectionSummaryText: String {
+    var remoteModelsSectionSummaryText: String {
         guard !remoteModels.isEmpty else {
             return "先接入可执行的 provider / model，再用这里统一管理远端文本、多模态和专用入口。"
         }
@@ -3926,7 +3488,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private var remoteModelsAttentionBannerText: String? {
+    var remoteModelsAttentionBannerText: String? {
         guard !remoteModels.isEmpty else { return nil }
         if needsSetupRemoteModelCount > 0 {
             return "当前还有 \(needsSetupRemoteModelCount) 个远端模型待补齐 auth / 兼容 / provider 健康，修完后才适合给 XT 稳定路由。"
@@ -3940,7 +3502,7 @@ struct SettingsSheetView: View {
         return nil
     }
 
-    private var remoteModelsOverviewBadgeText: String {
+    var remoteModelsOverviewBadgeText: String {
         if remoteModels.isEmpty {
             return "未配置"
         }
@@ -3956,7 +3518,7 @@ struct SettingsSheetView: View {
         return "待加载"
     }
 
-    private var remoteModelsOverviewTint: Color {
+    var remoteModelsOverviewTint: Color {
         if needsSetupRemoteModelCount > 0 {
             return .orange
         }
@@ -3969,7 +3531,7 @@ struct SettingsSheetView: View {
         return .secondary
     }
 
-    private var remoteModelsOverviewMetrics: [HubSettingsMetric] {
+    var remoteModelsOverviewMetrics: [HubSettingsMetric] {
         [
             HubSettingsMetric(
                 title: "模型组",
@@ -3998,7 +3560,7 @@ struct SettingsSheetView: View {
         ]
     }
 
-    private var remoteModelsAttentionBannerTint: Color {
+    var remoteModelsAttentionBannerTint: Color {
         if needsSetupRemoteModelCount > 0 {
             return .orange
         }
@@ -4008,7 +3570,7 @@ struct SettingsSheetView: View {
         return .blue
     }
 
-    private var remoteModelsAttentionBannerSystemName: String {
+    var remoteModelsAttentionBannerSystemName: String {
         if needsSetupRemoteModelCount > 0 {
             return "exclamationmark.triangle"
         }
@@ -4531,1050 +4093,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private var terminalAccessSection: some View {
-        Section("普通 Terminal Access Key + URL") {
-            VStack(alignment: .leading, spacing: 10) {
-                terminalAccessOverviewHero
-
-                DisclosureGroup(isExpanded: $terminalAccessIssueExpanded) {
-                    terminalAccessIssueCard
-                        .padding(.top, 6)
-                } label: {
-                    settingsInlineDisclosureLabel(
-                        systemName: "key.badge.plus",
-                        title: "签发新 Terminal Access Key",
-                        summary: terminalAccessDraftSummaryText,
-                        badge: terminalAccessIssueExpanded ? "编辑中" : "签发面板",
-                        tint: .orange,
-                        isExpanded: terminalAccessIssueExpanded
-                    )
-                }
-
-                if let lastSecret = terminalAccessLastSecret {
-                    DisclosureGroup(isExpanded: $terminalAccessLastSecretExpanded) {
-                        terminalAccessLastSecretCard(lastSecret)
-                            .padding(.top, 6)
-                    } label: {
-                        settingsInlineDisclosureLabel(
-                            systemName: "key.radiowaves.forward",
-                            title: "最近签发 / 轮换的 Secret",
-                            summary: terminalAccessLastSecretSummaryText(lastSecret),
-                            badge: terminalAccessLastSecretExpanded ? "已展开" : "待分发",
-                            tint: .teal,
-                            isExpanded: terminalAccessLastSecretExpanded
-                        )
-                    }
-                }
-
-                if !terminalAccessActionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    terminalAccessFeedbackBanner(
-                        text: terminalAccessActionText,
-                        tint: .blue,
-                        systemName: "checkmark.seal"
-                    )
-                }
-
-                if !terminalAccessErrorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    terminalAccessFeedbackBanner(
-                        text: terminalAccessErrorText,
-                        tint: .red,
-                        systemName: "exclamationmark.triangle"
-                    )
-                }
-
-                if terminalAccessSortedKeys.isEmpty {
-                    Text("当前还没有给普通 terminal 签发 access key。签发后这里会直接展示 URL、额度、今日用量、轮换次数和导出模板。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(terminalAccessSortedKeys) { accessKey in
-                        terminalAccessKeyCard(accessKey)
-                    }
-                }
-            }
-            .confirmationDialog(
-                "确认撤销普通 terminal access key",
-                isPresented: terminalAccessRevokeDialogPresented,
-                titleVisibility: .visible
-            ) {
-                if let accessKey = terminalAccessPendingRevokeAccessKey {
-                    Button("撤销", role: .destructive) {
-                        Task { await revokeTerminalAccessKey(accessKey) }
-                    }
-                }
-                Button("取消", role: .cancel) {
-                    terminalAccessPendingRevokeAccessKeyID = ""
-                }
-            } message: {
-                if let accessKey = terminalAccessPendingRevokeAccessKey {
-                    Text("撤销后，现有的 `OPENAI_API_KEY` 会立即失效。目标：\(accessKey.resolvedName)")
-                } else {
-                    Text("撤销后，这把普通 terminal access key 将不能继续访问 Hub。")
-                }
-            }
-        }
-        .id(terminalAccessSectionAnchorID)
-    }
-
-    private var terminalAccessOverviewHero: some View {
-        let quotaTotal = terminalAccessOverviewQuotaTotal
-        let usedTotal = terminalAccessOverviewUsedTotal
-        let remainingTotal = terminalAccessOverviewRemainingTotal
-        let usageTotal = max(1, quotaTotal)
-        let usageValue = min(Double(max(0, usedTotal)), Double(usageTotal))
-        let summaryTint: Color = terminalAccessReadyCount == terminalAccessKeys.count && !terminalAccessKeys.isEmpty ? .green : .blue
-
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color(red: 0.13, green: 0.40, blue: 0.66),
-                                    Color(red: 0.07, green: 0.62, blue: 0.57),
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                    Image(systemName: "terminal.fill")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 44, height: 44)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("普通 Terminal Gateway")
-                        .font(.headline)
-                    Text("Hub 常驻时，可以持续给普通 terminal 发放独立的 OpenAI-compatible access key，并按 key / user / device 记账。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(terminalAccessSectionSummaryText)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-
-                Spacer()
-
-                VStack(alignment: .trailing, spacing: 8) {
-                    terminalAccessBadge(
-                        title: terminalAccessKeys.isEmpty ? "尚未签发" : "\(terminalAccessReadyCount)/\(terminalAccessKeys.count) 可用",
-                        tint: summaryTint
-                    )
-                    if terminalAccessLastSecret != nil {
-                        terminalAccessBadge(title: "待分发 Secret", tint: .teal)
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(terminalAccessCurrentBaseURL)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.primary)
-                        .textSelection(.enabled)
-                    Spacer()
-                }
-
-                HStack(spacing: 8) {
-                    terminalAccessMiniPill(title: "GET /v1/models", tint: .blue)
-                    terminalAccessMiniPill(title: "POST /v1/chat/completions", tint: .teal)
-                    terminalAccessMiniPill(title: "POST /v1/responses", tint: .orange)
-                    Spacer()
-                }
-            }
-
-            HStack(spacing: 10) {
-                terminalAccessOverviewMetric(
-                    title: "已签发",
-                    value: terminalAccessIntText(Int64(terminalAccessKeys.count)),
-                    subtitle: "所有外部 terminal key",
-                    tint: .blue
-                )
-                terminalAccessOverviewMetric(
-                    title: "今日已用",
-                    value: terminalAccessIntText(usedTotal),
-                    subtitle: "按已上报 usage 汇总",
-                    tint: .teal
-                )
-                terminalAccessOverviewMetric(
-                    title: "今日剩余",
-                    value: terminalAccessIntText(remainingTotal),
-                    subtitle: "可继续分配的预算",
-                    tint: remainingTotal > 0 ? .green : .orange
-                )
-            }
-
-            if quotaTotal > 0 {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("外部 Terminal 总额度")
-                            .font(.caption.weight(.semibold))
-                        Spacer()
-                        Text("\(terminalAccessIntText(usedTotal)) / \(terminalAccessIntText(quotaTotal))")
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-                    ProgressView(value: usageValue, total: Double(usageTotal))
-                        .progressViewStyle(.linear)
-                        .tint(remainingTotal > 0 ? .teal : .orange)
-                }
-            }
-
-            HStack(spacing: 10) {
-                Button(terminalAccessReloadInFlight ? "刷新中..." : "刷新视图") {
-                    Task { await reloadTerminalAccessKeys(forceMessage: true) }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(terminalAccessReloadInFlight || terminalAccessMutationInFlight)
-
-                Button("复制 Gateway URL") {
-                    terminalAccessCopyToPasteboard(
-                        terminalAccessCurrentBaseURL,
-                        successText: "已复制普通 terminal OpenAI 入口 URL。"
-                    )
-                }
-                .disabled(terminalAccessCurrentBaseURL.isEmpty || terminalAccessMutationInFlight)
-
-                Spacer()
-            }
-            .font(.caption)
-        }
-        .padding(14)
-        .background(
-            ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.97, green: 0.92, blue: 0.84),
-                                Color(red: 0.87, green: 0.93, blue: 0.97),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(Color.white.opacity(0.35))
-            }
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.white.opacity(0.55), lineWidth: 1)
-        )
-    }
-
-    private func terminalAccessFeedbackBanner(text: String, tint: Color, systemName: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: systemName)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(tint)
-            Text(text)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(tint.opacity(0.10))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    private var terminalAccessIssueCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("签发给普通 terminal")
-                        .font(.headline)
-                    Text("每把 key 都绑定独立 `user_id / app_id / 每日额度 / paid policy`，方便你分配给不同机器、脚本或团队成员。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                terminalAccessBadge(title: "Issue", tint: .orange)
-            }
-
-            HStack(spacing: 8) {
-                TextField("名称", text: $terminalAccessDraft.name)
-                    .textFieldStyle(.roundedBorder)
-                TextField("user_id", text: $terminalAccessDraft.userID)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            HStack(spacing: 8) {
-                TextField("app_id", text: $terminalAccessDraft.appID)
-                    .textFieldStyle(.roundedBorder)
-                TextField("备注", text: $terminalAccessDraft.note)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            HStack(spacing: 8) {
-                TextField(
-                    "每日 token 额度",
-                    value: $terminalAccessDraft.dailyTokenLimit,
-                    formatter: terminalAccessIntegerFormatter(minimum: 1, maximum: 1_000_000_000)
-                )
-                .textFieldStyle(.roundedBorder)
-
-                TextField(
-                    "TTL 小时，0=不过期",
-                    value: $terminalAccessDraft.ttlHours,
-                    formatter: terminalAccessIntegerFormatter(minimum: 0, maximum: 24 * 365 * 10)
-                )
-                .textFieldStyle(.roundedBorder)
-            }
-            .font(.caption)
-
-            Toggle("允许付费模型", isOn: $terminalAccessDraft.allowPaidModels)
-                .toggleStyle(.checkbox)
-                .font(.caption)
-
-            Toggle("默认允许 web.fetch", isOn: $terminalAccessDraft.defaultWebFetchEnabled)
-                .toggleStyle(.checkbox)
-                .font(.caption)
-
-            HStack(spacing: 8) {
-                terminalAccessMiniPill(
-                    title: terminalAccessDraft.allowPaidModels ? "付费模型已开启" : "仅按默认 paid policy",
-                    tint: terminalAccessDraft.allowPaidModels ? .orange : .gray
-                )
-                terminalAccessMiniPill(
-                    title: terminalAccessDraft.defaultWebFetchEnabled ? "web.fetch 默认开启" : "web.fetch 默认关闭",
-                    tint: terminalAccessDraft.defaultWebFetchEnabled ? .teal : .gray
-                )
-                terminalAccessMiniPill(
-                    title: "TTL \(terminalAccessDraft.ttlHours == 0 ? "无限" : "\(terminalAccessDraft.ttlHours)h")",
-                    tint: .blue
-                )
-                Spacer()
-            }
-
-            HStack(spacing: 10) {
-                Button(terminalAccessMutationInFlight ? "签发中..." : "签发并返回 Key + URL") {
-                    Task { await issueTerminalAccessKey() }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(terminalAccessMutationInFlight || terminalAccessReloadInFlight)
-
-                Button("复制当前 URL") {
-                    terminalAccessCopyToPasteboard(
-                        terminalAccessCurrentBaseURL,
-                        successText: "已复制普通 terminal OpenAI 入口 URL。"
-                    )
-                }
-                .disabled(terminalAccessCurrentBaseURL.isEmpty || terminalAccessMutationInFlight)
-
-                Spacer()
-            }
-            .font(.caption)
-
-            Text("普通 terminal 直接拿 `OPENAI_BASE_URL` + `OPENAI_API_KEY` 即可；Hub 内部仍按独立 device/user/account 记账。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.98, green: 0.95, blue: 0.90),
-                            Color(red: 0.95, green: 0.97, blue: 0.99),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.black.opacity(0.06), lineWidth: 1)
-        )
-    }
-
-    private func terminalAccessLastSecretCard(_ secret: HubTerminalAccessKeySecretEnvelope) -> some View {
-        let deliveryPack = secret.deliveryPack
-
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [.teal, .green],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                    Image(systemName: "key.radiowaves.forward")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 40, height: 40)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("最近签发 / 轮换")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(secret.accessKey.resolvedName)
-                        .font(.subheadline.weight(.semibold))
-                    if !secret.openAIBaseURL.isEmpty {
-                        Text(secret.openAIBaseURL)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 6) {
-                    terminalAccessStatusBadge(secret.accessKey)
-                    terminalAccessBadge(title: "可即刻交付", tint: .teal)
-                }
-            }
-
-            Text("这段 secret 只会在当前 Hub 界面里显示一次。确认目标 terminal 已保存后，再离开这一页。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 8) {
-                terminalAccessMiniPill(title: deliveryPack.authDisplayText, tint: .blue)
-                terminalAccessMiniPill(title: deliveryPack.baseURLEnvKey, tint: .teal)
-                terminalAccessMiniPill(title: deliveryPack.apiKeyEnvKey, tint: .orange)
-                if !deliveryPack.responsesURL.isEmpty {
-                    terminalAccessMiniPill(title: "/responses 已就绪", tint: .green)
-                }
-                Spacer()
-            }
-
-            if !deliveryPack.baseURL.isEmpty {
-                Text(deliveryPack.baseURL)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
-                    Button("复制接入包") {
-                        terminalAccessCopyToPasteboard(
-                            deliveryPack.setupPackText,
-                            successText: "已复制 \(secret.accessKey.resolvedName) 的 terminal 接入包。"
-                        )
-                    }
-                    .disabled(deliveryPack.setupPackText.isEmpty)
-
-                    Button("复制 shell export") {
-                        terminalAccessCopyToPasteboard(
-                            deliveryPack.shellExports,
-                            successText: "已复制 \(secret.accessKey.resolvedName) 的 shell export。"
-                        )
-                    }
-                    .disabled(deliveryPack.shellExports.isEmpty)
-
-                    Button("复制 API Key") {
-                        terminalAccessCopyToPasteboard(
-                            deliveryPack.apiKeyValue,
-                            successText: "已复制 \(secret.accessKey.resolvedName) 的 OpenAI API key。"
-                        )
-                    }
-                    .disabled(deliveryPack.apiKeyValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                    Spacer()
-                }
-
-                HStack(spacing: 10) {
-                    Button("复制 URL") {
-                        terminalAccessCopyToPasteboard(
-                            secret.openAIBaseURL,
-                            successText: "已复制普通 terminal OpenAI 入口 URL。"
-                        )
-                    }
-                    .disabled(secret.openAIBaseURL.isEmpty)
-
-                    Button("复制 smoke curl") {
-                        terminalAccessCopyToPasteboard(
-                            secret.smokeCurlCommand,
-                            successText: "已复制普通 terminal smoke curl。"
-                        )
-                    }
-                    .disabled(secret.smokeCurlCommand.isEmpty)
-
-                    Spacer()
-                }
-            }
-            .font(.caption)
-
-            if !deliveryPack.shellExports.isEmpty {
-                terminalAccessExportBlock(
-                    title: "Shell Export",
-                    text: deliveryPack.shellExports,
-                    minHeight: 56,
-                    maxHeight: 108
-                )
-            }
-
-            if !deliveryPack.setupPackText.isEmpty {
-                terminalAccessExportBlock(
-                    title: "Terminal 接入包",
-                    text: deliveryPack.setupPackText,
-                    minHeight: 126,
-                    maxHeight: 240
-                )
-            }
-
-            terminalAccessExampleShowcase(deliveryPack: deliveryPack)
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.86, green: 0.96, blue: 0.92),
-                            Color(red: 0.88, green: 0.95, blue: 0.97),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.white.opacity(0.55), lineWidth: 1)
-        )
-    }
-
-    private func terminalAccessKeyCard(_ accessKey: HubTerminalAccessKey) -> some View {
-        let deviceStatus = terminalAccessDeviceStatus(for: accessKey)
-        let hasSecret = terminalAccessSecretEnvelope(for: accessKey) != nil
-        let baseURL = terminalAccessBaseURL(for: accessKey)
-        let deliveryPack = terminalAccessDeliveryPack(for: accessKey)
-        let quotaLimit = terminalAccessQuotaLimit(for: accessKey, deviceStatus: deviceStatus)
-        let used = terminalAccessQuotaUsed(deviceStatus: deviceStatus)
-        let remaining = terminalAccessQuotaRemaining(limit: quotaLimit, used: used, deviceStatus: deviceStatus)
-        let statusTint = terminalAccessStatusTint(accessKey)
-        let statusIcon = terminalAccessStatusIcon(accessKey)
-        let detailBinding = expansionBinding(accessKey.accessKeyID, in: $expandedTerminalAccessKeyDetailIDs)
-
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(statusTint.opacity(0.16))
-                    Image(systemName: statusIcon)
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(statusTint)
-                }
-                .frame(width: 40, height: 40)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(accessKey.resolvedName)
-                        .font(.subheadline.weight(.semibold))
-                    Text("\(accessKey.accessKeyID) • \(accessKey.appID.isEmpty ? "external_terminal" : accessKey.appID)")
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-                Spacer()
-                terminalAccessStatusBadge(accessKey)
-            }
-
-            Text(terminalAccessSummaryLine(accessKey, quotaLimit: quotaLimit))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 8) {
-                terminalAccessMiniPill(
-                    title: accessKey.paidModelSelectionMode == .off ? "付费模型关闭" : "付费模型开启",
-                    tint: accessKey.paidModelSelectionMode == .off ? .gray : .orange
-                )
-                terminalAccessMiniPill(
-                    title: accessKey.defaultWebFetchEnabled ? "web.fetch 开启" : "web.fetch 关闭",
-                    tint: accessKey.defaultWebFetchEnabled ? .teal : .gray
-                )
-                terminalAccessMiniPill(
-                    title: accessKey.expiresAtMs > 0 ? "会过期" : "不过期",
-                    tint: accessKey.expiresAtMs > 0 ? .blue : .green
-                )
-                if hasSecret {
-                    terminalAccessMiniPill(title: "持有最新 Secret", tint: .teal)
-                }
-                Spacer()
-            }
-
-            if !accessKey.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(accessKey.note)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if !baseURL.isEmpty {
-                Text(baseURL)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-
-            if !accessKey.statusReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let statusReasonTint: Color = accessKey.status.lowercased() == "ready" ? .secondary : .orange
-                Text("状态原因: \(accessKey.statusReason)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(statusReasonTint)
-                    .textSelection(.enabled)
-            }
-
-            if quotaLimit > 0 {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("今日额度进度")
-                            .font(.caption.weight(.semibold))
-                        Spacer()
-                        Text("\(terminalAccessIntText(used)) / \(terminalAccessIntText(quotaLimit))")
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-                    ProgressView(value: min(Double(max(0, used)), Double(max(1, quotaLimit))), total: Double(max(1, quotaLimit)))
-                        .progressViewStyle(.linear)
-                        .tint(remaining > 0 ? statusTint : .orange)
-                    HStack(spacing: 8) {
-                        terminalAccessMiniPill(title: "剩余 \(terminalAccessIntText(remaining))", tint: remaining > 0 ? .green : .orange)
-                        if let deviceStatus {
-                            terminalAccessMiniPill(title: "请求 \(deviceStatus.requestsToday)", tint: .blue)
-                            terminalAccessMiniPill(title: "阻断 \(deviceStatus.blockedToday)", tint: deviceStatus.blockedToday > 0 ? .orange : .gray)
-                        }
-                        Spacer()
-                    }
-                }
-                .padding(10)
-                .background(Color.white.opacity(0.62))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-
-            if accessKey.supportsDirectBudgetAdjustment {
-                HStack(spacing: 8) {
-                    Text("预算快拨")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    terminalAccessQuickBudgetButton(accessKey, delta: -50_000, title: "-50k")
-                    terminalAccessQuickBudgetButton(accessKey, delta: 50_000, title: "+50k")
-                    terminalAccessQuickBudgetButton(accessKey, delta: 200_000, title: "+200k")
-                    Button("精确设置") {
-                        presentRemoteQuotaBudgetEditor(accessKey)
-                    }
-                    .buttonStyle(.borderless)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.indigo)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.indigo.opacity(0.08))
-                    .clipShape(Capsule())
-                    .disabled(terminalAccessMutationInFlight)
-                    Spacer()
-                }
-            }
-
-            HStack(spacing: 10) {
-                Button("复制 URL") {
-                    terminalAccessCopyToPasteboard(
-                        baseURL,
-                        successText: "已复制 \(accessKey.resolvedName) 的 OpenAI 入口 URL。"
-                    )
-                }
-                .disabled(baseURL.isEmpty)
-
-                Button(hasSecret ? "复制接入包" : "复制模板包") {
-                    terminalAccessCopyToPasteboard(
-                        deliveryPack.setupPackText,
-                        successText: hasSecret
-                            ? "已复制 \(accessKey.resolvedName) 的 terminal 接入包。"
-                            : "已复制 \(accessKey.resolvedName) 的模板接入包。"
-                    )
-                }
-                .disabled(deliveryPack.setupPackText.isEmpty)
-
-                Button(terminalAccessMutationInFlight ? "轮换中..." : "轮换") {
-                    Task { await rotateTerminalAccessKey(accessKey) }
-                }
-                .disabled(terminalAccessMutationInFlight || accessKey.status.lowercased() == "revoked")
-
-                Button("撤销") {
-                    terminalAccessPendingRevokeAccessKeyID = accessKey.accessKeyID
-                }
-                .disabled(terminalAccessMutationInFlight || accessKey.status.lowercased() == "revoked")
-
-                Spacer()
-            }
-            .font(.caption)
-
-            DisclosureGroup(isExpanded: detailBinding) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                        GridRow {
-                            terminalAccessFact(title: "每日额度", value: terminalAccessIntText(quotaLimit))
-                            terminalAccessFact(title: "今日已用", value: terminalAccessIntText(used))
-                        }
-                        GridRow {
-                            terminalAccessFact(title: "今日剩余", value: terminalAccessIntText(remaining))
-                            terminalAccessFact(
-                                title: "到期时间",
-                                value: accessKey.expiresAtMs > 0 ? formatEpochMs(accessKey.expiresAtMs) : "不过期"
-                            )
-                        }
-                        GridRow {
-                            terminalAccessFact(
-                                title: "上次使用",
-                                value: accessKey.lastUsedAtMs > 0 ? formatEpochMs(accessKey.lastUsedAtMs) : "未记录"
-                            )
-                            terminalAccessFact(title: "轮换次数", value: terminalAccessIntText(Int64(accessKey.rotationCount)))
-                        }
-                    }
-                    .font(.caption)
-
-                    if let deviceStatus {
-                        Text(terminalAccessLiveUsageLine(deviceStatus))
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(remaining <= 0 ? .orange : .secondary)
-                            .textSelection(.enabled)
-
-                        if let lastActivity = deviceStatus.lastActivity, lastActivity.createdAtMs > 0 {
-                            let modelID = lastActivity.modelId.trimmingCharacters(in: .whitespacesAndNewlines)
-                            let activitySuffix = modelID.isEmpty ? "" : " • \(modelID)"
-                            Text("最近活动 \(formatEpochMs(lastActivity.createdAtMs))\(activitySuffix)")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
-                    }
-
-                    if accessKey.status.lowercased() == "ready" && !hasSecret {
-                        Text("Hub 现在只保留这把 key 的导出模板；如果要重新分发原始 `OPENAI_API_KEY`，请先轮换。")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    if !deliveryPack.baseURL.isEmpty || !deliveryPack.envBlock.isEmpty {
-                        terminalAccessDeliveryPanel(
-                            accessKey: accessKey,
-                            deliveryPack: deliveryPack,
-                            hasSecret: hasSecret
-                        )
-                    }
-                }
-                .padding(.top, 6)
-            } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("预算 / 活动 / 交付包")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(terminalAccessDetailSummary(accessKey, remaining: remaining, hasSecret: hasSecret))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            statusTint.opacity(0.10),
-                            Color.white.opacity(0.92),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(statusTint.opacity(0.18), lineWidth: 1)
-        )
-    }
-
-    private func terminalAccessStatusBadge(_ accessKey: HubTerminalAccessKey) -> some View {
-        let label: String
-        let tint: Color
-        switch accessKey.status.lowercased() {
-        case "ready":
-            label = "可用"
-            tint = .green
-        case "revoked":
-            label = "已撤销"
-            tint = .red
-        case "expired":
-            label = "已过期"
-            tint = .orange
-        case "disabled":
-            label = "已禁用"
-            tint = .orange
-        case "invalid":
-            label = "无效"
-            tint = .red
-        default:
-            label = accessKey.status.isEmpty ? "未知" : accessKey.status
-            tint = .secondary
-        }
-
-        return Text(label)
-            .font(.caption.monospaced())
-            .foregroundStyle(tint)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(tint.opacity(0.12))
-            .clipShape(Capsule())
-    }
-
-    @ViewBuilder
-    private func terminalAccessQuickBudgetButton(
-        _ accessKey: HubTerminalAccessKey,
-        delta: Int,
-        title: String
-    ) -> some View {
-        let tint: Color = delta < 0 ? .orange : .indigo
-        Button(title) {
-            Task { await adjustTerminalAccessKeyDailyBudget(accessKey, delta: delta) }
-        }
-        .buttonStyle(.borderless)
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(tint)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(tint.opacity(0.12))
-        .clipShape(Capsule())
-        .disabled(terminalAccessMutationInFlight || !accessKey.supportsDirectBudgetAdjustment)
-    }
-
-    private func terminalAccessFact(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption)
-                .textSelection(.enabled)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(Color.white.opacity(0.72))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private func terminalAccessExportBlock(
-        title: String,
-        text: String,
-        minHeight: CGFloat,
-        maxHeight: CGFloat
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            ScrollView {
-                Text(text)
-                    .font(.caption.monospaced())
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-            }
-            .frame(minHeight: minHeight, maxHeight: maxHeight)
-            .padding(10)
-            .background(Color.white.opacity(0.72))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-    }
-
-    private func terminalAccessDeliveryPanel(
-        accessKey: HubTerminalAccessKey,
-        deliveryPack: HubTerminalAccessDeliveryPack,
-        hasSecret: Bool
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(hasSecret ? "当前可直接下发" : "当前交付模板")
-                        .font(.caption.weight(.semibold))
-                    Text(
-                        hasSecret
-                            ? "这把 key 的最新 secret 还在当前页面，可直接把 URL + API key + shell export 发给目标 terminal。"
-                            : "Hub 目前只保留这把 key 的 URL 与模板。需要重新分发原始 secret 时，请先轮换。"
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                }
-                Spacer()
-                terminalAccessBadge(
-                    title: hasSecret ? "Secret 已就绪" : "仅模板",
-                    tint: hasSecret ? .teal : .orange
-                )
-            }
-
-            HStack(spacing: 8) {
-                terminalAccessMiniPill(title: deliveryPack.authDisplayText, tint: .blue)
-                terminalAccessMiniPill(title: deliveryPack.baseURLEnvKey, tint: .teal)
-                terminalAccessMiniPill(
-                    title: deliveryPack.apiKeyEnvKey,
-                    tint: hasSecret ? .orange : .gray
-                )
-                terminalAccessMiniPill(
-                    title: "示例 \(terminalAccessExampleKind.title)",
-                    tint: terminalAccessExampleKind.tint
-                )
-                if !deliveryPack.responsesURL.isEmpty {
-                    terminalAccessMiniPill(title: "/responses", tint: .green)
-                }
-                Spacer()
-            }
-
-            if !deliveryPack.baseURL.isEmpty {
-                Text(deliveryPack.baseURL)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-
-            HStack(spacing: 10) {
-                Button(hasSecret ? "复制接入包" : "复制模板包") {
-                    terminalAccessCopyToPasteboard(
-                        deliveryPack.setupPackText,
-                        successText: hasSecret
-                            ? "已复制 \(accessKey.resolvedName) 的 terminal 接入包。"
-                            : "已复制 \(accessKey.resolvedName) 的模板接入包。"
-                    )
-                }
-                .disabled(deliveryPack.setupPackText.isEmpty)
-
-                Button(hasSecret ? "复制 shell export" : "复制 shell 模板") {
-                    terminalAccessCopyToPasteboard(
-                        deliveryPack.shellExports,
-                        successText: hasSecret
-                            ? "已复制 \(accessKey.resolvedName) 的 shell export。"
-                            : "已复制 \(accessKey.resolvedName) 的 shell 模板。"
-                    )
-                }
-                .disabled(deliveryPack.shellExports.isEmpty)
-
-                Button(terminalAccessExampleKind.copyButtonTitle) {
-                    terminalAccessCopyToPasteboard(
-                        terminalAccessExampleText(for: deliveryPack),
-                        successText: "已复制 \(accessKey.resolvedName) 的 \(terminalAccessExampleKind.title) 示例。"
-                    )
-                }
-                .disabled(terminalAccessExampleText(for: deliveryPack).isEmpty)
-
-                if hasSecret {
-                    Button("复制 API Key") {
-                        terminalAccessCopyToPasteboard(
-                            deliveryPack.apiKeyValue,
-                            successText: "已复制 \(accessKey.resolvedName) 的 OpenAI API key。"
-                        )
-                    }
-                    .disabled(deliveryPack.apiKeyValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-
-                Spacer()
-            }
-            .font(.caption)
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: hasSecret
-                            ? [
-                                Color(red: 0.87, green: 0.96, blue: 0.93),
-                                Color(red: 0.92, green: 0.97, blue: 0.98),
-                            ]
-                            : [
-                                Color(red: 0.98, green: 0.94, blue: 0.88),
-                                Color(red: 0.96, green: 0.97, blue: 0.99),
-                            ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(
-                    (hasSecret ? Color.teal : Color.orange).opacity(0.18),
-                    lineWidth: 1
-                )
-        )
-    }
-
-    private func terminalAccessExampleShowcase(deliveryPack: HubTerminalAccessDeliveryPack) -> some View {
-        let snippet = terminalAccessExampleText(for: deliveryPack)
-
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("SDK / CLI 快速接入")
-                        .font(.caption.weight(.semibold))
-                    Text("切换示例类型后，可直接复制给普通 terminal 用户。示例默认用 `MODEL_ID_HERE`，先看 `/v1/models` 再替换。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                terminalAccessBadge(
-                    title: terminalAccessExampleKind.title,
-                    tint: terminalAccessExampleKind.tint
-                )
-            }
-
-            Picker("接入示例", selection: $terminalAccessExampleKind) {
-                ForEach(TerminalAccessExampleKind.allCases) { kind in
-                    Text(kind.title).tag(kind)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-
-            HStack(spacing: 10) {
-                Button(terminalAccessExampleKind.copyButtonTitle) {
-                    terminalAccessCopyToPasteboard(
-                        snippet,
-                        successText: "已复制普通 terminal 的 \(terminalAccessExampleKind.title) 示例。"
-                    )
-                }
-                .disabled(snippet.isEmpty)
-
-                Spacer()
-            }
-            .font(.caption)
-
-            if !snippet.isEmpty {
-                terminalAccessExportBlock(
-                    title: terminalAccessExampleKind.blockTitle,
-                    text: snippet,
-                    minHeight: 104,
-                    maxHeight: 220
-                )
-            }
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.white.opacity(0.60))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(terminalAccessExampleKind.tint.opacity(0.16), lineWidth: 1)
-        )
-    }
-
-    private var terminalAccessSortedKeys: [HubTerminalAccessKey] {
+    var terminalAccessSortedKeys: [HubTerminalAccessKey] {
         terminalAccessKeys.sorted { left, right in
             if left.updatedAtMs != right.updatedAtMs {
                 return left.updatedAtMs > right.updatedAtMs
@@ -5586,11 +4105,11 @@ struct SettingsSheetView: View {
         }
     }
 
-    private var terminalAccessReadyCount: Int {
+    var terminalAccessReadyCount: Int {
         terminalAccessKeys.filter { $0.status.lowercased() == "ready" }.count
     }
 
-    private var terminalAccessCurrentBaseURL: String {
+    var terminalAccessCurrentBaseURL: String {
         if let resolved = terminalAccessKeys
             .compactMap({ $0.openAICompat?.baseURL.trimmingCharacters(in: .whitespacesAndNewlines) })
             .first(where: { !$0.isEmpty }) {
@@ -5605,25 +4124,25 @@ struct SettingsSheetView: View {
         return "http://\(resolvedHost):\(pairingPort)/v1"
     }
 
-    private var terminalAccessSectionSummaryText: String {
+    var terminalAccessSectionSummaryText: String {
         let blocked = max(0, terminalAccessKeys.count - terminalAccessReadyCount)
         let baseURL = terminalAccessCurrentBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         return "keys \(terminalAccessKeys.count) • ready \(terminalAccessReadyCount) • blocked \(blocked) • daily quota \(terminalAccessIntText(terminalAccessOverviewQuotaTotal)) • \(baseURL)"
     }
 
-    private var terminalAccessOverviewQuotaTotal: Int64 {
+    var terminalAccessOverviewQuotaTotal: Int64 {
         terminalAccessSortedKeys.reduce(Int64(0)) { partialResult, item in
             partialResult + terminalAccessQuotaLimit(for: item, deviceStatus: terminalAccessDeviceStatus(for: item))
         }
     }
 
-    private var terminalAccessOverviewUsedTotal: Int64 {
+    var terminalAccessOverviewUsedTotal: Int64 {
         terminalAccessSortedKeys.reduce(Int64(0)) { partialResult, item in
             partialResult + terminalAccessQuotaUsed(deviceStatus: terminalAccessDeviceStatus(for: item))
         }
     }
 
-    private var terminalAccessOverviewRemainingTotal: Int64 {
+    var terminalAccessOverviewRemainingTotal: Int64 {
         terminalAccessSortedKeys.reduce(Int64(0)) { partialResult, item in
             let status = terminalAccessDeviceStatus(for: item)
             let limit = terminalAccessQuotaLimit(for: item, deviceStatus: status)
@@ -5632,55 +4151,11 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func terminalAccessBadge(title: String, tint: Color) -> some View {
-        Text(title)
-            .font(.caption.monospaced())
-            .foregroundStyle(tint)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(tint.opacity(0.12))
-            .clipShape(Capsule())
-    }
-
-    private func terminalAccessMiniPill(title: String, tint: Color) -> some View {
-        Text(title)
-            .font(.caption2.monospaced())
-            .foregroundStyle(tint)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(tint.opacity(0.10))
-            .clipShape(Capsule())
-    }
-
-    private func terminalAccessOverviewMetric(
-        title: String,
-        value: String,
-        subtitle: String,
-        tint: Color
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.primary)
-                .textSelection(.enabled)
-            Text(subtitle)
-                .font(.caption2)
-                .foregroundStyle(tint)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(Color.white.opacity(0.58))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    private var terminalAccessPendingRevokeAccessKey: HubTerminalAccessKey? {
+    var terminalAccessPendingRevokeAccessKey: HubTerminalAccessKey? {
         terminalAccessKeys.first { $0.accessKeyID == terminalAccessPendingRevokeAccessKeyID }
     }
 
-    private var terminalAccessRevokeDialogPresented: Binding<Bool> {
+    var terminalAccessRevokeDialogPresented: Binding<Bool> {
         Binding(
             get: { !terminalAccessPendingRevokeAccessKeyID.isEmpty },
             set: { presented in
@@ -5691,11 +4166,11 @@ struct SettingsSheetView: View {
         )
     }
 
-    private func terminalAccessBaseURL(for accessKey: HubTerminalAccessKey) -> String {
+    func terminalAccessBaseURL(for accessKey: HubTerminalAccessKey) -> String {
         accessKey.openAICompat?.baseURL.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
-    private func terminalAccessStatusTint(_ accessKey: HubTerminalAccessKey) -> Color {
+    func terminalAccessStatusTint(_ accessKey: HubTerminalAccessKey) -> Color {
         switch accessKey.status.lowercased() {
         case "ready":
             return .green
@@ -5708,7 +4183,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func terminalAccessStatusIcon(_ accessKey: HubTerminalAccessKey) -> String {
+    func terminalAccessStatusIcon(_ accessKey: HubTerminalAccessKey) -> String {
         switch accessKey.status.lowercased() {
         case "ready":
             return "checkmark.shield.fill"
@@ -5723,19 +4198,19 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func terminalAccessSecretEnvelope(for accessKey: HubTerminalAccessKey) -> HubTerminalAccessKeySecretEnvelope? {
+    func terminalAccessSecretEnvelope(for accessKey: HubTerminalAccessKey) -> HubTerminalAccessKeySecretEnvelope? {
         guard let lastSecret = terminalAccessLastSecret else { return nil }
         return lastSecret.accessKey.accessKeyID == accessKey.accessKeyID ? lastSecret : nil
     }
 
-    private func terminalAccessDeliveryPack(for accessKey: HubTerminalAccessKey) -> HubTerminalAccessDeliveryPack {
+    func terminalAccessDeliveryPack(for accessKey: HubTerminalAccessKey) -> HubTerminalAccessDeliveryPack {
         if let secret = terminalAccessSecretEnvelope(for: accessKey) {
             return secret.deliveryPack
         }
         return accessKey.deliveryPack()
     }
 
-    private func terminalAccessExampleText(for deliveryPack: HubTerminalAccessDeliveryPack) -> String {
+    func terminalAccessExampleText(for deliveryPack: HubTerminalAccessDeliveryPack) -> String {
         switch terminalAccessExampleKind {
         case .shell:
             return deliveryPack.shellExports
@@ -5748,13 +4223,13 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func terminalAccessDeviceStatus(for accessKey: HubTerminalAccessKey) -> GRPCDeviceStatusEntry? {
+    func terminalAccessDeviceStatus(for accessKey: HubTerminalAccessKey) -> GRPCDeviceStatusEntry? {
         grpcDevicesStatus.devices.first { row in
             row.deviceId.trimmingCharacters(in: .whitespacesAndNewlines) == accessKey.deviceID.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 
-    private func terminalAccessQuotaLimit(
+    func terminalAccessQuotaLimit(
         for accessKey: HubTerminalAccessKey,
         deviceStatus: GRPCDeviceStatusEntry?
     ) -> Int64 {
@@ -5765,11 +4240,11 @@ struct SettingsSheetView: View {
         return Int64(max(0, accessKey.dailyTokenLimit))
     }
 
-    private func terminalAccessQuotaUsed(deviceStatus: GRPCDeviceStatusEntry?) -> Int64 {
+    func terminalAccessQuotaUsed(deviceStatus: GRPCDeviceStatusEntry?) -> Int64 {
         max(0, deviceStatus?.dailyTokenUsed ?? 0)
     }
 
-    private func terminalAccessQuotaRemaining(
+    func terminalAccessQuotaRemaining(
         limit: Int64,
         used: Int64,
         deviceStatus: GRPCDeviceStatusEntry?
@@ -5787,7 +4262,7 @@ struct SettingsSheetView: View {
         return max(0, limit - used)
     }
 
-    private func terminalAccessSummaryLine(_ accessKey: HubTerminalAccessKey, quotaLimit: Int64) -> String {
+    func terminalAccessSummaryLine(_ accessKey: HubTerminalAccessKey, quotaLimit: Int64) -> String {
         let paidModelText = accessKey.paidModelSelectionMode == .off ? "paid off" : "paid on"
         let webFetchText = accessKey.defaultWebFetchEnabled ? "web.fetch on" : "web.fetch off"
         let userText = accessKey.userID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "anonymous" : accessKey.userID
@@ -5802,7 +4277,7 @@ struct SettingsSheetView: View {
         .joined(separator: " • ")
     }
 
-    private func terminalAccessLiveUsageLine(_ deviceStatus: GRPCDeviceStatusEntry) -> String {
+    func terminalAccessLiveUsageLine(_ deviceStatus: GRPCDeviceStatusEntry) -> String {
         let topModel = deviceStatus.topModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let topModelSuffix = topModel.isEmpty ? "" : " • top \(topModel)"
         return [
@@ -5813,7 +4288,7 @@ struct SettingsSheetView: View {
         ].joined(separator: " • ") + topModelSuffix
     }
 
-    private func terminalAccessIntText(_ value: Int64) -> String {
+    func terminalAccessIntText(_ value: Int64) -> String {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         formatter.groupingSeparator = ","
@@ -5821,7 +4296,7 @@ struct SettingsSheetView: View {
         return formatter.string(from: NSNumber(value: max(0, value))) ?? String(max(0, value))
     }
 
-    private func terminalAccessIntegerFormatter(minimum: Int, maximum: Int) -> NumberFormatter {
+    func terminalAccessIntegerFormatter(minimum: Int, maximum: Int) -> NumberFormatter {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         formatter.allowsFloats = false
@@ -5831,7 +4306,7 @@ struct SettingsSheetView: View {
         return formatter
     }
 
-    private func terminalAccessCopyToPasteboard(_ text: String, successText: String) {
+    func terminalAccessCopyToPasteboard(_ text: String, successText: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         NSPasteboard.general.clearContents()
@@ -5841,12 +4316,45 @@ struct SettingsSheetView: View {
     }
 
     @MainActor
-    private func reloadTerminalAccessKeys(forceMessage: Bool = false) async {
+    private func ensureTerminalAccessGatewayReady() async throws {
+        let firstHealth = await TerminalAccessKeyHTTPClient.gatewayHealth(grpcPort: grpc.port)
+        if firstHealth?.isPairingGateway == true {
+            return
+        }
+        if let firstHealth {
+            let endpoint = TerminalAccessKeyHTTPClient.gatewayBaseURLText(grpcPort: grpc.port)
+            throw TerminalAccessKeyHTTPClient.ClientError.gatewayUnavailable(
+                message: "普通 Terminal Gateway 端口不正确：\(endpoint)/health 返回 \(firstHealth.diagnosticSummary)，不是 service=pairing。请不要把普通 terminal URL 指到 Rust kernel 的 HTTP 端口。"
+            )
+        }
+
+        grpc.restart()
+        var lastHealth: TerminalAccessGatewayHealth? = nil
+        for _ in 0..<8 {
+            try await Task.sleep(nanoseconds: 350_000_000)
+            let health = await TerminalAccessKeyHTTPClient.gatewayHealth(grpcPort: grpc.port)
+            lastHealth = health
+            if health?.isPairingGateway == true {
+                return
+            }
+        }
+
+        let endpoint = TerminalAccessKeyHTTPClient.gatewayBaseURLText(grpcPort: grpc.port)
+        let observed = lastHealth?.diagnosticSummary ?? "no response"
+        let message = """
+        普通 Terminal Gateway 还没有就绪：\(endpoint)/health 返回 \(observed)。这通常说明 Node pairing gateway 没启动，或当前端口指到了 Rust kernel。请先在 Hub 设置里重启 gRPC/Pairing sidecar，再重新签发；系统不会返回一个会 404/not_found 的 Key + URL。
+        """
+        throw TerminalAccessKeyHTTPClient.ClientError.gatewayUnavailable(message: message)
+    }
+
+    @MainActor
+    func reloadTerminalAccessKeys(forceMessage: Bool = false) async {
         if terminalAccessReloadInFlight { return }
         terminalAccessReloadInFlight = true
         defer { terminalAccessReloadInFlight = false }
 
         do {
+            try await ensureTerminalAccessGatewayReady()
             let rows = try await TerminalAccessKeyHTTPClient.list(
                 adminToken: grpc.localAdminToken(),
                 grpcPort: grpc.port
@@ -5866,12 +4374,13 @@ struct SettingsSheetView: View {
     }
 
     @MainActor
-    private func issueTerminalAccessKey() async {
+    func issueTerminalAccessKey() async {
         if terminalAccessMutationInFlight { return }
         terminalAccessMutationInFlight = true
         defer { terminalAccessMutationInFlight = false }
 
         do {
+            try await ensureTerminalAccessGatewayReady()
             let secret = try await TerminalAccessKeyHTTPClient.issue(
                 draft: terminalAccessDraft,
                 adminToken: grpc.localAdminToken(),
@@ -5889,12 +4398,13 @@ struct SettingsSheetView: View {
     }
 
     @MainActor
-    private func rotateTerminalAccessKey(_ accessKey: HubTerminalAccessKey) async {
+    func rotateTerminalAccessKey(_ accessKey: HubTerminalAccessKey) async {
         if terminalAccessMutationInFlight { return }
         terminalAccessMutationInFlight = true
         defer { terminalAccessMutationInFlight = false }
 
         do {
+            try await ensureTerminalAccessGatewayReady()
             let secret = try await TerminalAccessKeyHTTPClient.rotate(
                 accessKeyID: accessKey.accessKeyID,
                 note: accessKey.note,
@@ -5932,6 +4442,7 @@ struct SettingsSheetView: View {
         defer { terminalAccessMutationInFlight = false }
 
         do {
+            try await ensureTerminalAccessGatewayReady()
             let updated = try await TerminalAccessKeyHTTPClient.updateDailyBudget(
                 accessKeyID: accessKey.accessKeyID,
                 dailyTokenLimit: updatedLimit,
@@ -5967,7 +4478,7 @@ struct SettingsSheetView: View {
     }
 
     @MainActor
-    private func adjustTerminalAccessKeyDailyBudget(
+    func adjustTerminalAccessKeyDailyBudget(
         _ accessKey: HubTerminalAccessKey,
         delta: Int
     ) async {
@@ -5977,7 +4488,7 @@ struct SettingsSheetView: View {
         await setTerminalAccessKeyDailyBudget(accessKey, dailyTokenLimit: updatedLimit)
     }
 
-    private func presentRemoteQuotaBudgetEditor(
+    func presentRemoteQuotaBudgetEditor(
         _ consumer: RemoteQuotaCenterClientProjection
     ) {
         guard providerKeyCanQuickAdjustBudget(consumer) else {
@@ -5995,7 +4506,7 @@ struct SettingsSheetView: View {
         )
     }
 
-    private func presentRemoteQuotaBudgetEditor(
+    func presentRemoteQuotaBudgetEditor(
         _ accessKey: HubTerminalAccessKey
     ) {
         guard accessKey.supportsDirectBudgetAdjustment else {
@@ -6046,12 +4557,13 @@ struct SettingsSheetView: View {
     }
 
     @MainActor
-    private func revokeTerminalAccessKey(_ accessKey: HubTerminalAccessKey) async {
+    func revokeTerminalAccessKey(_ accessKey: HubTerminalAccessKey) async {
         if terminalAccessMutationInFlight { return }
         terminalAccessMutationInFlight = true
         defer { terminalAccessMutationInFlight = false }
 
         do {
+            try await ensureTerminalAccessGatewayReady()
             _ = try await TerminalAccessKeyHTTPClient.revoke(
                 accessKeyID: accessKey.accessKeyID,
                 note: "revoked from hub settings",
@@ -6070,210 +4582,6 @@ struct SettingsSheetView: View {
             terminalAccessPendingRevokeAccessKeyID = ""
             terminalAccessErrorText = error.localizedDescription
         }
-    }
-
-    private var floatingModeSection: some View {
-        Section(HubUIStrings.Settings.FloatingMode.sectionTitle) {
-            Picker(HubUIStrings.Settings.FloatingMode.mode, selection: $store.floatingMode) {
-                ForEach(FloatingMode.allCases, id: \.self) { m in
-                    Text(m.title).tag(m)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            Text(HubUIStrings.Settings.FloatingMode.reminderHint)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var legacyCountsOnlyIntegrationsEnabled: Bool {
-        store.integrationMailEnabled || store.integrationMessagesEnabled || store.integrationSlackEnabled
-    }
-
-    private var doctorSection: some View {
-        Section(HubUIStrings.Settings.Doctor.sectionTitle) {
-            HStack {
-                Text(HubUIStrings.Settings.Doctor.accessibility)
-                Spacer()
-                Text(axTrusted ? HubUIStrings.Settings.Doctor.authorized : HubUIStrings.Settings.Doctor.unauthorized)
-                    .foregroundStyle(.secondary)
-            }
-            if !axTrusted {
-                HStack(spacing: 10) {
-                    Button(HubUIStrings.Settings.Doctor.requestAccess) {
-                        NSApp.activate(ignoringOtherApps: true)
-                        _ = DockBadgeReader.ensureAccessibilityTrusted(prompt: true)
-                        SystemSettingsLinks.openAccessibilityPrivacy()
-                    }
-                    Button(HubUIStrings.Settings.Doctor.openSettings) { SystemSettingsLinks.openAccessibilityPrivacy() }
-                    Spacer()
-                }
-            }
-
-            if legacyCountsOnlyIntegrationsEnabled {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(HubUIStrings.Settings.Doctor.legacyCountsEnabled)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(HubUIStrings.Settings.Doctor.legacyCountsHint)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    if !store.integrationsStatusText.isEmpty || !store.integrationsDebugText.isEmpty {
-                        DisclosureGroup(HubUIStrings.Settings.Doctor.legacyDetails) {
-                            if !store.integrationsStatusText.isEmpty {
-                                Text(store.integrationsStatusText)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Text(
-                                store.integrationsDebugText.isEmpty
-                                    ? HubUIStrings.Settings.Doctor.debugInfoEmpty
-                                    : store.integrationsDebugText
-                            )
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
-                    }
-                }
-                HStack(spacing: 10) {
-                    Button(HubUIStrings.Settings.Doctor.disableLegacyCounts) {
-                        disableLegacyCountsOnlyIntegrations()
-                    }
-                    Spacer()
-                }
-            }
-
-            HStack {
-                Text(HubUIStrings.Settings.Doctor.localRuntime)
-                Spacer()
-                Text(store.aiRuntimeStatusText)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            if !store.aiRuntimeDoctorSummaryText.isEmpty {
-                Text(store.aiRuntimeDoctorSummaryText)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-            if let guidance = xhubLocalServiceRecoveryGuidance {
-                DisclosureGroup(HubUIStrings.Settings.Doctor.recoveryDisclosure) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(HubUIStrings.Settings.Doctor.actionCategory)
-                            Spacer()
-                            Text(guidance.actionCategory)
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
-                        HStack {
-                            Text(HubUIStrings.Settings.Doctor.severity)
-                            Spacer()
-                            Text(guidance.severity.uppercased())
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(localServiceRecoverySeverityColor(guidance.severity))
-                                .textSelection(.enabled)
-                        }
-                        HStack {
-                            Text(HubUIStrings.Settings.Doctor.primaryIssueCode)
-                            Spacer()
-                            Text(guidance.primaryIssue.reasonCode)
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
-                        if !guidance.serviceBaseURL.isEmpty {
-                            HStack {
-                                Text(HubUIStrings.Settings.Doctor.serviceBaseURL)
-                                Spacer()
-                                Text(guidance.serviceBaseURL)
-                                    .font(.caption2.monospaced())
-                                    .foregroundStyle(.secondary)
-                                    .textSelection(.enabled)
-                            }
-                        }
-                        Text(guidance.primaryIssue.headline)
-                            .font(.caption.weight(.semibold))
-                        Text(guidance.primaryIssue.message)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                        Text(HubUIStrings.Settings.Doctor.installHintTitle)
-                            .font(.caption.weight(.semibold))
-                        Text(guidance.installHint)
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                            .textSelection(.enabled)
-
-                        if !guidance.recommendedActions.isEmpty {
-                            Text(HubUIStrings.Settings.Doctor.recommendedActionsTitle)
-                                .font(.caption.weight(.semibold))
-                            let rankedActions = Array(guidance.recommendedActions.enumerated())
-                            ForEach(rankedActions, id: \.offset) { item in
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(HubUIStrings.Settings.numberedItem(item.offset + 1, title: item.element.title))
-                                        .font(.caption)
-                                    Text(item.element.why)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                    if !item.element.commandOrReference.isEmpty {
-                                        Text(item.element.commandOrReference)
-                                            .font(.caption2.monospaced())
-                                            .foregroundStyle(.secondary)
-                                            .textSelection(.enabled)
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                        }
-
-                        if !guidance.supportFAQ.isEmpty {
-                            Text(HubUIStrings.Settings.Doctor.supportFAQTitle)
-                                .font(.caption.weight(.semibold))
-                            ForEach(guidance.supportFAQ) { item in
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(item.question)
-                                        .font(.caption)
-                                    Text(item.answer)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                        }
-
-                        HStack(spacing: 10) {
-                            Button(HubUIStrings.Settings.Doctor.copyRecoverySummary) {
-                                copyXHubLocalServiceRecoveryToClipboard(guidance)
-                            }
-                            Spacer()
-                        }
-                        .font(.caption)
-                    }
-                    .padding(.top, 4)
-                }
-            }
-            HStack(spacing: 10) {
-                Button(HubUIStrings.Settings.RuntimeMonitor.copyProviderSummary) {
-                    copyLocalProviderSummaryToClipboard(snapshot: hubLaunchStatus)
-                }
-                Button(HubUIStrings.Settings.RuntimeMonitor.openLog) {
-                    store.openAIRuntimeLog()
-                }
-                Spacer()
-            }
-            .font(.caption)
-        }
-    }
-
-    private func disableLegacyCountsOnlyIntegrations() {
-        store.integrationMailEnabled = false
-        store.integrationMessagesEnabled = false
-        store.integrationSlackEnabled = false
     }
 
     private var diagnosticsSection: some View {
@@ -6623,714 +4931,11 @@ struct SettingsSheetView: View {
         }
     }
 
-    private var rustHubKernelSection: some View {
-        Section("Rust Hub Kernel") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Label("Local Agent Control Kernel", systemImage: "cpu")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Text(rustHubRuntimeSnapshot.daemonStatusText)
-                        .font(.caption.monospaced())
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(rustHubKernelTint.opacity(0.14))
-                        .clipShape(Capsule())
-                }
-
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 150), spacing: 8)],
-                    alignment: .leading,
-                    spacing: 8
-                ) {
-                    runtimeMonitorMetricCard(
-                        title: "内置包",
-                        value: rustHubRuntimeSnapshot.embeddedStatusText,
-                        detail: rustHubEmbeddedPackageDetail
-                    )
-                    runtimeMonitorMetricCard(
-                        title: "Active root",
-                        value: rustHubRuntimeSnapshot.activeStatusText,
-                        detail: rustHubActivePackageDetail
-                    )
-                    runtimeMonitorMetricCard(
-                        title: "Node root",
-                        value: rustHubRuntimeSnapshot.selectedRootText,
-                        detail: rustHubSelectedPackageDetail
-                    )
-                    runtimeMonitorMetricCard(
-                        title: "Daemon",
-                        value: rustHubRuntimeSnapshot.daemonStatusText,
-                        detail: rustHubRuntimeSnapshot.endpointText
-                    )
-                    runtimeMonitorMetricCard(
-                        title: "Mode",
-                        value: rustHubRuntimeSnapshot.modeText,
-                        detail: "version \(rustHubRuntimeSnapshot.versionText)"
-                    )
-                    runtimeMonitorMetricCard(
-                        title: "Authority",
-                        value: "Shadow",
-                        detail: rustHubRuntimeSnapshot.authoritySummary
-                    )
-                }
-
-                if !rustHubRuntimeSnapshot.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(rustHubRuntimeSnapshot.detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                HStack(spacing: 10) {
-                    HubNeutralActionChipButton(
-                        title: rustHubRuntimeRefreshing ? "刷新中" : "刷新",
-                        systemName: "arrow.clockwise",
-                        width: nil,
-                        help: nil
-                    ) {
-                        refreshRustHubRuntimeSnapshot(force: true)
-                        refreshRustLocalModelRepairPlan(force: true)
-                        refreshRustLocalModelRepairJobs(force: true)
-                    }
-                    Text(rustHubRuntimeSnapshot.updatedAtMs > 0 ? "更新 \(formatEpochMs(rustHubRuntimeSnapshot.updatedAtMs))" : "等待首次刷新")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    private var rustHubKernelTint: Color {
-        if rustHubRuntimeSnapshot.ready { return .green }
-        if rustHubRuntimeSnapshot.healthOK { return .orange }
-        return rustHubRuntimeSnapshot.embeddedPackage.valid ? .blue : .secondary
-    }
-
-    private var rustHubEmbeddedPackageDetail: String {
-        let package = rustHubRuntimeSnapshot.embeddedPackage
-        if package.valid {
-            let root = package.rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
-            return root.isEmpty ? "Resources/rust-hub" : root
-        }
-        if package.exists {
-            return "缺少 bin/xhubd 或 tools/run_rust_hub.command"
-        }
-        return "当前 App 包内没有 Resources/rust-hub"
-    }
-
-    private var rustHubActivePackageDetail: String {
-        let package = rustHubRuntimeSnapshot.activePackage
-        if package.valid {
-            return package.rootPath
-        }
-        if package.exists {
-            return "缺少 bin/xhubd 或 tools/run_rust_hub.command"
-        }
-        return "~/Library/Application Support/AX/rust-hub/current"
-    }
-
-    private var rustHubSelectedPackageDetail: String {
-        let package = rustHubRuntimeSnapshot.selectedPackage
-        if package.valid {
-            return package.rootPath
-        }
-        return "等待 embedded 或 active root"
-    }
-
-    @ViewBuilder
-    private var rustLocalModelRepairApplyFeedback: some View {
-        let error = rustLocalModelRepairApplyErrorText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !error.isEmpty {
-            Label(error, systemImage: "exclamationmark.triangle")
-                .font(.caption)
-                .foregroundStyle(.red)
-        } else if rustLocalModelRepairExecutorInFlight {
-            Label(HubUIStrings.Models.Runtime.LocalServiceRecovery.rustRepairExecutorRunning, systemImage: "arrow.triangle.2.circlepath")
-                .font(.caption)
-                .foregroundStyle(.blue)
-        } else if let job = rustLocalModelRepairJobsSnapshot.latestJob,
-                  ["queued_waiting_executor", "running_install_provider_pack"].contains(job.status) {
-            Label(
-                HubUIStrings.Models.Runtime.LocalServiceRecovery.rustRepairJobStatus(
-                    jobID: job.jobID,
-                    status: job.status
-                ),
-                systemImage: job.status == "running_install_provider_pack" ? "arrow.triangle.2.circlepath" : "clock"
-            )
-            .font(.caption)
-            .foregroundStyle(.blue)
-            .textSelection(.enabled)
-        } else if let result = rustLocalModelRepairExecutorResult {
-            Label(
-                HubUIStrings.Models.Runtime.LocalServiceRecovery.rustRepairExecutorFinished(
-                    status: result.status,
-                    ok: result.ok
-                ),
-                systemImage: result.ok ? "checkmark.seal" : "exclamationmark.triangle"
-            )
-            .font(.caption)
-            .foregroundStyle(result.ok ? .blue : .orange)
-            .textSelection(.enabled)
-        } else if let job = rustLocalModelRepairJobsSnapshot.latestJob {
-            Label(
-                HubUIStrings.Models.Runtime.LocalServiceRecovery.rustRepairJobStatus(
-                    jobID: job.jobID,
-                    status: job.status
-                ),
-                systemImage: job.status == "applied_pending_runtime_restart" ? "checkmark.seal" : "clock"
-            )
-            .font(.caption)
-            .foregroundStyle(job.status == "failed" ? .orange : .secondary)
-            .textSelection(.enabled)
-        } else if let result = rustLocalModelRepairApplyResult {
-            let text = result.accepted
-                ? HubUIStrings.Models.Runtime.LocalServiceRecovery.rustRepairApplyQueued(
-                    jobID: result.jobID,
-                    executorReady: result.jobPolicy.executorReady
-                )
-                : HubUIStrings.Models.Runtime.LocalServiceRecovery.rustRepairApplyRejected(status: result.status)
-            Label(text, systemImage: result.accepted ? "checkmark.seal" : "exclamationmark.triangle")
-                .font(.caption)
-                .foregroundStyle(result.accepted ? .blue : .orange)
-                .textSelection(.enabled)
-        }
-    }
-
-    private var runtimeMonitorSection: some View {
-        Section(HubUIStrings.Settings.RuntimeMonitor.sectionTitle) {
-            if let summary = effectiveRuntimeRepairSurfaceSummary {
-                LocalRuntimeRepairEntryCard(
-                    summary: summary,
-                    onCopySummary: { copyLocalRuntimeRepairSummary(summary) },
-                    onOpenLog: { store.openAIRuntimeLog() },
-                    queueRepairTitle: (rustLocalModelRepairApplyInFlight || rustLocalModelRepairExecutorInFlight)
-                        ? HubUIStrings.Models.Runtime.LocalServiceRecovery.queueRustRepairInFlightAction
-                        : HubUIStrings.Models.Runtime.LocalServiceRecovery.queueRustRepairAction,
-                    onQueueRepair: rustLocalModelRepairPlan?.isActionableRepair == true
-                        && !rustLocalModelRepairExecutorInFlight
-                        ? { presentRustLocalModelRepairApplyDialog() }
-                        : nil
-                )
-            }
-
-            rustLocalModelRepairApplyFeedback
-
-            if let status = store.aiRuntimeStatusSnapshot,
-               let monitor = status.monitorSnapshot {
-                let runtimeOpsSummary = LocalRuntimeOperationsSummaryBuilder.build(
-                    status: status,
-                    models: modelStore.snapshot.models,
-                    currentTargetsByModelID: modelStore.currentLocalRuntimeRequestContextByModelId
-                )
-                let currentTargets = modelStore.snapshot.models.compactMap { model -> (HubModel, LocalModelRuntimeRequestContext)? in
-                    guard let requestContext = modelStore.currentLocalRuntimeRequestContextByModelId[model.id] else {
-                        return nil
-                    }
-                    return (model, requestContext)
-                }
-                .sorted {
-                    let lhsName = ($0.0.name.isEmpty ? $0.0.id : $0.0.name)
-                    let rhsName = ($1.0.name.isEmpty ? $1.0.id : $1.0.name)
-                    let nameOrder = lhsName.localizedCaseInsensitiveCompare(rhsName)
-                    if nameOrder != .orderedSame {
-                        return nameOrder == .orderedAscending
-                    }
-                    return $0.0.id.localizedCaseInsensitiveCompare($1.0.id) == .orderedAscending
-                }
-                VStack(alignment: .leading, spacing: 12) {
-                    if !status.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) {
-                        Text(HubUIStrings.Settings.RuntimeMonitor.staleHeartbeat)
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-
-                    LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 130), spacing: 8)],
-                        alignment: .leading,
-                        spacing: 8
-                    ) {
-                        runtimeMonitorMetricCard(
-                            title: HubUIStrings.Settings.RuntimeMonitor.Metric.providersTitle,
-                            value: HubUIStrings.Settings.RuntimeMonitor.Metric.providersValue(
-                                ready: monitor.providers.filter(\.ok).count,
-                                total: monitor.providers.count
-                            ),
-                            detail: HubUIStrings.Settings.RuntimeMonitor.Metric.providersDetail(
-                                hasProviders: !monitor.providers.isEmpty
-                            )
-                        )
-                        runtimeMonitorMetricCard(
-                            title: HubUIStrings.Settings.RuntimeMonitor.Metric.queueTitle,
-                            value: HubUIStrings.Settings.RuntimeMonitor.Metric.queueValue(
-                                active: monitor.queue.activeTaskCount,
-                                queued: monitor.queue.queuedTaskCount
-                            ),
-                            detail: HubUIStrings.Settings.RuntimeMonitor.Metric.queueDetail(
-                                busy: monitor.queue.providersBusyCount,
-                                maxOldestWaitMs: monitor.queue.maxOldestWaitMs
-                            )
-                        )
-                        runtimeMonitorMetricCard(
-                            title: HubUIStrings.Settings.RuntimeMonitor.Metric.instancesTitle,
-                            value: HubUIStrings.Settings.RuntimeMonitor.Metric.instancesValue(monitor.loadedInstances.count),
-                            detail: HubUIStrings.Settings.RuntimeMonitor.Metric.instancesDetail(
-                                taskCount: monitor.activeTasks.count
-                            )
-                        )
-                        runtimeMonitorMetricCard(
-                            title: HubUIStrings.Settings.RuntimeMonitor.Metric.fallbackTitle,
-                            value: HubUIStrings.Settings.RuntimeMonitor.Metric.fallbackValue(
-                                providerCount: monitor.fallbackCounters.fallbackReadyProviderCount
-                            ),
-                            detail: HubUIStrings.Settings.RuntimeMonitor.Metric.fallbackDetail(
-                                taskCount: monitor.fallbackCounters.fallbackReadyTaskCount
-                            )
-                        )
-                        runtimeMonitorMetricCard(
-                            title: HubUIStrings.Settings.RuntimeMonitor.Metric.errorsTitle,
-                            value: "\(monitor.lastErrors.count)",
-                            detail: HubUIStrings.Settings.RuntimeMonitor.Metric.errorsDetail(
-                                hasErrors: !monitor.lastErrors.isEmpty
-                            )
-                        )
-                        runtimeMonitorMetricCard(
-                            title: HubUIStrings.Settings.RuntimeMonitor.Metric.updatedAtTitle,
-                            value: formatEpochSeconds(monitor.updatedAt),
-                            detail: HubUIStrings.Settings.RuntimeMonitor.updatedAtDetail
-                        )
-                    }
-
-                    Text(HubUIStrings.Settings.RuntimeMonitor.metricsExplainer)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    HStack(spacing: 10) {
-                        HubNeutralActionChipButton(
-                            title: HubUIStrings.Settings.RuntimeMonitor.copySummary,
-                            systemName: "doc.on.doc",
-                            width: nil,
-                            help: nil
-                        ) {
-                            copyRuntimeMonitorSummaryToClipboard(status: status)
-                        }
-                        if !monitor.activeTasks.isEmpty {
-                            HubNeutralActionChipButton(
-                                title: HubUIStrings.Settings.RuntimeMonitor.copyActiveTasks,
-                                systemName: "list.bullet.rectangle",
-                                width: nil,
-                                help: nil
-                            ) {
-                                copyRuntimeMonitorActiveTasksToClipboard(monitor: monitor)
-                            }
-                        }
-                        if !monitor.loadedInstances.isEmpty {
-                            HubNeutralActionChipButton(
-                                title: HubUIStrings.Settings.RuntimeMonitor.copyLoadedInstances,
-                                systemName: "shippingbox",
-                                width: nil,
-                                help: nil
-                            ) {
-                                copyRuntimeMonitorLoadedInstancesToClipboard(summary: runtimeOpsSummary)
-                            }
-                        }
-                        if !currentTargets.isEmpty {
-                            HubNeutralActionChipButton(
-                                title: HubUIStrings.Settings.RuntimeMonitor.copyCurrentTargets,
-                                systemName: "scope",
-                                width: nil,
-                                help: nil
-                            ) {
-                                copyRuntimeMonitorCurrentTargetsToClipboard(currentTargets)
-                            }
-                        }
-                        if !monitor.lastErrors.isEmpty {
-                            HubNeutralActionChipButton(
-                                title: HubUIStrings.Settings.RuntimeMonitor.copyLastErrors,
-                                systemName: "exclamationmark.bubble",
-                                width: nil,
-                                help: nil
-                            ) {
-                                copyRuntimeMonitorErrorsToClipboard(monitor: monitor)
-                            }
-                        }
-                        HubNeutralActionChipButton(
-                            title: HubUIStrings.Settings.RuntimeMonitor.openLog,
-                            systemName: "doc.text.magnifyingglass",
-                            width: nil,
-                            help: nil
-                        ) {
-                            store.openAIRuntimeLog()
-                        }
-                        Spacer()
-                    }
-
-                    if monitor.providers.isEmpty {
-                        Text(HubUIStrings.Settings.RuntimeMonitor.noProviderRecords)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(monitor.providers, id: \.provider) { provider in
-                            runtimeMonitorProviderCard(provider)
-                        }
-                    }
-
-                    DisclosureGroup(HubUIStrings.Settings.RuntimeMonitor.currentTargetsDisclosure(currentTargets.count)) {
-                        if currentTargets.isEmpty {
-                            Text(HubUIStrings.Settings.RuntimeMonitor.currentTargetsEmpty)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            VStack(alignment: .leading, spacing: 6) {
-                                ForEach(Array(currentTargets.enumerated()), id: \.offset) { entry in
-                                    let model = entry.element.0
-                                    let requestContext = entry.element.1
-                                    Text(runtimeMonitorCurrentTargetLine(model: model, requestContext: requestContext))
-                                        .font(.caption2.monospaced())
-                                        .foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-                                }
-                            }
-                        }
-                    }
-
-                    DisclosureGroup(HubUIStrings.Settings.RuntimeMonitor.activeTasksDisclosure(monitor.activeTasks.count)) {
-                        if monitor.activeTasks.isEmpty {
-                            Text(HubUIStrings.Settings.RuntimeMonitor.activeTasksEmpty)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            let activeTasks = Array(monitor.activeTasks.enumerated())
-                            VStack(alignment: .leading, spacing: 6) {
-                                ForEach(activeTasks, id: \.offset) { entry in
-                                    let task = entry.element
-                                    Text(runtimeMonitorActiveTaskLine(task))
-                                        .font(.caption2.monospaced())
-                                        .foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-                                }
-                            }
-                        }
-                    }
-
-                    DisclosureGroup(
-                        HubUIStrings.Settings.RuntimeMonitor.loadedInstancesDisclosure(runtimeOpsSummary.instanceRows.count)
-                    ) {
-                        if runtimeOpsSummary.instanceRows.isEmpty {
-                            Text(HubUIStrings.Settings.RuntimeMonitor.loadedInstancesEmpty)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            VStack(alignment: .leading, spacing: 6) {
-                                ForEach(runtimeOpsSummary.instanceRows) { row in
-                                    Text(runtimeMonitorLoadedInstanceLine(row))
-                                        .font(.caption2.monospaced())
-                                        .foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-                                }
-                            }
-                        }
-                    }
-
-                    DisclosureGroup(HubUIStrings.Settings.RuntimeMonitor.lastErrorsDisclosure(monitor.lastErrors.count)) {
-                        if monitor.lastErrors.isEmpty {
-                            Text(HubUIStrings.Settings.RuntimeMonitor.lastErrorsEmpty)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            let lastErrors = Array(monitor.lastErrors.enumerated())
-                            VStack(alignment: .leading, spacing: 6) {
-                                ForEach(lastErrors, id: \.offset) { entry in
-                                    let error = entry.element
-                                    Text(runtimeMonitorErrorLine(error))
-                                        .font(.caption2.monospaced())
-                                        .foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                Text(HubUIStrings.Settings.RuntimeMonitor.waitingForHeartbeat)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 10) {
-                    HubNeutralActionChipButton(
-                        title: HubUIStrings.Settings.RuntimeMonitor.copyProviderSummary,
-                        systemName: "doc.on.doc",
-                        width: nil,
-                        help: nil
-                    ) {
-                        copyLocalProviderSummaryToClipboard(snapshot: hubLaunchStatus)
-                    }
-                    HubNeutralActionChipButton(
-                        title: HubUIStrings.Settings.RuntimeMonitor.openLog,
-                        systemName: "doc.text.magnifyingglass",
-                        width: nil,
-                        help: nil
-                    ) {
-                        store.openAIRuntimeLog()
-                    }
-                    Spacer()
-                }
-            }
-        }
-    }
-
-    private var networkingSection: some View {
-        Section(HubUIStrings.Settings.Networking.sectionTitle) {
-            HStack {
-                Text(HubUIStrings.Settings.Networking.bridgeStatus)
-                Spacer()
-                Text(store.bridge.bridgeStatusText)
-                    .foregroundStyle(.secondary)
-            }
-            HStack(spacing: 10) {
-                Button(HubUIStrings.Settings.Networking.restoreNetwork) {
-                    store.bridge.restore(seconds: 30 * 60)
-                }
-                Button(HubUIStrings.Settings.Networking.refreshStatus) { store.bridge.refresh() }
-                Spacer()
-            }
-
-            Text(HubUIStrings.Settings.Networking.defaultHint)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            DisclosureGroup(HubUIStrings.Settings.Networking.emergencyDisclosure) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(HubUIStrings.Settings.Networking.emergencyHint)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    HStack(spacing: 10) {
-                        Button(HubUIStrings.Settings.Networking.cutOffGlobal) {
-                            store.bridge.disable()
-                        }
-                        .tint(.red)
-                        Button(HubUIStrings.Settings.Networking.restoreGlobal) {
-                            store.bridge.restore(seconds: 30 * 60)
-                        }
-                        Spacer()
-                    }
-                }
-                .padding(.top, 4)
-            }
-
-            if store.pendingNetworkRequests.isEmpty {
-                Text(HubUIStrings.Settings.Networking.noPendingRequests)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(store.pendingNetworkRequests) { req in
-                    networkRequestCard(req)
-                }
-            }
-        }
-    }
-
-    private func formatEpochMs(_ ms: Int64) -> String {
+    func formatEpochMs(_ ms: Int64) -> String {
         let d = Date(timeIntervalSince1970: Double(ms) / 1000.0)
         let f = DateFormatter()
         f.dateFormat = HubUIStrings.Formatting.dateTimeWithSeconds
         return f.string(from: d)
-    }
-
-    private func formatEpochSeconds(_ seconds: Double) -> String {
-        guard seconds > 0 else { return HubUIStrings.Settings.RuntimeMonitor.unknown }
-        return formatEpochMs(Int64(seconds * 1000.0))
-    }
-
-    private func formatRuntimeMemoryBytes(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: max(0, bytes), countStyle: .memory)
-    }
-
-    private func runtimeMonitorTaskKindsText(_ values: [String]) -> String {
-        HubUIStrings.Settings.RuntimeMonitor.taskKinds(values)
-    }
-
-    private func runtimeMonitorMemoryText(_ provider: AIRuntimeMonitorProvider) -> String {
-        return HubUIStrings.Settings.RuntimeMonitor.memorySummary(
-            memoryState: provider.memoryState,
-            current: formatRuntimeMemoryBytes(provider.activeMemoryBytes),
-            peak: formatRuntimeMemoryBytes(provider.peakMemoryBytes)
-        )
-    }
-
-    @ViewBuilder
-    private func runtimeMonitorMetricCard(title: String, value: String, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.subheadline.weight(.semibold))
-            Text(detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(Color.secondary.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func runtimeMonitorProviderCard(_ provider: AIRuntimeMonitorProvider) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(provider.provider.uppercased())
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Text(HubUIStrings.Settings.RuntimeMonitor.providerStatus(ok: provider.ok))
-                    .font(.caption.monospaced())
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background((provider.ok ? Color.green : Color.red).opacity(0.14))
-                    .clipShape(Capsule())
-                if provider.queuedTaskCount > 0 {
-                    Text(HubUIStrings.Settings.RuntimeMonitor.queuedCount(provider.queuedTaskCount))
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Text(
-                HubUIStrings.Settings.RuntimeMonitor.reasonBackend(
-                    reason: provider.reasonCode.isEmpty ? HubUIStrings.Settings.RuntimeMonitor.none : provider.reasonCode,
-                    backend: provider.deviceBackend.isEmpty ? HubUIStrings.Settings.RuntimeMonitor.unknown : provider.deviceBackend
-                )
-            )
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-
-            Text(
-                HubUIStrings.Settings.RuntimeMonitor.taskKindsSummary(
-                    real: runtimeMonitorTaskKindsText(provider.realTaskKinds),
-                    fallback: runtimeMonitorTaskKindsText(provider.fallbackTaskKinds),
-                    unavailable: runtimeMonitorTaskKindsText(provider.unavailableTaskKinds)
-                )
-            )
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-
-            Text(
-                HubUIStrings.Settings.RuntimeMonitor.providerLoadSummary(
-                    activeTaskCount: provider.activeTaskCount,
-                    concurrencyLimit: provider.concurrencyLimit,
-                    queuedTaskCount: provider.queuedTaskCount,
-                    loadedInstanceCount: provider.loadedInstanceCount,
-                    loadedModelCount: provider.loadedModelCount
-                )
-            )
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-
-            Text(
-                HubUIStrings.Settings.RuntimeMonitor.queueSummary(
-                    mode: provider.queueMode.isEmpty ? HubUIStrings.Settings.RuntimeMonitor.unknown : provider.queueMode,
-                    oldestWaiterAgeMs: provider.oldestWaiterAgeMs,
-                    contentionCount: provider.contentionCount,
-                    memory: runtimeMonitorMemoryText(provider)
-                )
-            )
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-
-            if !provider.lastIdleEvictionReason.isEmpty || !provider.importError.isEmpty {
-                Text(
-                    HubUIStrings.Settings.RuntimeMonitor.idleEvictionSummary(
-                        policy: provider.idleEvictionPolicy.isEmpty ? HubUIStrings.Settings.RuntimeMonitor.unknown : provider.idleEvictionPolicy,
-                        lastEviction: provider.lastIdleEvictionReason.isEmpty ? HubUIStrings.Settings.RuntimeMonitor.none : provider.lastIdleEvictionReason,
-                        importError: provider.importError.isEmpty ? HubUIStrings.Settings.RuntimeMonitor.none : provider.importError
-                    )
-                )
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-
-            let providerHint = (store.aiRuntimeProviderHelpTextByProvider[provider.provider] ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !providerHint.isEmpty {
-                Text(providerHint)
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .textSelection(.enabled)
-            }
-        }
-        .padding(12)
-        .background(Color.secondary.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    private func runtimeMonitorActiveTaskLine(_ task: AIRuntimeMonitorActiveTask) -> String {
-        HubUIStrings.Settings.RuntimeMonitor.activeTaskLine(
-            provider: task.provider,
-            taskKind: task.taskKind,
-            modelID: task.modelId,
-            requestID: task.requestId,
-            deviceID: task.deviceId,
-            instanceKey: task.instanceKey,
-            loadConfigHash: task.loadConfigHash,
-            currentContextLength: task.currentContextLength,
-            maxContextLength: task.maxContextLength > task.currentContextLength ? task.maxContextLength : nil,
-            leaseTtlSec: task.leaseTtlSec
-        )
-    }
-
-    private func runtimeMonitorLoadedInstanceLine(_ instance: AIRuntimeLoadedInstance) -> String {
-        HubUIStrings.Settings.RuntimeMonitor.loadedInstanceLine(
-            modelID: instance.modelId,
-            taskKinds: runtimeMonitorTaskKindsText(instance.taskKinds),
-            instanceKey: instance.instanceKey,
-            loadConfigHash: instance.loadConfigHash,
-            currentContextLength: instance.currentContextLength,
-            maxContextLength: instance.maxContextLength,
-            ttl: instance.ttl ?? instance.loadConfig?.ttl,
-            residency: instance.residency,
-            backend: instance.deviceBackend,
-            lastUsedAt: formatEpochSeconds(instance.lastUsedAt)
-        )
-    }
-
-    private func runtimeMonitorLoadedInstanceLine(_ row: LocalRuntimeOperationsSummary.InstanceRow) -> String {
-        HubUIStrings.Settings.RuntimeMonitor.loadedInstanceRowLine(
-            modelID: row.modelID,
-            modelName: row.modelName,
-            providerID: row.providerID,
-            instanceKey: row.shortInstanceKey.isEmpty ? row.instanceKey : row.shortInstanceKey,
-            taskSummary: row.taskSummary,
-            loadSummary: row.loadSummary,
-            detailSummary: row.detailSummary,
-            currentTargetSummary: row.isCurrentTarget ? row.currentTargetSummary : nil
-        )
-    }
-
-    private func runtimeMonitorCurrentTargetLine(
-        model: HubModel,
-        requestContext: LocalModelRuntimeRequestContext
-    ) -> String {
-        let modelName = model.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? model.id : model.name
-        return HubUIStrings.Settings.RuntimeMonitor.currentTargetLine(
-            modelID: model.id,
-            modelName: modelName,
-            providerID: requestContext.providerID,
-            target: requestContext.uiSummary,
-            detail: requestContext.technicalSummary
-        )
-    }
-
-    private func runtimeMonitorErrorLine(_ error: AIRuntimeMonitorLastError) -> String {
-        HubUIStrings.Settings.RuntimeMonitor.errorLine(
-            provider: error.provider,
-            severity: error.severity,
-            code: error.code,
-            message: error.message
-        )
     }
 
     private func renderRootCauseText(_ rc: HubLaunchRootCause?) -> String {
@@ -7372,305 +4977,6 @@ struct SettingsSheetView: View {
         let out = HubDiagnosticsBundleExporter.redactTextForSharing(header + "\n\n" + body)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(out, forType: .string)
-    }
-
-    private func reloadSkillsSnapshots() {
-        skillsIndex = HubSkillsStoreStorage.loadSkillsIndex()
-        skillsPins = HubSkillsStoreStorage.loadSkillPins()
-        skillsSources = HubSkillsStoreStorage.loadSkillSources()
-    }
-
-    private func shortSha(_ sha: String) -> String {
-        let s = sha.trimmingCharacters(in: .whitespacesAndNewlines)
-        if s.count <= 12 { return s }
-        return "\(s.prefix(8))…\(s.suffix(4))"
-    }
-
-    private func renderResolvedSkills(_ resolved: [HubSkillsStoreStorage.ResolvedSkill]) -> String {
-        let uid = skillsResolveUserId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let pid = skillsResolveProjectId.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        var lines: [String] = []
-        lines.append(HubUIStrings.Settings.Skills.resolvedUserID(uid.isEmpty ? HubUIStrings.Settings.Skills.resolvedEmptyValue : uid))
-        lines.append(HubUIStrings.Settings.Skills.resolvedProjectID(pid.isEmpty ? HubUIStrings.Settings.Skills.resolvedEmptyValue : pid))
-        lines.append(HubUIStrings.Settings.Skills.resolvedPrecedence)
-        lines.append("")
-
-        for r in resolved {
-            let sid = r.pin.skillId.trimmingCharacters(in: .whitespacesAndNewlines)
-            let sha = r.pin.packageSha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let ver = r.meta?.version.trimmingCharacters(in: .whitespacesAndNewlines) ?? HubUIStrings.Settings.Diagnostics.missingField
-            let src = r.meta?.sourceId.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            lines.append(
-                HubUIStrings.Settings.Skills.resolvedSkillLine(
-                    scopeLabel: r.scope.shortLabel,
-                    skillID: sid,
-                    version: ver,
-                    packageSHA256: sha,
-                    sourceID: src
-                )
-            )
-        }
-
-        return HubDiagnosticsBundleExporter.redactTextForSharing(lines.joined(separator: "\n"))
-    }
-
-    private func openSkillManifest(packageSha256: String) {
-        let sha = packageSha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !sha.isEmpty else { return }
-        let url = HubSkillsStoreStorage.skillManifestURL(packageSha256: sha)
-        let fm = FileManager.default
-        if fm.fileExists(atPath: url.path) {
-            NSWorkspace.shared.open(url)
-        } else {
-            NSWorkspace.shared.open(url.deletingLastPathComponent())
-        }
-    }
-
-    private func revealSkillPackage(packageSha256: String) {
-        let sha = packageSha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !sha.isEmpty else { return }
-        let url = HubSkillsStoreStorage.skillPackageURL(packageSha256: sha)
-        let fm = FileManager.default
-        if fm.fileExists(atPath: url.path) {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        } else {
-            NSWorkspace.shared.activateFileViewerSelecting([url.deletingLastPathComponent()])
-        }
-    }
-
-    private func updateSkillPin(
-        scope: HubSkillsStoreStorage.PinScope,
-        skillId: String,
-        packageSha256: String,
-        userIdOverride: String? = nil,
-        projectIdOverride: String? = nil
-    ) {
-        skillsLastActionText = ""
-        skillsLastErrorText = ""
-
-        let uid = (userIdOverride ?? skillsResolveUserId).trimmingCharacters(in: .whitespacesAndNewlines)
-        let pid = (projectIdOverride ?? skillsResolveProjectId).trimmingCharacters(in: .whitespacesAndNewlines)
-
-        do {
-            let userForScope: String? = {
-                if scope == .memoryCore { return nil }
-                return uid.isEmpty ? nil : uid
-            }()
-            let projectForScope: String? = {
-                if scope != .project { return nil }
-                return pid.isEmpty ? nil : pid
-            }()
-
-            let res = try HubSkillsStoreStorage.setPin(
-                scope: scope,
-                userId: userForScope,
-                projectId: projectForScope,
-                skillId: skillId,
-                packageSha256: packageSha256,
-                note: nil
-            )
-            skillsPins = HubSkillsStoreStorage.loadSkillPins()
-
-            let newSha = packageSha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if newSha.isEmpty {
-                skillsLastActionText = HubUIStrings.Settings.Skills.pinActionUnpinned(
-                    skillID: skillId,
-                    scopeLabel: scope.displayLabel
-                )
-            } else {
-                let prev = res.previousSha.trimmingCharacters(in: .whitespacesAndNewlines)
-                skillsLastActionText = HubUIStrings.Settings.Skills.pinActionPinned(
-                    skillID: skillId,
-                    scopeLabel: scope.displayLabel,
-                    shortSHA: shortSha(newSha),
-                    previousShortSHA: prev.isEmpty ? nil : shortSha(prev)
-                )
-            }
-        } catch {
-            skillsLastErrorText = error.localizedDescription
-        }
-    }
-
-    private func sortedPins(_ pins: [HubSkillsStoreStorage.SkillPin]) -> [HubSkillsStoreStorage.SkillPin] {
-        pins.sorted { a, b in
-            let am = a.updatedAtMs ?? 0
-            let bm = b.updatedAtMs ?? 0
-            if am != bm { return am > bm }
-            return a.skillId.localizedCaseInsensitiveCompare(b.skillId) == .orderedAscending
-        }
-    }
-
-    @ViewBuilder
-    private func skillResolvedRow(_ r: HubSkillsStoreStorage.ResolvedSkill) -> some View {
-        let sid = r.pin.skillId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sha = r.pin.packageSha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let ver = (r.meta?.version ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let name = (r.meta?.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let title = HubUIStrings.Settings.Skills.skillTitle(skillID: sid, version: ver)
-
-        VStack(alignment: .leading, spacing: 2) {
-            Text(HubUIStrings.Settings.Skills.scopeAndTitle(scopeLabel: r.scope.displayLabel, title: title))
-                .font(.callout.weight(.semibold))
-            if !name.isEmpty, name != sid {
-                Text(name)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            if r.meta == nil {
-                Text(HubUIStrings.Settings.Skills.packageMissing(shortSha(sha)))
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-            } else {
-                Text(HubUIStrings.Settings.Skills.packageSHA(shortSha(sha)))
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-
-            HStack(spacing: 10) {
-                if !sha.isEmpty {
-                    Button(HubUIStrings.Settings.Skills.openManifest) { openSkillManifest(packageSha256: sha) }
-                    Button(HubUIStrings.Settings.Skills.showPackageDirectory) { revealSkillPackage(packageSha256: sha) }
-                }
-                Spacer()
-            }
-            .font(.caption)
-        }
-    }
-
-    @ViewBuilder
-    private func skillPinRow(_ p: HubSkillsStoreStorage.SkillPin, scope: HubSkillsStoreStorage.PinScope) -> some View {
-        let sid = p.skillId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sha = p.packageSha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let uid = (p.userId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let pid = (p.projectId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let scopeDetail = [
-            uid.isEmpty ? nil : HubUIStrings.Settings.Skills.scopeUserID(uid),
-            pid.isEmpty ? nil : HubUIStrings.Settings.Skills.scopeProjectID(pid),
-        ]
-            .compactMap { $0 }
-        let scopeDetailText = HubUIStrings.Formatting.middleDotSeparated(scopeDetail)
-
-        let meta = skillsIndex.skills.first(where: { $0.packageSha256.lowercased() == sha })?.toMeta()
-        let ver = (meta?.version ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let title = HubUIStrings.Settings.Skills.skillTitle(skillID: sid, version: ver)
-
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.callout.weight(.semibold))
-            if !scopeDetailText.isEmpty {
-                Text(scopeDetailText)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .textSelection(.enabled)
-            }
-            Text(HubUIStrings.Settings.Skills.packageSHA(shortSha(sha)))
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-
-            HStack(spacing: 10) {
-                if !sha.isEmpty {
-                    Button(HubUIStrings.Settings.Skills.openManifest) { openSkillManifest(packageSha256: sha) }
-                    Button(HubUIStrings.Settings.Skills.showPackageDirectory) { revealSkillPackage(packageSha256: sha) }
-                }
-                Button(HubUIStrings.Settings.Skills.unpin) {
-                    updateSkillPin(scope: scope, skillId: sid, packageSha256: "", userIdOverride: uid, projectIdOverride: pid)
-                }
-                Spacer()
-            }
-            .font(.caption)
-        }
-    }
-
-    @ViewBuilder
-    private func skillMetaRow(_ meta: HubSkillsStoreStorage.SkillMeta) -> some View {
-        let sid = meta.skillId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let ver = meta.version.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sha = meta.packageSha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let desc = meta.description.trimmingCharacters(in: .whitespacesAndNewlines)
-        let caps = meta.capabilitiesRequired
-        let capsText = caps.isEmpty ? HubUIStrings.Settings.Skills.empty : caps.joined(separator: ", ")
-        let hint = meta.installHint.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let canPin = !sha.isEmpty
-        let uid = skillsResolveUserId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let pid = skillsResolveProjectId.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(HubUIStrings.Settings.Skills.skillTitle(skillID: sid, version: ver))
-                    .font(.callout.weight(.semibold))
-                Spacer()
-                if sha.isEmpty {
-                    Text(HubUIStrings.Settings.Skills.notInstalled)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text(shortSha(sha))
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if !desc.isEmpty {
-                Text(desc)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-
-            Text(HubUIStrings.Settings.Skills.publisherSourceCapabilities(
-                publisherID: meta.publisherId,
-                sourceID: meta.sourceId,
-                capabilities: capsText
-            ))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
-            if !hint.isEmpty {
-                Text(HubUIStrings.Settings.Skills.installHint(hint))
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .textSelection(.enabled)
-            }
-
-            HStack(spacing: 10) {
-                Menu(HubUIStrings.Settings.Skills.pinTo) {
-                    Button(HubUIStrings.Settings.Skills.pinMemoryCore) { updateSkillPin(scope: .memoryCore, skillId: sid, packageSha256: sha) }
-                        .disabled(!canPin)
-                    Button(HubUIStrings.Settings.Skills.pinGlobal) { updateSkillPin(scope: .global, skillId: sid, packageSha256: sha, userIdOverride: uid) }
-                        .disabled(!canPin || uid.isEmpty)
-                    Button(HubUIStrings.Settings.Skills.pinProject) {
-                        updateSkillPin(scope: .project, skillId: sid, packageSha256: sha, userIdOverride: uid, projectIdOverride: pid)
-                    }
-                    .disabled(!canPin || uid.isEmpty || pid.isEmpty)
-
-                    Divider()
-
-                    Button(HubUIStrings.Settings.Skills.unpinMemoryCore()) { updateSkillPin(scope: .memoryCore, skillId: sid, packageSha256: "") }
-                    Button(HubUIStrings.Settings.Skills.unpinGlobal()) { updateSkillPin(scope: .global, skillId: sid, packageSha256: "", userIdOverride: uid) }
-                        .disabled(uid.isEmpty)
-                    Button(HubUIStrings.Settings.Skills.unpinProject()) {
-                        updateSkillPin(scope: .project, skillId: sid, packageSha256: "", userIdOverride: uid, projectIdOverride: pid)
-                    }
-                    .disabled(uid.isEmpty || pid.isEmpty)
-                }
-
-                if !sha.isEmpty {
-                    Button(HubUIStrings.Settings.Skills.openManifest) { openSkillManifest(packageSha256: sha) }
-                    Button(HubUIStrings.Settings.Skills.showPackageDirectory) { revealSkillPackage(packageSha256: sha) }
-                }
-                Spacer()
-            }
-            .font(.caption)
-        }
     }
 
     private enum FixNowAction {
@@ -8741,7 +6047,7 @@ struct SettingsSheetView: View {
         NSPasteboard.general.setString(lines.joined(separator: "\n\n"), forType: .string)
     }
 
-    private func copyLocalProviderSummaryToClipboard(snapshot: HubLaunchStatusSnapshot?) {
+    func copyLocalProviderSummaryToClipboard(snapshot: HubLaunchStatusSnapshot?) {
         let blocked = snapshot?.degraded.blockedCapabilities ?? []
         let rtStatus = store.aiRuntimeStatusText.trimmingCharacters(in: .whitespacesAndNewlines)
         let doctor = store.aiRuntimeDoctorSummaryText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -8791,14 +6097,14 @@ struct SettingsSheetView: View {
         NSPasteboard.general.setString(out, forType: .string)
     }
 
-    private func copyRuntimeMonitorSummaryToClipboard(status: AIRuntimeStatus) {
+    func copyRuntimeMonitorSummaryToClipboard(status: AIRuntimeStatus) {
         let text = status.runtimeMonitorOperatorSummary(ttl: AIRuntimeStatus.recommendedHeartbeatTTL)
         let out = HubDiagnosticsBundleExporter.redactTextForSharing(text)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(out, forType: .string)
     }
 
-    private func copyRuntimeMonitorActiveTasksToClipboard(monitor: AIRuntimeMonitorSnapshot) {
+    func copyRuntimeMonitorActiveTasksToClipboard(monitor: AIRuntimeMonitorSnapshot) {
         let body = monitor.activeTasks.isEmpty
             ? HubUIStrings.Settings.RuntimeMonitor.noneField
             : monitor.activeTasks.map(runtimeMonitorActiveTaskLine).joined(separator: "\n")
@@ -8809,7 +6115,7 @@ struct SettingsSheetView: View {
         NSPasteboard.general.setString(out, forType: .string)
     }
 
-    private func copyRuntimeMonitorLoadedInstancesToClipboard(summary: LocalRuntimeOperationsSummary) {
+    func copyRuntimeMonitorLoadedInstancesToClipboard(summary: LocalRuntimeOperationsSummary) {
         let body = summary.instanceRows.isEmpty
             ? HubUIStrings.Settings.RuntimeMonitor.noneField
             : summary.instanceRows.map(runtimeMonitorLoadedInstanceLine).joined(separator: "\n")
@@ -8820,7 +6126,7 @@ struct SettingsSheetView: View {
         NSPasteboard.general.setString(out, forType: .string)
     }
 
-    private func copyRuntimeMonitorCurrentTargetsToClipboard(
+    func copyRuntimeMonitorCurrentTargetsToClipboard(
         _ currentTargets: [(HubModel, LocalModelRuntimeRequestContext)]
     ) {
         let body = currentTargets.isEmpty
@@ -8833,7 +6139,7 @@ struct SettingsSheetView: View {
         NSPasteboard.general.setString(out, forType: .string)
     }
 
-    private func copyRuntimeMonitorErrorsToClipboard(monitor: AIRuntimeMonitorSnapshot) {
+    func copyRuntimeMonitorErrorsToClipboard(monitor: AIRuntimeMonitorSnapshot) {
         let body = monitor.lastErrors.isEmpty
             ? HubUIStrings.Settings.RuntimeMonitor.noneField
             : monitor.lastErrors.map(runtimeMonitorErrorLine).joined(separator: "\n")
@@ -8844,7 +6150,7 @@ struct SettingsSheetView: View {
         NSPasteboard.general.setString(out, forType: .string)
     }
 
-    private func copyRuntimePythonCandidatesToClipboard() {
+    func copyRuntimePythonCandidatesToClipboard() {
         let body = store.aiRuntimePythonCandidatesText.trimmingCharacters(in: .whitespacesAndNewlines)
         let out = HubDiagnosticsBundleExporter.redactTextForSharing(
             HubUIStrings.Settings.Diagnostics.Export.pythonCandidatesBlock(
@@ -8855,13 +6161,13 @@ struct SettingsSheetView: View {
         NSPasteboard.general.setString(out, forType: .string)
     }
 
-    private func copyXHubLocalServiceRecoveryToClipboard(_ guidance: XHubLocalServiceRecoveryGuidance) {
+    func copyXHubLocalServiceRecoveryToClipboard(_ guidance: XHubLocalServiceRecoveryGuidance) {
         let out = HubDiagnosticsBundleExporter.redactTextForSharing(guidance.clipboardText)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(out, forType: .string)
     }
 
-    private func copyLocalRuntimeRepairSummary(_ summary: LocalRuntimeRepairSurfaceSummary) {
+    func copyLocalRuntimeRepairSummary(_ summary: LocalRuntimeRepairSurfaceSummary) {
         let out = HubDiagnosticsBundleExporter.redactTextForSharing(summary.clipboardText)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(out, forType: .string)
@@ -8939,7 +6245,7 @@ struct SettingsSheetView: View {
         NSPasteboard.general.setString(out, forType: .string)
     }
 
-    private func localServiceRecoverySeverityColor(_ severity: String) -> Color {
+    func localServiceRecoverySeverityColor(_ severity: String) -> Color {
         switch severity.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "high":
             return .red
@@ -8958,7 +6264,7 @@ struct SettingsSheetView: View {
         Task { await exportUnifiedDoctorReportAsync() }
     }
 
-    private func reloadAXConstitutionStatus() {
+    func reloadAXConstitutionStatus() {
         axConstitutionErrorText = ""
         axConstitutionVersion = ""
         axConstitutionEnabledClauseIds = []
@@ -8997,7 +6303,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func copyAXConstitutionSummaryToClipboard() {
+    func copyAXConstitutionSummaryToClipboard() {
         let url = store.axConstitutionURL()
         let ver = axConstitutionVersion.trimmingCharacters(in: .whitespacesAndNewlines)
         let enabled = axConstitutionEnabledClauseIds
@@ -9176,843 +6482,6 @@ struct SettingsSheetView: View {
         return urls
     }
 
-    private var grpcServerSection: some View {
-        Section(HubUIStrings.Settings.GRPC.sectionTitle) {
-            grpcServerPrimaryBlock()
-            grpcAdvancedSettingsBlock()
-            grpcAllowedDevicesBlock()
-            grpcRemoteAccessBlock()
-        }
-    }
-
-    @ViewBuilder
-    private func grpcServerPrimaryBlock() -> some View {
-        Toggle(HubUIStrings.Settings.GRPC.enableLAN, isOn: $grpc.autoStart)
-
-        HStack {
-            Text(HubUIStrings.Settings.GRPC.status)
-            Spacer()
-            Text(grpc.statusText)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-
-        if !grpc.lastError.isEmpty {
-            Text(grpc.lastError)
-                .font(.caption2)
-                .foregroundStyle(.red)
-        }
-
-        if !grpc.autoPortSwitchMessage.isEmpty {
-            Text(grpc.autoPortSwitchMessage)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-
-        VStack(alignment: .leading, spacing: 6) {
-            Text(HubUIStrings.Settings.GRPC.pairingInfoTitle)
-                .font(.caption.weight(.semibold))
-
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                GridRow {
-                    Text(HubUIStrings.Settings.GRPC.externalAddress)
-                        .foregroundStyle(.secondary)
-                    Text(grpc.xtTerminalInternetHost ?? HubUIStrings.Settings.GRPC.noReachableHost)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(grpc.xtTerminalInternetHost == nil ? .secondary : .primary)
-                        .textSelection(.enabled)
-                }
-                GridRow {
-                    Text(HubUIStrings.Settings.GRPC.pairingPort)
-                        .foregroundStyle(.secondary)
-                    Text(HubUIStrings.Settings.numericValue(grpc.xtTerminalPairingPort))
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                }
-                GridRow {
-                    Text(HubUIStrings.Settings.GRPC.grpcPort)
-                        .foregroundStyle(.secondary)
-                    Text(HubUIStrings.Settings.numericValue(grpc.port))
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                }
-            }
-            .font(.caption)
-
-            Text(HubUIStrings.Settings.GRPC.setupHint)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-
-        if !grpc.lanAddresses.isEmpty {
-            Text(grpc.lanAddresses.joined(separator: "\n"))
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-        }
-
-        HStack(spacing: 10) {
-            Button(HubUIStrings.Settings.GRPC.copyConnectionVars) {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(grpc.connectionGuide, forType: .string)
-            }
-            Button(HubUIStrings.Settings.FirstRun.copyBootstrap) { grpc.copyBootstrapCommandToClipboard() }
-            Button(HubUIStrings.Settings.FirstRun.addDevice) { showAddGRPCClient = true }
-            Button(HubUIStrings.Settings.FirstRun.refresh) { grpc.refresh() }
-            Spacer()
-        }
-        .font(.caption)
-
-        if !grpc.connectionGuide.isEmpty {
-            Text(grpc.connectionGuide)
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-        }
-    }
-
-    @ViewBuilder
-    private func grpcAdvancedSettingsBlock() -> some View {
-        DisclosureGroup(HubUIStrings.Settings.GRPC.advancedSettings) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(HubUIStrings.Settings.GRPC.externalHostOverride)
-                    .font(.caption.weight(.semibold))
-                TextField(HubUIStrings.Settings.GRPC.externalHostPlaceholder, text: $grpc.internetHostOverride)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption.monospaced())
-                Text(HubUIStrings.Settings.GRPC.externalHostHint)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(HubUIStrings.Settings.GRPC.noDomainAccessTitle)
-                        .font(.caption.weight(.semibold))
-                    if let noDomainHost = noDomainPrivateRemoteHost {
-                        Text(HubUIStrings.Settings.GRPC.noDomainAccessDetected(noDomainHost))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        HStack(spacing: 10) {
-                            Button(isUsingNoDomainPrivateRemoteHost
-                                   ? HubUIStrings.Settings.GRPC.noDomainPrivateHostApplied
-                                   : HubUIStrings.Settings.GRPC.useNoDomainPrivateHost) {
-                                if grpc.applyNoDomainPrivateRemoteHost(noDomainHost) {
-                                    remoteRouteProbe.refresh(host: grpc.xtTerminalInternetHost, force: true)
-                                }
-                            }
-                            .disabled(isUsingNoDomainPrivateRemoteHost)
-                            Text(HubUIStrings.Settings.GRPC.noDomainAccessMTLSHint)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Text(noDomainPrivateRemoteHostSourceText)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Button(HubUIStrings.Settings.FirstRun.refresh) {
-                                refreshRustHubRemoteEntryCandidates(force: true)
-                            }
-                            .disabled(rustHubRemoteEntryRefreshing)
-                        }
-                    } else {
-                        Text(HubUIStrings.Settings.GRPC.noDomainAccessMissing)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(HubUIStrings.Settings.GRPC.externalInviteTitle)
-                    .font(.caption.weight(.semibold))
-                Text(HubUIStrings.Settings.GRPC.externalHubAlias)
-                    .font(.caption.weight(.semibold))
-                TextField(HubUIStrings.Settings.GRPC.externalHubAliasPlaceholder, text: $grpc.externalHubAlias)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption.monospaced())
-                Text(HubUIStrings.Settings.GRPC.externalHubAliasHint)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                    GridRow {
-                        Text(HubUIStrings.Settings.GRPC.externalInviteToken)
-                            .foregroundStyle(.secondary)
-                        Text(grpc.externalInviteTokenPreview.isEmpty
-                             ? HubUIStrings.Settings.GRPC.inviteTokenNotIssued
-                             : grpc.externalInviteTokenPreview)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(grpc.externalInviteTokenPreview.isEmpty ? .secondary : .primary)
-                            .textSelection(.enabled)
-                    }
-                }
-                .font(.caption)
-
-                HStack(spacing: 10) {
-                    Button(HubUIStrings.Settings.GRPC.copySecureRemoteSetupPack) {
-                        _ = grpc.copySecureRemoteSetupPackToClipboard()
-                    }
-                    .disabled(!grpc.canProvisionSecureRemoteSetupPack)
-                    Button(grpc.hasExternalInviteToken
-                           ? HubUIStrings.Settings.GRPC.rotateInviteToken
-                           : HubUIStrings.Settings.GRPC.issueInviteToken) {
-                        grpc.rotateExternalInviteToken()
-                    }
-                    .disabled(!grpc.canProvisionExternalInvite)
-                    Button(HubUIStrings.Settings.GRPC.copyInviteLink) {
-                        _ = grpc.copyInviteLinkToClipboard()
-                    }
-                    .disabled(!grpc.canProvisionExternalInvite)
-                    if grpc.hasExternalInviteToken {
-                        Button(HubUIStrings.Settings.GRPC.clearInviteToken) {
-                            grpc.clearExternalInviteToken()
-                        }
-                    }
-                    Spacer()
-                }
-                .font(.caption)
-
-                Text(HubUIStrings.Settings.GRPC.secureRemoteSetupPackHint)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                if !grpc.externalInviteLinkText.isEmpty {
-                    Text(grpc.externalInviteLinkText)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                    if let qrImage = grpc.externalInviteQRCodeImage {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Image(nsImage: qrImage)
-                                .interpolation(.none)
-                                .resizable()
-                                .frame(width: 156, height: 156)
-                                .padding(8)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(Color.white)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
-                                )
-                            Text(HubUIStrings.Settings.GRPC.inviteQRCodeHint)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                } else {
-                    Text(grpc.externalInviteUnavailableReason)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Text(HubUIStrings.Settings.GRPC.externalInviteTokenHint)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(HubUIStrings.Settings.GRPC.transportSecurity)
-                    .font(.caption.weight(.semibold))
-                Picker(HubUIStrings.Settings.GRPC.transportMode, selection: $grpc.tlsMode) {
-                    Text(HubUIStrings.Settings.GRPC.insecure).tag("insecure")
-                    Text(HubUIStrings.Settings.GRPC.tls).tag("tls")
-                    Text(HubUIStrings.Settings.GRPC.mtls).tag("mtls")
-                }
-                .pickerStyle(.segmented)
-                .font(.caption)
-
-                Text(HubUIStrings.Settings.GRPC.transportHint)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Divider()
-
-            HStack {
-                Text(HubUIStrings.Settings.GRPC.port)
-                Spacer()
-                TextField(
-                    "50051",
-                    value: $grpc.port,
-                    formatter: {
-                        let f = NumberFormatter()
-                        f.allowsFloats = false
-                        f.minimum = 1
-                        f.maximum = 65535
-                        return f
-                    }()
-                )
-                .textFieldStyle(.roundedBorder)
-                .font(.caption)
-                .frame(width: 120)
-            }
-
-            HStack(spacing: 10) {
-                Button(HubUIStrings.Settings.GRPC.openLog) { grpc.openLog() }
-                Button(HubUIStrings.Settings.GRPC.rotateDeviceToken) { grpc.regenerateClientToken() }
-                Spacer()
-            }
-            .font(.caption)
-
-            HStack(spacing: 10) {
-                Button(HubUIStrings.Settings.FirstRun.openQuotaSettings) { grpc.openQuotaConfig() }
-                Spacer()
-            }
-            .font(.caption)
-
-            Text(HubUIStrings.Settings.GRPC.quotaFile(grpc.quotaConfigURL().path))
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-
-            Divider()
-        }
-    }
-
-    @ViewBuilder
-    private func grpcAllowedDevicesBlock() -> some View {
-        Text(HubUIStrings.Settings.GRPC.allowedDevicesTitle)
-            .font(.caption.weight(.semibold))
-
-        HStack(spacing: 10) {
-            Button(HubUIStrings.Settings.GRPC.add) { showAddGRPCClient = true }
-            Button(HubUIStrings.Settings.GRPC.openDeviceList) { grpc.openClientsConfig() }
-            Spacer()
-        }
-        .font(.caption)
-
-        let ipDenied = grpcDeniedAttempts.attempts
-            .filter { a in
-                a.reason.trimmingCharacters(in: .whitespacesAndNewlines) == "source_ip_not_allowed"
-                    && !a.peerIp.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
-            .prefix(6)
-        if !ipDenied.isEmpty {
-            Divider()
-            Text(HubUIStrings.Settings.GRPC.DeviceList.deniedSourceIPTitle)
-                .font(.caption.weight(.semibold))
-            ForEach(ipDenied) { a in
-                VStack(alignment: .leading, spacing: 4) {
-                    let title = !a.clientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? a.clientName
-                        : (
-                            a.deviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                ? HubUIStrings.Settings.GRPC.DeviceList.unknownDevice
-                                : a.deviceId
-                        )
-                    let lastText = a.lastSeenAtMs > 0 ? formatMs(a.lastSeenAtMs) : HubUIStrings.Settings.GRPC.DeviceList.unknownSeen
-
-                    Text(title)
-                        .font(.caption.weight(.semibold))
-
-                    Text(HubUIStrings.Settings.GRPC.DeviceList.deniedLine(ip: a.peerIp, count: a.count, lastText: lastText))
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-
-                    if !a.expectedAllowedCidrs.isEmpty {
-                        Text(HubUIStrings.Settings.GRPC.DeviceList.allowedSources(a.expectedAllowedCidrs))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .textSelection(.enabled)
-                    }
-
-                    let did = a.deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !did.isEmpty, grpc.allowedClients.contains(where: { $0.deviceId == did }) {
-                        HStack(spacing: 10) {
-                            Button(HubUIStrings.Settings.GRPC.DeviceList.addIPToDevice) {
-                                grpc.addAllowedCidr(deviceId: did, value: a.peerIp)
-                            }
-                            .font(.caption)
-                            Button(HubUIStrings.Settings.GRPC.DeviceList.edit) {
-                                if let c = grpc.allowedClients.first(where: { $0.deviceId == did }) {
-                                    presentGRPCClientEditor(c)
-                                }
-                            }
-                            .font(.caption)
-                            Spacer()
-                        }
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-        }
-
-        if grpc.allowedClients.isEmpty {
-            Text(HubUIStrings.Settings.GRPC.DeviceList.noPairedDevices)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        } else {
-            let statusById: [String: GRPCDeviceStatusEntry] = Dictionary(
-                uniqueKeysWithValues: grpcDevicesStatus.devices.map { ($0.deviceId, $0) }
-            )
-            let summary = grpcClientListSummary(grpc.allowedClients, statusById: statusById)
-            let visibleClients = grpcVisibleClients(grpc.allowedClients, statusById: statusById)
-
-            grpcAllowedClientsHeader(statusById: statusById, summary: summary, visibleClients: visibleClients)
-
-            grpcAllowedClientsRows(visibleClients, statusById: statusById)
-        }
-    }
-
-    @ViewBuilder
-    private func grpcAllowedClientsHeader(
-        statusById: [String: GRPCDeviceStatusEntry],
-        summary: GRPCClientListSummary,
-        visibleClients: [HubGRPCClientEntry]
-    ) -> some View {
-        grpcPairingRepairCard(statusById: statusById)
-
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.totalDevices(summary.total), color: .secondary)
-                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.enabledDevices(summary.enabled), color: .green)
-                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.connectedDevices(summary.connected), color: .accentColor)
-                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.staleDevices(summary.stale), color: .orange)
-                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.networkEnabledDevices(summary.networkEnabled), color: .blue)
-                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.paidEnabledDevices(summary.paidEnabled), color: .purple)
-                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.webEnabledDevices(summary.webEnabled), color: .teal)
-                grpcClientNetworkPill(HubUIStrings.Settings.GRPC.DeviceList.blockedDevices(summary.blocked), color: .red)
-            }
-            .padding(.vertical, 2)
-        }
-
-        HStack(spacing: 10) {
-            Text(HubUIStrings.Settings.GRPC.DeviceList.filter)
-                .font(.caption.weight(.semibold))
-
-            Picker(HubUIStrings.Settings.GRPC.DeviceList.filter, selection: $grpcClientListFilter) {
-                ForEach(GRPCClientListFilter.allCases) { filter in
-                    Text(filter.title).tag(filter)
-                }
-            }
-            .pickerStyle(.menu)
-            .font(.caption)
-
-            Spacer()
-
-            Text(HubUIStrings.Settings.GRPC.DeviceList.visibleDevices(visibleClients.count, summary.total))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-
-        Text(HubUIStrings.Settings.GRPC.DeviceList.sortHint)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-    }
-
-    @ViewBuilder
-    private func grpcAllowedClientsRows(
-        _ visibleClients: [HubGRPCClientEntry],
-        statusById: [String: GRPCDeviceStatusEntry]
-    ) -> some View {
-        ForEach(visibleClients) { client in
-            grpcAllowedClientRow(client, status: statusById[client.deviceId])
-        }
-    }
-
-    @ViewBuilder
-    private func grpcAllowedClientRow(_ client: HubGRPCClientEntry, status: GRPCDeviceStatusEntry?) -> some View {
-        let network = grpcClientNetworkAccessSnapshot(client)
-        let detailBinding = expansionBinding(client.deviceId, in: $expandedGRPCClientDetailIDs)
-
-        VStack(alignment: .leading, spacing: 6) {
-            grpcAllowedClientRowHeader(client)
-            grpcAllowedClientRowPills(client, network: network, status: status)
-            grpcAllowedClientRowActions(client, network: network)
-            DisclosureGroup(isExpanded: detailBinding) {
-                VStack(alignment: .leading, spacing: 6) {
-                    grpcAllowedClientRowMetadata(client)
-                    grpcAllowedClientRowStatus(status)
-                }
-                .padding(.top, 6)
-            } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("诊断 / 用量 / 安全明细")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(grpcClientDetailSummary(status))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-        }
-        .padding(12)
-        .background(Color.primary.opacity(0.035))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func grpcAllowedClientRowHeader(_ client: HubGRPCClientEntry) -> some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(grpcClientDisplayName(client))
-                    .font(.caption.weight(.semibold))
-                Text(client.deviceId)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            Button(HubUIStrings.Settings.GRPC.DeviceList.edit) {
-                presentGRPCClientEditor(client)
-            }
-            .font(.caption)
-
-            Button(HubUIStrings.Settings.GRPC.DeviceList.copyVars) {
-                grpc.copyConnectVars(for: client)
-            }
-            .font(.caption)
-
-            Button(client.enabled ? HubUIStrings.Settings.GRPC.DeviceList.disable : HubUIStrings.Settings.GRPC.DeviceList.enable) {
-                grpc.setClientEnabled(deviceId: client.deviceId, enabled: !client.enabled)
-            }
-            .font(.caption)
-
-            if client.deviceId != "terminal_device" {
-                Button(HubUIStrings.Settings.GRPC.DeviceList.delete) {
-                    deletingGRPCClient = client
-                }
-                .font(.caption)
-                .foregroundStyle(.red)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func grpcAllowedClientRowPills(
-        _ client: HubGRPCClientEntry,
-        network: GRPCClientNetworkAccessSnapshot,
-        status: GRPCDeviceStatusEntry?
-    ) -> some View {
-        HStack(spacing: 6) {
-            grpcClientNetworkPill(
-                HubUIStrings.Settings.GRPC.DeviceList.deviceEnabledPill(client.enabled),
-                color: client.enabled ? .green : .secondary
-            )
-            grpcClientNetworkPill(
-                HubUIStrings.Settings.GRPC.DeviceList.networkEnabledPill(network.canNetwork),
-                color: network.canNetwork ? .green : .secondary
-            )
-            grpcClientNetworkPill(
-                HubUIStrings.Settings.GRPC.DeviceList.paidEnabledPill(network.paidEnabled),
-                color: network.paidEnabled ? .orange : .secondary
-            )
-            grpcClientNetworkPill(
-                network.webEnabled ? HubUIStrings.Settings.GRPC.DeviceList.webOn : HubUIStrings.Settings.GRPC.DeviceList.webOff,
-                color: network.webEnabled ? .blue : .secondary
-            )
-            grpcClientNetworkPill(
-                network.usesPolicyProfile ? HubUIStrings.Settings.GRPC.DeviceList.policyNew : HubUIStrings.Settings.GRPC.DeviceList.policyLegacy,
-                color: network.usesPolicyProfile ? .purple : .secondary
-            )
-
-            if let status {
-                grpcClientNetworkPill(
-                    grpcClientPresencePillTitle(status),
-                    color: grpcClientPresencePillColor(status)
-                )
-                grpcClientNetworkPill(
-                    grpcClientExecutionPillTitle(status),
-                    color: grpcClientExecutionPillColor(status)
-                )
-            }
-
-            Spacer()
-        }
-    }
-
-    @ViewBuilder
-    private func grpcAllowedClientRowActions(
-        _ client: HubGRPCClientEntry,
-        network: GRPCClientNetworkAccessSnapshot
-    ) -> some View {
-        HStack(spacing: 10) {
-            Button(HubUIStrings.Settings.GRPC.DeviceList.toggleWeb(network.webEnabled)) {
-                grpcSetWebFetchEnabled(client, enabled: !network.webEnabled)
-            }
-            .font(.caption)
-
-            Button(HubUIStrings.Settings.GRPC.DeviceList.adoptCurrentSuggestedRange) {
-                grpc.adoptCurrentLANDefaults(deviceId: client.deviceId)
-                if editingGRPCClient?.deviceId == client.deviceId,
-                   let refreshed = grpc.allowedClients.first(where: { $0.deviceId == client.deviceId }) {
-                    presentGRPCClientEditor(
-                        refreshed,
-                        capabilityFocusKey: editingGRPCClientFocusCapabilityKey
-                    )
-                }
-            }
-            .font(.caption)
-
-            if network.policyGrantsNetwork {
-                Button(HubUIStrings.Settings.GRPC.DeviceList.cutOffNetwork) {
-                    grpcCutOffNetworkAccess(client)
-                }
-                .font(.caption)
-            }
-
-            Text(grpcClientQuickActionHint(network))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            Spacer()
-        }
-    }
-
-    @ViewBuilder
-    private func grpcAllowedClientRowMetadata(_ client: HubGRPCClientEntry) -> some View {
-        Text(grpcClientSecuritySummary(client))
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .lineLimit(2)
-            .textSelection(.enabled)
-
-        Text(grpcClientPaidPolicySummary(client))
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .lineLimit(2)
-            .textSelection(.enabled)
-    }
-
-    @ViewBuilder
-    private func grpcAllowedClientRowStatus(_ status: GRPCDeviceStatusEntry?) -> some View {
-        if let status {
-            Text(grpcClientStatusSummary(status))
-                .font(.caption2)
-                .foregroundStyle(grpcClientPresencePillColor(status))
-                .lineLimit(2)
-                .textSelection(.enabled)
-
-            Text(grpcClientPolicyUsageSummary(status))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .textSelection(.enabled)
-
-            Text(grpcClientActualExecutionSummary(status))
-                .font(.caption2)
-                .foregroundStyle(grpcClientExecutionPillColor(status))
-                .lineLimit(3)
-                .textSelection(.enabled)
-
-            if let activity = status.lastActivity {
-                Text(grpcClientLastActivitySummary(activity))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
-            }
-
-            if grpcClientPresenceCountsAsStale(status) {
-                Text(HubUIStrings.Settings.GRPC.DeviceList.staleRepairHint)
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if !status.lastBlockedReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || !status.lastDenyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(grpcClientLastBlockedSummary(status))
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
-            }
-
-            if let series = status.tokenSeries5m1h, !series.points.isEmpty {
-                TokenSparkline(
-                    points: series.points,
-                    strokeColor: grpcClientPresenceState(status) == .connected ? .accentColor : Color.gray.opacity(0.7),
-                    lineWidth: 1.5
-                )
-                .frame(height: 18)
-            }
-
-            if status.dailyTokenCap > 0 {
-                ProgressView(value: Double(status.dailyTokenUsed), total: Double(status.dailyTokenCap))
-                    .progressViewStyle(.linear)
-                Text(
-                    HubUIStrings.Settings.GRPC.DeviceList.dailyTokenUsage(
-                        day: status.quotaDay,
-                        used: Int(status.dailyTokenUsed),
-                        cap: Int(status.dailyTokenCap),
-                        remaining: Int(max(0, status.remainingDailyTokenBudget))
-                    )
-                )
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            } else if status.dailyTokenUsed > 0 {
-                Text(HubUIStrings.Settings.GRPC.DeviceList.dailyTokenUsageUnlimited(day: status.quotaDay, used: Int(status.dailyTokenUsed)))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            if !status.modelBreakdown.isEmpty {
-                DisclosureGroup(HubUIStrings.Settings.GRPC.DeviceList.usageDetails) {
-                    ForEach(Array(status.modelBreakdown.prefix(3))) { row in
-                        Text(grpcClientModelBreakdownSummary(row))
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-                }
-                .font(.caption2)
-            }
-        } else {
-            Text(HubUIStrings.Settings.GRPC.DeviceList.statusUnknownNoEvents)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    @ViewBuilder
-    private func grpcRemoteAccessBlock() -> some View {
-        let remoteHealth = grpcRemoteAccessHealthSummary
-        let routeSnapshot = remoteRouteProbe.snapshot
-
-        Text(HubUIStrings.Settings.GRPC.deviceFile(grpc.clientsConfigURL().path))
-            .font(.caption2.monospaced())
-            .foregroundStyle(.secondary)
-            .textSelection(.enabled)
-
-        Text(HubUIStrings.Settings.GRPC.enabledDeviceFileHint)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-
-        Divider()
-
-        VStack(alignment: .leading, spacing: 6) {
-            Text(HubUIStrings.Settings.GRPC.RemoteHealth.title)
-                .font(.caption.weight(.semibold))
-
-            HStack(spacing: 6) {
-                grpcClientNetworkPill(remoteHealth.badgeText, color: grpcRemoteHealthColor(remoteHealth.state))
-                Spacer()
-            }
-
-            Text(remoteHealth.headline)
-                .font(.caption.weight(.semibold))
-
-            Text(remoteHealth.detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            Text(remoteHealth.accessScopeText)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            Text(remoteHealth.operatorHintText)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            if let nextStep = remoteHealth.nextStep,
-               !nextStep.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(HubUIStrings.Settings.GRPC.RemoteHealth.nextStep(nextStep))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-
-        Divider()
-
-        VStack(alignment: .leading, spacing: 6) {
-            Text(HubUIStrings.Settings.GRPC.RemoteRoute.title)
-                .font(.caption.weight(.semibold))
-
-            HStack(spacing: 6) {
-                grpcClientNetworkPill(routeSnapshot.statusText, color: grpcRemoteRouteColor(routeSnapshot.state))
-                Spacer()
-            }
-
-            Text(routeSnapshot.detailText)
-                .font(.caption2)
-                .foregroundStyle(routeSnapshot.state == .failed ? .red : .secondary)
-
-            if !routeSnapshot.addresses.isEmpty {
-                Text(routeSnapshot.addresses.joined(separator: "\n"))
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-        }
-
-        Divider()
-
-        DisclosureGroup(HubUIStrings.Settings.GRPC.remoteAccessDisclosure) {
-            Text(HubUIStrings.Settings.GRPC.remoteAccessMethodsIntro)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            Text(HubUIStrings.Settings.GRPC.remoteAccessHint)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            Text(HubUIStrings.Settings.GRPC.remoteHardeningHint)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            Text(HubUIStrings.Settings.GRPC.remoteAdminHint)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            Button(HubUIStrings.Settings.GRPC.copyRemoteAccessGuide) {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(Self.remoteModeGuideText, forType: .string)
-            }
-            .font(.caption)
-
-            Text(Self.remoteModeGuideText)
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-        }
-
-        Divider()
-
-        Toggle(HubUIStrings.Settings.GRPC.ServingPower.keepSystemAwake, isOn: $servingPower.keepSystemAwakeWhileServing)
-
-        Text(HubUIStrings.Settings.GRPC.ServingPower.keepSystemAwakeHint)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-
-        Toggle(HubUIStrings.Settings.GRPC.ServingPower.keepDisplayAwake, isOn: $servingPower.keepDisplayAwakeWhileServing)
-            .disabled(!servingPower.keepSystemAwakeWhileServing)
-
-        Text(HubUIStrings.Settings.GRPC.ServingPower.keepDisplayAwakeHint)
-            .font(.caption2)
-            .foregroundStyle(servingPower.keepSystemAwakeWhileServing ? .secondary : .tertiary)
-
-        HStack {
-            Text(HubUIStrings.Settings.GRPC.ServingPower.status)
-            Spacer()
-            Text(servingPower.statusText)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-        .font(.caption)
-
-        Text(servingPower.detailText)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-
-        if !servingPower.lastError.isEmpty {
-            Text(servingPower.lastError)
-                .font(.caption2)
-                .foregroundStyle(.red)
-        }
-    }
-
     private func deleteClientConfirmationMessage(_ client: HubGRPCClientEntry) -> String {
         let displayName = client.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? client.deviceId
@@ -10020,7 +6489,7 @@ struct SettingsSheetView: View {
         return HubUIStrings.Settings.GRPC.deleteClientConfirmation(displayName: displayName, deviceID: client.deviceId)
     }
 
-    private func grpcClientSecuritySummary(_ c: HubGRPCClientEntry) -> String {
+    func grpcClientSecuritySummary(_ c: HubGRPCClientEntry) -> String {
         let caps = c.capabilities
         let cidrs = c.allowedCidrs
         let user = c.userId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -10051,7 +6520,7 @@ struct SettingsSheetView: View {
         )
     }
 
-    private func grpcClientPaidPolicySummary(_ client: HubGRPCClientEntry) -> String {
+    func grpcClientPaidPolicySummary(_ client: HubGRPCClientEntry) -> String {
         if client.policyMode == .legacyGrant {
             let paidEnabled = client.capabilities.contains { cap in
                 cap.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ai.generate.paid"
@@ -10084,7 +6553,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private struct GRPCClientNetworkAccessSnapshot {
+    struct GRPCClientNetworkAccessSnapshot {
         var clientEnabled: Bool
         var paidEnabled: Bool
         var webEnabled: Bool
@@ -10099,7 +6568,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func grpcClientNetworkAccessSnapshot(_ client: HubGRPCClientEntry) -> GRPCClientNetworkAccessSnapshot {
+    func grpcClientNetworkAccessSnapshot(_ client: HubGRPCClientEntry) -> GRPCClientNetworkAccessSnapshot {
         if client.policyMode == .newProfile, let profile = client.approvedTrustProfile {
             return GRPCClientNetworkAccessSnapshot(
                 clientEnabled: client.enabled,
@@ -10117,7 +6586,7 @@ struct SettingsSheetView: View {
         )
     }
 
-    private enum GRPCClientListFilter: String, CaseIterable, Identifiable {
+    enum GRPCClientListFilter: String, CaseIterable, Identifiable {
         case all
         case connected
         case stale
@@ -10145,7 +6614,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private struct GRPCClientListSummary {
+    struct GRPCClientListSummary {
         var total: Int = 0
         var enabled: Int = 0
         var connected: Int = 0
@@ -10156,7 +6625,7 @@ struct SettingsSheetView: View {
         var blocked: Int = 0
     }
 
-    private func grpcClientListSummary(
+    func grpcClientListSummary(
         _ clients: [HubGRPCClientEntry],
         statusById: [String: GRPCDeviceStatusEntry]
     ) -> GRPCClientListSummary {
@@ -10190,7 +6659,7 @@ struct SettingsSheetView: View {
         return summary
     }
 
-    private func grpcVisibleClients(
+    func grpcVisibleClients(
         _ clients: [HubGRPCClientEntry],
         statusById: [String: GRPCDeviceStatusEntry]
     ) -> [HubGRPCClientEntry] {
@@ -10276,7 +6745,7 @@ struct SettingsSheetView: View {
     }
 
     @ViewBuilder
-    private func grpcPairingRepairCard(statusById: [String: GRPCDeviceStatusEntry]) -> some View {
+    func grpcPairingRepairCard(statusById: [String: GRPCDeviceStatusEntry]) -> some View {
         let staleClients = grpcPairingRepairCandidateClients(grpc.allowedClients, statusById: statusById)
         let pairingRepairDeniedAttempts = grpcPairingRepairDeniedAttempts(limit: 3)
         let singleRepairCandidate = staleClients.count == 1 ? staleClients.first : nil
@@ -10349,7 +6818,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " ")
     }
 
-    private func grpcClientDisplayName(_ client: HubGRPCClientEntry) -> String {
+    func grpcClientDisplayName(_ client: HubGRPCClientEntry) -> String {
         let name = client.name.trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty ? client.deviceId : name
     }
@@ -10366,7 +6835,7 @@ struct SettingsSheetView: View {
         return HubUIStrings.Settings.GRPC.DeviceList.unknownDevice
     }
 
-    private func grpcClientQuickActionHint(_ snapshot: GRPCClientNetworkAccessSnapshot) -> String {
+    func grpcClientQuickActionHint(_ snapshot: GRPCClientNetworkAccessSnapshot) -> String {
         if !snapshot.clientEnabled {
             return HubUIStrings.Settings.GRPC.DeviceList.quickActionEnableFirst
         }
@@ -10377,7 +6846,7 @@ struct SettingsSheetView: View {
     }
 
     @ViewBuilder
-    private func grpcClientNetworkPill(_ title: String, color: Color) -> some View {
+    func grpcClientNetworkPill(_ title: String, color: Color) -> some View {
         Text(title)
             .font(.caption2.monospaced())
             .foregroundStyle(color)
@@ -10387,7 +6856,7 @@ struct SettingsSheetView: View {
             .clipShape(Capsule())
     }
 
-    private func grpcRemoteHealthColor(_ state: HubRemoteAccessHealthSummary.State) -> Color {
+    func grpcRemoteHealthColor(_ state: HubRemoteAccessHealthSummary.State) -> Color {
         switch state {
         case .ready:
             return .green
@@ -10398,7 +6867,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func grpcRemoteRouteColor(_ state: HubRemoteAccessRouteProbeSnapshot.State) -> Color {
+    func grpcRemoteRouteColor(_ state: HubRemoteAccessRouteProbeSnapshot.State) -> Color {
         switch state {
         case .idle, .skipped:
             return .secondary
@@ -10411,7 +6880,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func grpcCutOffNetworkAccess(_ client: HubGRPCClientEntry) {
+    func grpcCutOffNetworkAccess(_ client: HubGRPCClientEntry) {
         var updated = client
         if client.policyMode == .newProfile, var profile = client.approvedTrustProfile {
             profile.paidModelPolicy = HubPairedTerminalPaidModelPolicy(mode: .off, allowedModelIds: [])
@@ -10432,7 +6901,7 @@ struct SettingsSheetView: View {
         grpc.upsertClient(updated)
     }
 
-    private func grpcSetWebFetchEnabled(_ client: HubGRPCClientEntry, enabled: Bool) {
+    func grpcSetWebFetchEnabled(_ client: HubGRPCClientEntry, enabled: Bool) {
         var updated = client
         if client.policyMode == .newProfile, var profile = client.approvedTrustProfile {
             profile.networkPolicy = HubPairedTerminalNetworkPolicy(defaultWebFetchEnabled: enabled)
@@ -10482,7 +6951,7 @@ struct SettingsSheetView: View {
         remoteQuotaActionText = "\(client.name.isEmpty ? client.deviceId : client.name) 日预算已调整为 \(terminalAccessIntText(Int64(updatedLimit))) tokens。"
     }
 
-    private func grpcAdjustDailyBudget(
+    func grpcAdjustDailyBudget(
         _ client: HubGRPCClientEntry,
         delta: Int
     ) {
@@ -10490,7 +6959,7 @@ struct SettingsSheetView: View {
         grpcSetDailyBudget(client, dailyTokenLimit: currentLimit + delta)
     }
 
-    private func grpcClientStatusSummary(_ st: GRPCDeviceStatusEntry) -> String {
+    func grpcClientStatusSummary(_ st: GRPCDeviceStatusEntry) -> String {
         let ip = st.peerIp.trimmingCharacters(in: .whitespacesAndNewlines)
         let streams = max(0, st.activeEventSubscriptions)
         switch grpcClientPresenceState(st) {
@@ -10531,7 +7000,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private enum GRPCClientPresenceState {
+    enum GRPCClientPresenceState {
         case connected
         case offlineRecent
         case stale
@@ -10539,7 +7008,7 @@ struct SettingsSheetView: View {
         case unknown
     }
 
-    private func grpcClientPresenceState(_ status: GRPCDeviceStatusEntry?) -> GRPCClientPresenceState {
+    func grpcClientPresenceState(_ status: GRPCDeviceStatusEntry?) -> GRPCClientPresenceState {
         guard let status else { return .unknown }
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
         let snapshotAgeMs: Int64 = {
@@ -10556,7 +7025,7 @@ struct SettingsSheetView: View {
         return lastSeenAgeMs > Self.grpcClientPresenceStaleMs ? .stale : .offlineRecent
     }
 
-    private func grpcClientPresenceCountsAsStale(_ status: GRPCDeviceStatusEntry?) -> Bool {
+    func grpcClientPresenceCountsAsStale(_ status: GRPCDeviceStatusEntry?) -> Bool {
         switch grpcClientPresenceState(status) {
         case .stale, .neverSeen:
             return true
@@ -10580,7 +7049,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func grpcClientPresencePillTitle(_ status: GRPCDeviceStatusEntry?) -> String {
+    func grpcClientPresencePillTitle(_ status: GRPCDeviceStatusEntry?) -> String {
         switch grpcClientPresenceState(status) {
         case .connected:
             return HubUIStrings.Settings.GRPC.DeviceList.filterConnected
@@ -10595,7 +7064,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func grpcClientPresencePillColor(_ status: GRPCDeviceStatusEntry?) -> Color {
+    func grpcClientPresencePillColor(_ status: GRPCDeviceStatusEntry?) -> Color {
         switch grpcClientPresenceState(status) {
         case .connected:
             return .green
@@ -10612,7 +7081,7 @@ struct SettingsSheetView: View {
     private static let grpcClientPresenceStaleMs: Int64 = 12 * 60 * 60 * 1000
 
 
-    private func grpcClientPolicyUsageSummary(_ st: GRPCDeviceStatusEntry) -> String {
+    func grpcClientPolicyUsageSummary(_ st: GRPCDeviceStatusEntry) -> String {
         var parts: [String] = []
         let mode = st.paidModelPolicyMode.trimmingCharacters(in: .whitespacesAndNewlines)
         if !mode.isEmpty {
@@ -10660,7 +7129,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func grpcClientExecutionPillTitle(_ st: GRPCDeviceStatusEntry) -> String {
+    func grpcClientExecutionPillTitle(_ st: GRPCDeviceStatusEntry) -> String {
         switch grpcClientExecutionState(st) {
         case .remoteCompleted:
             return HubUIStrings.Settings.GRPC.DeviceList.executionRemote
@@ -10679,7 +7148,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func grpcClientExecutionPillColor(_ st: GRPCDeviceStatusEntry) -> Color {
+    func grpcClientExecutionPillColor(_ st: GRPCDeviceStatusEntry) -> Color {
         switch grpcClientExecutionState(st) {
         case .remoteCompleted:
             return .green
@@ -10696,7 +7165,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func grpcClientActualExecutionSummary(_ st: GRPCDeviceStatusEntry) -> String {
+    func grpcClientActualExecutionSummary(_ st: GRPCDeviceStatusEntry) -> String {
         guard let activity = st.lastActivity else {
             let topModel = st.topModel.trimmingCharacters(in: .whitespacesAndNewlines)
             if !topModel.isEmpty {
@@ -10735,7 +7204,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func grpcClientLastBlockedSummary(_ st: GRPCDeviceStatusEntry) -> String {
+    func grpcClientLastBlockedSummary(_ st: GRPCDeviceStatusEntry) -> String {
         let reason = st.lastBlockedReason.trimmingCharacters(in: .whitespacesAndNewlines)
         let code = st.lastDenyCode.trimmingCharacters(in: .whitespacesAndNewlines)
         if reason.isEmpty && code.isEmpty { return HubUIStrings.Settings.GRPC.DeviceList.lastBlockedNone }
@@ -10744,7 +7213,7 @@ struct SettingsSheetView: View {
         return HubUIStrings.Settings.GRPC.DeviceList.lastBlocked(reason: reason, code: code)
     }
 
-    private func grpcClientModelBreakdownSummary(_ row: GRPCDeviceModelBreakdownEntry) -> String {
+    func grpcClientModelBreakdownSummary(_ row: GRPCDeviceModelBreakdownEntry) -> String {
         var parts: [String] = [row.modelId]
         parts.append(HubUIStrings.Settings.GRPC.DeviceList.tokenUsage(row.totalTokens))
         parts.append(HubUIStrings.Settings.GRPC.DeviceList.requests(row.requestCount))
@@ -10761,7 +7230,7 @@ struct SettingsSheetView: View {
         HubUIStrings.Settings.GRPC.DeviceList.policyModeLabel(raw)
     }
 
-    private func grpcClientLastActivitySummary(_ a: GRPCDeviceLastActivity) -> String {
+    func grpcClientLastActivitySummary(_ a: GRPCDeviceLastActivity) -> String {
         let model = a.modelId.trimmingCharacters(in: .whitespacesAndNewlines)
         let cap = a.capability.trimmingCharacters(in: .whitespacesAndNewlines)
         let at = a.createdAtMs > 0 ? formatMs(a.createdAtMs) : ""
@@ -10789,7 +7258,7 @@ struct SettingsSheetView: View {
         return HubUIStrings.Settings.GRPC.DeviceList.summary(parts)
     }
 
-    private func formatMs(_ ms: Int64) -> String {
+    func formatMs(_ ms: Int64) -> String {
         let secs = Double(ms) / 1000.0
         let d = Date(timeIntervalSince1970: secs)
         let f = DateFormatter()
@@ -10797,1779 +7266,7 @@ struct SettingsSheetView: View {
         return f.string(from: d)
     }
 
-    private static let remoteModeGuideText = HubUIStrings.Settings.GRPC.remoteAccessGuideChecklist
-
-    private var networkPoliciesSection: some View {
-        Section(HubUIStrings.Settings.NetworkPolicies.sectionTitle) {
-            HStack {
-                Text(HubUIStrings.Settings.NetworkPolicies.policy)
-                Spacer()
-                Button(HubUIStrings.Settings.NetworkPolicies.add) { showAddNetworkPolicy = true }
-            }
-
-            if networkPolicies.isEmpty {
-                Text(HubUIStrings.Settings.NetworkPolicies.empty)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(networkPolicies) { p in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(HubUIStrings.Settings.NetworkPolicies.policyTitle(appID: p.appId, projectID: p.projectId))
-                            .font(.callout.weight(.semibold))
-                        Text(HubUIStrings.Settings.NetworkPolicies.summary(mode: policyModeText(p.mode), limit: policyLimitText(p.maxSeconds)))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-
-                        HStack(spacing: 10) {
-                            Menu(HubUIStrings.Settings.NetworkPolicies.modeMenu) {
-                                Button(HubUIStrings.Settings.NetworkPolicies.manual) { updatePolicy(p, mode: .manual, maxSeconds: nil) }
-                                Button(HubUIStrings.Settings.NetworkPolicies.autoApprove) { updatePolicy(p, mode: .autoApprove, maxSeconds: p.maxSeconds) }
-                                Button(HubUIStrings.Settings.NetworkPolicies.alwaysAllow) { updatePolicy(p, mode: .alwaysOn, maxSeconds: p.maxSeconds) }
-                                Button(HubUIStrings.Settings.NetworkPolicies.alwaysDeny) { updatePolicy(p, mode: .deny, maxSeconds: nil) }
-                            }
-                            Menu(HubUIStrings.Settings.NetworkPolicies.durationMenu) {
-                                Button(HubUIStrings.Settings.NetworkPolicies.noLimit) { updatePolicy(p, mode: nil, maxSeconds: nil) }
-                                Button(HubUIStrings.Settings.NetworkPolicies.fifteenMinutes) { updatePolicy(p, mode: nil, maxSeconds: 15 * 60) }
-                                Button(HubUIStrings.Settings.NetworkPolicies.thirtyMinutes) { updatePolicy(p, mode: nil, maxSeconds: 30 * 60) }
-                                Button(HubUIStrings.Settings.NetworkPolicies.sixtyMinutes) { updatePolicy(p, mode: nil, maxSeconds: 60 * 60) }
-                                Button(HubUIStrings.Settings.NetworkPolicies.oneHundredTwentyMinutes) { updatePolicy(p, mode: nil, maxSeconds: 120 * 60) }
-                                Button(HubUIStrings.Settings.NetworkPolicies.eightHours) { updatePolicy(p, mode: nil, maxSeconds: 8 * 60 * 60) }
-                            }
-                            Button(HubUIStrings.Settings.NetworkPolicies.remove) { removePolicy(p) }
-                            Spacer()
-                        }
-                        .font(.caption)
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
-        }
-    }
-
-    private var routingSection: some View {
-        Section(HubUIStrings.Settings.Routing.sectionTitle) {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(Self.routingTaskTypes, id: \.self) { t in
-                    HStack {
-                        Text(routingTaskTypeLabel(t))
-                            .font(.caption.weight(.medium))
-                        Spacer()
-                        TextField(HubUIStrings.Settings.Routing.modelIDPlaceholder, text: bindingRoutingModelId(t))
-                            .textFieldStyle(.roundedBorder)
-                            .font(.caption)
-                            .frame(width: 320)
-                    }
-                }
-                Text(HubUIStrings.Settings.Routing.truthHint)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var modelResourcePoolsSection: some View {
-        let pools = modelResourcePools
-        Section("资源池总览") {
-            VStack(alignment: .leading, spacing: 12) {
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: 12) {
-                        modelResourcePoolsHeadline(pools)
-                        Spacer(minLength: 12)
-                        modelResourcePoolsHeaderControls(pools)
-                    }
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        modelResourcePoolsHeadline(pools)
-                        modelResourcePoolsHeaderControls(pools)
-                    }
-                }
-
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 320), spacing: 12, alignment: .top)],
-                    alignment: .leading,
-                    spacing: 12
-                ) {
-                    ForEach(pools) { pool in
-                        modelResourcePoolCard(pool)
-                    }
-                }
-
-                Text("第一屏只回答“哪个池子能用、还剩多少、能跑哪些模型”。账号、消费者、物理 key 和配额链路放在下面的高级配额运营里。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func modelResourcePoolsHeadline(_ pools: [ModelResourcePoolSummary]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("可用模型资源池")
-                .font(.headline)
-            Text(modelResourcePoolsSummaryText(pools))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func modelResourcePoolsHeaderControls(_ pools: [ModelResourcePoolSummary]) -> some View {
-        VStack(alignment: .trailing, spacing: 8) {
-            Text(modelResourcePoolsBadgeText(pools))
-                .font(.caption.monospaced())
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(modelResourcePoolsTint(pools).opacity(0.12))
-                .foregroundStyle(modelResourcePoolsTint(pools))
-                .clipShape(Capsule())
-
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    localModelEntryActions()
-                }
-
-                VStack(alignment: .trailing, spacing: 8) {
-                    localModelEntryActions()
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func localModelEntryActions() -> some View {
-        Button {
-            showDiscoverModels = true
-        } label: {
-            settingsActionChipLabel(title: "发现本地模型", systemName: "magnifyingglass", tint: .indigo)
-        }
-        .buttonStyle(.plain)
-
-        Button {
-            showAddModel = true
-        } label: {
-            settingsActionChipLabel(title: "添加本地模型", systemName: "plus", tint: .green)
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func modelResourcePoolCard(_ pool: ModelResourcePoolSummary) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(pool.tint.opacity(0.14))
-                    Image(systemName: pool.systemName)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(pool.tint)
-                }
-                .frame(width: 42, height: 42)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(pool.title)
-                            .font(.headline)
-                        Text(pool.statusText)
-                            .font(.caption2.monospaced())
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(pool.tint.opacity(0.12))
-                            .foregroundStyle(pool.tint)
-                            .clipShape(Capsule())
-                    }
-                    Text(pool.subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 8)
-
-                Text(pool.badgeText)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(pool.tint)
-            }
-
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 118), spacing: 8, alignment: .top)],
-                alignment: .leading,
-                spacing: 8
-            ) {
-                modelResourcePoolMetric(title: "账号", value: pool.accountText, tint: pool.tint)
-                modelResourcePoolMetric(title: "额度", value: pool.quotaText, tint: modelResourcePoolQuotaTint(pool))
-                modelResourcePoolMetric(title: "模型", value: pool.modelText, tint: .indigo)
-            }
-
-            if !pool.usageWindows.isEmpty {
-                VStack(alignment: .leading, spacing: 7) {
-                    ForEach(Array(pool.usageWindows.enumerated()), id: \.offset) { _, window in
-                        modelResourcePoolQuotaRow(window)
-                    }
-                }
-            }
-
-            modelResourcePoolModelChips(pool)
-
-            Text(pool.detailText)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Divider()
-                .opacity(0.35)
-
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    modelResourcePoolActions(pool)
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    modelResourcePoolActions(pool)
-                }
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(pool.tint.opacity(0.07))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(pool.tint.opacity(0.20), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-    }
-
-    private func modelResourcePoolMetric(title: String, value: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(tint)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tint.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    private func modelResourcePoolQuotaRow(_ window: ProviderKeyUsageWindow) -> some View {
-        let tint = providerKeyUsageWindowTint(window)
-        let percent = providerKeyUsageWindowPercent(window)
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(providerKeyUsageWindowTitle(window))
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(providerKeyUsageWindowPercentText(window))
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(tint)
-            }
-            ProgressView(value: min(1.0, max(0.0, percent / 100.0)))
-                .tint(tint)
-            let resetText = providerKeyUsageWindowResetText(window)
-            if !resetText.isEmpty {
-                Text(resetText)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func modelResourcePoolModelChips(_ pool: ModelResourcePoolSummary) -> some View {
-        if pool.models.isEmpty {
-            Text("还没有编入可展示模型")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        } else {
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 92), spacing: 6, alignment: .leading)],
-                alignment: .leading,
-                spacing: 6
-            ) {
-                ForEach(pool.models, id: \.self) { model in
-                    Text(model)
-                        .font(.caption2.weight(.semibold))
-                        .lineLimit(1)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(pool.tint.opacity(0.10))
-                        .foregroundStyle(pool.tint)
-                        .clipShape(Capsule())
-                }
-                if pool.hiddenModelCount > 0 {
-                    Text("+\(pool.hiddenModelCount)")
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(Color.secondary.opacity(0.10))
-                        .foregroundStyle(.secondary)
-                        .clipShape(Capsule())
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func modelResourcePoolActions(_ pool: ModelResourcePoolSummary) -> some View {
-        if pool.kind == .local {
-            Button {
-                modelCatalogDetailsExpanded = true
-                store.scanAllLocalModelHealth()
-            } label: {
-                settingsActionChipLabel(
-                    title: store.localModelHealthScanInFlight ? "扫描中" : "扫描健康",
-                    systemName: "waveform.path.ecg",
-                    tint: .teal,
-                    disabled: store.localModelHealthScanInFlight || localCatalogModels.isEmpty
-                )
-            }
-            .buttonStyle(.plain)
-            .disabled(store.localModelHealthScanInFlight || localCatalogModels.isEmpty)
-        } else {
-            Button {
-                reloadProviderKeySnapshot(rebuildProjection: providerQuotaOperationsExpanded)
-            } label: {
-                settingsActionChipLabel(title: "刷新额度", systemName: "arrow.clockwise", tint: .blue)
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                showAddRemoteModel = true
-            } label: {
-                settingsActionChipLabel(title: "添加模型", systemName: "plus", tint: .indigo)
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                focusProviderKeyVendor(pool.vendorKey, displayName: pool.title)
-            } label: {
-                settingsActionChipLabel(title: "管理账号", systemName: "person.badge.key", tint: .orange)
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    private var modelResourcePools: [ModelResourcePoolSummary] {
-        [localModelResourcePool()] + providerModelResourcePools()
-    }
-
-    private func localModelResourcePool() -> ModelResourcePoolSummary {
-        let models = localCatalogModels.sorted { lhs, rhs in
-            if lhs.state != rhs.state {
-                return lhs.state == .loaded
-            }
-            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-        }
-        let modelNames = modelResourcePoolPreviewModels(
-            models.map { model in
-                let name = model.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                return name.isEmpty ? model.id : name
-            }
-        )
-        let loadedCount = loadedLocalModelCount
-        let statusText: String
-        let tint: Color
-        if localCatalogModelCount == 0 {
-            statusText = "未导入"
-            tint = .secondary
-        } else if loadedCount > 0 {
-            statusText = "Ready"
-            tint = .green
-        } else if localAvailableModelCount > 0 {
-            statusText = "可按需加载"
-            tint = .teal
-        } else if runtimeHeartbeatText != "在线" {
-            statusText = "Runtime 待恢复"
-            tint = .orange
-        } else {
-            statusText = "待预检"
-            tint = .indigo
-        }
-
-        return ModelResourcePoolSummary(
-            id: "local",
-            kind: .local,
-            vendorKey: "local",
-            title: "Local",
-            subtitle: "本地模型池，不消耗付费账号额度，适合摘要、离线任务和低风险默认路由。",
-            statusText: statusText,
-            badgeText: localCatalogModelCount == 0 ? "未配置" : "\(loadedCount)/\(localCatalogModelCount) loaded",
-            systemName: "desktopcomputer",
-            tint: tint,
-            accountText: runtimeHeartbeatText,
-            quotaText: "免付费额度",
-            modelText: localCatalogModelCount == 0 ? "未导入" : "\(localCatalogModelCount) 个模型",
-            detailText: localCatalogModelCount == 0
-                ? "先发现或添加本地模型，Hub 会把可用任务类型、上下文和运行时状态编进资源池。"
-                : "\(localAvailableModelCount) 个预检可用 · \(localPendingModelCount) 个待复核 · \(loadedRuntimeInstanceCount) 个驻留实例",
-            models: modelNames.visible,
-            hiddenModelCount: modelNames.hidden,
-            usageWindows: []
-        )
-    }
-
-    private func providerModelResourcePools() -> [ModelResourcePoolSummary] {
-        let pools = providerKeyDerivedSnapshot.keyPools
-        let groupedPools = Dictionary(grouping: pools) { pool in
-            modelResourcePoolVendorKey(
-                supplierKey: pool.supplierKey,
-                provider: pool.provider
-            )
-        }
-        let supplierKeyByAccountKey = Dictionary(
-            uniqueKeysWithValues: pools.flatMap { pool in
-                pool.members.map { member in
-                    (member.account.accountKey, pool.supplierKey)
-                }
-            }
-        )
-        let groupedAccounts = Dictionary(grouping: providerKeySnapshot.allAccounts) { account in
-            modelResourceAccountVendorKey(account, supplierKeyByAccountKey: supplierKeyByAccountKey)
-        }
-        let groupedRemoteModels = Dictionary(grouping: remoteModels) { model in
-            modelResourceRemoteVendorKey(model)
-        }
-        let vendorKeys = Set(groupedPools.keys)
-            .union(groupedAccounts.keys)
-            .union(groupedRemoteModels.keys)
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0 != "local" }
-
-        return vendorKeys
-            .sorted(by: modelResourcePoolVendorSort(_:_:))
-            .map { vendorKey in
-                providerModelResourcePool(
-                    vendorKey: vendorKey,
-                    pools: groupedPools[vendorKey] ?? [],
-                    accounts: groupedAccounts[vendorKey] ?? [],
-                    remoteModels: groupedRemoteModels[vendorKey] ?? []
-                )
-            }
-    }
-
-    private func providerModelResourcePool(
-        vendorKey: String,
-        pools: [ProviderKeyPoolSnapshot],
-        accounts: [ProviderKeyAccount],
-        remoteModels: [RemoteModelEntry]
-    ) -> ModelResourcePoolSummary {
-        let title = modelResourcePoolDisplayName(vendorKey: vendorKey, pools: pools)
-        let totalAccounts = max(accounts.count, pools.reduce(0) { $0 + $1.totalAccounts })
-        let readyAccounts = pools.isEmpty
-            ? accounts.filter { $0.enabled && $0.errorState.status == "healthy" }.count
-            : pools.reduce(0) { $0 + $1.readyAccounts }
-        let cooldownAccounts = pools.reduce(0) { $0 + $1.cooldownAccounts }
-        let blockedAccounts = pools.reduce(0) { $0 + $1.blockedAccounts }
-        let disabledAccounts = pools.reduce(0) { $0 + $1.disabledAccounts }
-        let usageWindows = modelResourcePoolUsageWindows(accounts: accounts)
-        let allModelNames = modelResourceProviderModelNames(
-            vendorKey: vendorKey,
-            pools: pools,
-            accounts: accounts,
-            remoteModels: remoteModels
-        )
-        let preview = modelResourcePoolPreviewModels(allModelNames)
-        let totalDailyCap = pools.reduce(Int64(0)) { $0 + $1.totalDailyTokenCap }
-        let totalDailyRemaining = pools.reduce(Int64(0)) { $0 + $1.totalDailyTokensRemaining }
-
-        let statusText: String
-        let tint: Color
-        if readyAccounts > 0 {
-            statusText = "Ready"
-            tint = (blockedAccounts > 0 || cooldownAccounts > 0) ? .orange : .green
-        } else if blockedAccounts > 0 {
-            statusText = "阻断"
-            tint = .red
-        } else if cooldownAccounts > 0 {
-            statusText = "冷却"
-            tint = .orange
-        } else if totalAccounts == 0 && !remoteModels.isEmpty {
-            statusText = "待接账号"
-            tint = .orange
-        } else if totalAccounts == 0 {
-            statusText = "未配置"
-            tint = .secondary
-        } else if disabledAccounts >= totalAccounts {
-            statusText = "已禁用"
-            tint = .secondary
-        } else {
-            statusText = "待恢复"
-            tint = .orange
-        }
-
-        let quotaText: String = {
-            if let firstWindow = usageWindows.first {
-                return "\(providerKeyUsageWindowPercentText(firstWindow)) 已用"
-            }
-            if totalDailyCap > 0 {
-                return "剩余 \(HubUIStrings.Settings.ProviderKeys.tokenCount(totalDailyRemaining))"
-            }
-            return totalAccounts > 0 ? "等待刷新" : "无账号"
-        }()
-
-        let detailParts = modelResourceNonEmptyParts([
-            totalAccounts > 0 ? "\(readyAccounts)/\(totalAccounts) 个账号可用" : "",
-            cooldownAccounts > 0 ? "\(cooldownAccounts) 个冷却" : "",
-            blockedAccounts > 0 ? "\(blockedAccounts) 个阻断" : "",
-            remoteModels.isEmpty ? "" : "\(remoteModels.count) 个远端模型已编目",
-            totalDailyCap > 0 ? "daily 剩余 \(HubUIStrings.Settings.ProviderKeys.tokenCount(totalDailyRemaining))" : ""
-        ])
-
-        return ModelResourcePoolSummary(
-            id: "provider::\(vendorKey)",
-            kind: .provider,
-            vendorKey: vendorKey,
-            title: title,
-            subtitle: "厂商账号池，统一承载账号额度、可执行模型和默认路由候选。",
-            statusText: statusText,
-            badgeText: totalAccounts > 0 ? "\(readyAccounts)/\(totalAccounts) ready" : "未接账号",
-            systemName: modelResourcePoolSystemName(vendorKey),
-            tint: tint,
-            accountText: totalAccounts > 0 ? "\(readyAccounts)/\(totalAccounts) 可用" : "未配置",
-            quotaText: quotaText,
-            modelText: allModelNames.isEmpty ? "未编目" : "\(allModelNames.count) 个模型",
-            detailText: detailParts.isEmpty ? "先导入账号或添加远端模型，Hub 才能把这个厂商编入资源池。" : detailParts.joined(separator: " · "),
-            models: preview.visible,
-            hiddenModelCount: preview.hidden,
-            usageWindows: usageWindows
-        )
-    }
-
-    private func modelResourcePoolsSummaryText(_ pools: [ModelResourcePoolSummary]) -> String {
-        let readyCount = pools.filter { $0.statusText == "Ready" || $0.statusText == "可按需加载" }.count
-        let attentionCount = pools.filter { pool in
-            pool.statusText == "阻断" || pool.statusText == "冷却" || pool.statusText == "Runtime 待恢复" || pool.statusText == "待接账号"
-        }.count
-        return "\(pools.count) 个资源池 · \(readyCount) 个可用 · \(attentionCount) 个需要关注"
-    }
-
-    private func modelResourcePoolsBadgeText(_ pools: [ModelResourcePoolSummary]) -> String {
-        let readyCount = pools.filter { $0.statusText == "Ready" || $0.statusText == "可按需加载" }.count
-        return "\(readyCount)/\(pools.count) 可用"
-    }
-
-    private func modelResourcePoolsTint(_ pools: [ModelResourcePoolSummary]) -> Color {
-        if pools.contains(where: { $0.statusText == "阻断" }) {
-            return .red
-        }
-        if pools.contains(where: { $0.statusText == "冷却" || $0.statusText == "Runtime 待恢复" || $0.statusText == "待接账号" }) {
-            return .orange
-        }
-        return .green
-    }
-
-    private func modelResourcePoolQuotaTint(_ pool: ModelResourcePoolSummary) -> Color {
-        if let window = pool.usageWindows.first {
-            return providerKeyUsageWindowTint(window)
-        }
-        return pool.tint
-    }
-
-    private func modelResourcePoolUsageWindows(accounts: [ProviderKeyAccount]) -> [ProviderKeyUsageWindow] {
-        var selected: [Int: ProviderKeyUsageWindow] = [:]
-        for account in accounts where account.enabled {
-            for window in providerKeyDisplayUsageWindows(account) {
-                let rank = providerKeyUsageWindowRank(window)
-                if let existing = selected[rank] {
-                    if modelResourceWindowIsMoreConstrained(window, than: existing) {
-                        selected[rank] = window
-                    }
-                } else {
-                    selected[rank] = window
-                }
-            }
-        }
-        return selected.values.sorted {
-            let lhsRank = providerKeyUsageWindowRank($0)
-            let rhsRank = providerKeyUsageWindowRank($1)
-            if lhsRank != rhsRank { return lhsRank < rhsRank }
-            return $0.limitWindowSeconds < $1.limitWindowSeconds
-        }
-    }
-
-    private func modelResourceWindowIsMoreConstrained(
-        _ lhs: ProviderKeyUsageWindow,
-        than rhs: ProviderKeyUsageWindow
-    ) -> Bool {
-        if lhs.limited != rhs.limited {
-            return lhs.limited
-        }
-        return providerKeyUsageWindowPercent(lhs) > providerKeyUsageWindowPercent(rhs)
-    }
-
-    private func modelResourceProviderModelNames(
-        vendorKey: String,
-        pools: [ProviderKeyPoolSnapshot],
-        accounts: [ProviderKeyAccount],
-        remoteModels: [RemoteModelEntry]
-    ) -> [String] {
-        modelResourceUniqueStrings(
-            remoteModels.map(\.nestedDisplayName)
-                + modelResourceAccountModelNames(vendorKey: vendorKey, accounts: accounts)
-                + pools.flatMap(\.supportedFamilyDisplayNames)
-        )
-    }
-
-    private func modelResourcePoolPreviewModels(_ rawModels: [String]) -> (visible: [String], hidden: Int) {
-        let models = modelResourceUniqueStrings(rawModels)
-            .map(modelResourceCompactModelName(_:))
-        let visible = Array(models.prefix(6))
-        return (visible, max(0, models.count - visible.count))
-    }
-
-    private func modelResourcePoolVendorKey(supplierKey: String, provider: String) -> String {
-        let supplier = supplierKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !supplier.isEmpty {
-            return providerKeyCanonicalVendorKey(supplier)
-        }
-        return providerKeyCanonicalVendorKey(provider)
-    }
-
-    private func modelResourceAccountVendorKey(
-        _ account: ProviderKeyAccount,
-        supplierKeyByAccountKey: [String: String]
-    ) -> String {
-        let supplierKey = supplierKeyByAccountKey[account.accountKey] ?? account.provider
-        return modelResourcePoolVendorKey(supplierKey: supplierKey, provider: account.provider)
-    }
-
-    private func modelResourceRemoteVendorKey(_ model: RemoteModelEntry) -> String {
-        providerKeyCanonicalVendorKey(RemoteProviderEndpoints.canonicalBackend(model.backend))
-    }
-
-    private func modelResourceAccountModelNames(
-        vendorKey: String,
-        accounts: [ProviderKeyAccount]
-    ) -> [String] {
-        let canonicalVendor = providerKeyCanonicalVendorKey(vendorKey)
-        let shouldFilter = modelResourceVendorUsesStrictModelFamilies(canonicalVendor)
-
-        return accounts.flatMap { account in
-            account.models.filter { modelID in
-                guard shouldFilter else { return true }
-                let modelVendor = modelResourceModelVendorKey(modelID)
-                guard !modelVendor.isEmpty else { return true }
-                return providerKeyCanonicalVendorKey(modelVendor) == canonicalVendor
-            }
-        }
-    }
-
-    private func modelResourceVendorUsesStrictModelFamilies(_ vendorKey: String) -> Bool {
-        switch providerKeyCanonicalVendorKey(vendorKey) {
-        case "openai",
-             "claude",
-             "gemini",
-             "deepseek",
-             "qwen",
-             "glm",
-             "kimi",
-             "mistral",
-             "xai":
-            return true
-        default:
-            return false
-        }
-    }
-
-    private func modelResourceModelVendorKey(_ rawModelID: String) -> String {
-        let normalized = rawModelID
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        guard !normalized.isEmpty else { return "" }
-        let modelID = normalized
-            .split(separator: "/")
-            .last
-            .map(String.init) ?? normalized
-
-        if modelID.hasPrefix("gpt")
-            || modelID.hasPrefix("o1")
-            || modelID.hasPrefix("o3")
-            || modelID.hasPrefix("o4")
-            || modelID.hasPrefix("chatgpt") {
-            return "openai"
-        }
-        if modelID.hasPrefix("claude") {
-            return "claude"
-        }
-        if modelID.hasPrefix("gemini") {
-            return "gemini"
-        }
-        if modelID.hasPrefix("deepseek") {
-            return "deepseek"
-        }
-        if modelID.hasPrefix("qwen")
-            || modelID.hasPrefix("qwq")
-            || modelID.hasPrefix("qvq")
-            || modelID.hasPrefix("tongyi") {
-            return "qwen"
-        }
-        if modelID.hasPrefix("glm") || modelID.hasPrefix("zhipu") {
-            return "glm"
-        }
-        if modelID.hasPrefix("kimi") || modelID.hasPrefix("moonshot") {
-            return "kimi"
-        }
-        if modelID.hasPrefix("mistral") {
-            return "mistral"
-        }
-        if modelID.hasPrefix("grok") || modelID.hasPrefix("xai") {
-            return "xai"
-        }
-        return ""
-    }
-
-    private func modelResourcePoolDisplayName(
-        vendorKey: String,
-        pools: [ProviderKeyPoolSnapshot]
-    ) -> String {
-        let display = pools
-            .map(\.supplierDisplayName)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { !$0.isEmpty }
-        return display ?? providerKeyVendorDisplayName(vendorKey)
-    }
-
-    private func modelResourcePoolSystemName(_ vendorKey: String) -> String {
-        switch providerKeyCanonicalVendorKey(vendorKey) {
-        case "openai":
-            return "sparkles"
-        case "claude":
-            return "text.bubble.fill"
-        case "gemini":
-            return "diamond.fill"
-        default:
-            return "cloud.fill"
-        }
-    }
-
-    private func modelResourcePoolVendorSort(_ lhs: String, _ rhs: String) -> Bool {
-        let order = ["openai", "claude", "gemini", "kimi"]
-        let lhsIndex = order.firstIndex(of: providerKeyCanonicalVendorKey(lhs)) ?? Int.max
-        let rhsIndex = order.firstIndex(of: providerKeyCanonicalVendorKey(rhs)) ?? Int.max
-        if lhsIndex != rhsIndex {
-            return lhsIndex < rhsIndex
-        }
-        return providerKeyVendorDisplayName(lhs).localizedCaseInsensitiveCompare(providerKeyVendorDisplayName(rhs)) == .orderedAscending
-    }
-
-    private func modelResourceCompactModelName(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count > 26 else { return trimmed }
-        return String(trimmed.prefix(24)) + "..."
-    }
-
-    private func modelResourceUniqueStrings(_ values: [String]) -> [String] {
-        var out: [String] = []
-        var seen: Set<String> = []
-        for raw in values {
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            let normalized = trimmed.lowercased()
-            guard !trimmed.isEmpty, seen.insert(normalized).inserted else { continue }
-            out.append(trimmed)
-        }
-        return out
-    }
-
-    private func modelResourceNonEmptyParts(_ values: [String]) -> [String] {
-        values
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-    }
-
-    private var localModelsCapabilitySection: some View {
-        Section("本地模型能力") {
-            settingsOperationsPanelCard(
-                systemName: "internaldrive.fill",
-                title: "本地模型能力",
-                summary: localModelsCapabilitySummaryText,
-                badge: localModelsCapabilityBadgeText,
-                tint: localModelsCapabilityTint
-            ) {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 150), spacing: 10)],
-                    alignment: .leading,
-                    spacing: 10
-                ) {
-                    ForEach(localModelsCapabilityMetrics) { metric in
-                        settingsMetricCard(metric, compact: false)
-                    }
-                }
-
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) {
-                        Button {
-                            store.scanAllLocalModelHealth()
-                        } label: {
-                            settingsActionChipLabel(
-                                title: store.localModelHealthScanInFlight
-                                    ? HubUIStrings.Models.LocalHealth.scanningBadge
-                                    : HubUIStrings.Models.LocalHealth.scanAll,
-                                systemName: "waveform.path.ecg",
-                                tint: .teal,
-                                disabled: store.localModelHealthScanInFlight || localCatalogModels.isEmpty
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(store.localModelHealthScanInFlight || localCatalogModels.isEmpty)
-
-                        Button {
-                            modelStore.refresh()
-                        } label: {
-                            settingsActionChipLabel(
-                                title: "刷新目录",
-                                systemName: "arrow.clockwise",
-                                tint: .indigo,
-                                disabled: false
-                            )
-                        }
-                        .buttonStyle(.plain)
-
-                        Menu {
-                            Button("查看运行时基础设施") {
-                                selectSettingsPage(.runtime)
-                            }
-                            Button("查看任务路由") {
-                                runtimeRoutingExpanded = true
-                                selectSettingsPage(.runtime)
-                            }
-                            Button("自动扫描与保活策略") {
-                                modelsAutoScanExpanded = true
-                            }
-                        } label: {
-                            settingsActionChipLabel(
-                                title: "更多动作",
-                                systemName: "ellipsis.circle",
-                                tint: .secondary
-                            )
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 8) {
-                            Button {
-                                store.scanAllLocalModelHealth()
-                            } label: {
-                                settingsActionChipLabel(
-                                    title: store.localModelHealthScanInFlight
-                                        ? HubUIStrings.Models.LocalHealth.scanningBadge
-                                        : HubUIStrings.Models.LocalHealth.scanAll,
-                                    systemName: "waveform.path.ecg",
-                                    tint: .teal,
-                                    disabled: store.localModelHealthScanInFlight || localCatalogModels.isEmpty
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(store.localModelHealthScanInFlight || localCatalogModels.isEmpty)
-
-                            Button {
-                                modelStore.refresh()
-                            } label: {
-                                settingsActionChipLabel(
-                                    title: "刷新目录",
-                                    systemName: "arrow.clockwise",
-                                    tint: .indigo
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        Menu {
-                            Button("查看运行时基础设施") {
-                                selectSettingsPage(.runtime)
-                            }
-                            Button("查看任务路由") {
-                                runtimeRoutingExpanded = true
-                                selectSettingsPage(.runtime)
-                            }
-                            Button("自动扫描与保活策略") {
-                                modelsAutoScanExpanded = true
-                            }
-                        } label: {
-                            settingsActionChipLabel(
-                                title: "更多动作",
-                                systemName: "ellipsis.circle",
-                                tint: .secondary
-                            )
-                        }
-                    }
-                }
-
-                if let notice = localModelsCapabilityNoticeText {
-                    terminalAccessFeedbackBanner(
-                        text: notice,
-                        tint: localModelsCapabilityNoticeTint,
-                        systemName: localModelsCapabilityNoticeSystemName
-                    )
-                }
-            }
-
-            Text("本地模型页只回答“能不能在 Hub 本地稳定执行”；更底层的 provider 心跳、实例与队列请去“运行时基础设施”。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var remoteModelsSection: some View {
-        Section("付费模型能力") {
-            settingsOperationsPanelCard(
-                systemName: "antenna.radiowaves.left.and.right",
-                title: "付费模型能力",
-                summary: remoteModelsSectionSummaryText,
-                badge: remoteModelsOverviewBadgeText,
-                tint: remoteModelsOverviewTint
-            ) {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 150), spacing: 10)],
-                    alignment: .leading,
-                    spacing: 10
-                ) {
-                    ForEach(remoteModelsOverviewMetrics) { metric in
-                        settingsMetricCard(metric, compact: false)
-                    }
-                }
-
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) {
-                        Button {
-                            showAddRemoteModel = true
-                        } label: {
-                            settingsActionChipLabel(
-                                title: HubUIStrings.Settings.RemoteModels.add,
-                                systemName: "plus",
-                                tint: .indigo
-                            )
-                        }
-                        .buttonStyle(.plain)
-
-                        Button {
-                            store.quickScanAllRemoteKeyHealth()
-                        } label: {
-                            settingsActionChipLabel(
-                                title: store.remoteKeyHealthScanInFlight
-                                    ? HubUIStrings.Settings.RemoteModels.healthCheckingBadge
-                                    : HubUIStrings.Settings.RemoteModels.scanQuick,
-                                systemName: "bolt.badge.clock",
-                                tint: .teal,
-                                disabled: store.remoteKeyHealthScanInFlight || remoteModels.isEmpty
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(store.remoteKeyHealthScanInFlight || remoteModels.isEmpty)
-
-                        Menu {
-                            Button(HubUIStrings.Settings.RemoteModels.importCatalog) {
-                                showImportRemoteCatalog = true
-                            }
-                            Button(HubUIStrings.Settings.RemoteModels.scanFull) {
-                                store.fullScanAllRemoteKeyHealth()
-                            }
-                            .disabled(store.remoteKeyHealthScanInFlight || remoteModels.isEmpty)
-                        } label: {
-                            settingsActionChipLabel(
-                                title: "更多动作",
-                                systemName: "ellipsis.circle",
-                                tint: .secondary
-                            )
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 8) {
-                            Button {
-                                showAddRemoteModel = true
-                            } label: {
-                                settingsActionChipLabel(
-                                    title: HubUIStrings.Settings.RemoteModels.add,
-                                    systemName: "plus",
-                                    tint: .indigo
-                                )
-                            }
-                            .buttonStyle(.plain)
-
-                            Button {
-                                store.quickScanAllRemoteKeyHealth()
-                            } label: {
-                                settingsActionChipLabel(
-                                    title: store.remoteKeyHealthScanInFlight
-                                        ? HubUIStrings.Settings.RemoteModels.healthCheckingBadge
-                                        : HubUIStrings.Settings.RemoteModels.scanQuick,
-                                    systemName: "bolt.badge.clock",
-                                    tint: .teal,
-                                    disabled: store.remoteKeyHealthScanInFlight || remoteModels.isEmpty
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(store.remoteKeyHealthScanInFlight || remoteModels.isEmpty)
-                        }
-
-                        Menu {
-                            Button(HubUIStrings.Settings.RemoteModels.importCatalog) {
-                                showImportRemoteCatalog = true
-                            }
-                            Button(HubUIStrings.Settings.RemoteModels.scanFull) {
-                                store.fullScanAllRemoteKeyHealth()
-                            }
-                            .disabled(store.remoteKeyHealthScanInFlight || remoteModels.isEmpty)
-                        } label: {
-                            settingsActionChipLabel(
-                                title: "更多动作",
-                                systemName: "ellipsis.circle",
-                                tint: .secondary
-                            )
-                        }
-                    }
-                }
-
-                if let notice = remoteModelsAttentionBannerText {
-                    terminalAccessFeedbackBanner(
-                        text: notice,
-                        tint: remoteModelsAttentionBannerTint,
-                        systemName: remoteModelsAttentionBannerSystemName
-                    )
-                }
-            }
-
-            if remoteModels.isEmpty {
-                Text(HubUIStrings.Settings.RemoteModels.empty)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                settingsCollapsedSectionCard(
-                    title: "付费模型组明细",
-                    summary: "按 provider / key 聚合后的执行明细。展开后可继续加载、卸载、改组名或删除模型组。",
-                    badge: remoteModelCatalogExpanded ? "已展开" : "\(remoteModelGroupCount) 个组",
-                    tint: remoteModelsOverviewTint,
-                    isExpanded: $remoteModelCatalogExpanded
-                )
-                if remoteModelCatalogExpanded {
-                    ForEach(remoteModelGroups) { group in
-                        remoteModelGroupCard(group)
-                    }
-                }
-            }
-            Text(HubUIStrings.Settings.RemoteModels.syncHint)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var providerKeySection: some View {
-        let snapshot = providerKeySectionSnapshot
-        let keyPools = snapshot.keyPools
-        let users = snapshot.users
-        let focusedUser = snapshot.focusedUser
-        let vendorSummaries = snapshot.vendorSummaries
-        let filteredVendors = snapshot.filteredVendors
-        let filteredFamilies = snapshot.filteredFamilies
-        let filteredUsers = snapshot.filteredUsers
-        let filteredConsumers = snapshot.filteredConsumers
-        let focusedVendor = snapshot.focusedVendor
-        let flowChains = snapshot.flowChains
-        let scopeOverview = snapshot.scopeOverview
-        let riskVendorCount = snapshot.riskVendorCount
-        let riskFamilyCount = snapshot.riskFamilyCount
-        let overallTrendCard = snapshot.overallTrendCard
-        let vendorTrendCards = snapshot.vendorTrendCards
-        let familyTrendCards = snapshot.familyTrendCards
-        let userTrendCards = snapshot.userTrendCards
-        let consumerTrendCards = snapshot.consumerTrendCards
-        let operationalTint = snapshot.operationalTint
-        return Section(HubUIStrings.Settings.ProviderKeys.sectionTitle) {
-            HStack {
-                Text(HubUIStrings.Settings.ProviderKeys.title)
-                Spacer()
-                Button(HubUIStrings.Settings.ProviderKeys.refresh) {
-                    reloadProviderKeySnapshot()
-                }
-            }
-
-            if !remoteQuotaActionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                terminalAccessFeedbackBanner(
-                    text: remoteQuotaActionText,
-                    tint: .blue,
-                    systemName: "slider.horizontal.3"
-                )
-            }
-
-            if !remoteQuotaErrorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                terminalAccessFeedbackBanner(
-                    text: remoteQuotaErrorText,
-                    tint: .red,
-                    systemName: "exclamationmark.triangle"
-                )
-            }
-
-            settingsInlineDisclosureGroup(
-                systemName: "person.badge.key.fill",
-                title: "CLIProxy OAuth",
-                summary: cliproxyOAuthDisclosureSummaryText,
-                badge: providerOAuthExpanded ? "已展开" : cliproxyOAuthStatusBadgeText,
-                tint: cliproxyOAuthOverviewNoticeTint,
-                isExpanded: $providerOAuthExpanded
-            ) {
-                cliproxyOAuthSourceCard
-            }
-
-            if !providerKeySnapshot.importSources.isEmpty {
-                settingsInlineDisclosureGroup(
-                    systemName: "tray.and.arrow.down.fill",
-                    title: "导入源",
-                    summary: providerKeyImportSourcesSummaryText(providerKeySnapshot.importSources),
-                    badge: providerImportSourcesExpanded ? "已展开" : "按需查看",
-                    tint: .teal,
-                    isExpanded: $providerImportSourcesExpanded
-                ) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(providerKeySnapshot.importSources) { source in
-                            providerKeyImportSourceRow(source)
-                        }
-                    }
-                }
-            }
-
-            if keyPools.isEmpty && providerKeySnapshot.importSources.isEmpty {
-                Text(HubUIStrings.Settings.ProviderKeys.empty)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                settingsOperationsPanelCard(
-                    systemName: "shippingbox.and.arrow.forward",
-                    title: "配额运营总览",
-                    summary: providerKeyOperationalSummaryText(
-                        scopeOverview: scopeOverview,
-                        overview: snapshot.overview,
-                        focusedUser: focusedUser,
-                        focusedVendor: focusedVendor
-                    ),
-                    badge: providerKeyOperationalBadgeText(
-                        focusedUser: focusedUser,
-                        focusedVendor: focusedVendor
-                    ),
-                    tint: operationalTint
-                ) {
-                    HStack {
-                        Text(HubUIStrings.Settings.ProviderKeys.globalStrategy)
-                            .font(.caption)
-                        Spacer()
-                        Text(providerKeySnapshot.globalRoutingStrategy)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-
-                    providerKeyOverviewGrid(snapshot.overview, scopeOverview: scopeOverview)
-
-                    providerKeyScopeControlCard(users: users, vendors: vendorSummaries)
-
-                    terminalAccessFeedbackBanner(
-                        text: providerKeyScopeSummary(
-                            focusedUser: focusedUser,
-                            focusedVendor: focusedVendor,
-                            vendors: filteredVendors,
-                            families: filteredFamilies,
-                            users: filteredUsers,
-                            consumers: filteredConsumers
-                        ),
-                        tint: focusedVendor != nil ? .indigo : (focusedUser == nil ? .blue : .teal),
-                        systemName: focusedVendor != nil ? "building.2.crop.circle" : (focusedUser == nil ? "square.grid.2x2" : "person.crop.circle")
-                    )
-
-                    if riskVendorCount > 0 || riskFamilyCount > 0 {
-                        terminalAccessFeedbackBanner(
-                            text: "当前视角下 \(riskVendorCount) 家厂家、\(riskFamilyCount) 个家族存在明显风险，重点看超配、库存缓冲不足或 key 阻塞。",
-                            tint: riskFamilyCount > 0 ? .red : .orange,
-                            systemName: "exclamationmark.octagon"
-                        )
-                    }
-                }
-
-                settingsInlineDisclosureGroup(
-                    systemName: "point.3.connected.trianglepath.dotted",
-                    title: "配额流向地图",
-                    summary: providerFlowExpanded
-                        ? providerKeyFlowSummaryText(
-                            flowChains: flowChains,
-                            focusedUser: focusedUser,
-                            focusedVendor: focusedVendor
-                        )
-                        : "按需展开后再计算厂家 -> 用户 -> consumer 的真实链路。",
-                    badge: providerFlowExpanded
-                        ? "已展开"
-                        : "按需查看",
-                    tint: focusedVendor != nil ? .indigo : (focusedUser != nil ? .teal : .blue),
-                    isExpanded: $providerFlowExpanded
-                ) {
-                    providerKeyFlowSection(
-                        flowChains: flowChains,
-                        focusedUser: focusedUser,
-                        focusedVendor: focusedVendor
-                    )
-                }
-
-                settingsInlineDisclosureGroup(
-                    systemName: "chart.line.uptrend.xyaxis",
-                    title: "近 1 小时趋势",
-                    summary: providerTrendExpanded
-                        ? providerKeyTrendSummaryText(
-                            focusedUser: focusedUser,
-                            focusedVendor: focusedVendor,
-                            overallTrendCard: overallTrendCard,
-                            vendorTrendCards: vendorTrendCards,
-                            familyTrendCards: familyTrendCards,
-                            userTrendCards: userTrendCards,
-                            consumerTrendCards: consumerTrendCards
-                        )
-                        : "按需展开后再生成 5m token 趋势图。",
-                    badge: providerTrendExpanded
-                        ? "已展开"
-                        : "按需查看",
-                    tint: focusedVendor != nil ? .orange : (focusedUser != nil ? .teal : .purple),
-                    isExpanded: $providerTrendExpanded
-                ) {
-                    providerKeyTrendSection(
-                        focusedUser: focusedUser,
-                        focusedVendor: focusedVendor,
-                        overallTrendCard: overallTrendCard,
-                        vendorTrendCards: vendorTrendCards,
-                        familyTrendCards: familyTrendCards,
-                        userTrendCards: userTrendCards,
-                        consumerTrendCards: consumerTrendCards
-                    )
-                }
-
-                if !vendorSummaries.isEmpty {
-                    settingsInlineDisclosureGroup(
-                        systemName: "building.2.crop.circle.fill",
-                        title: "厂家经营总账",
-                        summary: providerKeyVendorLedgerSummaryText(
-                            filteredVendors,
-                            focusedUser: focusedUser,
-                            focusedVendor: focusedVendor
-                        ),
-                        badge: providerVendorLedgerExpanded ? "已展开" : "\(filteredVendors.count)/\(vendorSummaries.count) 厂家",
-                        tint: focusedVendor != nil ? .indigo : .blue,
-                        isExpanded: $providerVendorLedgerExpanded
-                    ) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            providerKeyLedgerSectionHeader(
-                                title: "厂家经营总账",
-                                summary: focusedUser == nil
-                                    ? "按厂家同时看上游库存、下游覆盖预算、今日家族用量和影响用户数。这里回答哪家还能继续发额度，哪家已经快顶住了。"
-                                    : "当前只显示与 \(focusedUser?.displayName ?? "") 相关的厂家。上游库存和 key 健康仍按厂家全局账展示，但覆盖预算与今日家族用量已经按该用户真实重算。"
-                            )
-
-                            Picker("厂家过滤", selection: $remoteQuotaVendorFilter) {
-                                ForEach(RemoteQuotaVendorFilter.allCases) { filter in
-                                    Text(filter.title).tag(filter)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-
-                            Text(
-                                providerKeyVendorFilterSummary(
-                                    filteredVendors,
-                                    totalVendors: vendorSummaries.count,
-                                    focusedUser: focusedUser,
-                                    focusedVendor: focusedVendor
-                                )
-                            )
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-
-                            if filteredVendors.isEmpty {
-                                Text("当前视角下没有匹配的厂家。")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                ForEach(filteredVendors) { vendor in
-                                    self.providerKeyVendorHeatCard(vendor)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if snapshot.totalFamilyCount > 0 {
-                    settingsInlineDisclosureGroup(
-                        systemName: "shippingbox.circle.fill",
-                        title: "库存总账",
-                        summary: providerKeyFamilyLedgerSummaryText(
-                            filteredFamilies,
-                            focusedUser: focusedUser
-                        ),
-                        badge: providerFamilyLedgerExpanded ? "已展开" : "\(filteredFamilies.count)/\(snapshot.totalFamilyCount) 家族",
-                        tint: focusedUser != nil ? .teal : .purple,
-                        isExpanded: $providerFamilyLedgerExpanded
-                    ) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            providerKeyLedgerSectionHeader(
-                                title: "库存总账",
-                                summary: focusedUser == nil
-                                    ? "先按模型家族看上游库存、覆盖预算和今日实际用量。这里回答每家模型现在还剩多少库存。"
-                                    : "当前只显示 \(focusedUser?.displayName ?? "") 可命中的家族。上游库存仍是家族全局池，但覆盖预算与今日用量已经按该用户真实重算。"
-                            )
-
-                            if filteredFamilies.isEmpty {
-                                Text("当前视角下没有匹配的模型家族。")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                ForEach(filteredFamilies) { family in
-                                    providerKeyQuotaFamilyCard(family)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                settingsInlineDisclosureGroup(
-                    systemName: "person.3.sequence.fill",
-                    title: "用户台账",
-                    summary: providerKeyUserLedgerDisclosureSummary(
-                        filteredUsers,
-                        totalUsers: users.count,
-                        focusedUser: focusedUser
-                    ),
-                    badge: providerUserLedgerExpanded ? "已展开" : "\(filteredUsers.count)/\(users.count) 用户",
-                    tint: focusedUser != nil ? .teal : .indigo,
-                    isExpanded: $providerUserLedgerExpanded
-                ) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        providerKeyLedgerSectionHeader(
-                            title: "用户台账",
-                            summary: "这里按 user_id 汇总预算、用量和剩余；如果终端没绑 user_id，会按单个 consumer 单独记账，避免不同终端混账。"
-                        )
-
-                        if users.isEmpty {
-                            Text("当前还没有任何用户获得远端付费模型预算。")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Picker("用户过滤", selection: $remoteQuotaUserFilter) {
-                                ForEach(RemoteQuotaUserFilter.allCases) { filter in
-                                    Text(filter.title).tag(filter)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-
-                            Text(
-                                providerKeyUserFilterSummary(
-                                    filteredUsers,
-                                    totalUsers: users.count,
-                                    focusedUser: focusedUser
-                                )
-                            )
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-
-                            if filteredUsers.isEmpty {
-                                Text("当前视角下没有匹配的用户主体。")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    ForEach(filteredUsers) { user in
-                                        providerKeyBudgetUserRow(user)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                .id(providerKeyUserLedgerAnchorID)
-
-                settingsInlineDisclosureGroup(
-                    systemName: "rectangle.3.group.bubble.left.fill",
-                    title: "统一消费者台账",
-                    summary: providerKeyConsumerLedgerDisclosureSummary(
-                        filteredConsumers,
-                        totalConsumers: snapshot.consumerLedgerTotalCount,
-                        focusedUser: focusedUser
-                    ),
-                    badge: providerConsumerLedgerExpanded
-                        ? "已展开"
-                        : "\(filteredConsumers.count)/\(snapshot.consumerLedgerTotalCount) 消费者",
-                    tint: focusedUser != nil ? .blue : .purple,
-                    isExpanded: $providerConsumerLedgerExpanded
-                ) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        providerKeyLedgerSectionHeader(
-                            title: "统一消费者台账",
-                            summary: "把 XT 和普通 terminal access key 放在同一张账上，看每个用户下面每个 consumer 具体拿了多少预算、用了多少、还剩多少。"
-                        )
-
-                        if snapshot.totalConsumerCount == 0 {
-                            Text("当前还没有任何 XT 或普通 terminal access key 获得远端付费模型预算。")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Picker("消费者过滤", selection: $remoteQuotaConsumerFilter) {
-                                ForEach(RemoteQuotaConsumerFilter.allCases) { filter in
-                                    Text(filter.title).tag(filter)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-
-                            Text(
-                                providerKeyConsumerFilterSummary(
-                                    filteredConsumers,
-                                    totalConsumers: snapshot.consumerLedgerTotalCount,
-                                    focusedUser: focusedUser
-                                )
-                            )
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-
-                            if filteredConsumers.isEmpty {
-                                Text("当前视角下没有匹配的消费者。")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    ForEach(filteredConsumers) { client in
-                                        providerKeyBudgetClientRow(client)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                .id(providerKeyConsumerLedgerAnchorID)
-
-                if keyPools.isEmpty {
-                    Text("当前还没有可路由的 Provider 账号，先修复上面的导入源即可。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    settingsInlineDisclosureGroup(
-                        systemName: "key.radiowaves.forward.fill",
-                        title: "物理 Key 池",
-                        summary: providerKeyPhysicalPoolsSummaryText(keyPools),
-                        badge: providerPhysicalPoolsExpanded ? "已展开" : "\(keyPools.count) 个池",
-                        tint: .orange,
-                        isExpanded: $providerPhysicalPoolsExpanded
-                    ) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            providerKeyLedgerSectionHeader(
-                                title: "物理 Key 池",
-                                summary: focusedUser == nil
-                                    ? "当你需要下钻到具体厂商 key 时，在这里看每个池子和每把 key 的健康、额度、冷却与重试。"
-                                    : "物理 Key 池保持全局视角，方便你在按用户观察预算时，仍能直接回到具体厂商 key 排障。"
-                            )
-
-                            ForEach(keyPools) { pool in
-                                providerKeyPoolCard(pool)
-                            }
-                        }
-                    }
-
-                    Text(
-                        "共 \(snapshot.overview.quotaPoolCount) 个额度池 · \(keyPools.count) 个物理池 · \(providerKeyDerivedSnapshot.totalAccounts) 个 key · "
-                            + "\(providerKeyDerivedSnapshot.readyAccounts) 个就绪 · "
-                            + "\(providerKeyDerivedSnapshot.cooldownAccounts) 个冷却 · "
-                            + "\(providerKeyDerivedSnapshot.blockedAccounts) 个阻塞"
-                    )
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .id(providerKeySectionAnchorID)
-    }
-
-    @ViewBuilder
-    private func providerKeyOverviewGrid(
-        _ overview: RemoteQuotaCenterOverview,
-        scopeOverview: ProviderKeyScopeOverview
-    ) -> some View {
-        let upstreamUsage = providerKeyUsageFraction(
-            used: overview.totalDailyTokensUsed,
-            cap: overview.totalDailyTokenCap
-        )
-        let upstreamTint: Color = upstreamUsage >= 0.85 ? .orange : .blue
-        let allocatedTint: Color = scopeOverview.allocatedDailyTokenBudget > 0 ? .purple : .gray
-        let observedTint: Color = scopeOverview.observedConsumerTokensUsed > 0 ? .teal : .gray
-        let downstreamRemaining = max(Int64(0), scopeOverview.allocatedDailyTokenBudget - scopeOverview.observedConsumerTokensUsed)
-        let downstreamRemainingTint: Color = scopeOverview.allocatedDailyTokenBudget > 0
-            ? (downstreamRemaining <= max(Int64(50_000), scopeOverview.allocatedDailyTokenBudget / 10) ? .orange : .green)
-            : .gray
-        let allocationHeadroom = overview.totalDailyTokenCap > 0
-            ? overview.totalDailyTokenCap - scopeOverview.allocatedDailyTokenBudget
-            : 0
-        let riskTint: Color = scopeOverview.oversubscribedFamilyCount > 0
-            ? .red
-            : (overview.blockedKeys > 0 ? .orange : .green)
-        let downstreamRemainingValue: String = {
-            guard scopeOverview.allocatedDailyTokenBudget > 0 else {
-                return scopeOverview.unlimitedBudgetConsumerCount > 0 ? "弹性" : "0"
-            }
-            let base = HubUIStrings.Settings.ProviderKeys.tokenCount(downstreamRemaining)
-            return scopeOverview.unlimitedBudgetConsumerCount > 0 ? "\(base) +" : base
-        }()
-        let unlimitedBudgetSuffix = scopeOverview.unlimitedBudgetConsumerCount > 0
-            ? " · 未设上限 \(scopeOverview.unlimitedBudgetConsumerCount)"
-            : ""
-
-        LazyVGrid(
-            columns: [
-                GridItem(.flexible(minimum: 150), spacing: 8, alignment: .top),
-                GridItem(.flexible(minimum: 150), spacing: 8, alignment: .top),
-                GridItem(.flexible(minimum: 150), spacing: 8, alignment: .top)
-            ],
-            spacing: 8
-        ) {
-            providerKeyOverviewCard(
-                title: "上游剩余库存",
-                value: overview.totalDailyTokenCap > 0
-                    ? HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokensRemaining)
-                    : HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokensUsed),
-                detail: overview.totalDailyTokenCap > 0
-                    ? "今日已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokensUsed)) / \(HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokenCap))"
-                    : "尚未拿到统一 cap，已识别额度 \(overview.knownQuotaKeys)/\(overview.totalKeys) 个 key",
-                tint: upstreamTint
-            )
-
-            providerKeyOverviewCard(
-                title: "下游已分配",
-                value: scopeOverview.allocatedDailyTokenBudget > 0
-                    ? HubUIStrings.Settings.ProviderKeys.tokenCount(scopeOverview.allocatedDailyTokenBudget)
-                    : "弹性分配",
-                detail: scopeOverview.allocatedDailyTokenBudget > 0
-                    ? (
-                        {
-                            if let focusedUser = scopeOverview.focusedUser,
-                               let focusedVendor = scopeOverview.focusedVendorDisplayName {
-                                return "\(focusedUser.displayName) 在 \(focusedVendor) 视角下的覆盖预算\(unlimitedBudgetSuffix)"
-                            }
-                            if let focusedVendor = scopeOverview.focusedVendorDisplayName {
-                                return "\(focusedVendor) 相关固定 daily budget 合计\(unlimitedBudgetSuffix)"
-                            }
-                            if let focusedUser = scopeOverview.focusedUser {
-                                return "\(focusedUser.displayName) 当前覆盖预算\(unlimitedBudgetSuffix)"
-                            }
-                            return "当前全局固定 daily budget 合计\(unlimitedBudgetSuffix)"
-                        }()
-                    )
-                    : (scopeOverview.unlimitedBudgetConsumerCount > 0 ? "当前视角主要受上游库存约束" : "当前主要受上游库存约束"),
-                tint: allocatedTint
-            )
-
-            providerKeyOverviewCard(
-                title: "下游今日已用",
-                value: HubUIStrings.Settings.ProviderKeys.tokenCount(scopeOverview.observedConsumerTokensUsed),
-                detail: overview.totalDailyTokensUsed > 0
-                    ? (
-                        {
-                            if let focusedUser = scopeOverview.focusedUser,
-                               let focusedVendor = scopeOverview.focusedVendorDisplayName {
-                                return "\(focusedUser.displayName) 在 \(focusedVendor) 视角下已用，对比上游总账 \(HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokensUsed))"
-                            }
-                            if let focusedVendor = scopeOverview.focusedVendorDisplayName {
-                                return "\(focusedVendor) 相关下游已用，对比上游总账 \(HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokensUsed))"
-                            }
-                            if scopeOverview.focusedUser == nil {
-                                return "上游账本已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokensUsed))"
-                            }
-                            return "当前用户已用，对比上游总账 \(HubUIStrings.Settings.ProviderKeys.tokenCount(overview.totalDailyTokensUsed))"
-                        }()
-                    )
-                    : "来自 XT / Terminal 消费者账本",
-                tint: observedTint
-            )
-
-            providerKeyOverviewCard(
-                title: "下游剩余预算",
-                value: downstreamRemainingValue,
-                detail: scopeOverview.allocatedDailyTokenBudget > 0
-                    ? (
-                        scopeOverview.unlimitedBudgetConsumerCount > 0
-                            ? "固定预算剩余 + 弹性额度"
-                            : "按当前视角的已分配预算减去今日已用"
-                    )
-                    : "无固定 hard cap",
-                tint: downstreamRemainingTint
-            )
-
-            providerKeyOverviewCard(
-                title: "覆盖主体",
-                value: "\(scopeOverview.userCount) 用户 / \(scopeOverview.consumerCount) 消费者",
-                detail: "XT \(scopeOverview.xtConsumerCount) · Terminal \(scopeOverview.terminalConsumerCount) · 在线 \(scopeOverview.connectedConsumerCount)",
-                tint: .indigo
-            )
-
-            providerKeyOverviewCard(
-                title: "风险态势",
-                value: overview.totalDailyTokenCap > 0
-                    ? providerKeySignedTokenCount(allocationHeadroom)
-                    : "\(scopeOverview.oversubscribedFamilyCount) 个家族风险",
-                detail: scopeOverview.allocatedDailyTokenBudget > 0
-                    ? "当前视角缓冲 · 超配家族 \(scopeOverview.oversubscribedFamilyCount) · 阻塞 key \(overview.blockedKeys)"
-                    : "家族池 \(overview.quotaPoolCount) · 物理池 \(overview.keyPoolCount) · Ready key \(overview.readyKeys)",
-                tint: riskTint
-            )
-        }
-        .padding(.vertical, 4)
-    }
-
-    @ViewBuilder
-    private func providerKeyScopeControlCard(
-        users: [RemoteQuotaCenterUserProjection],
-        vendors: [ProviderKeyVendorInventorySummary]
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 10) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("运营视角")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text("可叠加用户视角和厂家视角。切到某个厂家后，趋势、家族、用户和消费者台账会一起收窄到相关流量；物理 key 池仍保持全局。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                HStack(spacing: 8) {
-                    Picker("用户视角", selection: $remoteQuotaFocusedUserGroupingKey) {
-                        Text("全局用户").tag("")
-                        ForEach(users) { user in
-                            Text(providerKeyFocusUserTitle(user)).tag(user.groupingKey)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .disabled(users.isEmpty)
-
-                    Picker("厂家视角", selection: $remoteQuotaFocusedVendorKey) {
-                        Text("全部厂家").tag("")
-                        ForEach(vendors) { vendor in
-                            Text(providerKeyFocusVendorTitle(vendor))
-                                .tag(providerKeyCanonicalVendorKey(vendor.vendorKey))
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .disabled(vendors.isEmpty)
-                    .onChange(of: remoteQuotaFocusedVendorKey) { newValue in
-                        let normalized = providerKeyCanonicalVendorKey(newValue)
-                        guard !normalized.isEmpty else {
-                            highlightedProviderKeyVendorKey = nil
-                            return
-                        }
-                        highlightedProviderKeyVendorKey = normalized
-                        if let focusedVendor = providerKeyFocusedVendor(vendors) {
-                            expandedProviderKeyVendorIDs.insert(focusedVendor.id)
-                        }
-                    }
-
-                    if !remoteQuotaFocusedUserGroupingKey.isEmpty || providerKeyHasFocusedVendor {
-                        Button("清除视角") {
-                            remoteQuotaFocusedUserGroupingKey = ""
-                            remoteQuotaFocusedVendorKey = ""
-                            highlightedProviderKeyVendorKey = nil
-                        }
-                        .buttonStyle(.borderless)
-                        .font(.caption.weight(.semibold))
-                    }
-                }
-            }
-
-            if providerKeyFocusedUser(users) != nil || providerKeyHasFocusedVendor {
-                HStack(spacing: 8) {
-                    if let focusedUser = providerKeyFocusedUser(users) {
-                        Text("当前用户")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Text(providerKeyFocusUserTitle(focusedUser))
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.teal)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.teal.opacity(0.12))
-                            .clipShape(Capsule())
-                    }
-                    if let focusedVendor = providerKeyFocusedVendor(vendors) {
-                        Text("当前厂家")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Text(providerKeyFocusVendorTitle(focusedVendor))
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.indigo)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.indigo.opacity(0.12))
-                            .clipShape(Capsule())
-                    } else if providerKeyHasFocusedVendor {
-                        Text("当前厂家")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Text(providerKeyVendorDisplayName(providerKeyNormalizedFocusedVendorKey))
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.indigo)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.indigo.opacity(0.12))
-                            .clipShape(Capsule())
-                    }
-                    Spacer(minLength: 0)
-                }
-            }
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.blue.opacity(0.05))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.blue.opacity(0.14), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func providerKeyOverviewCard(
-        title: String,
-        value: String,
-        detail: String,
-        tint: Color
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Text(value)
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(tint)
-
-            Text(detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            tint.opacity(0.14),
-                            tint.opacity(0.05)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(tint.opacity(0.18), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
+    static let remoteModeGuideText = HubUIStrings.Settings.GRPC.remoteAccessGuideChecklist
 
     private func providerKeyFlowLinkKind(
         _ consumer: RemoteQuotaCenterClientProjection,
@@ -12687,462 +7384,6 @@ struct SettingsSheetView: View {
             return Array(preferred.prefix(6))
         }
         return Array(makeChains(relaxed: true).prefix(6))
-    }
-
-    @ViewBuilder
-    private func providerKeyFlowSection(
-        flowChains: [ProviderKeyFlowChainSummary],
-        focusedUser: RemoteQuotaCenterUserProjection?,
-        focusedVendor: ProviderKeyVendorInventorySummary?
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            providerKeyLedgerSectionHeader(
-                title: "配额流向地图",
-                summary: {
-                    if let focusedVendor, let focusedUser {
-                        return "把 \(focusedVendor.displayName) 的上游库存、\(focusedUser.displayName) 的用户预算，以及它下面的终端 consumer 放在同一张链路图里。"
-                    }
-                    if let focusedVendor {
-                        return "直接看 \(focusedVendor.displayName) 的库存主要流向了哪些用户和终端，便于判断还能继续发给谁。"
-                    }
-                    if let focusedUser {
-                        return "直接看 \(focusedUser.displayName) 当前把预算拆给了哪些 XT / Terminal，以及这些 consumer 主要命中了哪些厂家。"
-                    }
-                    return "把上游厂家库存、下游用户预算和最终 consumer 放在同一张关系图里，回答额度现在流向了谁、谁还剩多少。"
-                }()
-            )
-
-            if flowChains.isEmpty {
-                Text("当前还没有足够清晰的厂家-用户-consumer 链路。先给 XT 或普通 terminal 挂上远端额度，或等产生一点真实用量后这里会更直观。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else {
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(minimum: 280), spacing: 10, alignment: .top),
-                        GridItem(.flexible(minimum: 280), spacing: 10, alignment: .top),
-                    ],
-                    spacing: 10
-                ) {
-                    ForEach(flowChains) { chain in
-                        providerKeyFlowChainCard(chain)
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func providerKeyFlowChainCard(
-        _ chain: ProviderKeyFlowChainSummary
-    ) -> some View {
-        let vendorUsageFraction = providerKeyUsageFraction(
-            used: chain.vendor.totalDailyTokensUsed,
-            cap: chain.vendor.totalDailyTokenCap
-        )
-        let vendorTint = providerKeyUsageHeatTint(
-            fraction: vendorUsageFraction,
-            hasBlockingRisk: chain.vendor.blockedAccounts > 0
-        )
-        let userTint = providerKeyUserAtRisk(chain.user) ? Color.orange : providerKeyUserTint(chain.user)
-        let consumerTint = providerKeyConsumerAtRisk(chain.consumer) ? Color.orange : providerKeyConsumerKindColor(chain.consumer.consumerKind)
-
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(chain.vendor.displayName)
-                    .font(.callout.weight(.semibold))
-                    .lineLimit(1)
-
-                Text(chain.linkKind.title)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(chain.linkKind.tint)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(chain.linkKind.tint.opacity(0.12))
-                    .clipShape(Capsule())
-
-                if providerKeyVendorAtRisk(chain.vendor) || providerKeyUserAtRisk(chain.user) || providerKeyConsumerAtRisk(chain.consumer) {
-                    Text("需关注")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(Color.orange.opacity(0.12))
-                        .clipShape(Capsule())
-                }
-
-                Spacer(minLength: 6)
-
-                Text("命中已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.vendorObservedDailyTokensUsed))")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(vendorTint)
-            }
-
-            providerKeyFlowNodeRow(
-                title: "上游厂家",
-                name: chain.vendor.displayName,
-                detail: chain.vendor.totalDailyTokenCap > 0
-                    ? "库存剩余 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.vendor.totalDailyTokensRemaining)) / \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.vendor.totalDailyTokenCap)) · 覆盖预算 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.vendor.assignedDailyTokenBudget))"
-                    : "已观测今日已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.vendor.totalDailyTokensUsed)) · \(chain.vendor.poolCount) 个池 / \(chain.vendor.totalAccounts) 把 key",
-                tint: vendorTint,
-                systemName: "shippingbox.fill"
-            )
-
-            providerKeyFlowArrow(tint: vendorTint)
-
-            providerKeyFlowNodeRow(
-                title: "用户预算",
-                name: chain.user.displayName,
-                detail: "总剩余 \(providerKeyUserRemainingBudgetPreviewText(chain.user)) · 今日已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.user.observedDailyTokensUsed)) · \(chain.user.consumerCount) 个 consumer",
-                tint: userTint,
-                systemName: chain.user.isStandaloneConsumer ? "person.crop.circle.badge.questionmark" : "person.crop.circle.fill"
-            )
-
-            providerKeyFlowArrow(tint: userTint)
-
-            providerKeyFlowNodeRow(
-                title: chain.consumer.kindTitle,
-                name: chain.consumer.name,
-                detail: chain.consumer.dailyTokenLimit > 0
-                    ? "剩余 \(providerKeyConsumerRemainingBudgetPreviewText(chain.consumer)) · 今日已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.consumer.dailyTokenUsed)) · 预算 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.consumer.dailyTokenLimit))"
-                    : "弹性预算 · 今日已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(chain.consumer.dailyTokenUsed)) · 主要受上游库存约束",
-                tint: consumerTint,
-                systemName: chain.consumer.isTerminalAccess ? "terminal.fill" : "display.2"
-            )
-
-            HStack(spacing: 6) {
-                providerKeyVendorSpotlightMetric("命中家族 \(chain.matchedFamilyCount) 个", tint: chain.linkKind.tint)
-                providerKeyVendorSpotlightMetric(
-                    chain.consumer.connected ? "在线" : "未在线",
-                    tint: chain.consumer.connected ? .green : .gray
-                )
-                if chain.vendor.hotPoolCount > 0 {
-                    providerKeyVendorSpotlightMetric("\(chain.vendor.hotPoolCount) 个热点池", tint: .orange)
-                }
-            }
-
-            let activitySummary = providerKeyBudgetClientActivitySummary(chain.consumer)
-            if !activitySummary.isEmpty {
-                Text(activitySummary)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack(spacing: 8) {
-                Button("锁定链路") {
-                    focusProviderKeyVendorUser(chain.user, vendor: chain.vendor)
-                }
-                .buttonStyle(.borderless)
-                .font(.caption.weight(.semibold))
-
-                Button(chain.consumer.managementTitle) {
-                    presentRemoteQuotaConsumerManager(chain.consumer)
-                }
-                .buttonStyle(.borderless)
-                .font(.caption.weight(.semibold))
-
-                Spacer(minLength: 0)
-            }
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            vendorTint.opacity(0.14),
-                            chain.linkKind.tint.opacity(0.08),
-                            Color.white.opacity(0.02)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(vendorTint.opacity(0.20), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func providerKeyFlowNodeRow(
-        title: String,
-        name: String,
-        detail: String,
-        tint: Color,
-        systemName: String
-    ) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(tint.opacity(0.12))
-                Image(systemName: systemName)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(tint)
-            }
-            .frame(width: 30, height: 30)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(name)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-                Text(detail)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(10)
-        .background(tint.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func providerKeyFlowArrow(
-        tint: Color
-    ) -> some View {
-        HStack(spacing: 8) {
-            Capsule()
-                .fill(tint.opacity(0.24))
-                .frame(width: 2, height: 10)
-            Image(systemName: "arrow.down")
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(tint.opacity(0.8))
-            Capsule()
-                .fill(tint.opacity(0.24))
-                .frame(width: 2, height: 10)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.leading, 14)
-    }
-
-    @ViewBuilder
-    private func providerKeyTrendSection(
-        focusedUser: RemoteQuotaCenterUserProjection?,
-        focusedVendor: ProviderKeyVendorInventorySummary?,
-        overallTrendCard: ProviderKeyTrendCardSummary?,
-        vendorTrendCards: [ProviderKeyTrendCardSummary],
-        familyTrendCards: [ProviderKeyTrendCardSummary],
-        userTrendCards: [ProviderKeyTrendCardSummary],
-        consumerTrendCards: [ProviderKeyTrendCardSummary]
-    ) -> some View {
-        let hasTrendData = overallTrendCard != nil
-            || !vendorTrendCards.isEmpty
-            || !familyTrendCards.isEmpty
-            || !userTrendCards.isEmpty
-            || !consumerTrendCards.isEmpty
-
-        VStack(alignment: .leading, spacing: 10) {
-            providerKeyLedgerSectionHeader(
-                title: "近 1 小时趋势",
-                summary: {
-                    if let focusedVendor, let focusedUser {
-                        return "当前叠加 \(focusedUser.displayName) + \(focusedVendor.displayName) 视角，趋势只看这个用户最近把压力打到这家厂商的哪些家族与 consumer。"
-                    }
-                    if let focusedVendor {
-                        return "当前锁定 \(focusedVendor.displayName) 厂家视角。家族 / 用户曲线会围绕这家厂商相关 family 估算，方便判断它是否还能继续发额度。"
-                    }
-                    if let focusedUser {
-                        return "当前按 \(focusedUser.displayName) 视角观察最近 1 小时走势。家族曲线按今日 family 命中占比估算，方便你看到这个用户最近把压力打到了哪些池。"
-                    }
-                    return "每 5 分钟一个桶，看最近 1 小时的远端消费压力。厂家 / 家族曲线会按今日 family 命中占比估算，用来判断热度变化，不当作结算账。"
-                }()
-            )
-
-            if !hasTrendData {
-                Text("当前还没有足够的 5m token series 数据，等 XT 或 Terminal 连上并产生远端流量后，这里会开始出趋势。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else {
-                if let overallTrendCard {
-                    providerKeyTrendCard(overallTrendCard, prominent: true)
-                }
-
-                if let focusedVendor {
-                    providerKeyTrendGroup(
-                        title: "热点家族",
-                        summary: "看 \(focusedVendor.displayName) 下面哪些模型家族最近正在升温。",
-                        cards: familyTrendCards
-                    )
-                    if focusedUser == nil {
-                        providerKeyTrendGroup(
-                            title: "热点用户",
-                            summary: "看最近 1 小时谁持续命中 \(focusedVendor.displayName)，方便回到用户台账继续调配。",
-                            cards: userTrendCards
-                        )
-                    } else {
-                        providerKeyTrendGroup(
-                            title: "热点 Consumer",
-                            summary: "直接看该用户下面哪台 XT / 哪个 Terminal 最近正在吃 \(focusedVendor.displayName) 的额度。",
-                            cards: consumerTrendCards
-                        )
-                    }
-                } else if focusedUser == nil {
-                    providerKeyTrendGroup(
-                        title: "热点厂家",
-                        summary: "按近 15 分钟热度排序，优先看哪家正在快速升温。",
-                        cards: vendorTrendCards
-                    )
-                    providerKeyTrendGroup(
-                        title: "热点用户",
-                        summary: "看最近 1 小时内谁在持续消耗预算，方便回到用户台账继续调配。",
-                        cards: userTrendCards
-                    )
-                } else {
-                    providerKeyTrendGroup(
-                        title: "热点家族",
-                        summary: "看这个用户最近 1 小时把负载压到了哪些模型家族。",
-                        cards: familyTrendCards
-                    )
-                    providerKeyTrendGroup(
-                        title: "热点 Consumer",
-                        summary: "直接看该用户下面哪台 XT / 哪个 Terminal 最近正在吃额度。",
-                        cards: consumerTrendCards
-                    )
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func providerKeyTrendGroup(
-        title: String,
-        summary: String,
-        cards: [ProviderKeyTrendCardSummary]
-    ) -> some View {
-        if !cards.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                providerKeyLedgerSectionHeader(title: title, summary: summary)
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(minimum: 220), spacing: 10, alignment: .top),
-                        GridItem(.flexible(minimum: 220), spacing: 10, alignment: .top),
-                    ],
-                    spacing: 10
-                ) {
-                    ForEach(Array(cards.prefix(4))) { card in
-                        providerKeyTrendCard(card, prominent: false)
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func providerKeyTrendCard(
-        _ card: ProviderKeyTrendCardSummary,
-        prominent: Bool
-    ) -> some View {
-        let momentumText = providerKeyTrendMomentumText(card.aggregate)
-        let momentumColor = providerKeyTrendMomentumColor(card.aggregate)
-
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(card.tint.opacity(0.12))
-                    Image(systemName: card.systemName)
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(card.tint)
-                }
-                .frame(width: 34, height: 34)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(card.title)
-                            .font(prominent ? .callout.weight(.semibold) : .caption.weight(.semibold))
-                            .lineLimit(1)
-
-                        if card.aggregate.estimatedConsumerCount > 0 {
-                            Text("估算")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.orange)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background(Color.orange.opacity(0.12))
-                                .clipShape(Capsule())
-                        }
-                    }
-
-                    Text(card.subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 8)
-
-                Text(providerKeyTrendWindowSummary(card.aggregate))
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(Color.secondary.opacity(0.1))
-                    .clipShape(Capsule())
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                TokenSparkline(
-                    points: card.aggregate.points,
-                    strokeColor: card.tint,
-                    lineWidth: prominent ? 2.2 : 1.8
-                )
-                .frame(height: prominent ? 42 : 30)
-                .padding(.horizontal, 2)
-                .padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(card.tint.opacity(0.08))
-                )
-
-                HStack(spacing: 8) {
-                    providerKeyLedgerMetricTile(
-                        title: "近 15m",
-                        value: HubUIStrings.Settings.ProviderKeys.tokenCount(card.aggregate.recentTokens15m),
-                        detail: "\(card.aggregate.contributingConsumerCount) 个活跃 consumer",
-                        tint: card.tint
-                    )
-                    providerKeyLedgerMetricTile(
-                        title: "1h 累计",
-                        value: HubUIStrings.Settings.ProviderKeys.tokenCount(card.aggregate.totalTokens1h),
-                        detail: "最近 1 小时总用量",
-                        tint: .teal
-                    )
-                    providerKeyLedgerMetricTile(
-                        title: "峰值 / 5m",
-                        value: HubUIStrings.Settings.ProviderKeys.tokenCount(card.aggregate.peakBucketTokens),
-                        detail: "单桶最高负载",
-                        tint: .orange
-                    )
-                }
-            }
-
-            Text(momentumText)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(momentumColor)
-
-            if !card.footnote.isEmpty {
-                Text(card.footnote)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(prominent ? 12 : 11)
-        .background(card.tint.opacity(prominent ? 0.09 : 0.07))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(card.tint.opacity(0.18), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func providerKeyScopeOverview(
@@ -13640,473 +7881,7 @@ struct SettingsSheetView: View {
     }
 
     @ViewBuilder
-    private func providerKeyVendorHeatCard(_ vendor: ProviderKeyVendorInventorySummary) -> some View {
-        let canonicalVendorKey = providerKeyCanonicalVendorKey(vendor.vendorKey)
-        let isHighlighted = highlightedProviderKeyVendorKey == canonicalVendorKey
-        let detailBinding = expansionBinding(vendor.id, in: $expandedProviderKeyVendorIDs)
-        let usageFraction = providerKeyUsageFraction(
-            used: vendor.totalDailyTokensUsed,
-            cap: vendor.totalDailyTokenCap
-        )
-        let coverageFraction = providerKeyUsageFraction(
-            used: vendor.assignedDailyTokenBudget,
-            cap: vendor.totalDailyTokenCap
-        )
-        let usageTint = providerKeyUsageHeatTint(
-            fraction: usageFraction,
-            hasBlockingRisk: vendor.blockedAccounts > 0
-        )
-        let coverageTint: Color = vendor.allocationHeadroom < 0
-            ? .red
-            : (coverageFraction >= 0.85 ? .orange : .purple)
-        let readinessFraction = vendor.totalAccounts > 0
-            ? Double(vendor.readyAccounts) / Double(max(1, vendor.totalAccounts))
-            : 0
-        let remainingValue = vendor.totalDailyTokenCap > 0
-            ? HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalDailyTokensRemaining)
-            : HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalDailyTokensUsed)
-        let headroomTint: Color = {
-            guard vendor.totalDailyTokenCap > 0 else { return .gray }
-            if vendor.allocationHeadroom < 0 { return .red }
-            if vendor.allocationHeadroom <= max(Int64(50_000), vendor.totalDailyTokenCap / 10) { return .orange }
-            return .green
-        }()
-
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(vendor.displayName)
-                            .font(.callout.weight(.semibold))
-
-                        Text("\(vendor.readyAccounts)/\(vendor.totalAccounts) Ready")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(vendor.blockedAccounts > 0 ? Color.orange : Color.green)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background((vendor.blockedAccounts > 0 ? Color.orange : Color.green).opacity(0.12))
-                            .clipShape(Capsule())
-
-                        if vendor.hotPoolCount > 0 {
-                            Text("\(vendor.hotPoolCount) 热点池")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.orange)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background(Color.orange.opacity(0.12))
-                                .clipShape(Capsule())
-                        }
-
-                        if vendor.oversubscribedFamilyCount > 0 {
-                            Text("\(vendor.oversubscribedFamilyCount) 超配家族")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.red)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background(Color.red.opacity(0.12))
-                                .clipShape(Capsule())
-                        }
-                    }
-
-                    Text(providerKeyVendorSummaryText(vendor))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 8)
-
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text("库存热度")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(usageFraction > 0 ? "\(Int(usageFraction * 100))%" : "低")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(usageTint)
-                }
-            }
-
-            HStack(spacing: 8) {
-                providerKeyLedgerMetricTile(
-                    title: "剩余库存",
-                    value: remainingValue,
-                    detail: vendor.totalDailyTokenCap > 0
-                        ? "今日总上限 \(HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalDailyTokenCap))"
-                        : "仅统计到今日已用",
-                    tint: usageTint
-                )
-                providerKeyLedgerMetricTile(
-                    title: "覆盖预算",
-                    value: vendor.assignedDailyTokenBudget > 0
-                        ? HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.assignedDailyTokenBudget)
-                        : (vendor.coveredConsumerCount > 0 ? "弹性" : "未覆盖"),
-                    detail: vendor.coveredUnlimitedConsumerCount > 0
-                        ? "\(vendor.coveredConsumerCount) 个 consumer · 弹性 \(vendor.coveredUnlimitedConsumerCount)"
-                        : "\(vendor.coveredConsumerCount) 个 consumer",
-                    tint: coverageTint
-                )
-            }
-
-            HStack(spacing: 8) {
-                providerKeyLedgerMetricTile(
-                    title: "家族今日已用",
-                    value: HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.observedFamilyTokensUsed),
-                    detail: vendor.totalTokensUsed > 0
-                        ? "累计 \(HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalTokensUsed))"
-                        : "\(vendor.coveredFamilyCount) 个家族账本",
-                    tint: .teal
-                )
-                providerKeyLedgerMetricTile(
-                    title: "预算缓冲",
-                    value: vendor.totalDailyTokenCap > 0
-                        ? providerKeySignedTokenCount(vendor.allocationHeadroom)
-                        : "\(vendor.coveredUserCount) 个用户",
-                    detail: vendor.totalDailyTokenCap > 0
-                        ? "上游 cap - 下游覆盖预算"
-                        : "\(vendor.coveredUserCount) 个用户主体 / \(vendor.poolCount) 个池",
-                    tint: headroomTint
-                )
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("额度热力")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(vendor.totalDailyTokenCap > 0
-                        ? "\(HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalDailyTokensUsed)) / \(HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalDailyTokenCap))"
-                        : HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalDailyTokensUsed))
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-                providerKeyHeatStrip(value: usageFraction, tint: usageTint)
-
-                HStack {
-                    Text("覆盖压力")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(vendor.totalDailyTokenCap > 0
-                        ? "\(HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.assignedDailyTokenBudget)) / \(HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.totalDailyTokenCap))"
-                        : (vendor.assignedDailyTokenBudget > 0 ? HubUIStrings.Settings.ProviderKeys.tokenCount(vendor.assignedDailyTokenBudget) : "弹性"))
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-                providerKeyHeatStrip(value: coverageFraction, tint: coverageTint)
-
-                HStack {
-                    Text("可用度")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("\(vendor.readyAccounts) / \(vendor.totalAccounts)")
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-                providerKeyHeatStrip(value: readinessFraction, tint: vendor.blockedAccounts > 0 ? .orange : .green)
-            }
-
-            providerKeyVendorCoverageSpotlights(vendor)
-
-            DisclosureGroup(isExpanded: detailBinding) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("这里继续展开到每个池子 / 每把 key，可直接看剩余额度、下次刷新、恢复时间和失败原因。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    if vendor.pools.isEmpty {
-                        Text("当前厂家还没有可展示的物理池。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(vendor.pools) { pool in
-                            providerKeyPoolCard(pool)
-                        }
-                    }
-                }
-                .padding(.top, 6)
-            } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("池子与单 Key 明细")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(providerKeyVendorPoolDisclosureSummary(vendor))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-        }
-        .padding(12)
-        .background(isHighlighted ? usageTint.opacity(0.12) : usageTint.opacity(0.07))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(
-                    isHighlighted ? usageTint.opacity(0.52) : usageTint.opacity(0.16),
-                    lineWidth: isHighlighted ? 1.6 : 1
-                )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .id(providerKeyVendorAnchorID(canonicalVendorKey))
-    }
-
-    @ViewBuilder
-    private func providerKeyVendorCoverageSpotlights(
-        _ vendor: ProviderKeyVendorInventorySummary
-    ) -> some View {
-        if !vendor.spotlightUsers.isEmpty || !vendor.spotlightConsumers.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("下游分配热点")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("\(vendor.coveredUserCount) 个用户 / \(vendor.coveredConsumerCount) 个 consumer")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                if !vendor.spotlightUsers.isEmpty && !vendor.spotlightConsumers.isEmpty {
-                    HStack(alignment: .top, spacing: 8) {
-                        providerKeyVendorUserSpotlightPanel(vendor)
-                        providerKeyVendorConsumerSpotlightPanel(vendor)
-                    }
-                } else if !vendor.spotlightUsers.isEmpty {
-                    providerKeyVendorUserSpotlightPanel(vendor)
-                } else {
-                    providerKeyVendorConsumerSpotlightPanel(vendor)
-                }
-
-                Text("锁定用户会把当前厂家与该用户视角叠起来；管理 consumer 可直接去调 XT 或 Terminal 配额。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func providerKeyVendorUserSpotlightPanel(
-        _ vendor: ProviderKeyVendorInventorySummary
-    ) -> some View {
-        let hiddenCount = max(0, vendor.coveredUserCount - vendor.spotlightUsers.count)
-
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("重点用户")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("\(vendor.spotlightUsers.count) / \(vendor.coveredUserCount)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-
-            ForEach(vendor.spotlightUsers) { spotlight in
-                providerKeyVendorUserSpotlightRow(spotlight, vendor: vendor)
-            }
-
-            if hiddenCount > 0 {
-                Text("另外 \(hiddenCount) 个用户主体在下方用户台账。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(Color.indigo.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func providerKeyVendorUserSpotlightRow(
-        _ spotlight: ProviderKeyVendorUserSpotlight,
-        vendor: ProviderKeyVendorInventorySummary
-    ) -> some View {
-        let user = spotlight.user
-        let userTint = providerKeyUserAtRisk(user) ? Color.orange : providerKeyUserTint(user)
-        let identitySummary = providerKeyBudgetUserIdentitySummary(user)
-
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(user.displayName)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-
-                Text(user.groupingKind.title)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(userTint)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(userTint.opacity(0.12))
-                    .clipShape(Capsule())
-
-                if providerKeyUserAtRisk(user) {
-                    Text("预算吃紧")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.12))
-                        .clipShape(Capsule())
-                }
-
-                Spacer(minLength: 6)
-
-                Button("锁定用户") {
-                    focusProviderKeyVendorUser(user, vendor: vendor)
-                }
-                .buttonStyle(.borderless)
-                .font(.caption2.weight(.semibold))
-            }
-
-            if !identitySummary.isEmpty {
-                Text(identitySummary)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-
-            HStack(spacing: 6) {
-                providerKeyVendorSpotlightMetric(
-                    "命中已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(spotlight.vendorObservedDailyTokensUsed))",
-                    tint: .teal
-                )
-                providerKeyVendorSpotlightMetric(
-                    "总剩余 \(providerKeyUserRemainingBudgetPreviewText(user))",
-                    tint: providerKeyUserAtRisk(user) ? .orange : .green
-                )
-                providerKeyVendorSpotlightMetric(
-                    "\(user.consumerCount) 个 consumer",
-                    tint: userTint
-                )
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(userTint.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func providerKeyVendorConsumerSpotlightPanel(
-        _ vendor: ProviderKeyVendorInventorySummary
-    ) -> some View {
-        let hiddenCount = max(0, vendor.coveredConsumerCount - vendor.spotlightConsumers.count)
-
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("热点 Consumer")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("\(vendor.spotlightConsumers.count) / \(vendor.coveredConsumerCount)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-
-            ForEach(vendor.spotlightConsumers) { spotlight in
-                providerKeyVendorConsumerSpotlightRow(spotlight)
-            }
-
-            if hiddenCount > 0 {
-                Text("另外 \(hiddenCount) 个 consumer 在下方统一消费者台账。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(Color.teal.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func providerKeyVendorConsumerSpotlightRow(
-        _ spotlight: ProviderKeyVendorConsumerSpotlight
-    ) -> some View {
-        let consumer = spotlight.consumer
-        let consumerTint = providerKeyConsumerAtRisk(consumer) ? Color.orange : providerKeyConsumerKindColor(consumer.consumerKind)
-        let referenceSummary = providerKeyBudgetClientReferenceSummary(consumer)
-        let activitySummary = providerKeyBudgetClientActivitySummary(consumer)
-
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(consumer.name)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-
-                Text(consumer.kindTitle)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(consumerTint)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(consumerTint.opacity(0.12))
-                    .clipShape(Capsule())
-
-                if providerKeyConsumerAtRisk(consumer) {
-                    Text("逼近上限")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.12))
-                        .clipShape(Capsule())
-                }
-
-                Spacer(minLength: 6)
-
-                Button(consumer.managementTitle) {
-                    presentRemoteQuotaConsumerManager(consumer)
-                }
-                .buttonStyle(.borderless)
-                .font(.caption2.weight(.semibold))
-            }
-
-            if !referenceSummary.isEmpty {
-                Text(referenceSummary)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-
-            HStack(spacing: 6) {
-                providerKeyVendorSpotlightMetric(
-                    "命中已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(spotlight.vendorObservedDailyTokensUsed))",
-                    tint: .teal
-                )
-                providerKeyVendorSpotlightMetric(
-                    consumer.dailyTokenLimit > 0
-                        ? "总剩余 \(providerKeyConsumerRemainingBudgetPreviewText(consumer))"
-                        : "弹性预算",
-                    tint: providerKeyConsumerAtRisk(consumer) ? .orange : .green
-                )
-                providerKeyVendorSpotlightMetric(
-                    consumer.dailyTokenLimit > 0
-                        ? "预算 \(HubUIStrings.Settings.ProviderKeys.tokenCount(consumer.dailyTokenLimit))"
-                        : "由上游库存约束",
-                    tint: consumerTint
-                )
-            }
-
-            if !activitySummary.isEmpty {
-                Text(activitySummary)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(consumerTint.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func providerKeyVendorSpotlightMetric(
+    func providerKeyVendorSpotlightMetric(
         _ title: String,
         tint: Color
     ) -> some View {
@@ -14119,7 +7894,7 @@ struct SettingsSheetView: View {
             .clipShape(Capsule())
     }
 
-    private func providerKeyUserRemainingBudgetPreviewText(
+    func providerKeyUserRemainingBudgetPreviewText(
         _ user: RemoteQuotaCenterUserProjection
     ) -> String {
         if user.allocatedDailyTokenBudget > 0 {
@@ -14129,7 +7904,7 @@ struct SettingsSheetView: View {
         return user.hasUnlimitedBudget ? "弹性" : "0"
     }
 
-    private func providerKeyConsumerRemainingBudgetPreviewText(
+    func providerKeyConsumerRemainingBudgetPreviewText(
         _ consumer: RemoteQuotaCenterClientProjection
     ) -> String {
         consumer.dailyTokenLimit > 0
@@ -14138,7 +7913,7 @@ struct SettingsSheetView: View {
     }
 
     @ViewBuilder
-    private func providerKeyHeatStrip(
+    func providerKeyHeatStrip(
         value: Double,
         tint: Color,
         segments: Int = 14
@@ -14154,7 +7929,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyUsageHeatTint(
+    func providerKeyUsageHeatTint(
         fraction: Double,
         hasBlockingRisk: Bool
     ) -> Color {
@@ -14206,7 +7981,7 @@ struct SettingsSheetView: View {
         return providerKeyPoolTitle(lhs).localizedCaseInsensitiveCompare(providerKeyPoolTitle(rhs)) == .orderedAscending
     }
 
-    private func providerKeyVendorPoolDisclosureSummary(
+    func providerKeyVendorPoolDisclosureSummary(
         _ vendor: ProviderKeyVendorInventorySummary
     ) -> String {
         var parts: [String] = [
@@ -14245,7 +8020,7 @@ struct SettingsSheetView: View {
         return out
     }
 
-    private func providerKeyCanonicalVendorKey(_ rawVendorKey: String) -> String {
+    func providerKeyCanonicalVendorKey(_ rawVendorKey: String) -> String {
         let normalized = rawVendorKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch normalized {
         case "chatgpt", "codex", "openai_compatible":
@@ -14259,7 +8034,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyVendorDisplayName(_ vendorKey: String) -> String {
+    func providerKeyVendorDisplayName(_ vendorKey: String) -> String {
         switch providerKeyCanonicalVendorKey(vendorKey) {
         case "openai":
             return "OpenAI / Codex"
@@ -14277,7 +8052,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyVendorSummaryText(
+    func providerKeyVendorSummaryText(
         _ vendor: ProviderKeyVendorInventorySummary
     ) -> String {
         var parts: [String] = []
@@ -14295,461 +8070,7 @@ struct SettingsSheetView: View {
     }
 
     @ViewBuilder
-    private func providerKeyQuotaFamilyCard(_ family: ProviderKeyFamilyInventorySummary) -> some View {
-        let poolTint = providerKeyPoolStateColor(family.quotaPool.state)
-        let inventoryValue = family.combinedDailyTokenCap > 0
-            ? HubUIStrings.Settings.ProviderKeys.tokenCount(family.combinedDailyTokensRemaining)
-            : HubUIStrings.Settings.ProviderKeys.tokenCount(family.combinedDailyTokensUsed)
-        let inventoryDetail = family.combinedDailyTokenCap > 0
-            ? "剩余 / 上限 \(HubUIStrings.Settings.ProviderKeys.tokenCount(family.combinedDailyTokenCap))"
-            : "仅观测到今日已用"
-        let assignedValue = family.assignedDailyTokenBudget > 0
-            ? HubUIStrings.Settings.ProviderKeys.tokenCount(family.assignedDailyTokenBudget)
-            : (family.assignedClientCount > 0 ? "不限" : "未分配")
-        let assignedDetail = family.assignedClientCount > 0
-            ? (
-                family.unlimitedBudgetConsumerCount > 0
-                    ? "\(family.coveredUserCount) 个用户 / \(family.assignedClientCount) 个消费者 · 弹性 \(family.unlimitedBudgetConsumerCount)"
-                    : "\(family.coveredUserCount) 个用户 / \(family.assignedClientCount) 个消费者"
-            )
-            : "当前没有消费者"
-        let observedDetail = family.connectedAssignedConsumerCount > 0
-            ? "在线 \(family.connectedAssignedConsumerCount) 个消费者"
-            : "来自当前视角消费账本"
-
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(family.displayName)
-                            .font(.callout.weight(.semibold))
-
-                        Text(providerKeyPoolStateText(family.quotaPool.state))
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(poolTint)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(poolTint.opacity(0.12))
-                            .clipShape(Capsule())
-                    }
-
-                    Text(
-                        HubUIStrings.Settings.ProviderKeys.familyQuotaPoolSummary(
-                            sources: family.quotaPool.totalSources,
-                            dedicated: family.quotaPool.dedicatedSources,
-                            shared: family.quotaPool.sharedSources,
-                            total: family.quotaPool.totalAccounts,
-                            ready: family.quotaPool.readyAccounts,
-                            cooldown: family.quotaPool.cooldownAccounts,
-                            blocked: family.quotaPool.blockedAccounts,
-                            stale: family.quotaPool.staleAccounts
-                        )
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 8)
-
-                Text(providerKeyFamilyRetrySummary(family))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.trailing)
-            }
-
-            HStack(spacing: 8) {
-                providerKeyLedgerMetricTile(
-                    title: "上游库存",
-                    value: inventoryValue,
-                    detail: inventoryDetail,
-                    tint: poolTint
-                )
-                providerKeyLedgerMetricTile(
-                    title: "覆盖预算",
-                    value: assignedValue,
-                    detail: assignedDetail,
-                    tint: .purple
-                )
-                providerKeyLedgerMetricTile(
-                    title: "今日用量",
-                    value: HubUIStrings.Settings.ProviderKeys.tokenCount(family.observedDailyTokensUsed),
-                    detail: observedDetail,
-                    tint: .teal
-                )
-            }
-
-            if family.combinedDailyTokenCap > 0 {
-                ProgressView(value: Double(family.combinedDailyTokensUsed), total: Double(family.combinedDailyTokenCap))
-                    .progressViewStyle(.linear)
-                    .tint(poolTint)
-            }
-
-            Text(providerKeyFamilyQuotaSummary(family))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            Text(providerKeyFamilyBudgetSummary(family))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if family.isOversubscribed {
-                Text("覆盖预算超过当前已知上游上限，建议给这个池补 key 或下调对应消费者预算。")
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            let clientsPreview = providerKeyFamilyClientPreview(family)
-            if !clientsPreview.isEmpty {
-                Text(clientsPreview)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-        }
-        .padding(12)
-        .background(poolTint.opacity(0.07))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(poolTint.opacity(0.18), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func providerKeyBudgetClientRow(_ clientProjection: RemoteQuotaCenterClientProjection) -> some View {
-        let status = clientProjection.deviceStatus
-        let kindTint = providerKeyConsumerKindColor(clientProjection.consumerKind)
-        let usageTint = providerKeyConsumerAtRisk(clientProjection) ? Color.orange : kindTint
-        let remainingTint = clientProjection.dailyTokenLimit > 0 && clientProjection.remainingDailyTokenBudget <= 0
-            ? Color.orange
-            : Color.green
-
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 8) {
-                Circle()
-                    .fill(grpcClientPresencePillColor(status))
-                    .frame(width: 8, height: 8)
-                    .padding(.top, 4)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(clientProjection.name)
-                            .font(.callout.weight(.semibold))
-                            .lineLimit(1)
-
-                        Text(clientProjection.kindTitle)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(kindTint)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(kindTint.opacity(0.12))
-                            .clipShape(Capsule())
-
-                        Text(grpcClientPresencePillTitle(status))
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(grpcClientPresencePillColor(status))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(grpcClientPresencePillColor(status).opacity(0.12))
-                            .clipShape(Capsule())
-
-                        Text(clientProjection.paidPolicyTitle)
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.purple.opacity(0.12))
-                            .clipShape(Capsule())
-
-                        if clientProjection.defaultWebFetchEnabled {
-                            Text("Web")
-                                .font(.caption2)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.teal.opacity(0.12))
-                                .clipShape(Capsule())
-                        }
-                    }
-
-                    let referenceSummary = providerKeyBudgetClientReferenceSummary(clientProjection)
-                    if !referenceSummary.isEmpty {
-                        Text(referenceSummary)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-
-                    Text(providerKeyBudgetClientScopeSummary(clientProjection))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 8)
-
-                Button(clientProjection.managementTitle) {
-                    presentRemoteQuotaConsumerManager(clientProjection)
-                }
-                .buttonStyle(.borderless)
-                .font(.caption.weight(.semibold))
-            }
-
-            HStack(spacing: 8) {
-                providerKeyLedgerMetricTile(
-                    title: "预算",
-                    value: clientProjection.dailyTokenLimit > 0
-                        ? HubUIStrings.Settings.ProviderKeys.tokenCount(clientProjection.dailyTokenLimit)
-                        : "不限",
-                    detail: clientProjection.dailyTokenLimit > 0 ? "每日硬上限" : "由上游库存约束",
-                    tint: .purple
-                )
-                providerKeyLedgerMetricTile(
-                    title: "已用",
-                    value: HubUIStrings.Settings.ProviderKeys.tokenCount(clientProjection.dailyTokenUsed),
-                    detail: status != nil ? "今日实时账本" : "已记录 usage",
-                    tint: usageTint
-                )
-                providerKeyLedgerMetricTile(
-                    title: "剩余",
-                    value: clientProjection.dailyTokenLimit > 0
-                        ? HubUIStrings.Settings.ProviderKeys.tokenCount(clientProjection.remainingDailyTokenBudget)
-                        : "上游池",
-                    detail: clientProjection.dailyTokenLimit > 0 ? "今日还能分配" : "无固定硬上限",
-                    tint: remainingTint
-                )
-            }
-
-            if clientProjection.dailyTokenLimit > 0 {
-                ProgressView(
-                    value: Double(clientProjection.dailyTokenUsed),
-                    total: Double(clientProjection.dailyTokenLimit)
-                )
-                .progressViewStyle(.linear)
-                .tint(usageTint)
-
-                Text(
-                    HubUIStrings.Settings.GRPC.DeviceList.dailyTokenUsage(
-                        day: status?.quotaDay ?? "unknown",
-                        used: Int(clientProjection.dailyTokenUsed),
-                        cap: Int(clientProjection.dailyTokenLimit),
-                        remaining: Int(clientProjection.remainingDailyTokenBudget)
-                    )
-                )
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            } else {
-                Text(
-                    clientProjection.dailyTokenUsed > 0
-                        ? "今日已用 \(HubUIStrings.Settings.ProviderKeys.tokenCount(clientProjection.dailyTokenUsed)) tokens，当前没有单独硬上限。"
-                        : "当前没有单独硬上限，主要受上游家族池库存约束。"
-                )
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            }
-
-            let activitySummary = providerKeyBudgetClientActivitySummary(clientProjection)
-            if !activitySummary.isEmpty {
-                Text(activitySummary)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if providerKeyCanQuickAdjustBudget(clientProjection) {
-                HStack(spacing: 8) {
-                    Text("快速调预算")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    providerKeyQuickBudgetButton(clientProjection, delta: -50_000, title: "-50k")
-                    providerKeyQuickBudgetButton(clientProjection, delta: 50_000, title: "+50k")
-                    providerKeyQuickBudgetButton(clientProjection, delta: 200_000, title: "+200k")
-                    Button("精确设置") {
-                        presentRemoteQuotaBudgetEditor(clientProjection)
-                    }
-                    .buttonStyle(.borderless)
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.indigo.opacity(0.08))
-                    .clipShape(Capsule())
-                    .disabled((clientProjection.isTerminalAccess && terminalAccessMutationInFlight) || !providerKeyCanQuickAdjustBudget(clientProjection))
-                    Spacer(minLength: 0)
-                }
-            }
-        }
-        .padding(12)
-        .background((providerKeyConsumerAtRisk(clientProjection) ? Color.orange : kindTint).opacity(0.08))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke((providerKeyConsumerAtRisk(clientProjection) ? Color.orange : kindTint).opacity(0.2), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func providerKeyBudgetUserRow(_ userProjection: RemoteQuotaCenterUserProjection) -> some View {
-        let userTint = providerKeyUserTint(userProjection)
-        let usageTint = providerKeyUserAtRisk(userProjection) ? Color.orange : userTint
-        let remainingValue: String = {
-            if userProjection.allocatedDailyTokenBudget > 0 {
-                let base = HubUIStrings.Settings.ProviderKeys.tokenCount(userProjection.remainingDailyTokenBudget)
-                return userProjection.hasUnlimitedBudget ? "\(base) +" : base
-            }
-            return userProjection.hasUnlimitedBudget ? "弹性" : "0"
-        }()
-        let remainingDetail: String = {
-            if userProjection.hasUnlimitedBudget && userProjection.allocatedDailyTokenBudget > 0 {
-                return "固定预算剩余 + 弹性"
-            }
-            if userProjection.hasUnlimitedBudget {
-                return "由上游库存约束"
-            }
-            return "今日还能分配"
-        }()
-
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 8) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(userTint.opacity(0.12))
-                    Image(systemName: userProjection.isStandaloneConsumer ? "person.crop.circle.badge.questionmark" : "person.crop.circle.fill")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(userTint)
-                }
-                .frame(width: 34, height: 34)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(userProjection.displayName)
-                            .font(.callout.weight(.semibold))
-                            .lineLimit(1)
-
-                        Text(userProjection.groupingKind.title)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(userTint)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(userTint.opacity(0.12))
-                            .clipShape(Capsule())
-
-                        if userProjection.hasUnlimitedBudget {
-                            Text("含弹性额度")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.orange)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.orange.opacity(0.12))
-                                .clipShape(Capsule())
-                        }
-
-                        if userProjection.connectedConsumerCount > 0 {
-                            Text("\(userProjection.connectedConsumerCount) 在线")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.green)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.green.opacity(0.12))
-                                .clipShape(Capsule())
-                        }
-                    }
-
-                    Text(providerKeyBudgetUserIdentitySummary(userProjection))
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Text(providerKeyBudgetUserScopeSummary(userProjection))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 8)
-
-                Button(userProjection.consumerCount == 1 ? userProjection.consumers[0].managementTitle : "查看消费者") {
-                    presentRemoteQuotaUserManager(userProjection)
-                }
-                .buttonStyle(.borderless)
-                .font(.caption.weight(.semibold))
-            }
-
-            HStack(spacing: 8) {
-                providerKeyLedgerMetricTile(
-                    title: "分配预算",
-                    value: userProjection.allocatedDailyTokenBudget > 0
-                        ? HubUIStrings.Settings.ProviderKeys.tokenCount(userProjection.allocatedDailyTokenBudget)
-                        : (userProjection.hasUnlimitedBudget ? "不限" : "0"),
-                    detail: "\(userProjection.consumerCount) 个消费者 · XT \(userProjection.xtConsumerCount) · Terminal \(userProjection.terminalConsumerCount)",
-                    tint: .purple
-                )
-                providerKeyLedgerMetricTile(
-                    title: "今日已用",
-                    value: HubUIStrings.Settings.ProviderKeys.tokenCount(userProjection.observedDailyTokensUsed),
-                    detail: "该用户名下所有 consumer 合计",
-                    tint: usageTint
-                )
-                providerKeyLedgerMetricTile(
-                    title: "今日剩余",
-                    value: remainingValue,
-                    detail: remainingDetail,
-                    tint: providerKeyUserAtRisk(userProjection) ? .orange : .green
-                )
-            }
-
-            if userProjection.allocatedDailyTokenBudget > 0 {
-                ProgressView(
-                    value: Double(userProjection.observedDailyTokensUsed),
-                    total: Double(max(Int64(1), userProjection.allocatedDailyTokenBudget))
-                )
-                .progressViewStyle(.linear)
-                .tint(usageTint)
-            }
-
-            let consumerPreview = providerKeyBudgetUserConsumerPreview(userProjection)
-            if !consumerPreview.isEmpty {
-                Text(consumerPreview)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if userProjection.consumers.count == 1, let consumer = userProjection.consumers.first, providerKeyCanQuickAdjustBudget(consumer) {
-                HStack(spacing: 8) {
-                    Text("快速调预算")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    providerKeyQuickBudgetButton(consumer, delta: -50_000, title: "-50k")
-                    providerKeyQuickBudgetButton(consumer, delta: 50_000, title: "+50k")
-                    providerKeyQuickBudgetButton(consumer, delta: 200_000, title: "+200k")
-                    Button("精确设置") {
-                        presentRemoteQuotaBudgetEditor(consumer)
-                    }
-                    .buttonStyle(.borderless)
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.indigo.opacity(0.08))
-                    .clipShape(Capsule())
-                    .disabled((consumer.isTerminalAccess && terminalAccessMutationInFlight) || !providerKeyCanQuickAdjustBudget(consumer))
-                    Spacer(minLength: 0)
-                }
-            }
-        }
-        .padding(12)
-        .background((providerKeyUserAtRisk(userProjection) ? Color.orange : userTint).opacity(0.08))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke((providerKeyUserAtRisk(userProjection) ? Color.orange : userTint).opacity(0.2), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func providerKeyLedgerSectionHeader(
+    func providerKeyLedgerSectionHeader(
         title: String,
         summary: String
     ) -> some View {
@@ -14766,7 +8087,7 @@ struct SettingsSheetView: View {
     }
 
     @ViewBuilder
-    private func providerKeyLedgerMetricTile(
+    func providerKeyLedgerMetricTile(
         title: String,
         value: String,
         detail: String,
@@ -14795,42 +8116,7 @@ struct SettingsSheetView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
-    @ViewBuilder
-    private func providerKeyQuickBudgetButton(
-        _ consumer: RemoteQuotaCenterClientProjection,
-        delta: Int,
-        title: String
-    ) -> some View {
-        Button(title) {
-            if let client = consumer.grpcClient {
-                grpcAdjustDailyBudget(client, delta: delta)
-                return
-            }
-            guard let accessKey = consumer.terminalAccessKey else { return }
-            Task { await adjustTerminalAccessKeyDailyBudget(accessKey, delta: delta) }
-        }
-        .buttonStyle(.borderless)
-        .font(.caption2.weight(.semibold))
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Color.indigo.opacity(0.10))
-        .clipShape(Capsule())
-        .disabled((consumer.isTerminalAccess && terminalAccessMutationInFlight) || !providerKeyCanQuickAdjustBudget(consumer))
-    }
-
-    private func providerKeyCanQuickAdjustBudget(
-        _ consumer: RemoteQuotaCenterClientProjection
-    ) -> Bool {
-        if let client = consumer.grpcClient {
-            return client.policyMode == .newProfile && client.approvedTrustProfile != nil
-        }
-        if let accessKey = consumer.terminalAccessKey {
-            return accessKey.supportsDirectBudgetAdjustment
-        }
-        return false
-    }
-
-    private func providerKeyFocusUserTitle(
+    func providerKeyFocusUserTitle(
         _ user: RemoteQuotaCenterUserProjection
     ) -> String {
         if user.isStandaloneConsumer {
@@ -14839,13 +8125,13 @@ struct SettingsSheetView: View {
         return "\(user.displayName) · \(user.consumerCount) consumer"
     }
 
-    private func providerKeyFocusVendorTitle(
+    func providerKeyFocusVendorTitle(
         _ vendor: ProviderKeyVendorInventorySummary
     ) -> String {
         "\(vendor.displayName) · \(vendor.readyAccounts)/\(vendor.totalAccounts) Ready"
     }
 
-    private func providerKeyFocusedUser(
+    func providerKeyFocusedUser(
         _ users: [RemoteQuotaCenterUserProjection]
     ) -> RemoteQuotaCenterUserProjection? {
         let focusKey = remoteQuotaFocusedUserGroupingKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -14853,17 +8139,17 @@ struct SettingsSheetView: View {
         return users.first(where: { $0.groupingKey == focusKey })
     }
 
-    private var providerKeyNormalizedFocusedVendorKey: String {
+    var providerKeyNormalizedFocusedVendorKey: String {
         let focusKey = remoteQuotaFocusedVendorKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !focusKey.isEmpty else { return "" }
         return providerKeyCanonicalVendorKey(focusKey)
     }
 
-    private var providerKeyHasFocusedVendor: Bool {
+    var providerKeyHasFocusedVendor: Bool {
         !providerKeyNormalizedFocusedVendorKey.isEmpty
     }
 
-    private func providerKeyFocusedVendor(
+    func providerKeyFocusedVendor(
         _ vendors: [ProviderKeyVendorInventorySummary]
     ) -> ProviderKeyVendorInventorySummary? {
         let focusKey = providerKeyNormalizedFocusedVendorKey
@@ -15038,7 +8324,7 @@ struct SettingsSheetView: View {
         return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
     }
 
-    private func providerKeyVendorAtRisk(
+    func providerKeyVendorAtRisk(
         _ vendor: ProviderKeyVendorInventorySummary
     ) -> Bool {
         if vendor.oversubscribedFamilyCount > 0 || vendor.blockedAccounts > 0 {
@@ -15067,7 +8353,7 @@ struct SettingsSheetView: View {
         return family.combinedDailyTokensRemaining <= max(Int64(50_000), family.combinedDailyTokenCap / 10)
     }
 
-    private func providerKeyScopeSummary(
+    func providerKeyScopeSummary(
         focusedUser: RemoteQuotaCenterUserProjection?,
         focusedVendor: ProviderKeyVendorInventorySummary?,
         vendors: [ProviderKeyVendorInventorySummary],
@@ -15106,7 +8392,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func providerKeyVendorFilterSummary(
+    func providerKeyVendorFilterSummary(
         _ vendors: [ProviderKeyVendorInventorySummary],
         totalVendors: Int,
         focusedUser: RemoteQuotaCenterUserProjection?,
@@ -15133,7 +8419,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyUserFilterSummary(
+    func providerKeyUserFilterSummary(
         _ users: [RemoteQuotaCenterUserProjection],
         totalUsers: Int,
         focusedUser: RemoteQuotaCenterUserProjection?
@@ -15166,7 +8452,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func providerKeyUserTint(
+    func providerKeyUserTint(
         _ user: RemoteQuotaCenterUserProjection
     ) -> Color {
         if user.isStandaloneConsumer {
@@ -15175,7 +8461,7 @@ struct SettingsSheetView: View {
         return user.terminalConsumerCount > 0 && user.xtConsumerCount > 0 ? .blue : .indigo
     }
 
-    private func providerKeyUserAtRisk(
+    func providerKeyUserAtRisk(
         _ user: RemoteQuotaCenterUserProjection
     ) -> Bool {
         if user.consumers.contains(where: providerKeyConsumerAtRisk(_:)) {
@@ -15185,7 +8471,7 @@ struct SettingsSheetView: View {
         return user.remainingDailyTokenBudget <= max(Int64(5_000), user.allocatedDailyTokenBudget / 10)
     }
 
-    private func providerKeyBudgetUserIdentitySummary(
+    func providerKeyBudgetUserIdentitySummary(
         _ user: RemoteQuotaCenterUserProjection
     ) -> String {
         var parts: [String] = []
@@ -15201,7 +8487,7 @@ struct SettingsSheetView: View {
         return parts.joined(separator: " • ")
     }
 
-    private func providerKeyBudgetUserScopeSummary(
+    func providerKeyBudgetUserScopeSummary(
         _ user: RemoteQuotaCenterUserProjection
     ) -> String {
         var parts: [String] = []
@@ -15217,7 +8503,7 @@ struct SettingsSheetView: View {
         return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
     }
 
-    private func providerKeyBudgetUserConsumerPreview(
+    func providerKeyBudgetUserConsumerPreview(
         _ user: RemoteQuotaCenterUserProjection
     ) -> String {
         let preview = user.consumers.prefix(3).map { consumer in
@@ -15275,7 +8561,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyConsumerFilterSummary(
+    func providerKeyConsumerFilterSummary(
         _ consumers: [RemoteQuotaCenterClientProjection],
         totalConsumers: Int,
         focusedUser: RemoteQuotaCenterUserProjection?
@@ -15300,7 +8586,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyConsumerKindColor(
+    func providerKeyConsumerKindColor(
         _ kind: RemoteQuotaCenterConsumerKind
     ) -> Color {
         switch kind {
@@ -15311,7 +8597,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyConsumerAtRisk(
+    func providerKeyConsumerAtRisk(
         _ consumer: RemoteQuotaCenterClientProjection
     ) -> Bool {
         if let status = consumer.deviceStatus, status.blockedToday > 0 {
@@ -15324,7 +8610,7 @@ struct SettingsSheetView: View {
         return consumer.remainingDailyTokenBudget <= max(Int64(5_000), consumer.dailyTokenLimit / 10)
     }
 
-    private func providerKeyBudgetClientReferenceSummary(
+    func providerKeyBudgetClientReferenceSummary(
         _ clientProjection: RemoteQuotaCenterClientProjection
     ) -> String {
         var parts: [String] = []
@@ -15347,13 +8633,13 @@ struct SettingsSheetView: View {
         cliproxyRuntimeConfigAudit = CLIProxyRuntimeSupport.auditConfig(settings: cliproxyRuntimeSettings)
     }
 
-    private func persistCLIProxyRuntimeConfiguration() {
+    func persistCLIProxyRuntimeConfiguration() {
         cliproxyRuntimeSettings = cliproxyRuntimeSettings.normalized()
         _ = CLIProxyRuntimeSupport.saveSettings(cliproxyRuntimeSettings)
         cliproxyRuntimeConfigAudit = CLIProxyRuntimeSupport.auditConfig(settings: cliproxyRuntimeSettings)
     }
 
-    private func detectCLIProxyRuntimePackage() {
+    func detectCLIProxyRuntimePackage() {
         if let detectedURL = CLIProxyRuntimeSupport.detectPackageDirectoryURL() {
             cliproxyRuntimeSettings.packageDirectoryPath = detectedURL.path
             cliproxyRuntimeSettings.preferDetectedPackage = true
@@ -15368,7 +8654,7 @@ struct SettingsSheetView: View {
     }
 
     @MainActor
-    private func refreshCLIProxyRuntimeStatus(manual: Bool = false) async {
+    func refreshCLIProxyRuntimeStatus(manual: Bool = false) async {
         guard !cliproxyRuntimeRefreshing else { return }
 
         cliproxyRuntimeRefreshing = true
@@ -15439,7 +8725,7 @@ struct SettingsSheetView: View {
     }
 
     @MainActor
-    private func startCLIProxyRuntime() async {
+    func startCLIProxyRuntime() async {
         guard !cliproxyRuntimeLaunching else { return }
 
         persistCLIProxyRuntimeConfiguration()
@@ -15480,7 +8766,7 @@ struct SettingsSheetView: View {
     }
 
     @MainActor
-    private func applyCLIProxyRuntimeConfigRecommendations() async {
+    func applyCLIProxyRuntimeConfigRecommendations() async {
         guard !cliproxyRuntimeConfigApplying else { return }
 
         persistCLIProxyRuntimeConfiguration()
@@ -15515,7 +8801,7 @@ struct SettingsSheetView: View {
     }
 
     @MainActor
-    private func rotateCLIProxyRuntimeManagementKey() async {
+    func rotateCLIProxyRuntimeManagementKey() async {
         guard !cliproxyRuntimeKeyRotating else { return }
 
         persistCLIProxyRuntimeConfiguration()
@@ -15594,7 +8880,7 @@ struct SettingsSheetView: View {
         return false
     }
 
-    private func openCLIProxyRuntimePackageDirectory() {
+    func openCLIProxyRuntimePackageDirectory() {
         let settings = cliproxyRuntimeSettings
         let packageURL = CLIProxyRuntimeSupport.packageDirectoryURL(for: settings)
         guard let packageURL else {
@@ -15604,7 +8890,7 @@ struct SettingsSheetView: View {
         _ = NSWorkspace.shared.open(packageURL)
     }
 
-    private func openCLIProxyRuntimeConfigFile() {
+    func openCLIProxyRuntimeConfigFile() {
         let settings = cliproxyRuntimeSettings
         guard let configURL = CLIProxyRuntimeSupport.configURL(for: settings) else {
             cliproxyRuntimeErrorText = "还没有找到可打开的 CLIProxy config.yaml。"
@@ -15619,7 +8905,7 @@ struct SettingsSheetView: View {
         cliproxyOAuthManagementKey = CLIProxyOAuthSourceSupport.loadManagementKey(baseURL: settings.baseURL)
     }
 
-    private func persistCLIProxyOAuthConfiguration() {
+    func persistCLIProxyOAuthConfiguration() {
         cliproxyOAuthSettings.baseURL = CLIProxyOAuthSourceSupport.normalizedBaseURLString(
             cliproxyOAuthSettings.baseURL
         )
@@ -15631,7 +8917,7 @@ struct SettingsSheetView: View {
     }
 
     @MainActor
-    private func refreshCLIProxyOAuthRemoteAuths(manual: Bool = false) async {
+    func refreshCLIProxyOAuthRemoteAuths(manual: Bool = false) async {
         guard !cliproxyOAuthRefreshing, !cliproxyOAuthSyncing else { return }
 
         persistCLIProxyOAuthConfiguration()
@@ -15673,7 +8959,7 @@ struct SettingsSheetView: View {
     }
 
     @MainActor
-    private func syncCLIProxyOAuthAccounts(manual: Bool = true) async {
+    func syncCLIProxyOAuthAccounts(manual: Bool = true) async {
         guard !cliproxyOAuthSyncing else { return }
 
         persistCLIProxyOAuthConfiguration()
@@ -15728,7 +9014,7 @@ struct SettingsSheetView: View {
     }
 
     @MainActor
-    private func startCLIProxyOAuth(_ provider: HubProviderOAuthHTTPClient.Provider) async {
+    func startCLIProxyOAuth(_ provider: HubProviderOAuthHTTPClient.Provider) async {
         guard cliproxyOAuthActiveState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             cliproxyOAuthErrorText = "已有 Provider OAuth 登录在进行中。"
             return
@@ -15847,7 +9133,7 @@ struct SettingsSheetView: View {
         await syncCLIProxyOAuthAccounts(manual: false)
     }
 
-    private func openCLIProxyOAuthManagementConsole() {
+    func openCLIProxyOAuthManagementConsole() {
         persistCLIProxyOAuthConfiguration()
         guard cliproxyRuntimeProbe.serviceRunning else {
             cliproxyOAuthErrorText = "CLIProxy 管理页当前没有运行。Hub 原生 OAuth 可直接用“发起 OAuth”，不需要打开 CLIProxy 管理页；如果要维护旧 CLIProxy 账号，请先启动本地节点。"
@@ -15863,7 +9149,7 @@ struct SettingsSheetView: View {
     }
 
     @ViewBuilder
-    private var cliproxyOAuthSourceCard: some View {
+    var cliproxyOAuthSourceCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -16117,7 +9403,7 @@ struct SettingsSheetView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
-    private var cliproxyOAuthStatusBadgeText: String {
+    var cliproxyOAuthStatusBadgeText: String {
         if cliproxyOAuthSyncing {
             return "同步中"
         }
@@ -16144,596 +9430,6 @@ struct SettingsSheetView: View {
         return cliproxyOAuthSettings.autoSync ? .green : .secondary
     }
 
-    @ViewBuilder
-    private var cliproxyRuntimeControlPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("本地节点托管")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text("Hub 可以直接接管本机的 CLIProxy 发行包：自动探测目录、检查 8317 状态，并从这里一键启动。默认会带 `--local-model` 降低后台负担。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer()
-
-                Text(cliproxyRuntimeStatusBadgeText)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(cliproxyRuntimeStatusTint)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(cliproxyRuntimeStatusTint.opacity(0.12))
-                    .clipShape(Capsule())
-            }
-
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("发行包目录")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextField(
-                        "~/Documents/AX/source/CLIProxyAPI-main/CLIProxyAPI_6.9.30_darwin_amd64",
-                        text: $cliproxyRuntimeSettings.packageDirectoryPath
-                    )
-                    .textFieldStyle(.roundedBorder)
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Toggle("低负担模式 (--local-model)", isOn: $cliproxyRuntimeSettings.useLocalModel)
-                        .toggleStyle(.switch)
-                    Toggle("优先使用自动探测目录", isOn: $cliproxyRuntimeSettings.preferDetectedPackage)
-                        .toggleStyle(.switch)
-
-                    if cliproxyRuntimeLastProbeAtMs > 0 {
-                        Text("上次检查 \(formattedProviderKeyImportSourceTime(cliproxyRuntimeLastProbeAtMs))")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("还没有本地节点检查记录")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(maxWidth: 250, alignment: .leading)
-            }
-
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    cliproxyOAuthActionButton(
-                        title: "自动探测",
-                        systemName: "scope",
-                        tint: .indigo,
-                        disabled: cliproxyRuntimeControlBusy
-                    ) {
-                        detectCLIProxyRuntimePackage()
-                    }
-
-                    cliproxyOAuthActionButton(
-                        title: cliproxyRuntimeRefreshing ? "检查中" : "检查节点",
-                        systemName: "bolt.horizontal.circle",
-                        tint: .blue,
-                        disabled: cliproxyRuntimeControlBusy
-                    ) {
-                        Task { await refreshCLIProxyRuntimeStatus(manual: true) }
-                    }
-
-                    cliproxyOAuthActionButton(
-                        title: cliproxyRuntimeLaunching ? "启动中" : "启动本地节点",
-                        systemName: "play.circle",
-                        tint: .green,
-                        disabled: cliproxyRuntimeControlBusy
-                    ) {
-                        Task { await startCLIProxyRuntime() }
-                    }
-
-                    Menu {
-                        Button("打开发行包目录") {
-                            openCLIProxyRuntimePackageDirectory()
-                        }
-                        Button("打开 config.yaml") {
-                            openCLIProxyRuntimeConfigFile()
-                        }
-                        Button("打开管理页") {
-                            openCLIProxyOAuthManagementConsole()
-                        }
-                    } label: {
-                        settingsActionChipLabel(
-                            title: "更多",
-                            systemName: "ellipsis.circle",
-                            tint: .secondary,
-                            disabled: cliproxyRuntimeControlBusy
-                        )
-                    }
-                    .disabled(cliproxyRuntimeControlBusy)
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
-                        cliproxyOAuthActionButton(
-                            title: "自动探测",
-                            systemName: "scope",
-                            tint: .indigo,
-                            disabled: cliproxyRuntimeControlBusy
-                        ) {
-                            detectCLIProxyRuntimePackage()
-                        }
-
-                        cliproxyOAuthActionButton(
-                            title: cliproxyRuntimeRefreshing ? "检查中" : "检查节点",
-                            systemName: "bolt.horizontal.circle",
-                            tint: .blue,
-                            disabled: cliproxyRuntimeControlBusy
-                        ) {
-                            Task { await refreshCLIProxyRuntimeStatus(manual: true) }
-                        }
-                    }
-
-                    HStack(spacing: 8) {
-                        cliproxyOAuthActionButton(
-                            title: cliproxyRuntimeLaunching ? "启动中" : "启动本地节点",
-                            systemName: "play.circle",
-                            tint: .green,
-                            disabled: cliproxyRuntimeControlBusy
-                        ) {
-                            Task { await startCLIProxyRuntime() }
-                        }
-
-                        Menu {
-                            Button("打开发行包目录") {
-                                openCLIProxyRuntimePackageDirectory()
-                            }
-                            Button("打开 config.yaml") {
-                                openCLIProxyRuntimeConfigFile()
-                            }
-                            Button("打开管理页") {
-                                openCLIProxyOAuthManagementConsole()
-                            }
-                        } label: {
-                            settingsActionChipLabel(
-                                title: "更多",
-                                systemName: "ellipsis.circle",
-                                tint: .secondary,
-                                disabled: cliproxyRuntimeControlBusy
-                            )
-                        }
-                        .disabled(cliproxyRuntimeControlBusy)
-                    }
-                }
-            }
-
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    cliproxyRuntimeStateChip(
-                        title: "发行包",
-                        value: cliproxyRuntimePackageChipText,
-                        tint: cliproxyRuntimePackageChipTint,
-                        systemName: "shippingbox"
-                    )
-                    cliproxyRuntimeStateChip(
-                        title: "服务",
-                        value: cliproxyRuntimeServiceChipText,
-                        tint: cliproxyRuntimeServiceChipTint,
-                        systemName: "dot.radiowaves.left.and.right"
-                    )
-                    cliproxyRuntimeStateChip(
-                        title: "管理端",
-                        value: cliproxyRuntimeManagementChipText,
-                        tint: cliproxyRuntimeManagementChipTint,
-                        systemName: "lock.shield"
-                    )
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    cliproxyRuntimeStateChip(
-                        title: "发行包",
-                        value: cliproxyRuntimePackageChipText,
-                        tint: cliproxyRuntimePackageChipTint,
-                        systemName: "shippingbox"
-                    )
-                    cliproxyRuntimeStateChip(
-                        title: "服务",
-                        value: cliproxyRuntimeServiceChipText,
-                        tint: cliproxyRuntimeServiceChipTint,
-                        systemName: "dot.radiowaves.left.and.right"
-                    )
-                    cliproxyRuntimeStateChip(
-                        title: "管理端",
-                        value: cliproxyRuntimeManagementChipText,
-                        tint: cliproxyRuntimeManagementChipTint,
-                        systemName: "lock.shield"
-                    )
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("配置建议")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Text(cliproxyRuntimeConfigSummaryText)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    Spacer()
-
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 8) {
-                            cliproxyOAuthActionButton(
-                                title: cliproxyRuntimeKeyRotating ? "轮换中" : "轮换管理 Key",
-                                systemName: "key.horizontal.fill",
-                                tint: .indigo,
-                                disabled: cliproxyRuntimeControlBusy
-                            ) {
-                                Task { await rotateCLIProxyRuntimeManagementKey() }
-                            }
-
-                            cliproxyOAuthActionButton(
-                                title: cliproxyRuntimeConfigApplying ? "写入中" : "应用推荐修正",
-                                systemName: "wand.and.stars",
-                                tint: .orange,
-                                disabled: cliproxyRuntimeControlBusy || cliproxyRuntimeConfigAudit.unresolvedCount == 0
-                            ) {
-                                Task { await applyCLIProxyRuntimeConfigRecommendations() }
-                            }
-                        }
-
-                        VStack(alignment: .trailing, spacing: 8) {
-                            cliproxyOAuthActionButton(
-                                title: cliproxyRuntimeKeyRotating ? "轮换中" : "轮换管理 Key",
-                                systemName: "key.horizontal.fill",
-                                tint: .indigo,
-                                disabled: cliproxyRuntimeControlBusy
-                            ) {
-                                Task { await rotateCLIProxyRuntimeManagementKey() }
-                            }
-
-                            cliproxyOAuthActionButton(
-                                title: cliproxyRuntimeConfigApplying ? "写入中" : "应用推荐修正",
-                                systemName: "wand.and.stars",
-                                tint: .orange,
-                                disabled: cliproxyRuntimeControlBusy || cliproxyRuntimeConfigAudit.unresolvedCount == 0
-                            ) {
-                                Task { await applyCLIProxyRuntimeConfigRecommendations() }
-                            }
-                        }
-                    }
-                }
-
-                if cliproxyRuntimeConfigAudit.recommendations.isEmpty {
-                    Text("定位到 config.yaml 后，这里会显示低负担和安全相关的推荐项。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(cliproxyRuntimeConfigAudit.recommendations) { recommendation in
-                        cliproxyRuntimeConfigRecommendationRow(recommendation)
-                    }
-                }
-            }
-
-            Text(cliproxyRuntimeSummaryText)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if !cliproxyRuntimeActionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                terminalAccessFeedbackBanner(
-                    text: cliproxyRuntimeActionText,
-                    tint: .blue,
-                    systemName: "bolt.horizontal.circle"
-                )
-            }
-
-            if !cliproxyRuntimeErrorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                terminalAccessFeedbackBanner(
-                    text: cliproxyRuntimeErrorText,
-                    tint: .red,
-                    systemName: "exclamationmark.triangle"
-                )
-            }
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.white.opacity(0.46))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.indigo.opacity(0.10), lineWidth: 1)
-        )
-    }
-
-    @ViewBuilder
-    private func cliproxyRuntimeStateChip(
-        title: String,
-        value: String,
-        tint: Color,
-        systemName: String
-    ) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: systemName)
-                .imageScale(.small)
-                .foregroundStyle(tint)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text(value)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(tint)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(tint.opacity(0.08))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(tint.opacity(0.18), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func cliproxyRuntimeConfigRecommendationRow(
-        _ recommendation: CLIProxyRuntimeSupport.ConfigRecommendation
-    ) -> some View {
-        let tint = cliproxyRuntimeRecommendationTint(recommendation)
-
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: recommendation.satisfied ? "checkmark.seal.fill" : "wrench.and.screwdriver.fill")
-                .imageScale(.small)
-                .foregroundStyle(tint)
-                .frame(width: 16, height: 16)
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(recommendation.kind.title)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.primary)
-
-                    Text(recommendation.satisfied ? "已满足" : "建议修正")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(tint)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(tint.opacity(0.10))
-                        .clipShape(Capsule())
-                }
-
-                Text(recommendation.kind.detail)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text("当前 \(recommendation.currentValueDisplay) -> 推荐 \(recommendation.recommendedValueDisplay)")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(tint)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(tint.opacity(0.06))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(tint.opacity(0.16), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    private var cliproxyRuntimeControlBusy: Bool {
-        cliproxyRuntimeRefreshing
-            || cliproxyRuntimeLaunching
-            || cliproxyRuntimeConfigApplying
-            || cliproxyRuntimeKeyRotating
-    }
-
-    private var cliproxyRuntimeStatusBadgeText: String {
-        if cliproxyRuntimeLaunching {
-            return "启动中"
-        }
-        if cliproxyRuntimeRefreshing {
-            return "检查中"
-        }
-        if cliproxyRuntimeKeyRotating {
-            return "轮换 key"
-        }
-        if cliproxyRuntimeConfigApplying {
-            return "写入配置"
-        }
-        if cliproxyRuntimeConfigAudit.unresolvedCount > 0 {
-            return "待修配置"
-        }
-        if cliproxyRuntimeProbe.serviceRunning {
-            return "节点在线"
-        }
-        if cliproxyRuntimeProbe.packageStatus == .detected {
-            return "待启动"
-        }
-        return "待接入"
-    }
-
-    private var cliproxyRuntimeStatusTint: Color {
-        if cliproxyRuntimeLaunching
-            || cliproxyRuntimeRefreshing
-            || cliproxyRuntimeConfigApplying
-            || cliproxyRuntimeKeyRotating {
-            return .blue
-        }
-        if !cliproxyRuntimeErrorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return .red
-        }
-        if cliproxyRuntimeConfigAudit.unresolvedCount > 0 {
-            return .orange
-        }
-        if cliproxyRuntimeProbe.serviceRunning {
-            switch cliproxyRuntimeProbe.managementStatus {
-            case .keyInvalid, .unavailable, .error:
-                return .orange
-            default:
-                return .green
-            }
-        }
-        return cliproxyRuntimeProbe.packageStatus == .detected ? .indigo : .secondary
-    }
-
-    private var cliproxyRuntimeConfigSummaryText: String {
-        guard !cliproxyRuntimeConfigAudit.recommendations.isEmpty else {
-            return "config.yaml 就位后，这里会给出低负担和安全建议。"
-        }
-        if cliproxyRuntimeConfigAudit.unresolvedCount == 0 {
-            return "当前 \(cliproxyRuntimeConfigAudit.recommendations.count) 项推荐都已满足，适合常驻给 Hub 做本地 OAuth 汇聚节点。"
-        }
-        return "还有 \(cliproxyRuntimeConfigAudit.unresolvedCount) 项建议未处理。Hub 只会修正本地监听、管理面板和轻量运行相关项。"
-    }
-
-    private func cliproxyRuntimeRecommendationTint(
-        _ recommendation: CLIProxyRuntimeSupport.ConfigRecommendation
-    ) -> Color {
-        recommendation.satisfied ? .green : .orange
-    }
-
-    private var cliproxyRuntimePackageChipText: String {
-        switch cliproxyRuntimeProbe.packageStatus {
-        case .detected:
-            return cliproxyRuntimeProbe.usedDetectedPackage ? "已发现" : "已选定"
-        case .notFound:
-            return "未找到"
-        case .missingExecutable:
-            return "缺可执行文件"
-        case .missingConfig:
-            return "缺 config"
-        }
-    }
-
-    private var cliproxyRuntimePackageChipTint: Color {
-        switch cliproxyRuntimeProbe.packageStatus {
-        case .detected:
-            return .indigo
-        case .notFound, .missingExecutable, .missingConfig:
-            return .red
-        }
-    }
-
-    private var cliproxyRuntimeServiceChipText: String {
-        cliproxyRuntimeProbe.serviceRunning ? "8317 在线" : "未启动"
-    }
-
-    private var cliproxyRuntimeServiceChipTint: Color {
-        cliproxyRuntimeProbe.serviceRunning ? .green : .secondary
-    }
-
-    private var cliproxyRuntimeManagementChipText: String {
-        switch cliproxyRuntimeProbe.managementStatus {
-        case .unknown:
-            return cliproxyRuntimeProbe.serviceRunning ? "待检查" : "离线"
-        case .waitingForKey:
-            return "待填 key"
-        case .keyValid(let authCount):
-            return authCount > 0 ? "已验证 · \(authCount) 账号" : "已验证"
-        case .keyInvalid:
-            return "key 错误"
-        case .unavailable:
-            return "不可用"
-        case .error:
-            return "检查失败"
-        }
-    }
-
-    private var cliproxyRuntimeManagementChipTint: Color {
-        switch cliproxyRuntimeProbe.managementStatus {
-        case .unknown:
-            return .secondary
-        case .waitingForKey:
-            return .orange
-        case .keyValid:
-            return .green
-        case .keyInvalid, .unavailable, .error:
-            return .red
-        }
-    }
-
-    private var cliproxyRuntimeSummaryText: String {
-        switch cliproxyRuntimeProbe.packageStatus {
-        case .notFound where !cliproxyRuntimeProbe.serviceRunning:
-            return "当前还没有定位到 CLIProxy 发行包。自动探测默认会看 ~/Documents/AX/source/CLIProxyAPI-main，也可以直接粘贴发行包目录。"
-        case .missingExecutable:
-            return "目录存在，但不是可直接启动的发行包：缺少 cli-proxy-api 可执行文件。"
-        case .missingConfig:
-            return "目录存在，但不是完整发行包：缺少 config.yaml。"
-        default:
-            break
-        }
-
-        if cliproxyRuntimeProbe.serviceRunning {
-            switch cliproxyRuntimeProbe.managementStatus {
-            case .waitingForKey:
-                return "本地 CLIProxy 已运行。填好 management key 后，Hub 就能验证账号列表并把已认证免费额度同步进库存池。"
-            case .keyValid(let authCount):
-                return authCount > 0
-                    ? "本地 CLIProxy 已连通，management key 已验证，当前看到 \(authCount) 个已认证账号。可以继续发起 OAuth，或直接同步到 Hub。"
-                    : "本地 CLIProxy 已连通，management key 已验证，但当前还没有已认证账号。可直接打开管理页做 OAuth 登录。"
-            case .keyInvalid:
-                return "本地 CLIProxy 已运行，但 Hub 里保存的 management key 不正确。修正后再检查即可。"
-            case .unavailable:
-                return "CLIProxy 服务已启动，但管理端接口当前不可用。请确认 config.yaml 里的 remote-management.secret-key 已设置。"
-            case .error(let detail):
-                return detail.isEmpty ? "CLIProxy 管理端探测失败。" : "CLIProxy 管理端探测失败：\(detail)"
-            case .unknown:
-                return "CLIProxy 服务已运行，Hub 会继续做轻量探测。"
-            }
-        }
-
-        if cliproxyRuntimeProbe.packageStatus == .detected {
-            return "发行包已经就位。点“启动本地节点”后，Hub 会直接接管这颗 CLIProxy，并在服务起来后继续验证 management key 与账号列表。"
-        }
-
-        return "本机节点尚未接入。"
-    }
-
-    private var cliproxyRuntimeDisclosureSummarySegment: String {
-        if cliproxyRuntimeLaunching {
-            return "本地节点启动中"
-        }
-        if cliproxyRuntimeKeyRotating {
-            return "正在轮换管理 key"
-        }
-        if cliproxyRuntimeConfigApplying {
-            return "正在写入本地配置"
-        }
-        if cliproxyRuntimeConfigAudit.unresolvedCount > 0 {
-            return "本地配置待修 \(cliproxyRuntimeConfigAudit.unresolvedCount) 项"
-        }
-        if cliproxyRuntimeProbe.serviceRunning {
-            switch cliproxyRuntimeProbe.managementStatus {
-            case .keyValid(let authCount):
-                return authCount > 0 ? "本地节点在线 · \(authCount) 账号" : "本地节点在线"
-            case .waitingForKey:
-                return "本地节点在线 · 待填 key"
-            case .keyInvalid:
-                return "本地节点在线 · key 错误"
-            case .unavailable:
-                return "本地节点在线 · 管理端不可用"
-            case .error:
-                return "本地节点在线 · 检查失败"
-            case .unknown:
-                return "本地节点在线"
-            }
-        }
-        if cliproxyRuntimeProbe.packageStatus == .detected {
-            return "本地节点待启动"
-        }
-        return ""
-    }
-
     private func cliproxyOAuthProviderTint(
         _ provider: CLIProxyOAuthSourceSupport.OAuthProvider
     ) -> Color {
@@ -16751,7 +9447,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func cliproxyOAuthActionButton(
+    func cliproxyOAuthActionButton(
         title: String,
         systemName: String,
         tint: Color,
@@ -17155,449 +9851,14 @@ struct SettingsSheetView: View {
         return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
     }
 
-    @ViewBuilder
-    private func providerKeyImportSourceRow(_ source: ProviderKeyImportSourceStatus) -> some View {
-        let isHighlighted = providerKeyImportSourceIsHighlighted(source)
-        HStack(alignment: .top, spacing: 8) {
-            Circle()
-                .fill(providerKeyImportSourceStateColor(source))
-                .frame(width: 8, height: 8)
-                .padding(.top, 4)
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(providerKeyImportSourceTitle(source))
-                        .font(.caption.weight(.medium))
-                    Text(providerKeyImportSourceStateText(source))
-                        .font(.caption2.monospaced())
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(providerKeyImportSourceStateColor(source).opacity(0.12))
-                        .clipShape(Capsule())
-                }
-
-                Text(providerKeyImportSourceDisplayRef(source))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                Text(providerKeyImportSourceSummary(source))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                if let error = providerKeyImportSourceErrorDescription(source) {
-                    Text(error)
-                        .font(.caption2)
-                        .foregroundStyle(providerKeyImportSourceStateColor(source))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Spacer()
-        }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(
-                    isHighlighted
-                        ? providerKeyImportSourceStateColor(source).opacity(0.1)
-                        : Color.clear
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(
-                    isHighlighted
-                        ? providerKeyImportSourceStateColor(source).opacity(0.45)
-                        : Color.clear,
-                    lineWidth: isHighlighted ? 1 : 0
-                )
-        )
-        .id(providerKeyImportSourceAnchorID(source))
-    }
-
-    @ViewBuilder
-    private func providerKeyPoolCard(_ pool: ProviderKeyPoolSnapshot) -> some View {
-        let detailBinding = expansionBinding(pool.id, in: $expandedProviderKeyPoolIDs)
-        let usageWindows = providerKeyPoolDisplayUsageWindows(pool)
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(providerKeyPoolTitle(pool))
-                            .font(.callout.weight(.semibold))
-
-                        Text(providerKeyPoolStateText(pool.state))
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(providerKeyPoolStateColor(pool.state))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(providerKeyPoolStateColor(pool.state).opacity(0.12))
-                            .clipShape(Capsule())
-                    }
-
-                    Text(providerKeyPoolDetail(pool))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-
-                    Text(
-                        HubUIStrings.Settings.ProviderKeys.keyPoolSummary(
-                            total: pool.totalAccounts,
-                            ready: pool.readyAccounts,
-                            cooldown: pool.cooldownAccounts,
-                            blocked: pool.blockedAccounts,
-                            disabled: pool.disabledAccounts,
-                            stale: pool.staleAccounts
-                        )
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                    if !usageWindows.isEmpty {
-                        providerKeyUsageWindowRows(usageWindows)
-
-                        if pool.totalTokensUsed > 0 {
-                            Text("累计 \(HubUIStrings.Settings.ProviderKeys.tokenCount(pool.totalTokensUsed))")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    } else if pool.hasQuotaData {
-                        Text(providerKeyPoolQuotaSummary(pool))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-
-                        if pool.totalDailyTokenCap > 0 {
-                            ProgressView(
-                                value: Double(pool.totalDailyTokensUsed),
-                                total: Double(pool.totalDailyTokenCap)
-                            )
-                            .progressViewStyle(.linear)
-                            .tint(providerKeyPoolStateColor(pool.state))
-                        }
-
-                        let remainingText = providerKeyPoolRemainingSummary(pool)
-                        if !remainingText.isEmpty {
-                            Text(remainingText)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    providerKeyPoolIssueSummaryView(pool)
-                }
-
-                Spacer(minLength: 8)
-
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(pool.routingStrategy)
-                        .font(.caption2.monospaced())
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color.secondary.opacity(0.12))
-                        .clipShape(Capsule())
-
-                    Text(providerKeyPoolRetrySummary(pool))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.trailing)
-                }
-            }
-
-            DisclosureGroup(isExpanded: detailBinding) {
-                VStack(spacing: 0) {
-                    ForEach(Array(pool.members.enumerated()), id: \.element.id) { index, member in
-                        if index > 0 {
-                            Divider()
-                                .padding(.leading, 8)
-                        }
-                        providerKeyPoolMemberRow(member)
-                            .padding(.top, index == 0 ? 2 : 8)
-                            .padding(.bottom, 6)
-                    }
-                }
-                .padding(.top, 6)
-            } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("成员与单 Key 状态")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(providerKeyPoolMemberDisclosureSummary(pool))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-        }
-        .padding(10)
-        .background(Color.secondary.opacity(0.05))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(providerKeyPoolStateColor(pool.state).opacity(0.18), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func providerKeyPoolMemberRow(_ member: ProviderKeyPoolMemberState) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Circle()
-                .fill(providerKeyMemberStateColor(member))
-                .frame(width: 8, height: 8)
-                .padding(.top, 4)
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(providerKeyMemberTitle(member))
-                        .font(.caption.weight(.medium))
-                        .lineLimit(1)
-
-                    Text(providerKeyPoolStateText(member.state))
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(providerKeyMemberStateColor(member))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(providerKeyMemberStateColor(member).opacity(0.12))
-                        .clipShape(Capsule())
-
-                    if !member.account.tier.isEmpty {
-                        Text(member.account.tier)
-                            .font(.caption2)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.purple.opacity(0.15))
-                            .clipShape(Capsule())
-                    }
-
-                    if member.account.errorState.autoDisabled {
-                        Text(HubUIStrings.Settings.ProviderKeys.autoDisabled)
-                            .font(.caption2)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.red.opacity(0.15))
-                            .clipShape(Capsule())
-                    }
-                }
-
-                let sourceText = providerKeyMemberSourceText(member.account)
-                if !sourceText.isEmpty {
-                    Text(sourceText)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                let quotaText = providerKeyMemberQuotaText(member.account)
-                if !quotaText.isEmpty {
-                    Text(quotaText)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                if let retryText = providerKeyMemberRetryText(member) {
-                    Text(retryText)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                let usageWindows = providerKeyDisplayUsageWindows(member.account)
-                if !usageWindows.isEmpty {
-                    providerKeyUsageWindowRows(usageWindows)
-                } else if member.account.quota.dailyTokenCap > 0 {
-                    ProgressView(
-                        value: Double(member.account.quota.dailyTokensUsed),
-                        total: Double(member.account.quota.dailyTokenCap)
-                    )
-                    .progressViewStyle(.linear)
-                    .tint(providerKeyMemberStateColor(member))
-
-                    HStack(spacing: 6) {
-                        providerKeyMiniStatusPill(
-                            title: providerKeyMemberHeatLabel(member.account),
-                            tint: providerKeyUsageHeatTint(
-                                fraction: providerKeyUsageFraction(
-                                    used: member.account.quota.dailyTokensUsed,
-                                    cap: member.account.quota.dailyTokenCap
-                                ),
-                                hasBlockingRisk: member.state == "blocked"
-                            )
-                        )
-                        providerKeyMiniStatusPill(
-                            title: "剩余 \(HubUIStrings.Settings.ProviderKeys.tokenCount(max(Int64(0), member.account.quota.dailyTokensRemaining)))",
-                            tint: member.account.quota.dailyTokensRemaining > 0 ? .green : .orange
-                        )
-                    }
-                }
-
-                let usageMeta = providerKeyMemberUsageMetaText(member.account)
-                if !usageMeta.isEmpty {
-                    Text(usageMeta)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                providerKeyMemberIssueSummaryView(member)
-            }
-
-            Spacer(minLength: 8)
-        }
-    }
-
-    @ViewBuilder
-    private func providerKeyMiniStatusPill(
-        title: String,
-        tint: Color
-    ) -> some View {
-        Text(title)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(tint.opacity(0.12))
-            .clipShape(Capsule())
-    }
-
-    @ViewBuilder
-    private func providerKeyUsageWindowRows(_ windows: [ProviderKeyUsageWindow]) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            ForEach(windows, id: \.key) { window in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(providerKeyUsageWindowTitle(window))
-                            .font(.caption2.weight(.semibold))
-                            .lineLimit(1)
-
-                        let resetText = providerKeyUsageWindowResetText(window)
-                        if !resetText.isEmpty {
-                            Text(resetText)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-
-                        Spacer(minLength: 6)
-
-                        Text(providerKeyUsageWindowPercentText(window))
-                            .font(.caption2)
-                            .monospacedDigit()
-                            .foregroundStyle(providerKeyUsageWindowTint(window))
-                            .lineLimit(1)
-                    }
-
-                    ProgressView(
-                        value: Double(max(0, min(10_000, window.usedBasisPoints))),
-                        total: 10_000
-                    )
-                    .progressViewStyle(.linear)
-                    .tint(providerKeyUsageWindowTint(window))
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func providerKeyGroupCard(_ group: ProviderKeyProviderGroup) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(group.provider.uppercased())
-                    .font(.callout.weight(.semibold))
-                Spacer()
-                Text(group.routingStrategy)
-                    .font(.caption.monospaced())
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.secondary.opacity(0.12))
-                    .clipShape(Capsule())
-            }
-
-            ForEach(group.accounts) { account in
-                providerKeyAccountRow(account)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    @ViewBuilder
-    private func providerKeyAccountRow(_ account: ProviderKeyAccount) -> some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(accountStatusColor(account))
-                .frame(width: 8, height: 8)
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text(account.email.isEmpty ? account.apiKeyRedacted : account.email)
-                        .font(.caption.weight(.medium))
-                        .lineLimit(1)
-
-                    if !account.tier.isEmpty {
-                        Text(account.tier)
-                            .font(.caption2)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Color.purple.opacity(0.15))
-                            .clipShape(Capsule())
-                    }
-
-                    if account.errorState.autoDisabled {
-                        Text(HubUIStrings.Settings.ProviderKeys.autoDisabled)
-                            .font(.caption2)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Color.red.opacity(0.15))
-                            .clipShape(Capsule())
-                    }
-                }
-
-                let usageWindows = providerKeyDisplayUsageWindows(account)
-                if !usageWindows.isEmpty {
-                    providerKeyUsageWindowRows(usageWindows)
-                } else {
-                    HStack(spacing: 12) {
-                        if account.quota.dailyTokensUsed > 0 || account.quota.dailyTokenCap > 0 {
-                            Text(HubUIStrings.Settings.ProviderKeys.dailyUsageText(
-                                used: account.quota.dailyTokensUsed,
-                                cap: account.quota.dailyTokenCap
-                            ))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        }
-
-                        if account.quota.totalTokensUsed > 0 {
-                            Text("累计 \(HubUIStrings.Settings.ProviderKeys.tokenCount(account.quota.totalTokensUsed))")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                if account.errorState.status != "healthy" {
-                    Text(errorStateDescription(account.errorState))
-                        .font(.caption2)
-                        .foregroundStyle(accountStatusColor(account))
-                }
-            }
-
-            Spacer()
-
-            if !account.enabled {
-                Text(HubUIStrings.Settings.ProviderKeys.disabled)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func providerKeyPoolTitle(_ pool: ProviderKeyPoolSnapshot) -> String {
+    func providerKeyPoolTitle(_ pool: ProviderKeyPoolSnapshot) -> String {
         if pool.providerHost.isEmpty {
             return pool.supplierDisplayName
         }
         return "\(pool.supplierDisplayName) · \(pool.providerHost)"
     }
 
-    private func providerKeyPoolDetail(_ pool: ProviderKeyPoolSnapshot) -> String {
+    func providerKeyPoolDetail(_ pool: ProviderKeyPoolSnapshot) -> String {
         HubUIStrings.Settings.RemoteModels.sectionSummary([
             pool.poolID,
             pool.wireAPI == "default" ? "" : pool.wireAPI,
@@ -17605,7 +9866,7 @@ struct SettingsSheetView: View {
         ])
     }
 
-    private func providerKeyPoolQuotaSummary(_ pool: ProviderKeyPoolSnapshot) -> String {
+    func providerKeyPoolQuotaSummary(_ pool: ProviderKeyPoolSnapshot) -> String {
         HubUIStrings.Settings.RemoteModels.sectionSummary([
             HubUIStrings.Settings.ProviderKeys.dailyUsageText(
                 used: pool.totalDailyTokensUsed,
@@ -17618,7 +9879,7 @@ struct SettingsSheetView: View {
     }
 
     @ViewBuilder
-    private func providerKeyPoolIssueSummaryView(_ pool: ProviderKeyPoolSnapshot) -> some View {
+    func providerKeyPoolIssueSummaryView(_ pool: ProviderKeyPoolSnapshot) -> some View {
         let summary = pool.issueSummary.trimmingCharacters(in: .whitespacesAndNewlines)
         let detail = pool.issueDetail.trimmingCharacters(in: .whitespacesAndNewlines)
         let isExpanded = expandedProviderKeyPoolIssueIDs.contains(pool.id)
@@ -17660,7 +9921,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyPoolRetrySummary(_ pool: ProviderKeyPoolSnapshot) -> String {
+    func providerKeyPoolRetrySummary(_ pool: ProviderKeyPoolSnapshot) -> String {
         if let retryText = pool.members
             .map({ $0.account.errorState.retryAtText.trimmingCharacters(in: .whitespacesAndNewlines) })
             .first(where: { !$0.isEmpty }) {
@@ -17674,7 +9935,7 @@ struct SettingsSheetView: View {
         )
     }
 
-    private func providerKeyPoolStateColor(_ state: String) -> Color {
+    func providerKeyPoolStateColor(_ state: String) -> Color {
         switch state {
         case "ready":
             return .green
@@ -17691,7 +9952,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyPoolStateText(_ state: String) -> String {
+    func providerKeyPoolStateText(_ state: String) -> String {
         switch state {
         case "ready":
             return HubUIStrings.Settings.ProviderKeys.ready
@@ -17712,7 +9973,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyMemberStateColor(_ member: ProviderKeyPoolMemberState) -> Color {
+    func providerKeyMemberStateColor(_ member: ProviderKeyPoolMemberState) -> Color {
         switch member.state {
         case "ready":
             return .green
@@ -17731,12 +9992,12 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyMemberTitle(_ member: ProviderKeyPoolMemberState) -> String {
+    func providerKeyMemberTitle(_ member: ProviderKeyPoolMemberState) -> String {
         let account = member.account
         return account.email.isEmpty ? account.apiKeyRedacted : account.email
     }
 
-    private func providerKeyMemberSourceText(_ account: ProviderKeyAccount) -> String {
+    func providerKeyMemberSourceText(_ account: ProviderKeyAccount) -> String {
         let sourceRef = account.sourceRef.isEmpty ? "" : URL(fileURLWithPath: account.sourceRef).lastPathComponent
         return HubUIStrings.Settings.RemoteModels.sectionSummary([
             !account.accountId.isEmpty ? "id \(account.accountId)" : "",
@@ -17749,7 +10010,7 @@ struct SettingsSheetView: View {
         ])
     }
 
-    private func providerKeyDisplayUsageWindows(_ account: ProviderKeyAccount) -> [ProviderKeyUsageWindow] {
+    func providerKeyDisplayUsageWindows(_ account: ProviderKeyAccount) -> [ProviderKeyUsageWindow] {
         let windows = account.quota.usageWindows
         guard !windows.isEmpty else { return [] }
 
@@ -17776,7 +10037,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyPoolDisplayUsageWindows(_ pool: ProviderKeyPoolSnapshot) -> [ProviderKeyUsageWindow] {
+    func providerKeyPoolDisplayUsageWindows(_ pool: ProviderKeyPoolSnapshot) -> [ProviderKeyUsageWindow] {
         var groupedWindows: [String: ProviderKeyUsageWindow] = [:]
 
         for member in pool.members {
@@ -17857,7 +10118,7 @@ struct SettingsSheetView: View {
         return min(lhs, rhs)
     }
 
-    private func providerKeyUsageWindowRank(_ window: ProviderKeyUsageWindow) -> Int {
+    func providerKeyUsageWindowRank(_ window: ProviderKeyUsageWindow) -> Int {
         switch window.limitWindowSeconds {
         case 5 * 60 * 60:
             return 0
@@ -17868,7 +10129,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyUsageWindowTitle(_ window: ProviderKeyUsageWindow) -> String {
+    func providerKeyUsageWindowTitle(_ window: ProviderKeyUsageWindow) -> String {
         switch window.limitWindowSeconds {
         case 5 * 60 * 60:
             return "5 小时额度"
@@ -17886,23 +10147,23 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyUsageWindowPercent(_ window: ProviderKeyUsageWindow) -> Double {
+    func providerKeyUsageWindowPercent(_ window: ProviderKeyUsageWindow) -> Double {
         let percent = window.usedPercent > 0
             ? window.usedPercent
             : Double(max(0, min(10_000, window.usedBasisPoints))) / 100.0
         return max(0, min(100, percent))
     }
 
-    private func providerKeyUsageWindowPercentText(_ window: ProviderKeyUsageWindow) -> String {
+    func providerKeyUsageWindowPercentText(_ window: ProviderKeyUsageWindow) -> String {
         String(format: "%.1f%%", providerKeyUsageWindowPercent(window))
     }
 
-    private func providerKeyUsageWindowResetText(_ window: ProviderKeyUsageWindow) -> String {
+    func providerKeyUsageWindowResetText(_ window: ProviderKeyUsageWindow) -> String {
         guard window.resetAtMs > 0 else { return "" }
         return "重置 \(formattedProviderKeyImportSourceTime(window.resetAtMs))"
     }
 
-    private func providerKeyUsageWindowTint(_ window: ProviderKeyUsageWindow) -> Color {
+    func providerKeyUsageWindowTint(_ window: ProviderKeyUsageWindow) -> Color {
         if window.limited {
             return .red
         }
@@ -17918,7 +10179,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyMemberQuotaText(_ account: ProviderKeyAccount) -> String {
+    func providerKeyMemberQuotaText(_ account: ProviderKeyAccount) -> String {
         var parts: [String] = []
         if account.quota.usageWindows.isEmpty,
            account.quota.dailyTokensUsed > 0 || account.quota.dailyTokenCap > 0 {
@@ -17950,7 +10211,7 @@ struct SettingsSheetView: View {
         return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
     }
 
-    private func providerKeyMemberHeatLabel(_ account: ProviderKeyAccount) -> String {
+    func providerKeyMemberHeatLabel(_ account: ProviderKeyAccount) -> String {
         let fraction = providerKeyUsageFraction(
             used: account.quota.dailyTokensUsed,
             cap: account.quota.dailyTokenCap
@@ -17969,7 +10230,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyPoolRemainingSummary(_ pool: ProviderKeyPoolSnapshot) -> String {
+    func providerKeyPoolRemainingSummary(_ pool: ProviderKeyPoolSnapshot) -> String {
         var parts: [String] = []
         if pool.totalDailyTokenCap > 0 {
             parts.append(
@@ -17987,7 +10248,7 @@ struct SettingsSheetView: View {
         return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
     }
 
-    private func providerKeyMemberUsageMetaText(_ account: ProviderKeyAccount) -> String {
+    func providerKeyMemberUsageMetaText(_ account: ProviderKeyAccount) -> String {
         var parts: [String] = []
         if account.quota.usageWindows.isEmpty {
             if account.quota.dailyTokenCap > 0 {
@@ -18017,7 +10278,7 @@ struct SettingsSheetView: View {
         return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
     }
 
-    private func providerKeyFamilyQuotaSummary(_ family: ProviderKeyFamilyInventorySummary) -> String {
+    func providerKeyFamilyQuotaSummary(_ family: ProviderKeyFamilyInventorySummary) -> String {
         var parts: [String] = []
         if family.combinedDailyTokenCap > 0 {
             parts.append(
@@ -18038,7 +10299,7 @@ struct SettingsSheetView: View {
         return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
     }
 
-    private func providerKeyFamilyBudgetSummary(_ family: ProviderKeyFamilyInventorySummary) -> String {
+    func providerKeyFamilyBudgetSummary(_ family: ProviderKeyFamilyInventorySummary) -> String {
         var parts: [String] = []
         if family.assignedClientCount > 0 {
             parts.append("覆盖 \(family.coveredUserCount) 个用户 / \(family.assignedClientCount) 个消费者")
@@ -18061,7 +10322,7 @@ struct SettingsSheetView: View {
         return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
     }
 
-    private func providerKeyFamilyClientPreview(_ family: ProviderKeyFamilyInventorySummary) -> String {
+    func providerKeyFamilyClientPreview(_ family: ProviderKeyFamilyInventorySummary) -> String {
         let previewNames = family.assignedClients.prefix(3).map(\.name)
         guard !previewNames.isEmpty else { return "" }
         let suffix = family.assignedClients.count > previewNames.count
@@ -18070,7 +10331,7 @@ struct SettingsSheetView: View {
         return "消费者：\(previewNames.joined(separator: "、"))\(suffix)"
     }
 
-    private func providerKeyFamilyRetrySummary(_ family: ProviderKeyFamilyInventorySummary) -> String {
+    func providerKeyFamilyRetrySummary(_ family: ProviderKeyFamilyInventorySummary) -> String {
         if let retryText = family.quotaPool.sources
             .flatMap(\.members)
             .map({ $0.account.errorState.retryAtText.trimmingCharacters(in: .whitespacesAndNewlines) })
@@ -18085,7 +10346,7 @@ struct SettingsSheetView: View {
         )
     }
 
-    private func providerKeyBudgetClientScopeSummary(_ clientProjection: RemoteQuotaCenterClientProjection) -> String {
+    func providerKeyBudgetClientScopeSummary(_ clientProjection: RemoteQuotaCenterClientProjection) -> String {
         var parts: [String] = []
         if clientProjection.allowsAllFamilies {
             parts.append("允许所有已知付费家族")
@@ -18103,7 +10364,7 @@ struct SettingsSheetView: View {
         return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
     }
 
-    private func providerKeyBudgetClientActivitySummary(_ clientProjection: RemoteQuotaCenterClientProjection) -> String {
+    func providerKeyBudgetClientActivitySummary(_ clientProjection: RemoteQuotaCenterClientProjection) -> String {
         var parts: [String] = []
         if !clientProjection.topModel.isEmpty {
             parts.append(HubUIStrings.Settings.GRPC.DeviceList.topModel(clientProjection.topModel))
@@ -18129,21 +10390,21 @@ struct SettingsSheetView: View {
         return HubUIStrings.Settings.RemoteModels.sectionSummary(parts)
     }
 
-    private func providerKeyUsageFraction(used: Int64, cap: Int64) -> Double {
+    func providerKeyUsageFraction(used: Int64, cap: Int64) -> Double {
         guard cap > 0 else { return 0 }
         let normalizedUsed = max(Double(used), 0)
         let normalizedCap = max(Double(cap), 1)
         return max(0, min(1, normalizedUsed / normalizedCap))
     }
 
-    private func providerKeySignedTokenCount(_ value: Int64) -> String {
+    func providerKeySignedTokenCount(_ value: Int64) -> String {
         let magnitude = HubUIStrings.Settings.ProviderKeys.tokenCount(abs(value))
         if value > 0 { return "+\(magnitude)" }
         if value < 0 { return "-\(magnitude)" }
         return magnitude
     }
 
-    private func providerKeyTrendWindowSummary(
+    func providerKeyTrendWindowSummary(
         _ aggregate: RemoteQuotaTrendAggregate
     ) -> String {
         let bucketMinutes = max(Int64(1), aggregate.bucketMs / (60 * 1000))
@@ -18154,7 +10415,7 @@ struct SettingsSheetView: View {
         return "\(windowMinutes)m / \(bucketMinutes)m"
     }
 
-    private func providerKeyTrendMomentumText(
+    func providerKeyTrendMomentumText(
         _ aggregate: RemoteQuotaTrendAggregate
     ) -> String {
         if aggregate.recentTokens15m <= 0 && aggregate.previousTokens15m <= 0 {
@@ -18176,7 +10437,7 @@ struct SettingsSheetView: View {
         return "较前 15 分钟回落 \(percent)%。"
     }
 
-    private func providerKeyTrendMomentumColor(
+    func providerKeyTrendMomentumColor(
         _ aggregate: RemoteQuotaTrendAggregate
     ) -> Color {
         guard let momentum = aggregate.momentumRatio else {
@@ -18194,7 +10455,7 @@ struct SettingsSheetView: View {
     }
 
     @ViewBuilder
-    private func providerKeyMemberIssueSummaryView(_ member: ProviderKeyPoolMemberState) -> some View {
+    func providerKeyMemberIssueSummaryView(_ member: ProviderKeyPoolMemberState) -> some View {
         let summary = member.reasonMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         let detail = member.detailMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         let isExpanded = expandedProviderKeyMemberIssueIDs.contains(member.id)
@@ -18236,7 +10497,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyMemberRetryText(_ member: ProviderKeyPoolMemberState) -> String? {
+    func providerKeyMemberRetryText(_ member: ProviderKeyPoolMemberState) -> String? {
         let explicitText = member.account.errorState.retryAtText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !explicitText.isEmpty {
             return HubUIStrings.Settings.ProviderKeys.nextRetry(explicitText)
@@ -18247,7 +10508,7 @@ struct SettingsSheetView: View {
         )
     }
 
-    private func accountStatusColor(_ account: ProviderKeyAccount) -> Color {
+    func accountStatusColor(_ account: ProviderKeyAccount) -> Color {
         if !account.enabled { return .gray }
         switch account.errorState.status {
         case "healthy": return .green
@@ -18259,149 +10520,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func providerKeyImportSourceTitle(_ source: ProviderKeyImportSourceStatus) -> String {
-        let ref = providerKeyImportSourceDisplayName(source)
-        switch source.kind {
-        case "auth_dir":
-            return "Auth 目录 · \(ref)"
-        case "config_path":
-            return "配置文件 · \(ref)"
-        case "cliproxy_oauth":
-            return "CLIProxy OAuth · \(ref)"
-        default:
-            return "\(source.kind) · \(ref)"
-        }
-    }
-
-    private func providerKeyImportSourceDisplayName(_ source: ProviderKeyImportSourceStatus) -> String {
-        if source.kind == "cliproxy_oauth",
-           let url = URL(string: source.sourceRef),
-           let host = url.host?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !host.isEmpty {
-            if let port = url.port {
-                return "\(host):\(port)"
-            }
-            return host
-        }
-        let isDirectory = source.kind == "auth_dir"
-        let url = URL(fileURLWithPath: source.sourceRef, isDirectory: isDirectory)
-        let candidate = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
-        return candidate.isEmpty ? source.sourceRef : candidate
-    }
-
-    private func providerKeyImportSourceDisplayRef(_ source: ProviderKeyImportSourceStatus) -> String {
-        source.sourceRef
-    }
-
-    private func providerKeyImportSourceStateText(_ source: ProviderKeyImportSourceStatus) -> String {
-        switch source.state {
-        case "ready":
-            return "ready"
-        case "missing":
-            return "missing"
-        case "sync_failed":
-            return "sync_failed"
-        default:
-            return "pending"
-        }
-    }
-
-    private func providerKeyImportSourceStateColor(_ source: ProviderKeyImportSourceStatus) -> Color {
-        switch source.state {
-        case "ready":
-            return .green
-        case "missing":
-            return .orange
-        case "sync_failed":
-            return .red
-        default:
-            return .secondary
-        }
-    }
-
-    private func providerKeyImportSourceIsHighlighted(_ source: ProviderKeyImportSourceStatus) -> Bool {
-        guard let highlightedProviderKeySourceRef else { return false }
-        return hubNormalizedProviderKeySourceRef(source.sourceRef) == highlightedProviderKeySourceRef
-    }
-
-    private func providerKeyImportSourceSummary(_ source: ProviderKeyImportSourceStatus) -> String {
-        var parts: [String] = [
-            "owned \(source.ownedAccountCount)",
-            "导入 \(source.lastImportedCount)"
-        ]
-        if source.lastSyncAtMs > 0 {
-            parts.insert("上次同步 \(formattedProviderKeyImportSourceTime(source.lastSyncAtMs))", at: 0)
-        } else {
-            parts.insert("还没有成功同步记录", at: 0)
-        }
-        if source.lastErrorCount > 0 {
-            parts.append("错误 \(source.lastErrorCount)")
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    private func providerKeyImportSourceErrorDescription(_ source: ProviderKeyImportSourceStatus) -> String? {
-        guard let rawError = source.lastErrors.first?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !rawError.isEmpty else {
-            return nil
-        }
-
-        let normalized = rawError.lowercased()
-        if normalized.hasPrefix("source_path_missing") {
-            return "源路径已经不存在；恢复目录或文件后再次刷新。"
-        }
-        if normalized.contains("missing management key") {
-            return "CLIProxy management key 缺失；填好后重新同步。"
-        }
-        if normalized.contains("invalid management key") {
-            return "CLIProxy management key 不正确；请确认 Hub 里填写的是管理端口对应的 key。"
-        }
-        if normalized.contains("cli proxy") || normalized.contains("cliproxy") {
-            return rawError
-        }
-        if normalized.hasPrefix("unsupported_toml_config") {
-            return "当前 TOML 结构不在 Hub 支持范围内；请改用支持的 Codex CLI TOML / YAML，或直接导入 auth 目录。"
-        }
-        if normalized.hasPrefix("toml_read_failed") {
-            return "TOML 读取失败：\(trimmedProviderKeyImportErrorDetail(rawError))"
-        }
-        if normalized.hasPrefix("yaml_parse_failed") {
-            return "YAML 解析失败：\(trimmedProviderKeyImportErrorDetail(rawError))"
-        }
-        if normalized.hasPrefix("invalid_config") {
-            return "配置文件内容无效，当前还不能生成可导入账号。"
-        }
-        if normalized.hasSuffix("duplicate_api_key") || normalized.hasPrefix("duplicate_api_key") {
-            return "导入的 key 与当前池中已有 key 冲突；请去重后再导入。"
-        }
-        if normalized.hasSuffix("invalid_account") || normalized.hasPrefix("invalid_account") {
-            return "导入内容缺少 provider 或 credential 等必要字段。"
-        }
-        if normalized.hasSuffix("max_accounts_reached") || normalized.hasPrefix("max_accounts_reached") {
-            return "这个 provider 的账号数已经达到上限；先清理旧账号。"
-        }
-        if normalized.contains("save_failed") {
-            return "Hub 本地状态保存失败；请重试并检查共享目录是否可写。"
-        }
-        return rawError
-    }
-
-    private func trimmedProviderKeyImportErrorDetail(_ raw: String) -> String {
-        guard let separator = raw.firstIndex(of: ":") else { return raw }
-        let suffix = raw[raw.index(after: separator)...].trimmingCharacters(in: .whitespacesAndNewlines)
-        return suffix.isEmpty ? raw : suffix
-    }
-
-    private func formattedProviderKeyImportSourceTime(_ timestampMs: Int64) -> String {
-        guard timestampMs > 0 else { return "未知" }
-        let formatter = DateFormatter()
-        formatter.locale = Locale.autoupdatingCurrent
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(timestampMs) / 1000.0))
-    }
-
-    private func errorStateDescription(_ state: ProviderKeyErrorState) -> String {
+    func errorStateDescription(_ state: ProviderKeyErrorState) -> String {
         switch state.status {
         case "healthy": return HubUIStrings.Settings.ProviderKeys.healthy
         case "degraded": return HubUIStrings.Settings.ProviderKeys.degraded
@@ -18418,927 +10537,13 @@ struct SettingsSheetView: View {
         }
     }
 
-    private var modelHealthAutoScanSection: some View {
-        Section(HubUIStrings.Settings.ModelHealthAutoScan.sectionTitle) {
-            Text(HubUIStrings.Settings.ModelHealthAutoScan.summary)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            modelHealthAutoScanCard(
-                title: HubUIStrings.Settings.ModelHealthAutoScan.localTitle,
-                schedule: store.localModelHealthAutoScanSchedule,
-                hint: HubUIStrings.Settings.ModelHealthAutoScan.localHint,
-                nextRunText: nextLocalModelHealthAutoScanText(),
-                modeBinding: localModelHealthAutoScanModeBinding(),
-                intervalBinding: localModelHealthAutoScanIntervalBinding(),
-                dailyTimeBinding: localModelHealthAutoScanDailyTimeBinding()
-            )
-
-            modelHealthAutoScanCard(
-                title: HubUIStrings.Settings.ModelHealthAutoScan.remoteTitle,
-                schedule: store.remoteKeyHealthAutoScanSchedule,
-                hint: HubUIStrings.Settings.ModelHealthAutoScan.remoteHint,
-                nextRunText: nextRemoteKeyHealthAutoScanText(),
-                modeBinding: remoteKeyHealthAutoScanModeBinding(),
-                intervalBinding: remoteKeyHealthAutoScanIntervalBinding(),
-                dailyTimeBinding: remoteKeyHealthAutoScanDailyTimeBinding()
-            )
-        }
-    }
-
-    @ViewBuilder
-    private func modelHealthAutoScanCard(
-        title: String,
-        schedule: ModelHealthAutoScanSchedule,
-        hint: String,
-        nextRunText: String?,
-        modeBinding: Binding<ModelHealthAutoScanMode>,
-        intervalBinding: Binding<Int>,
-        dailyTimeBinding: Binding<Date>
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.callout.weight(.semibold))
-
-            Picker(HubUIStrings.Settings.ModelHealthAutoScan.mode, selection: modeBinding) {
-                Text(HubUIStrings.Settings.ModelHealthAutoScan.disabled).tag(ModelHealthAutoScanMode.disabled)
-                Text(HubUIStrings.Settings.ModelHealthAutoScan.interval).tag(ModelHealthAutoScanMode.interval)
-                Text(HubUIStrings.Settings.ModelHealthAutoScan.dailyTime).tag(ModelHealthAutoScanMode.dailyTime)
-            }
-            .pickerStyle(.segmented)
-
-            switch schedule.mode {
-            case .disabled:
-                EmptyView()
-            case .interval:
-                Stepper(value: intervalBinding, in: 1...(24 * 14)) {
-                    Text(HubUIStrings.Settings.ModelHealthAutoScan.everyHours(schedule.intervalHours))
-                        .font(.caption)
-                }
-            case .dailyTime:
-                HStack {
-                    Text(HubUIStrings.Settings.ModelHealthAutoScan.dailyAt)
-                        .font(.caption)
-                    Spacer()
-                    DatePicker(
-                        "",
-                        selection: dailyTimeBinding,
-                        displayedComponents: .hourAndMinute
-                    )
-                    .labelsHidden()
-                    .datePickerStyle(.field)
-                }
-
-                Text(HubUIStrings.Settings.ModelHealthAutoScan.dailyTimeHint)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Text(hint)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            if let nextRunText {
-                Text(HubUIStrings.Settings.ModelHealthAutoScan.nextRun(nextRunText))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(12)
-        .background(Color.white.opacity(0.05))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    private func localModelHealthAutoScanModeBinding() -> Binding<ModelHealthAutoScanMode> {
-        Binding(
-            get: { store.localModelHealthAutoScanSchedule.mode },
-            set: { newValue in
-                store.updateLocalModelHealthAutoScanSchedule(
-                    reconfiguredModelHealthAutoScanSchedule(from: store.localModelHealthAutoScanSchedule) {
-                        $0.mode = newValue
-                    }
-                )
-            }
-        )
-    }
-
-    private func localModelHealthAutoScanIntervalBinding() -> Binding<Int> {
-        Binding(
-            get: { store.localModelHealthAutoScanSchedule.intervalHours },
-            set: { newValue in
-                store.updateLocalModelHealthAutoScanSchedule(
-                    reconfiguredModelHealthAutoScanSchedule(from: store.localModelHealthAutoScanSchedule) {
-                        $0.intervalHours = newValue
-                    }
-                )
-            }
-        )
-    }
-
-    private func localModelHealthAutoScanDailyTimeBinding() -> Binding<Date> {
-        Binding(
-            get: { clockDate(for: store.localModelHealthAutoScanSchedule.dailyMinuteOfDay) },
-            set: { newValue in
-                store.updateLocalModelHealthAutoScanSchedule(
-                    reconfiguredModelHealthAutoScanSchedule(from: store.localModelHealthAutoScanSchedule) {
-                        $0.dailyMinuteOfDay = minuteOfDay(from: newValue)
-                    }
-                )
-            }
-        )
-    }
-
-    private func remoteKeyHealthAutoScanModeBinding() -> Binding<ModelHealthAutoScanMode> {
-        Binding(
-            get: { store.remoteKeyHealthAutoScanSchedule.mode },
-            set: { newValue in
-                store.updateRemoteKeyHealthAutoScanSchedule(
-                    reconfiguredModelHealthAutoScanSchedule(from: store.remoteKeyHealthAutoScanSchedule) {
-                        $0.mode = newValue
-                    }
-                )
-            }
-        )
-    }
-
-    private func remoteKeyHealthAutoScanIntervalBinding() -> Binding<Int> {
-        Binding(
-            get: { store.remoteKeyHealthAutoScanSchedule.intervalHours },
-            set: { newValue in
-                store.updateRemoteKeyHealthAutoScanSchedule(
-                    reconfiguredModelHealthAutoScanSchedule(from: store.remoteKeyHealthAutoScanSchedule) {
-                        $0.intervalHours = newValue
-                    }
-                )
-            }
-        )
-    }
-
-    private func remoteKeyHealthAutoScanDailyTimeBinding() -> Binding<Date> {
-        Binding(
-            get: { clockDate(for: store.remoteKeyHealthAutoScanSchedule.dailyMinuteOfDay) },
-            set: { newValue in
-                store.updateRemoteKeyHealthAutoScanSchedule(
-                    reconfiguredModelHealthAutoScanSchedule(from: store.remoteKeyHealthAutoScanSchedule) {
-                        $0.dailyMinuteOfDay = minuteOfDay(from: newValue)
-                    }
-                )
-            }
-        )
-    }
-
-    private func nextLocalModelHealthAutoScanText() -> String? {
-        guard store.localModelHealthAutoScanSchedule.isEnabled else { return nil }
-        let localModels = localModelSnapshot.models
-        guard !localModels.isEmpty else { return nil }
-
-        let healthByModelID = Dictionary(
-            uniqueKeysWithValues: store.localModelHealthSnapshot.records.map { ($0.modelId, $0) }
-        )
-        let dueAt = localModels.compactMap { model in
-            store.localModelHealthAutoScanSchedule.nextDueAt(
-                lastCheckedAt: healthByModelID[model.id]?.lastCheckedAt
-            )
-        }
-        .min()
-
-        return formattedAutoScanTime(dueAt)
-    }
-
-    private func nextRemoteKeyHealthAutoScanText() -> String? {
-        guard store.remoteKeyHealthAutoScanSchedule.isEnabled else { return nil }
-        let groups = RemoteKeyHealthScanner.groups(from: remoteModels)
-        guard !groups.isEmpty else { return nil }
-
-        let healthByKey = Dictionary(
-            uniqueKeysWithValues: store.remoteKeyHealthSnapshot.records.map { ($0.keyReference, $0) }
-        )
-        let dueAt = groups.compactMap { group in
-            store.remoteKeyHealthAutoScanSchedule.nextDueAt(
-                lastCheckedAt: healthByKey[group.keyReference]?.lastCheckedAt
-            )
-        }
-        .min()
-
-        return formattedAutoScanTime(dueAt)
-    }
-
-    private func reconfiguredModelHealthAutoScanSchedule(
-        from current: ModelHealthAutoScanSchedule,
-        update: (inout ModelHealthAutoScanSchedule) -> Void
-    ) -> ModelHealthAutoScanSchedule {
-        var updated = current
-        update(&updated)
-        let now = Date().timeIntervalSince1970
-        updated.configuredAt = now
-        return updated.normalized(now: now)
-    }
-
-    private func clockDate(for minuteOfDay: Int) -> Date {
-        let calendar = Calendar.autoupdatingCurrent
-        let startOfDay = calendar.startOfDay(for: Date())
-        return calendar.date(byAdding: .minute, value: minuteOfDay, to: startOfDay) ?? Date()
-    }
-
-    private func minuteOfDay(from date: Date) -> Int {
-        let components = Calendar.autoupdatingCurrent.dateComponents([.hour, .minute], from: date)
-        return (components.hour ?? 0) * 60 + (components.minute ?? 0)
-    }
-
-    private func formattedAutoScanTime(_ raw: TimeInterval?) -> String? {
-        guard let raw, raw > 0 else { return nil }
-        let formatter = DateFormatter()
-        formatter.locale = Locale.autoupdatingCurrent
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        return formatter.string(from: Date(timeIntervalSince1970: raw))
-    }
-
-    @ViewBuilder
-    private func remoteModelGroupCard(_ group: RemoteModelKeyGroup) -> some View {
-        let usageLimitNotice = remoteKeyUsageLimitNotice(for: group)
-        let healthPresentation = remoteKeyHealthPresentation(for: group, usageLimitNotice: usageLimitNotice)
-        let slotPresentations = remoteKeySlotPresentations(for: group)
-        let detailBinding = expansionBinding(group.id, in: $expandedRemoteModelGroupIDs)
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(group.title)
-                            .font(.callout.weight(.semibold))
-                        if let healthPresentation {
-                            remoteModelStatusBadge(healthPresentation.badgeText, tint: healthPresentation.tint)
-                        }
-                    }
-                    Text(group.summary)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    if let detail = group.detail, !detail.isEmpty {
-                        Text(detail)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let healthPresentation {
-                        Text(healthPresentation.detailText)
-                            .font(.caption2)
-                            .foregroundStyle(healthPresentation.tint)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if !slotPresentations.isEmpty {
-                        remoteKeySlotStatusList(slotPresentations)
-                    }
-                    keychainStatusLine(model: group.primaryModel)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 8) {
-                    HStack(spacing: 8) {
-                        Button(HubUIStrings.Settings.RemoteModels.loadAll) {
-                            setRemoteModelsEnabled(group.loadableModelIDs, enabled: true)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .disabled(group.loadableModelIDs.isEmpty)
-
-                        Button(HubUIStrings.Settings.RemoteModels.unloadAll) {
-                            setRemoteModelsEnabled(group.enabledModelIDs, enabled: false)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(group.enabledModelIDs.isEmpty)
-                    }
-
-                    Menu {
-                        Button(HubUIStrings.Settings.RemoteModels.rescan) {
-                            store.quickScanRemoteKeyHealth(for: [group.keyReference])
-                        }
-                        .disabled(store.remoteKeyHealthScanInFlight)
-
-                        Button(group.renameActionTitle) {
-                            editingRemoteModelGroup = group
-                        }
-
-                        Divider()
-
-                        Button(HubUIStrings.Settings.RemoteModels.removeKeyGroup, role: .destructive) {
-                            removeRemoteModelGroup(group)
-                        }
-                    } label: {
-                        settingsActionChipLabel(
-                            title: "管理",
-                            systemName: "slider.horizontal.3",
-                            tint: .secondary
-                        )
-                    }
-                }
-            }
-
-            settingsInlineDisclosureGroup(
-                systemName: "square.stack.3d.up.fill",
-                title: "组内模型明细",
-                summary: remoteModelGroupDisclosureSummary(group),
-                badge: detailBinding.wrappedValue ? "已展开" : "折叠中",
-                tint: .indigo,
-                isExpanded: detailBinding
-            ) {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(group.models) { model in
-                        remoteModelRow(model)
-                    }
-                }
-            }
-        }
-        .padding(12)
-        .background(Color.white.opacity(0.05))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func remoteKeySlotStatusList(_ slots: [RemoteKeySlotHealthPresentation]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(slots) { slot in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(slot.keyReference)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                        remoteModelStatusBadge(slot.badgeText, tint: slot.tint)
-                    }
-                    Text(slot.detailText)
-                        .font(.caption2)
-                        .foregroundStyle(slot.tint)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func remoteModelRow(_ model: RemoteModelEntry) -> some View {
-        let loadState = RemoteModelPresentationSupport.state(for: model)
-        let statusText = remoteModelStatusText(loadState)
-        let statusTint = remoteModelStatusTint(loadState)
-        let title = model.nestedDisplayName
-        let signals = remoteModelSignals(for: model)
-        let metadataTags = remoteModelMetadataTags(for: model)
-        let subtitle = remoteModelSubtitle(model)
-        let detailLine = remoteModelDetailLine(model)
-        let canLoad = loadState == .available
-        let isEnabled = model.enabled
-
-        HStack(alignment: .top, spacing: 10) {
-            ZStack {
-                Circle()
-                    .fill(remoteModelGlyphTint(for: model).opacity(0.16))
-                Image(systemName: remoteModelGlyphName(for: model))
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(remoteModelGlyphTint(for: model))
-            }
-            .frame(width: 30, height: 30)
-            .padding(.top, 1)
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(title)
-                        .font(.callout.weight(.semibold))
-                        .lineLimit(1)
-
-                    remoteModelStatusBadge(statusText, tint: statusTint)
-                }
-
-                Text(model.id)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .textSelection(.enabled)
-
-                if !signals.isEmpty || !metadataTags.isEmpty {
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 6) {
-                            ForEach(signals) { signal in
-                                remoteModelSignalBadge(signal)
-                            }
-                            ForEach(metadataTags, id: \.self) { tag in
-                                remoteModelChip(tag, tint: .secondary)
-                            }
-                        }
-
-                        Text(subtitle)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                }
-
-                if let detailLine {
-                    Text(detailLine)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-            }
-
-            Spacer(minLength: 10)
-
-            VStack(alignment: .trailing, spacing: 8) {
-                if isEnabled {
-                    Button(HubUIStrings.Settings.RemoteModels.unload) {
-                        setRemoteModelsEnabled([model.id], enabled: false)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                } else {
-                    Button(HubUIStrings.Settings.RemoteModels.load) {
-                        setRemoteModelsEnabled([model.id], enabled: true)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(!canLoad)
-                }
-
-                Button(HubUIStrings.Settings.RemoteModels.remove) {
-                    removeRemoteModel(id: model.id)
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-                .controlSize(.small)
-            }
-            .frame(width: 92, alignment: .trailing)
-        }
-        .padding(10)
-        .background(isEnabled ? Color.white.opacity(0.04) : Color.white.opacity(0.025))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(isEnabled ? Color.white.opacity(0.08) : Color.white.opacity(0.05), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    private func remoteModelStatusText(_ state: RemoteModelLoadState) -> String {
-        switch state {
-        case .loaded:
-            return HubUIStrings.Settings.RemoteModels.loaded
-        case .available:
-            return HubUIStrings.Settings.RemoteModels.available
-        case .needsSetup:
-            return HubUIStrings.Settings.RemoteModels.needsSetup
-        }
-    }
-
-    private func remoteModelStatusTint(_ state: RemoteModelLoadState) -> Color {
-        switch state {
-        case .loaded:
-            return .green
-        case .available:
-            return .secondary
-        case .needsSetup:
-            return .orange
-        }
-    }
-
-    @ViewBuilder
-    private func remoteModelChip(_ title: String, tint: Color) -> some View {
-        Text(title)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(tint.opacity(0.12))
-            .clipShape(Capsule())
-    }
-
-    @ViewBuilder
-    private func remoteModelSignalBadge(_ signal: RemoteModelSignalVisual) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: signal.systemName)
-                .imageScale(.small)
-            Text(signal.title)
-        }
-        .font(.caption2.weight(.medium))
-        .foregroundStyle(signal.tint)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(signal.tint.opacity(0.12))
-        .overlay(
-            Capsule()
-                .stroke(signal.tint.opacity(0.24), lineWidth: 1)
-        )
-        .clipShape(Capsule())
-    }
-
-    @ViewBuilder
-    private func remoteModelStatusBadge(_ title: String, tint: Color) -> some View {
-        Text(title)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(tint.opacity(0.12))
-            .clipShape(Capsule())
-    }
-
-    private var skillsSection: some View {
-        Section(HubUIStrings.Settings.Skills.sectionTitle) {
-            let storeDir = HubSkillsStoreStorage.skillsStoreDir()
-
-            HStack {
-                Text(HubUIStrings.Settings.Skills.store)
-                Spacer()
-                Button(HubUIStrings.Settings.Skills.showInFinder) {
-                    try? FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
-                    NSWorkspace.shared.activateFileViewerSelecting([storeDir])
-                }
-                Button(HubUIStrings.Settings.Skills.reload) {
-                    reloadSkillsSnapshots()
-                }
-            }
-
-            Text(storeDir.path)
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .textSelection(.enabled)
-
-            HStack {
-                Text(HubUIStrings.Settings.Skills.installedPackages)
-                Spacer()
-                Text(HubUIStrings.Settings.countBadge(skillsIndex.skills.count))
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack {
-                Text(HubUIStrings.Settings.Skills.pins)
-                Spacer()
-                Text(HubUIStrings.Settings.Skills.pinsSummary(
-                    memoryCore: skillsPins.memoryCorePins.count,
-                    global: skillsPins.globalPins.count,
-                    project: skillsPins.projectPins.count
-                ))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            if !skillsLastErrorText.isEmpty {
-                Text(skillsLastErrorText)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-            } else if !skillsLastActionText.isEmpty {
-                Text(skillsLastActionText)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            } else {
-                Text(HubUIStrings.Settings.Skills.storageHint)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(HubUIStrings.Settings.Skills.userIDLabel)
-                        .font(.caption.monospaced())
-                    Spacer()
-                    TextField(HubUIStrings.Settings.Skills.userIDPlaceholder, text: $skillsResolveUserId)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.caption)
-                        .frame(width: 320)
-                }
-
-                HStack {
-                    Text(HubUIStrings.Settings.Skills.projectIDLabel)
-                        .font(.caption.monospaced())
-                    Spacer()
-                    TextField(HubUIStrings.Settings.Skills.projectIDPlaceholder, text: $skillsResolveProjectId)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.caption)
-                        .frame(width: 320)
-                }
-
-                Text(HubUIStrings.Settings.Skills.priorityHint)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            DisclosureGroup(HubUIStrings.Settings.Skills.resolvedResults) {
-                let resolved = HubSkillsStoreStorage.resolvedSkills(
-                    index: skillsIndex,
-                    pins: skillsPins,
-                    userId: skillsResolveUserId,
-                    projectId: skillsResolveProjectId
-                )
-
-                HStack(spacing: 10) {
-                    Button(HubUIStrings.Settings.Skills.copyResolvedResults) {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(renderResolvedSkills(resolved), forType: .string)
-                    }
-                    Button(HubUIStrings.Settings.Skills.openPinsFile) {
-                        let url = HubSkillsStoreStorage.skillsPinsURL()
-                        let fm = FileManager.default
-                        if !fm.fileExists(atPath: url.path) {
-                            // Create an empty pins file so users can inspect/edit it directly.
-                            let empty = HubSkillsStoreStorage.SkillPinsSnapshot(
-                                schemaVersion: "skills_pins.v1",
-                                updatedAtMs: 0,
-                                memoryCorePins: [],
-                                globalPins: [],
-                                projectPins: []
-                            )
-                            try? HubSkillsStoreStorage.saveSkillPins(empty)
-                        }
-                        if fm.fileExists(atPath: url.path) {
-                            NSWorkspace.shared.open(url)
-                        } else {
-                            NSWorkspace.shared.open(url.deletingLastPathComponent())
-                        }
-                    }
-                    Spacer()
-                }
-                .font(.caption)
-
-                if resolved.isEmpty {
-                    Text(HubUIStrings.Settings.Skills.emptyResolvedResults)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(resolved) { r in
-                        skillResolvedRow(r)
-                            .padding(.vertical, 3)
-                    }
-                }
-            }
-
-            DisclosureGroup(HubUIStrings.Settings.Skills.pins) {
-                Text(HubUIStrings.Settings.Skills.memoryCorePins)
-                    .font(.caption.weight(.semibold))
-                if skillsPins.memoryCorePins.isEmpty {
-                    Text(HubUIStrings.Settings.Skills.empty)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(sortedPins(skillsPins.memoryCorePins)) { p in
-                        skillPinRow(p, scope: .memoryCore)
-                            .padding(.vertical, 3)
-                    }
-                }
-
-                Divider()
-
-                Text(HubUIStrings.Settings.Skills.globalPins)
-                    .font(.caption.weight(.semibold))
-                let uid = skillsResolveUserId.trimmingCharacters(in: .whitespacesAndNewlines)
-                let globals = uid.isEmpty ? sortedPins(skillsPins.globalPins) : sortedPins(skillsPins.globalPins.filter { ($0.userId ?? "") == uid })
-                if globals.isEmpty {
-                    Text(HubUIStrings.Settings.Skills.emptyGlobalPins(needsUserID: uid.isEmpty))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(globals) { p in
-                        skillPinRow(p, scope: .global)
-                            .padding(.vertical, 3)
-                    }
-                }
-
-                Divider()
-
-                Text(HubUIStrings.Settings.Skills.projectPins)
-                    .font(.caption.weight(.semibold))
-                let pid = skillsResolveProjectId.trimmingCharacters(in: .whitespacesAndNewlines)
-                let projects = (!uid.isEmpty && !pid.isEmpty)
-                    ? sortedPins(skillsPins.projectPins.filter { ($0.userId ?? "") == uid && ($0.projectId ?? "") == pid })
-                    : sortedPins(skillsPins.projectPins)
-                if projects.isEmpty {
-                    Text(HubUIStrings.Settings.Skills.emptyProjectPins(needsProjectFilter: uid.isEmpty || pid.isEmpty))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(projects) { p in
-                        skillPinRow(p, scope: .project)
-                            .padding(.vertical, 3)
-                    }
-                }
-            }
-
-            DisclosureGroup(HubUIStrings.Settings.Skills.search) {
-                TextField(HubUIStrings.Settings.Skills.searchPlaceholder, text: $skillsSearchQuery)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption)
-
-                let results = HubSkillsStoreStorage.searchSkills(index: skillsIndex, sources: skillsSources, query: skillsSearchQuery, limit: 30)
-                if results.isEmpty {
-                    Text(
-                        skillsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            ? HubUIStrings.Settings.Skills.emptySkills
-                            : HubUIStrings.Settings.Skills.noMatchingResults
-                    )
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(results) { meta in
-                        skillMetaRow(meta)
-                            .padding(.vertical, 4)
-                    }
-                }
-            }
-        }
-    }
-
-    private var advancedSection: some View {
-        Section(HubUIStrings.Settings.Advanced.sectionTitle) {
-            DisclosureGroup(HubUIStrings.Settings.Advanced.Runtime.title) {
-                Toggle(HubUIStrings.Settings.Advanced.Runtime.autoStart, isOn: $store.aiRuntimeAutoStart)
-
-                HStack {
-                    Text(HubUIStrings.Settings.Advanced.Runtime.status)
-                    Spacer()
-                    Text(store.aiRuntimeStatusText)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-            if !store.aiRuntimeLastError.isEmpty {
-                Text(store.aiRuntimeLastError)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-            }
-
-            if !store.aiRuntimeInstallHintsText.isEmpty {
-                Text(store.aiRuntimeInstallHintsText)
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .textSelection(.enabled)
-            }
-
-            HStack(spacing: 10) {
-                Button(HubUIStrings.Settings.Advanced.Runtime.start) { store.startAIRuntime() }
-                Button(HubUIStrings.Settings.Advanced.Runtime.stop) { store.stopAIRuntime() }
-                Button(HubUIStrings.Settings.Advanced.Runtime.openLog) { store.openAIRuntimeLog() }
-                    Spacer()
-                }
-
-                DisclosureGroup(HubUIStrings.Settings.Advanced.Runtime.configuration) {
-                    HStack {
-                        Text(HubUIStrings.Settings.Advanced.Runtime.pythonPath)
-                        Spacer()
-                        TextField(HubUIStrings.Settings.Advanced.Runtime.pythonPathPlaceholder, text: $store.aiRuntimePython)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.caption)
-                    }
-                    Text(HubUIStrings.Settings.Advanced.Runtime.packagedScriptHint)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                if !store.aiRuntimePythonCandidatesText.isEmpty {
-                    DisclosureGroup(HubUIStrings.Settings.Advanced.Runtime.pythonCandidates) {
-                        Text(store.aiRuntimePythonCandidatesText)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                        HStack(spacing: 10) {
-                            Button(HubUIStrings.Settings.Advanced.Runtime.copyPythonCandidates) {
-                                copyRuntimePythonCandidatesToClipboard()
-                            }
-                            Spacer()
-                        }
-                        .font(.caption)
-                    }
-                }
-            }
-
-            DisclosureGroup(HubUIStrings.Settings.Advanced.Constitution.title) {
-                HStack {
-                    Text(HubUIStrings.Settings.Advanced.Constitution.policyFile)
-                    Spacer()
-                    Button(HubUIStrings.Settings.Advanced.Constitution.reload) { reloadAXConstitutionStatus() }
-                    Button(HubUIStrings.Settings.Advanced.Constitution.open) { store.openAXConstitutionFile() }
-                }
-                let ver = axConstitutionVersion.trimmingCharacters(in: .whitespacesAndNewlines)
-                HStack {
-                    Text(HubUIStrings.Settings.Advanced.Constitution.version)
-                    Spacer()
-                    Text(ver.isEmpty ? HubUIStrings.Settings.Advanced.Constitution.unknown : ver)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                let clauseSummary = axConstitutionEnabledClauseIds.isEmpty
-                    ? HubUIStrings.Settings.Advanced.Constitution.none
-                    : axConstitutionEnabledClauseIds.joined(separator: ", ")
-                Text(HubUIStrings.Settings.Advanced.Constitution.enabledClauses(clauseSummary))
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                HStack(spacing: 10) {
-                    Button(HubUIStrings.Settings.Advanced.Constitution.copySummary) { copyAXConstitutionSummaryToClipboard() }
-                    Spacer()
-                }
-                Text(store.axConstitutionURL().path)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
-                if !axConstitutionErrorText.isEmpty {
-                    Text(axConstitutionErrorText)
-                        .font(.caption2)
-                        .foregroundStyle(.red)
-                        .textSelection(.enabled)
-                }
-                Text(HubUIStrings.Settings.Advanced.Constitution.bootstrapHint)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            // FA Tracker launcher settings removed for teammate-facing builds.
-        }
-    }
-
-    private var quitSection: some View {
-        Section(HubUIStrings.Settings.Quit.sectionTitle) {
-            HStack(spacing: 10) {
-                Button(HubUIStrings.Settings.Quit.quitApp) { quitApp() }
-                Spacer()
-            }
-            let ver = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? ""
-            let build = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? ""
-            Text(HubUIStrings.Settings.Quit.version(ver, build))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    @ViewBuilder
-    private func networkRequestCard(_ req: HubNetworkRequest) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(HubUIStrings.Settings.Networking.requestSource(req.source ?? HubUIStrings.Settings.Networking.unknown))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if let p = req.rootPath, !p.isEmpty {
-                Text(p)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-
-            if let r = req.reason, !r.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(r)
-                    .font(.caption)
-            }
-
-            let secs = req.requestedSeconds ?? 900
-            HStack(spacing: 10) {
-                Button(HubUIStrings.Settings.Networking.approveFiveMinutes) { store.approveNetworkRequest(req, seconds: 5 * 60) }
-                Button(HubUIStrings.Settings.Networking.approveThirtyMinutes) { store.approveNetworkRequest(req, seconds: 30 * 60) }
-                Button(HubUIStrings.Settings.Networking.approveSuggested(max(1, secs / 60))) { store.approveNetworkRequest(req, seconds: secs) }
-                Button(HubUIStrings.Settings.Networking.dismiss) { store.dismissNetworkRequest(req) }
-                Menu(HubUIStrings.Settings.Networking.policyMenu) {
-                    Button(HubUIStrings.Settings.Networking.allowProjectAlways) {
-                        // No explicit limit: "always on" will be kept alive automatically by Hub.
-                        store.setNetworkPolicy(for: req, mode: .alwaysOn, maxSeconds: nil)
-                        let requested = max(10, req.requestedSeconds ?? 900)
-                        let secs = max(requested, 8 * 60 * 60)
-                        store.approveNetworkRequest(req, seconds: secs)
-                    }
-                    Button(HubUIStrings.Settings.Networking.autoApproveProject) {
-                        let maxSecs = max(10, req.requestedSeconds ?? 900)
-                        store.setNetworkPolicy(for: req, mode: .autoApprove, maxSeconds: maxSecs)
-                        store.approveNetworkRequest(req, seconds: maxSecs)
-                    }
-                    Button(HubUIStrings.Settings.Networking.denyProjectAlways) {
-                        store.setNetworkPolicy(for: req, mode: .deny, maxSeconds: nil)
-                        store.dismissNetworkRequest(req)
-                    }
-                }
-                Spacer()
-            }
-        }
-        .padding(8)
-        .background(Color.secondary.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    @ViewBuilder
-    private func keychainStatusLine(model: RemoteModelEntry) -> some View {
-        let status = keychainStatus(model: model)
-        Text(status.text)
-            .font(.caption2)
-            .foregroundStyle(status.color)
-    }
-
-    private static let routingTaskTypes: [String] = [
+    static let routingTaskTypes: [String] = [
         "supervisor",
         "coder",
         "reviewer",
     ]
 
-    private func routingTaskTypeLabel(_ taskType: String) -> String {
+    func routingTaskTypeLabel(_ taskType: String) -> String {
         switch taskType {
         case "supervisor":
             return HubUIStrings.Models.TaskType.supervisor
@@ -19351,7 +10556,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func bindingRoutingModelId(_ taskType: String) -> Binding<String> {
+    func bindingRoutingModelId(_ taskType: String) -> Binding<String> {
         Binding(
             get: { store.routingPreferredModelIdByTask[taskType] ?? "" },
             set: { s in
@@ -19511,7 +10716,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func reloadProviderKeySnapshot(rebuildProjection: Bool? = nil) {
+    func reloadProviderKeySnapshot(rebuildProjection: Bool? = nil) {
         providerKeyReloadTask?.cancel()
         providerKeyReloadTask = Task { @MainActor in
             let state = await Task.detached(priority: .utility) {
@@ -19575,14 +10780,14 @@ struct SettingsSheetView: View {
         ModelStore.shared.refresh()
     }
 
-    private func removeRemoteModel(id: String) {
+    func removeRemoteModel(id: String) {
         let snap = RemoteModelStorage.remove(id: id)
         remoteModels = Self.sortedRemoteModels(snap.models)
         rebuildRemoteModelGroupsSnapshot()
         ModelStore.shared.refresh()
     }
 
-    private func removeRemoteModelGroup(_ group: RemoteModelKeyGroup) {
+    func removeRemoteModelGroup(_ group: RemoteModelKeyGroup) {
         let snap = RemoteModelStorage.remove(ids: group.models.map(\.id))
         remoteModels = Self.sortedRemoteModels(snap.models)
         rebuildRemoteModelGroupsSnapshot()
@@ -19602,7 +10807,7 @@ struct SettingsSheetView: View {
         persistRemoteModels()
     }
 
-    private func setRemoteModelsEnabled(_ modelIDs: [String], enabled: Bool) {
+    func setRemoteModelsEnabled(_ modelIDs: [String], enabled: Bool) {
         let ids = Set(modelIDs)
         guard !ids.isEmpty else { return }
 
@@ -19753,7 +10958,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func updatePolicy(_ rule: HubNetworkPolicyRule, mode: HubNetworkPolicyMode?, maxSeconds: Int?) {
+    func updatePolicy(_ rule: HubNetworkPolicyRule, mode: HubNetworkPolicyMode?, maxSeconds: Int?) {
         var r = rule
         if let m = mode { r.mode = m }
         r.maxSeconds = maxSeconds
@@ -19763,13 +10968,13 @@ struct SettingsSheetView: View {
         store.reloadNetworkPolicySnapshot()
     }
 
-    private func removePolicy(_ rule: HubNetworkPolicyRule) {
+    func removePolicy(_ rule: HubNetworkPolicyRule) {
         _ = HubNetworkPolicyStorage.remove(id: rule.id)
         reloadNetworkPolicies()
         store.reloadNetworkPolicySnapshot()
     }
 
-    private func policyModeText(_ mode: HubNetworkPolicyMode) -> String {
+    func policyModeText(_ mode: HubNetworkPolicyMode) -> String {
         switch mode {
         case .manual: return HubUIStrings.Settings.NetworkPolicies.manual
         case .autoApprove: return HubUIStrings.Settings.NetworkPolicies.autoApprove
@@ -19778,7 +10983,7 @@ struct SettingsSheetView: View {
         }
     }
 
-    private func policyLimitText(_ maxSeconds: Int?) -> String {
+    func policyLimitText(_ maxSeconds: Int?) -> String {
         guard let s = maxSeconds, s > 0 else { return HubUIStrings.Settings.NetworkPolicies.defaultLimit }
         let mins = max(1, s / 60)
         if mins >= 60 {
@@ -19788,2018 +10993,7 @@ struct SettingsSheetView: View {
         return HubUIStrings.Settings.NetworkPolicies.minutes(mins)
     }
 
-    private func remoteModelGlyphName(for model: RemoteModelEntry) -> String {
-        let haystack = remoteModelSearchText(model)
-        if remoteModelLooksEmbedding(haystack) {
-            return "point.3.connected.trianglepath.dotted"
-        }
-        if remoteModelLooksVoice(haystack) {
-            return "speaker.wave.2.fill"
-        }
-        if remoteModelLooksAudio(haystack) {
-            return "waveform"
-        }
-        if remoteModelLooksVision(haystack) {
-            return "photo.on.rectangle"
-        }
-        if remoteModelLooksCode(haystack) {
-            return "curlybraces"
-        }
-        return "cloud"
-    }
-
-    private func remoteModelGlyphTint(for model: RemoteModelEntry) -> Color {
-        let haystack = remoteModelSearchText(model)
-        if remoteModelLooksEmbedding(haystack) {
-            return .green
-        }
-        if remoteModelLooksVoice(haystack) {
-            return .mint
-        }
-        if remoteModelLooksAudio(haystack) {
-            return .pink
-        }
-        if remoteModelLooksVision(haystack) {
-            return .orange
-        }
-        if remoteModelLooksCode(haystack) {
-            return .blue
-        }
-        return .secondary
-    }
-
-    private func remoteModelSignals(for model: RemoteModelEntry) -> [RemoteModelSignalVisual] {
-        let haystack = remoteModelSearchText(model)
-        var signals: [RemoteModelSignalVisual] = [
-            RemoteModelSignalVisual(title: ModelCapabilityPresentation.localizedTitle(for: "hosted"), systemName: "cloud", tint: .blue)
-        ]
-
-        if remoteModelLooksReasoning(haystack) {
-            signals.append(RemoteModelSignalVisual(title: ModelCapabilityPresentation.localizedTitle(for: "reasoning"), systemName: "sparkles", tint: .secondary))
-        }
-        if remoteModelLooksCode(haystack) {
-            signals.append(RemoteModelSignalVisual(title: ModelCapabilityPresentation.localizedTitle(for: "code"), systemName: "curlybraces", tint: .blue))
-        }
-        if remoteModelLooksVision(haystack) {
-            signals.append(RemoteModelSignalVisual(title: ModelCapabilityPresentation.localizedTitle(for: "vision"), systemName: "photo.on.rectangle", tint: .orange))
-        }
-        if remoteModelLooksEmbedding(haystack) {
-            signals.append(RemoteModelSignalVisual(title: ModelCapabilityPresentation.localizedTitle(for: "embedding"), systemName: "point.3.connected.trianglepath.dotted", tint: .green))
-        }
-        if remoteModelLooksAudio(haystack) {
-            signals.append(RemoteModelSignalVisual(title: ModelCapabilityPresentation.localizedTitle(for: "audio"), systemName: "waveform", tint: .pink))
-        }
-        if remoteModelLooksVoice(haystack) {
-            signals.append(RemoteModelSignalVisual(title: ModelCapabilityPresentation.localizedTitle(for: "voice"), systemName: "speaker.wave.2.fill", tint: .mint))
-        }
-
-        var seen: Set<String> = []
-        return signals.filter { seen.insert($0.title).inserted }
-    }
-
-    private func remoteModelMetadataTags(for model: RemoteModelEntry) -> [String] {
-        var tags: [String] = []
-        let backend = RemoteProviderEndpoints.canonicalBackend(model.backend).uppercased()
-        if !backend.isEmpty {
-            tags.append(backend)
-        }
-        if model.contextLength > 0 {
-            tags.append(
-                HubUIStrings.Settings.RemoteModels.configuredContextTag(
-                    remoteModelContextSummary(model.contextLength)
-                )
-            )
-        }
-        if let knownContextLength = model.knownContextLength, knownContextLength > 0 {
-            let summary = remoteModelContextSummary(knownContextLength)
-            switch model.knownContextSource {
-            case .providerReported:
-                tags.append(HubUIStrings.Settings.RemoteModels.providerReportedContextTag(summary))
-            case .catalogEstimate:
-                tags.append(HubUIStrings.Settings.RemoteModels.catalogEstimatedContextTag(summary))
-            case nil:
-                break
-            }
-        }
-        if let upstream = model.upstreamModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !upstream.isEmpty,
-           upstream != model.id {
-            tags.append(HubUIStrings.Settings.RemoteModels.aliasTag)
-        }
-        let normalized = Array(NSOrderedSet(array: tags)) as? [String] ?? tags
-        return Array(normalized.prefix(3))
-    }
-
-    private func remoteModelDetailLine(_ model: RemoteModelEntry) -> String? {
-        var parts: [String] = []
-        if let host = remoteModelEndpointHost(model) {
-            parts.append(HubUIStrings.Settings.RemoteModels.endpoint(host))
-        }
-        if let upstream = model.upstreamModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !upstream.isEmpty,
-           upstream != model.id {
-            parts.append(HubUIStrings.Settings.RemoteModels.upstreamModel(upstream))
-        }
-        let note = (model.note ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !note.isEmpty {
-            parts.append(note)
-        }
-        if model.knownContextLength == nil {
-            parts.append(HubUIStrings.Settings.RemoteModels.providerContextUnknown)
-        } else if model.knownContextSource == .catalogEstimate {
-            parts.append(HubUIStrings.Settings.RemoteModels.catalogEstimateHint)
-        }
-        guard !parts.isEmpty else { return nil }
-        return HubUIStrings.Settings.RemoteModels.detailSummary(parts)
-    }
-
-    private func remoteModelSubtitle(_ model: RemoteModelEntry) -> String {
-        let upstream = (model.upstreamModelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let keyRef = RemoteModelStorage.keyReference(for: model)
-        let backend = RemoteProviderEndpoints.canonicalBackend(model.backend)
-        let context = HubUIStrings.Settings.RemoteModels.detailSummary(
-            remoteModelContextSummaryParts(for: model)
-        )
-        if upstream.isEmpty || upstream == model.id {
-            return HubUIStrings.Settings.RemoteModels.subtitleNoUpstream(
-                modelID: model.id,
-                backend: backend,
-                context: context,
-                keyRef: keyRef
-            )
-        }
-        return HubUIStrings.Settings.RemoteModels.subtitleWithUpstream(
-            modelID: model.id,
-            upstream: upstream,
-            backend: backend,
-            context: context,
-            keyRef: keyRef
-        )
-    }
-
-    private func remoteModelContextSummary(_ contextLength: Int) -> String {
-        HubUIStrings.Settings.RemoteModels.contextLength(contextLength)
-    }
-
-    private func remoteModelContextSummaryParts(for model: RemoteModelEntry) -> [String] {
-        var parts: [String] = []
-        if model.contextLength > 0 {
-            parts.append(
-                HubUIStrings.Settings.RemoteModels.configuredContext(
-                    remoteModelContextSummary(model.contextLength)
-                )
-            )
-        }
-        if let knownContextLength = model.knownContextLength, knownContextLength > 0 {
-            let summary = remoteModelContextSummary(knownContextLength)
-            switch model.knownContextSource {
-            case .providerReported:
-                parts.append(HubUIStrings.Settings.RemoteModels.providerReportedContext(summary))
-            case .catalogEstimate:
-                parts.append(HubUIStrings.Settings.RemoteModels.catalogEstimatedContext(summary))
-            case nil:
-                break
-            }
-        } else if model.contextLength > 0 {
-            parts.append(HubUIStrings.Settings.RemoteModels.providerContextUnknown)
-        }
-        return parts
-    }
-
-    private func remoteModelEndpointHost(_ model: RemoteModelEntry) -> String? {
-        guard let raw = model.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty,
-              let url = URL(string: raw) else {
-            return nil
-        }
-        return url.host ?? url.absoluteString
-    }
-
-    private func remoteModelSearchText(_ model: RemoteModelEntry) -> String {
-        [
-            model.id,
-            model.name,
-            model.backend,
-            model.upstreamModelId ?? "",
-            model.note ?? "",
-        ]
-        .joined(separator: " ")
-        .lowercased()
-    }
-
-    private func remoteModelLooksReasoning(_ haystack: String) -> Bool {
-        if remoteModelLooksEmbedding(haystack) || remoteModelLooksAudio(haystack) || remoteModelLooksVoice(haystack) {
-            return false
-        }
-        return remoteModelContainsAny(
-            haystack,
-            needles: ["gpt", "claude", "gemini", "reason", "think", "sonnet", "opus", "o1", "o3", "o4", "r1", "qwq", "kimi", "qwen"]
-        )
-    }
-
-    private func remoteModelLooksCode(_ haystack: String) -> Bool {
-        remoteModelContainsAny(
-            haystack,
-            needles: ["coder", "codex", "codestral", "codegemma", "deepseek-coder", "qwen2.5-coder", "codeqwen"]
-        )
-    }
-
-    private func remoteModelLooksVision(_ haystack: String) -> Bool {
-        remoteModelContainsAny(
-            haystack,
-            needles: ["vision", "image", "vl", "llava", "pixtral", "moondream", "gpt-4o", "gemini", "claude", "see", "omni"]
-        )
-    }
-
-    private func remoteModelLooksEmbedding(_ haystack: String) -> Bool {
-        remoteModelContainsAny(
-            haystack,
-            needles: ["embedding", "embed", "text-embedding", "bge", "gte", "e5"]
-        )
-    }
-
-    private func remoteModelLooksAudio(_ haystack: String) -> Bool {
-        remoteModelContainsAny(
-            haystack,
-            needles: ["audio", "speech", "stt", "asr", "whisper", "transcribe"]
-        )
-    }
-
-    private func remoteModelLooksVoice(_ haystack: String) -> Bool {
-        remoteModelContainsAny(
-            haystack,
-            needles: ["tts", "voice", "text-to-speech"]
-        )
-    }
-
-    private func remoteModelContainsAny(_ haystack: String, needles: [String]) -> Bool {
-        needles.contains(where: { haystack.contains($0) })
-    }
-
-    private func keychainStatus(model: RemoteModelEntry) -> (text: String, color: Color) {
-        let inMemory = (model.apiKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !inMemory.isEmpty {
-            if KeychainStore.hasSharedAccessGroup {
-                return (HubUIStrings.Settings.RemoteModels.apiKeySetKeychainEncrypted, .secondary)
-            }
-            return (HubUIStrings.Settings.RemoteModels.apiKeySetEncrypted, .secondary)
-        }
-
-        let hasEncrypted = !(model.apiKeyCiphertext ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let acct = RemoteModelStorage.keyReference(for: model)
-
-        // Avoid triggering repeated Keychain prompts in ad-hoc/dev builds (no shared access group).
-        if !KeychainStore.hasSharedAccessGroup {
-            if hasEncrypted {
-                return (HubUIStrings.Settings.RemoteModels.apiKeySetEncryptedLocked, .orange)
-            }
-            return (HubUIStrings.Settings.RemoteModels.apiKeyUnset, .red)
-        }
-
-        switch KeychainStore.read(account: acct) {
-        case .value:
-            return (HubUIStrings.Settings.RemoteModels.apiKeySetKeychain, .secondary)
-        case .notFound:
-            if hasEncrypted {
-                return (HubUIStrings.Settings.RemoteModels.apiKeySetEncryptedLocked, .orange)
-            }
-            return (HubUIStrings.Settings.RemoteModels.apiKeyUnset, .red)
-        case .error(let msg):
-            if hasEncrypted {
-                return (HubUIStrings.Settings.RemoteModels.apiKeySetEncryptedKeychainError, .orange)
-            }
-            return (HubUIStrings.Settings.RemoteModels.apiKeyKeychainError(msg), .red)
-        }
-    }
-
-    private func remoteKeyUsageLimitNotice(for group: RemoteModelKeyGroup) -> RemoteKeyUsageLimitNotice? {
-        RemoteModelTrialIssueSupport.latestUsageLimitNotice(
-            in: group.models.compactMap { store.remoteModelTrialStatus(for: $0.id) }
-        )
-    }
-
-    private func remoteKeyHealthPresentation(
-        for group: RemoteModelKeyGroup,
-        usageLimitNotice: RemoteKeyUsageLimitNotice?
-    ) -> RemoteKeyHealthPresentation? {
-        RemoteKeyHealthPresentationSupport.presentation(
-            health: store.remoteKeyHealth(for: group.keyReference),
-            usageLimitNotice: usageLimitNotice,
-            isScanning: store.isRemoteKeyHealthScanInProgress(for: group.keyReference)
-        )
-    }
-
-    private func remoteKeySlotPresentations(for group: RemoteModelKeyGroup) -> [RemoteKeySlotHealthPresentation] {
-        RemoteKeyHealthPresentationSupport.slotPresentations(
-            models: group.models,
-            healthSnapshot: store.remoteKeyHealthSnapshot,
-            isScanning: { keyReference in
-                store.isRemoteKeyHealthScanInProgress(for: keyReference)
-            }
-        )
-    }
-
-    private var remoteModelGroups: [RemoteModelKeyGroup] {
+    var remoteModelGroups: [RemoteModelKeyGroup] {
         remoteModelGroupsSnapshot
-    }
-}
-
-private struct RemoteQuotaBudgetEditorSheet: View {
-    let target: RemoteQuotaBudgetEditorTarget
-    let onSave: (Int) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var draftLimit: Int
-
-    init(target: RemoteQuotaBudgetEditorTarget, onSave: @escaping (Int) -> Void) {
-        self.target = target
-        self.onSave = onSave
-        _draftLimit = State(initialValue: max(1, target.currentDailyTokenLimit))
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("精确设置日预算")
-                .font(.headline)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(target.title)
-                    .font(.callout.weight(.semibold))
-                if !target.subtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(target.subtitle)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-            }
-
-            HStack(spacing: 8) {
-                metricCard(
-                    title: "当前额度",
-                    value: Self.tokenFormatter.string(from: NSNumber(value: target.currentDailyTokenLimit)) ?? "\(target.currentDailyTokenLimit)",
-                    tint: .purple
-                )
-                metricCard(
-                    title: "今日已用",
-                    value: Self.tokenFormatter.string(from: NSNumber(value: target.todayUsed)) ?? "\(target.todayUsed)",
-                    tint: .teal
-                )
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("目标 daily budget")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                TextField(
-                    "每日 token 额度",
-                    value: $draftLimit,
-                    formatter: Self.tokenFormatter
-                )
-                .textFieldStyle(.roundedBorder)
-
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(minimum: 72), spacing: 8),
-                        GridItem(.flexible(minimum: 72), spacing: 8),
-                        GridItem(.flexible(minimum: 72), spacing: 8),
-                        GridItem(.flexible(minimum: 72), spacing: 8),
-                    ],
-                    spacing: 8
-                ) {
-                    presetButton(100_000, title: "100k")
-                    presetButton(200_000, title: "200k")
-                    presetButton(500_000, title: "500k")
-                    presetButton(1_000_000, title: "1M")
-                }
-            }
-
-            Text("保存后会立刻刷新 Hub 台账；XT 和普通 terminal 共用这套 daily budget 语义。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            Spacer()
-
-            HStack(spacing: 10) {
-                Button("取消") {
-                    dismiss()
-                }
-
-                Spacer()
-
-                Button("保存额度") {
-                    onSave(max(1, draftLimit))
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(draftLimit < 1 || draftLimit == target.currentDailyTokenLimit)
-            }
-        }
-        .padding(16)
-        .frame(width: 420, height: 300)
-    }
-
-    private static let tokenFormatter: NumberFormatter = {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.usesGroupingSeparator = true
-        formatter.maximumFractionDigits = 0
-        return formatter
-    }()
-
-    @ViewBuilder
-    private func metricCard(
-        title: String,
-        value: String,
-        tint: Color
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(tint)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(tint.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func presetButton(_ value: Int, title: String) -> some View {
-        Button(title) {
-            draftLimit = value
-        }
-        .buttonStyle(.borderless)
-        .font(.caption.weight(.semibold))
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 6)
-        .background((draftLimit == value ? Color.indigo : Color.gray).opacity(draftLimit == value ? 0.14 : 0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-}
-
-private struct RemoteModelKeyGroup: Identifiable {
-    let id: String
-    let keyReference: String
-    let title: String
-    let detail: String?
-    let models: [RemoteModelEntry]
-    let loadedCount: Int
-    let availableCount: Int
-    let needsSetupCount: Int
-    let enabledCount: Int
-
-    var primaryModel: RemoteModelEntry {
-        models[0]
-    }
-
-    var loadableModelIDs: [String] {
-        models
-            .filter { RemoteModelPresentationSupport.state(for: $0) == .available }
-            .map(\.id)
-    }
-
-    var enabledModelIDs: [String] {
-        models.filter(\.enabled).map(\.id)
-    }
-
-    var renameActionTitle: String {
-        primaryModel.effectiveGroupDisplayName == nil
-            ? HubUIStrings.Settings.RemoteModels.setGroupName
-            : HubUIStrings.Settings.RemoteModels.renameGroup
-    }
-
-    var summary: String {
-        var parts = [HubUIStrings.Settings.RemoteModels.keyGroupSummary(count: models.count, enabled: enabledCount)]
-        if loadedCount > 0 {
-            parts.append("\(loadedCount) \(HubUIStrings.Settings.RemoteModels.loaded)")
-        }
-        if availableCount > 0 {
-            parts.append("\(availableCount) \(HubUIStrings.Settings.RemoteModels.available)")
-        }
-        if needsSetupCount > 0 {
-            parts.append("\(needsSetupCount) \(HubUIStrings.Settings.RemoteModels.needsSetup)")
-        }
-        return HubUIStrings.Settings.RemoteModels.detailSummary(parts)
-    }
-}
-
-private struct EditRemoteModelGroupDisplayNameSheet: View {
-    let group: RemoteModelKeyGroup
-    let onSave: (String) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var draftName: String
-
-    init(group: RemoteModelKeyGroup, onSave: @escaping (String) -> Void) {
-        self.group = group
-        self.onSave = onSave
-        _draftName = State(initialValue: group.primaryModel.effectiveGroupDisplayName ?? "")
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(HubUIStrings.Settings.RemoteModels.editGroupNameTitle)
-                .font(.headline)
-
-            Text(HubUIStrings.Settings.RemoteModels.editGroupNameSubtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            TextField(HubUIStrings.Settings.RemoteModels.editGroupNamePlaceholder, text: $draftName)
-                .textFieldStyle(.roundedBorder)
-
-            if group.primaryModel.effectiveGroupDisplayName == nil {
-                Text(HubUIStrings.Settings.RemoteModels.fallbackGroupTitle(group.title))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            HStack(spacing: 10) {
-                Button(HubUIStrings.Settings.RemoteModels.cancel) {
-                    dismiss()
-                }
-                Spacer()
-                Button(HubUIStrings.Settings.RemoteModels.editGroupNameSave) {
-                    onSave(draftName)
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(16)
-        .frame(width: 420, height: 190)
-    }
-}
-
-private struct AddGRPCClientSheet: View {
-    let onAdd: (String) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var name: String = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(HubUIStrings.Settings.GRPC.AddDeviceSheet.title)
-                .font(.headline)
-
-            TextField(HubUIStrings.Settings.GRPC.AddDeviceSheet.namePlaceholder, text: $name)
-                .textFieldStyle(.roundedBorder)
-
-            Text(HubUIStrings.Settings.GRPC.AddDeviceSheet.hint)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            Spacer(minLength: 0)
-
-            HStack {
-                Spacer()
-                Button(HubUIStrings.Settings.GRPC.AddDeviceSheet.cancel) { dismiss() }
-                Button(HubUIStrings.Settings.GRPC.AddDeviceSheet.createAndCopy) {
-                    onAdd(name)
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(16)
-        .frame(width: 420)
-    }
-}
-
-private struct EditGRPCClientSheet: View {
-    let client: HubGRPCClientEntry
-    let serverPort: Int
-    let localModels: [ModelCatalogEntry]
-    let existingLocalModelProfiles: [String: HubPairedTerminalLocalModelProfile]
-    let suggestedLANAllowedCidrs: [String]
-    let initialCapabilityFocusKey: String?
-    let onSave: (HubGRPCClientEntry) -> Void
-    let onSaveRoutingSettings: (RoutingSettings) -> Void
-    let onUpsertLocalModelProfile: (HubPairedTerminalLocalModelProfile) -> Void
-    let onRemoveLocalModelProfile: (String, String) -> Void
-    let onRotateToken: (String) -> String?
-    let onCopyVars: (String) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var name: String
-    @State private var userId: String
-    @State private var enabled: Bool
-    @State private var token: String
-    @State private var createdAtMs: Int64
-    @State private var allowAnySourceIP: Bool
-    @State private var allowedCidrs: [String]
-    @State private var allowedCidrsBackup: [String]
-    @State private var addCidrText: String
-    @State private var caps: Set<String>
-    @State private var certSha256: String
-    @State private var policyMode: HubGRPCClientPolicyMode
-    @State private var paidModelSelectionMode: HubPaidModelSelectionMode
-    @State private var allowedPaidModelsText: String
-    @State private var defaultWebFetchEnabled: Bool
-    @State private var dailyTokenLimitText: String
-    @State private var localTaskRoutingExpanded: Bool
-    @State private var localModelOverridesExpanded: Bool
-    @State private var routingSettingsDraft: RoutingSettings
-    @State private var localModelContextOverrideTextById: [String: String]
-    @State private var localModelTTLTextById: [String: String]
-    @State private var localModelParallelTextById: [String: String]
-    @State private var localModelIdentifierById: [String: String]
-    @State private var localModelVisionImageMaxDimensionTextById: [String: String]
-    @State private var localModelAdvancedExpandedById: [String: Bool]
-    @State private var localModelNoteById: [String: String]
-
-    init(
-        client: HubGRPCClientEntry,
-        serverPort: Int,
-        localModels: [ModelCatalogEntry],
-        routingSettings: RoutingSettings,
-        existingLocalModelProfiles: [String: HubPairedTerminalLocalModelProfile],
-        suggestedLANAllowedCidrs: [String],
-        initialCapabilityFocusKey: String? = nil,
-        onSave: @escaping (HubGRPCClientEntry) -> Void,
-        onSaveRoutingSettings: @escaping (RoutingSettings) -> Void,
-        onUpsertLocalModelProfile: @escaping (HubPairedTerminalLocalModelProfile) -> Void,
-        onRemoveLocalModelProfile: @escaping (String, String) -> Void,
-        onRotateToken: @escaping (String) -> String?,
-        onCopyVars: @escaping (String) -> Void
-    ) {
-        self.client = client
-        self.serverPort = serverPort
-        self.localModels = localModels
-        self.existingLocalModelProfiles = existingLocalModelProfiles
-        self.suggestedLANAllowedCidrs = Self.orderedAllowedCidrs(Self.normalizeAllowedCidrs(suggestedLANAllowedCidrs))
-        self.initialCapabilityFocusKey = hubNormalizedPairedDeviceCapabilityFocusKey(initialCapabilityFocusKey)
-        self.onSave = onSave
-        self.onSaveRoutingSettings = onSaveRoutingSettings
-        self.onUpsertLocalModelProfile = onUpsertLocalModelProfile
-        self.onRemoveLocalModelProfile = onRemoveLocalModelProfile
-        self.onRotateToken = onRotateToken
-        self.onCopyVars = onCopyVars
-
-        _name = State(initialValue: client.name)
-        _userId = State(initialValue: client.userId)
-        _enabled = State(initialValue: client.enabled)
-        _token = State(initialValue: client.token)
-        _createdAtMs = State(initialValue: client.createdAtMs)
-        let initialCidrs = Self.normalizeAllowedCidrs(client.allowedCidrs)
-        let allowAny = initialCidrs.isEmpty
-        _allowAnySourceIP = State(initialValue: allowAny)
-        // When allow-any is enabled, keep a safe restore set so users can flip back without rebuilding rules.
-        let backup = allowAny ? ["private", "loopback"] : initialCidrs
-        _allowedCidrs = State(initialValue: backup)
-        _allowedCidrsBackup = State(initialValue: backup)
-        _addCidrText = State(initialValue: "")
-        _caps = State(initialValue: Set(client.capabilities))
-        _certSha256 = State(initialValue: client.certSha256)
-        let profile = client.approvedTrustProfile
-        let legacyPaidEnabled = client.capabilities.contains("ai.generate.paid")
-        let legacyWebFetchEnabled = client.capabilities.contains("web.fetch")
-        _policyMode = State(initialValue: client.policyMode)
-        _paidModelSelectionMode = State(initialValue: profile?.paidModelPolicy.mode ?? (legacyPaidEnabled ? .allPaidModels : .off))
-        _allowedPaidModelsText = State(initialValue: (profile?.paidModelPolicy.allowedModelIds ?? []).joined(separator: ", "))
-        _defaultWebFetchEnabled = State(initialValue: profile?.networkPolicy.defaultWebFetchEnabled ?? legacyWebFetchEnabled)
-        let initialDailyTokenLimit = profile?.budgetPolicy.dailyTokenLimit ?? HubTrustProfileDefaults.dailyTokenLimit
-        _dailyTokenLimitText = State(initialValue: String(max(1, initialDailyTokenLimit)))
-        _localTaskRoutingExpanded = State(initialValue: true)
-        _localModelOverridesExpanded = State(initialValue: !localModels.isEmpty)
-        _routingSettingsDraft = State(initialValue: routingSettings)
-
-        var contextOverrideTextById: [String: String] = [:]
-        var ttlTextById: [String: String] = [:]
-        var parallelTextById: [String: String] = [:]
-        var identifierById: [String: String] = [:]
-        var visionImageMaxDimensionTextById: [String: String] = [:]
-        var advancedExpandedById: [String: Bool] = [:]
-        var noteById: [String: String] = [:]
-        for model in localModels {
-            let existingProfile = existingLocalModelProfiles[model.id]
-            contextOverrideTextById[model.id] = existingProfile?.overrideProfile.contextLength.map(String.init) ?? ""
-            ttlTextById[model.id] = existingProfile?.overrideProfile.ttl.map(String.init) ?? ""
-            parallelTextById[model.id] = existingProfile?.overrideProfile.parallel.map(String.init) ?? ""
-            identifierById[model.id] = existingProfile?.overrideProfile.identifier ?? ""
-            visionImageMaxDimensionTextById[model.id] = existingProfile?.overrideProfile.vision?.imageMaxDimension.map(String.init) ?? ""
-            advancedExpandedById[model.id] = Self.localModelProfileHasAdvancedFields(existingProfile?.overrideProfile)
-            noteById[model.id] = existingProfile?.note ?? ""
-        }
-        _localModelContextOverrideTextById = State(initialValue: contextOverrideTextById)
-        _localModelTTLTextById = State(initialValue: ttlTextById)
-        _localModelParallelTextById = State(initialValue: parallelTextById)
-        _localModelIdentifierById = State(initialValue: identifierById)
-        _localModelVisionImageMaxDimensionTextById = State(initialValue: visionImageMaxDimensionTextById)
-        _localModelAdvancedExpandedById = State(initialValue: advancedExpandedById)
-        _localModelNoteById = State(initialValue: noteById)
-    }
-
-    private struct CapSpec: Identifiable {
-        var key: String
-        var title: String
-        var detail: String
-        var id: String { key }
-    }
-
-    private static let capSpecs: [CapSpec] = [
-        CapSpec(key: "models", title: HubUIStrings.Settings.GRPC.EditDeviceSheet.capModelsTitle, detail: HubUIStrings.Settings.GRPC.EditDeviceSheet.capModelsDetail),
-        CapSpec(key: "events", title: HubUIStrings.Settings.GRPC.EditDeviceSheet.capEventsTitle, detail: HubUIStrings.Settings.GRPC.EditDeviceSheet.capEventsDetail),
-        CapSpec(key: "memory", title: HubUIStrings.Settings.GRPC.EditDeviceSheet.capMemoryTitle, detail: HubUIStrings.Settings.GRPC.EditDeviceSheet.capMemoryDetail),
-        CapSpec(key: "skills", title: HubUIStrings.Settings.GRPC.EditDeviceSheet.capSkillsTitle, detail: HubUIStrings.Settings.GRPC.EditDeviceSheet.capSkillsDetail),
-        CapSpec(key: "ai.generate.local", title: HubUIStrings.Settings.GRPC.EditDeviceSheet.capLocalAITitle, detail: HubUIStrings.Settings.GRPC.EditDeviceSheet.capLocalAIDetail),
-        CapSpec(key: "ai.generate.paid", title: HubUIStrings.Settings.GRPC.EditDeviceSheet.capPaidAITitle, detail: HubUIStrings.Settings.GRPC.EditDeviceSheet.capPaidAIDetail),
-        CapSpec(key: "web.fetch", title: HubUIStrings.Settings.GRPC.EditDeviceSheet.capWebFetchTitle, detail: HubUIStrings.Settings.GRPC.EditDeviceSheet.capWebFetchDetail),
-    ]
-
-    private static func capSpec(for key: String?) -> CapSpec? {
-        let normalizedKey = hubNormalizedPairedDeviceCapabilityFocusKey(key)
-        return capSpecs.first(where: { $0.key == normalizedKey })
-    }
-
-    private static func localModelProfileHasAdvancedFields(_ profile: LocalModelLoadProfileOverride?) -> Bool {
-        guard let profile else { return false }
-        return profile.ttl != nil
-            || profile.parallel != nil
-            || !(profile.identifier?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-            || !(profile.vision?.isEmpty ?? true)
-            || profile.gpuOffloadRatio != nil
-            || profile.ropeFrequencyBase != nil
-            || profile.ropeFrequencyScale != nil
-            || profile.evalBatchSize != nil
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.title)
-                        .font(.headline)
-                    Spacer()
-                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.cancel) { dismiss() }
-                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.save) {
-                        var out = client
-                        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let effectiveName = trimmedName.isEmpty ? client.deviceId : trimmedName
-                        out.name = effectiveName
-                        out.userId = userId.trimmingCharacters(in: .whitespacesAndNewlines)
-                        out.enabled = enabled
-                        out.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
-                        out.createdAtMs = createdAtMs
-                        out.allowedCidrs = allowAnySourceIP ? [] : orderedAllowedCidrs(allowedCidrs)
-                        out.certSha256 = certSha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                        if policyMode == .newProfile {
-                            let profile = HubGRPCClientEntry.buildApprovedTrustProfile(
-                                deviceId: client.deviceId,
-                                deviceName: effectiveName,
-                                requestedCapabilities: orderedCaps(Array(caps)),
-                                paidModelSelectionMode: paidModelSelectionMode,
-                                allowedPaidModels: parseList(allowedPaidModelsText),
-                                defaultWebFetchEnabled: defaultWebFetchEnabled,
-                                dailyTokenLimit: parsedDailyTokenLimit ?? HubTrustProfileDefaults.dailyTokenLimit,
-                                auditRef: client.deviceId
-                            )
-                            out.policyMode = .newProfile
-                            out.approvedTrustProfile = profile
-                            out.capabilities = profile.capabilities
-                        } else {
-                            out.policyMode = .legacyGrant
-                            out.approvedTrustProfile = nil
-                            out.capabilities = orderedCaps(Array(caps))
-                        }
-                        onSaveRoutingSettings(routingSettingsDraft)
-                        persistLocalModelProfiles()
-                        onSave(out)
-                        dismiss()
-                    }
-                    .disabled(!allowedCidrsConfigIsValid || !policyProfileIsValid || !localModelOverridesAreValid)
-                    .keyboardShortcut(.defaultAction)
-                }
-
-                if let focusedCapabilitySpec {
-                    focusedGrantBanner(focusedCapabilitySpec)
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.deviceID)
-                    Spacer()
-                    Text(client.deviceId)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-                Toggle(HubUIStrings.Settings.GRPC.EditDeviceSheet.enabled, isOn: $enabled)
-                TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.displayNamePlaceholder, text: $name)
-                    .textFieldStyle(.roundedBorder)
-                TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.userIDPlaceholder, text: $userId)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 8) {
-                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.policyMode)
-                    .font(.callout.weight(.semibold))
-                Picker(HubUIStrings.Settings.GRPC.EditDeviceSheet.policyMode, selection: $policyMode) {
-                    ForEach(HubGRPCClientPolicyMode.allCases, id: \.self) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                if policyMode == .newProfile {
-                    Picker(HubUIStrings.Settings.GRPC.EditDeviceSheet.paidModels, selection: $paidModelSelectionMode) {
-                        ForEach(HubPaidModelSelectionMode.allCases, id: \.self) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    if focusedCapabilityKey == "ai.generate.paid" {
-                        focusedGrantMarker()
-                    }
-
-                    if paidModelSelectionMode == .customSelectedModels {
-                        TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.customPaidModelsPlaceholder, text: $allowedPaidModelsText)
-                            .textFieldStyle(.roundedBorder)
-                        if parseList(allowedPaidModelsText).isEmpty {
-                            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.customPaidModelsError)
-                                .font(.caption2)
-                                .foregroundStyle(.red)
-                        }
-                    }
-
-                    Toggle(HubUIStrings.Settings.GRPC.EditDeviceSheet.defaultAllowWebFetch, isOn: $defaultWebFetchEnabled)
-                    if focusedCapabilityKey == "web.fetch" {
-                        focusedGrantMarker()
-                    }
-
-                    TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.dailyTokenLimit, text: $dailyTokenLimitText)
-                        .textFieldStyle(.roundedBorder)
-                    if parsedDailyTokenLimit == nil {
-                        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.dailyTokenLimitError)
-                            .font(.caption2)
-                            .foregroundStyle(.red)
-                    } else {
-                        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.saveHint)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.legacyHint)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.capabilities)
-                        .font(.callout.weight(.semibold))
-                    Spacer()
-                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.localOnly) {
-                        caps = Set(["models", "events", "memory", "skills", "ai.generate.local"])
-                    }
-                    .font(.caption)
-                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.allowAll) {
-                        caps = Set(["models", "events", "memory", "skills", "ai.generate.local", "ai.generate.paid", "web.fetch"])
-                    }
-                    .font(.caption)
-                }
-
-                ForEach(Self.capSpecs) { spec in
-                    capabilityToggleRow(spec)
-                }
-
-                if policyMode == .newProfile {
-                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.policyProfileCapabilitiesHint)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                if caps.isEmpty {
-                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.emptyCapabilitiesWarning)
-                        .font(.caption2)
-                        .foregroundStyle(.red)
-                } else {
-                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.capabilitiesHint)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.allowedSources)
-                        .font(.callout.weight(.semibold))
-                    Spacer()
-                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.adoptSuggestedRange) {
-                        let defaults = suggestedLANAllowedCidrs.isEmpty ? ["private", "loopback"] : suggestedLANAllowedCidrs
-                        allowAnySourceIP = false
-                        allowedCidrs = defaults
-                        allowedCidrsBackup = defaults
-                    }
-                        .font(.caption)
-                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.lanOnly) {
-                        allowAnySourceIP = false
-                        allowedCidrs = ["private", "loopback"]
-                        allowedCidrsBackup = allowedCidrs
-                    }
-                        .font(.caption)
-                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.anySource) { allowAnySourceIP = true }
-                        .font(.caption)
-                }
-
-                Toggle(
-                    HubUIStrings.Settings.GRPC.EditDeviceSheet.allowAnySourceIP,
-                    isOn: Binding(
-                        get: { allowAnySourceIP },
-                        set: { on in
-                            if on {
-                                allowedCidrsBackup = orderedAllowedCidrs(allowedCidrs)
-                                allowAnySourceIP = true
-                            } else {
-                                allowAnySourceIP = false
-                                let restore = orderedAllowedCidrs(allowedCidrsBackup)
-                                allowedCidrs = restore.isEmpty ? ["private", "loopback"] : restore
-                            }
-                        }
-                    )
-                )
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Toggle(HubUIStrings.Settings.GRPC.EditDeviceSheet.allowPrivate, isOn: bindingAllowedCidrRule("private"))
-                    Toggle(HubUIStrings.Settings.GRPC.EditDeviceSheet.allowLoopback, isOn: bindingAllowedCidrRule("loopback"))
-
-                    let customs = allowedCidrsCustomItems
-                    if !customs.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.customSources)
-                                .font(.caption.weight(.semibold))
-                            ForEach(customs, id: \.self) { v in
-                                HStack(spacing: 8) {
-                                    Text(v)
-                                        .font(.caption2.monospaced())
-                                        .foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-                                    Spacer()
-                                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.remove) { removeAllowedCidrValue(v) }
-                                        .font(.caption)
-                                }
-                            }
-                        }
-                    }
-
-                    HStack(spacing: 8) {
-                        TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.addCIDROrIPPlaceholder, text: $addCidrText)
-                            .textFieldStyle(.roundedBorder)
-                        Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.add) { addAllowedCidrsFromText(addCidrText) }
-                            .font(.caption)
-                            .disabled(addCidrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                }
-                .disabled(allowAnySourceIP)
-
-                if allowAnySourceIP {
-                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.anySourceWarning)
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                } else if !allowedCidrsConfigIsValid {
-                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.invalidRestrictedSources)
-                        .font(.caption2)
-                        .foregroundStyle(.red)
-                } else {
-                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.supportedSourcesHint)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    if !suggestedLANAllowedCidrs.isEmpty {
-                        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.suggestedLANRanges(suggestedLANAllowedCidrs.joined(separator: ", ")))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-                }
-            }
-
-                if hasLocalTaskRoutingSection {
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.localTaskRoutingTitle)
-                                .font(.callout.weight(.semibold))
-                            Spacer()
-                            Button(localTaskRoutingExpanded ? HubUIStrings.Settings.GRPC.EditDeviceSheet.collapse : HubUIStrings.Settings.GRPC.EditDeviceSheet.expand) {
-                                localTaskRoutingExpanded.toggle()
-                            }
-                            .font(.caption)
-                        }
-
-                        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.localTaskRoutingHint)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-
-                        if localTaskRoutingExpanded {
-                            VStack(alignment: .leading, spacing: 10) {
-                                ForEach(LocalTaskRoutingCatalog.descriptors) { descriptor in
-                                    pairedTerminalLocalTaskRoutingCard(descriptor)
-                                }
-                            }
-                        } else {
-                            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.localTaskRoutingCount(LocalTaskRoutingCatalog.descriptors.count))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                if !localModels.isEmpty {
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.localModelOverridesTitle)
-                                .font(.callout.weight(.semibold))
-                            Spacer()
-                            Button(localModelOverridesExpanded ? HubUIStrings.Settings.GRPC.EditDeviceSheet.collapse : HubUIStrings.Settings.GRPC.EditDeviceSheet.expand) {
-                                localModelOverridesExpanded.toggle()
-                            }
-                            .font(.caption)
-                        }
-
-                        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.localModelOverridesHint)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-
-                        if localModelOverridesExpanded {
-                            VStack(alignment: .leading, spacing: 10) {
-                                ForEach(localModels) { model in
-                                    pairedTerminalLocalModelOverrideCard(model)
-                                }
-                            }
-                        } else {
-                            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.localModelOverridesCount(localModels.count))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.mtlsFingerprint)
-                        .font(.callout.weight(.semibold))
-                    Spacer()
-                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.clear) { certSha256 = "" }
-                        .font(.caption)
-                }
-                TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.certFingerprintPlaceholder, text: $certSha256)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption2.monospaced())
-                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.certFingerprintHint)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-                Divider()
-
-                HStack(spacing: 10) {
-                Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.copyLANVars) { onCopyVars(token) }
-                    .font(.caption)
-                Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.copyRemoteVars) {
-                    let p = max(1, min(65535, serverPort))
-                    let snippet = """
-HUB_HOST=<hub_vpn_ip_or_tunnel>
-HUB_PORT=\(p)
-HUB_CLIENT_TOKEN='\(token)'
-"""
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(snippet, forType: .string)
-                }
-                .font(.caption)
-                Button(HubUIStrings.Settings.GRPC.rotateDeviceToken) {
-                    if let newToken = onRotateToken(client.deviceId) {
-                        token = newToken
-                        createdAtMs = Int64(Date().timeIntervalSince1970 * 1000.0)
-                    }
-                }
-                .font(.caption)
-                Spacer()
-                }
-
-                Spacer(minLength: 0)
-            }
-        }
-        .padding(16)
-        .frame(width: 560, height: 760)
-    }
-
-    private func bindingCap(_ key: String) -> Binding<Bool> {
-        Binding(
-            get: { caps.contains(key) },
-            set: { on in
-                if on { caps.insert(key) } else { caps.remove(key) }
-            }
-        )
-    }
-
-    private var focusedCapabilityKey: String? {
-        hubNormalizedPairedDeviceCapabilityFocusKey(initialCapabilityFocusKey)
-    }
-
-    private var focusedCapabilitySpec: CapSpec? {
-        Self.capSpec(for: focusedCapabilityKey)
-    }
-
-    @ViewBuilder
-    private func focusedGrantBanner(_ spec: CapSpec) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label(HubUIStrings.Settings.GRPC.EditDeviceSheet.focusedGrantTitle, systemImage: "exclamationmark.circle.fill")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.orange)
-            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.focusedGrantSummary(spec.title))
-                .font(.caption)
-            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.focusedGrantNextStep(spec.title))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.09))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.orange.opacity(0.28), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-
-    @ViewBuilder
-    private func focusedGrantMarker() -> some View {
-        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.focusedGrantMarker)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.orange)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    @ViewBuilder
-    private func capabilityToggleRow(_ spec: CapSpec) -> some View {
-        let isFocused = spec.key == focusedCapabilityKey
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle(isOn: bindingCap(spec.key)) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(spec.title)
-                        .font(.caption.weight(.semibold))
-                    Text(spec.detail)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if isFocused {
-                focusedGrantMarker()
-            }
-        }
-        .padding(isFocused ? 10 : 0)
-        .background(isFocused ? Color.orange.opacity(0.08) : Color.clear)
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(isFocused ? Color.orange.opacity(0.28) : Color.clear, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-
-    private var parsedDailyTokenLimit: Int? {
-        let trimmed = dailyTokenLimitText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value = Int(trimmed), value > 0 else { return nil }
-        return value
-    }
-
-    private var policyProfileIsValid: Bool {
-        guard policyMode == .newProfile else { return true }
-        guard parsedDailyTokenLimit != nil else { return false }
-        if paidModelSelectionMode == .customSelectedModels {
-            return !parseList(allowedPaidModelsText).isEmpty
-        }
-        return true
-    }
-
-    private var allowedCidrsConfigIsValid: Bool {
-        // Empty allowed_cidrs means "allow any source IP" on the server, which is only intended when
-        // allowAnySourceIP is enabled. In restricted mode, enforce at least one rule so the UI intent matches reality.
-        if allowAnySourceIP { return true }
-        return !orderedAllowedCidrs(allowedCidrs).isEmpty
-    }
-
-    private var localModelOverridesAreValid: Bool {
-        localModels.allSatisfy { localModelValidationMessages(for: $0).isEmpty }
-    }
-
-    private var hasLocalTaskRoutingSection: Bool {
-        if !localModels.isEmpty {
-            return true
-        }
-        return LocalTaskRoutingCatalog.descriptors.contains { descriptor in
-            let binding = routingBindingDraft(for: descriptor.taskKind)
-            return !binding.hubDefaultModelId.isEmpty || !binding.deviceOverrideModelId.isEmpty
-        }
-    }
-
-    private func routingBindingDraft(for taskKind: String) -> HubResolvedRoutingBinding {
-        let normalizedTaskKind = taskKind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let resolved = routingSettingsDraft.resolvedModelId(taskKind: normalizedTaskKind, deviceId: client.deviceId)
-        let normalizedDeviceId = client.deviceId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return HubResolvedRoutingBinding(
-            taskType: normalizedTaskKind,
-            taskLabel: LocalTaskRoutingCatalog.title(for: normalizedTaskKind),
-            effectiveModelId: resolved.modelId,
-            source: resolved.source,
-            hubDefaultModelId: routingSettingsDraft.hubDefaultModelIdByTaskKind[normalizedTaskKind] ?? "",
-            deviceOverrideModelId: routingSettingsDraft.devicePreferredModelIdByTaskKind[normalizedDeviceId]?[normalizedTaskKind] ?? ""
-        )
-    }
-
-    private func localModelsSupportingTaskKind(_ taskKind: String) -> [ModelCatalogEntry] {
-        let normalizedTaskKind = taskKind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return localModels.filter { model in
-            LocalTaskRoutingCatalog.supportedTaskKinds(in: model.taskKinds).contains(normalizedTaskKind)
-        }
-    }
-
-    private func routingModelDisplayName(_ modelId: String) -> String {
-        let trimmed = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return HubUIStrings.Settings.GRPC.EditDeviceSheet.automatic }
-        if let model = localModels.first(where: { $0.id == trimmed }) {
-            return model.name.isEmpty ? model.id : model.name
-        }
-        return HubUIStrings.Settings.GRPC.EditDeviceSheet.missingModel(trimmed)
-    }
-
-    private func routingSourceLabel(_ source: String) -> String {
-        switch source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "request_override":
-            return HubUIStrings.Settings.GRPC.EditDeviceSheet.requestOverride
-        case "device_override":
-            return HubUIStrings.Settings.GRPC.EditDeviceSheet.deviceOverride
-        case "hub_default":
-            return HubUIStrings.Settings.GRPC.EditDeviceSheet.hubDefault
-        case "auto_selected":
-            return HubUIStrings.Settings.GRPC.EditDeviceSheet.autoSelected
-        default:
-            return source.isEmpty ? HubUIStrings.Settings.GRPC.EditDeviceSheet.autoSelected : source
-        }
-    }
-
-    private func localModelContextSourceLabel(_ source: String) -> String {
-        switch source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "hub_default":
-            return HubUIStrings.Settings.GRPC.EditDeviceSheet.hubDefault
-        case "device_override":
-            return HubUIStrings.Settings.GRPC.EditDeviceSheet.deviceOverride
-        case "runtime_clamped":
-            return HubUIStrings.Settings.GRPC.EditDeviceSheet.runtimeClamped
-        default:
-            return source.isEmpty ? HubUIStrings.Settings.GRPC.EditDeviceSheet.hubDefault : source
-        }
-    }
-
-    private func pairedTerminalLocalTaskRoutingCard(_ descriptor: LocalTaskRoutingDescriptor) -> some View {
-        let binding = routingBindingDraft(for: descriptor.taskKind)
-        let compatibleModels = localModelsSupportingTaskKind(descriptor.taskKind)
-        let hubDefaultDisplay = routingModelDisplayName(binding.hubDefaultModelId)
-        let deviceOverrideDisplay = binding.deviceOverrideModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? (
-                binding.hubDefaultModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? HubUIStrings.Settings.GRPC.EditDeviceSheet.automatic
-                : HubUIStrings.Settings.GRPC.EditDeviceSheet.hubDefault
-            )
-            : routingModelDisplayName(binding.deviceOverrideModelId)
-        let effectiveDisplay = routingModelDisplayName(binding.effectiveModelId)
-
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(descriptor.title)
-                        .font(.caption.weight(.semibold))
-                    Text(descriptor.taskKind)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(routingSourceLabel(binding.source))
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack {
-                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.inheritHubDefault)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(hubDefaultDisplay)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-
-            HStack {
-                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.deviceOverride)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Menu {
-                    Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.useHubDefault) {
-                        routingSettingsDraft.setModelId(nil, for: descriptor.taskKind, deviceId: client.deviceId)
-                    }
-                    Divider()
-                    ForEach(compatibleModels) { model in
-                        Button(model.name.isEmpty ? model.id : model.name) {
-                            routingSettingsDraft.setModelId(model.id, for: descriptor.taskKind, deviceId: client.deviceId)
-                        }
-                    }
-                } label: {
-                    Text(deviceOverrideDisplay)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-                .controlSize(.mini)
-            }
-
-            HStack {
-                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.effectiveFinal)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(
-                    HubUIStrings.Settings.GRPC.EditDeviceSheet.effectiveSummary(
-                        display: effectiveDisplay,
-                        source: routingSourceLabel(binding.source)
-                    )
-                )
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-
-            if compatibleModels.isEmpty {
-                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.noCompatibleLocalModels(descriptor.shortTitle))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.compatibleModels(
-                    compatibleModels.map { $0.name.isEmpty ? $0.id : $0.name }.joined(separator: ", ")
-                ))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-        }
-        .padding(10)
-        .background(Color.secondary.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-
-    private var allowedCidrsCustomItems: [String] {
-        let norm = Self.normalizeAllowedCidrs(allowedCidrs)
-        return norm.filter { v in
-            let lower = v.lowercased()
-            return lower != "private" && lower != "loopback"
-        }
-    }
-
-    private func bindingAllowedCidrRule(_ rule: String) -> Binding<Bool> {
-        let key = rule.lowercased()
-        return Binding(
-            get: { Self.normalizeAllowedCidrs(allowedCidrs).contains(where: { $0.lowercased() == key }) },
-            set: { on in
-                if on { addAllowedCidrValue(key) } else { removeAllowedCidrValue(key) }
-            }
-        )
-    }
-
-    private func addAllowedCidrsFromText(_ text: String) {
-        let parts = text
-            .split(whereSeparator: { ch in
-                ch == "," || ch == "\n" || ch == ";" || ch == "\t"
-            })
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        guard !parts.isEmpty else { return }
-        for p in parts {
-            addAllowedCidrValue(p)
-        }
-        addCidrText = ""
-    }
-
-    private func addAllowedCidrValue(_ value: String) {
-        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty else { return }
-        // Treat allow-all aliases as "Any" mode for clarity.
-        let lower = cleaned.lowercased()
-        if lower == "any" || lower == "*" {
-            allowAnySourceIP = true
-            return
-        }
-        allowAnySourceIP = false
-
-        var cur = Self.normalizeAllowedCidrs(allowedCidrs)
-        let canon: String = {
-            if lower == "localhost" { return "loopback" }
-            if lower == "loopback" { return "loopback" }
-            if lower == "private" { return "private" }
-            return cleaned
-        }()
-        if cur.contains(where: { $0.lowercased() == canon.lowercased() }) {
-            allowedCidrs = orderedAllowedCidrs(cur)
-            return
-        }
-        cur.append(canon)
-        allowedCidrs = orderedAllowedCidrs(cur)
-        allowedCidrsBackup = orderedAllowedCidrs(cur)
-    }
-
-    private func removeAllowedCidrValue(_ value: String) {
-        let key = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !key.isEmpty else { return }
-        var cur = Self.normalizeAllowedCidrs(allowedCidrs)
-        cur.removeAll { $0.lowercased() == key }
-        allowedCidrs = orderedAllowedCidrs(cur)
-        allowedCidrsBackup = orderedAllowedCidrs(cur)
-    }
-
-    private func orderedAllowedCidrs(_ list: [String]) -> [String] {
-        Self.orderedAllowedCidrs(list)
-    }
-
-    private static func orderedAllowedCidrs(_ list: [String]) -> [String] {
-        let clean = Self.normalizeAllowedCidrs(list)
-        if clean.isEmpty { return [] }
-
-        // Keep stable order but pull well-known rules to the front.
-        let order = ["private", "loopback"]
-        var out: [String] = []
-        for k in order {
-            if clean.contains(where: { $0.lowercased() == k }) { out.append(k) }
-        }
-        out.append(contentsOf: clean.filter { v in
-            let lower = v.lowercased()
-            return !order.contains(lower)
-        })
-        return out
-    }
-
-    private static func normalizeAllowedCidrs(_ list: [String]) -> [String] {
-        let raw = list
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        if raw.contains(where: { s in
-            let lower = s.lowercased()
-            return lower == "any" || lower == "*"
-        }) {
-            return []
-        }
-
-        // De-dup while preserving order.
-        var seen = Set<String>()
-        var out: [String] = []
-        for s in raw {
-            let lower = s.lowercased()
-            let canon: String = {
-                if lower == "localhost" { return "loopback" }
-                if lower == "loopback" { return "loopback" }
-                if lower == "private" { return "private" }
-                return s
-            }()
-            let key = canon.lowercased()
-            if seen.contains(key) { continue }
-            seen.insert(key)
-            out.append(canon)
-        }
-        return out
-    }
-
-    private func orderedCaps(_ list: [String]) -> [String] {
-        let clean = list.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        if clean.isEmpty { return [] }
-
-        let order = Self.capSpecs.map { $0.key }
-        let known = clean.filter { order.contains($0) }
-        let unknown = clean.filter { !order.contains($0) }
-
-        var out: [String] = []
-        for k in order {
-            if known.contains(k) { out.append(k) }
-        }
-        // Keep unknowns stable-ish.
-        out.append(contentsOf: unknown.sorted())
-
-        // De-dup while preserving out order.
-        var seen = Set<String>()
-        var uniq: [String] = []
-        for c in out {
-            if seen.contains(c) { continue }
-            seen.insert(c)
-            uniq.append(c)
-        }
-        return uniq
-    }
-
-    private func pairedTerminalLocalModelOverrideCard(_ model: ModelCatalogEntry) -> some View {
-        let effective = localModelEffectiveLoadProfile(for: model)
-        let source = localModelEffectiveContextSource(for: model)
-        let validationMessages = localModelValidationMessages(for: model)
-        let draftText = localModelContextOverrideDraftText(for: model.id)
-        let hasHiddenFields = localModelHasHiddenNonContextFields(model.id)
-        let advancedSummary = localModelAdvancedSummary(for: effective)
-        let sourceLabel = localModelContextSourceLabel(source)
-
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(model.name.isEmpty ? model.id : model.name)
-                        .font(.caption.weight(.semibold))
-                    Text(model.id)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-                Spacer()
-                Text(model.backend.uppercased())
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 10) {
-                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.contextLimit(model.maxContextLength))
-                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.defaultContext(model.defaultLoadProfile.contextLength))
-                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.effectiveContext(effective.contextLength))
-                Spacer()
-                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.sourceSummary(sourceLabel))
-            }
-            .font(.caption2.monospaced())
-            .foregroundStyle(.secondary)
-
-            HStack(spacing: 8) {
-                TextField(
-                    HubUIStrings.Settings.GRPC.EditDeviceSheet.contextOverridePlaceholder,
-                    text: localModelContextOverrideBinding(for: model.id)
-                )
-                .textFieldStyle(.roundedBorder)
-
-                Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.restoreHubDefault) {
-                    localModelContextOverrideTextById[model.id] = ""
-                }
-                .font(.caption)
-
-                Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.useMaximum) {
-                    localModelContextOverrideTextById[model.id] = String(model.maxContextLength)
-                }
-                .font(.caption)
-            }
-
-            DisclosureGroup(
-                isExpanded: localModelAdvancedExpandedBinding(for: model.id),
-                content: {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 8) {
-                            TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.ttlSecondsPlaceholder, text: localModelTTLBinding(for: model.id))
-                                .textFieldStyle(.roundedBorder)
-                            TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.parallelismPlaceholder, text: localModelParallelBinding(for: model.id))
-                                .textFieldStyle(.roundedBorder)
-                        }
-
-                        TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.identifierPlaceholder, text: localModelIdentifierBinding(for: model.id))
-                            .textFieldStyle(.roundedBorder)
-
-                        TextField(
-                            HubUIStrings.Settings.GRPC.EditDeviceSheet.visionImageMaxDimensionPlaceholder,
-                            text: localModelVisionImageMaxDimensionBinding(for: model.id)
-                        )
-                        .textFieldStyle(.roundedBorder)
-
-                        HStack(spacing: 10) {
-                            Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.effective)
-                            Text(advancedSummary)
-                            Spacer()
-                            Button(HubUIStrings.Settings.GRPC.EditDeviceSheet.clearAdvanced) {
-                                localModelTTLTextById[model.id] = ""
-                                localModelParallelTextById[model.id] = ""
-                                localModelIdentifierById[model.id] = ""
-                                localModelVisionImageMaxDimensionTextById[model.id] = ""
-                            }
-                            .font(.caption)
-                        }
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-
-                        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.advancedOptionsHint)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.top, 2)
-                },
-                label: {
-                    HStack(spacing: 8) {
-                        Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.advancedOptions)
-                            .font(.caption.weight(.semibold))
-                        Text(advancedSummary)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            )
-
-            TextField(HubUIStrings.Settings.GRPC.EditDeviceSheet.notePlaceholder, text: localModelNoteBinding(for: model.id))
-                .textFieldStyle(.roundedBorder)
-
-            if !validationMessages.isEmpty {
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(validationMessages, id: \.self) { message in
-                        Text(message)
-                            .font(.caption2)
-                            .foregroundStyle(.red)
-                    }
-                }
-            } else if source == "runtime_clamped", let requested = Int(draftText) {
-                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.runtimeClampedWarning(
-                    requested: requested,
-                    effective: effective.contextLength
-                ))
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-            } else {
-                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.finalResolutionHint)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            if hasHiddenFields {
-                Text(HubUIStrings.Settings.GRPC.EditDeviceSheet.hiddenMachineFieldsHint)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(10)
-        .background(Color.secondary.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-
-    private func localModelContextOverrideBinding(for modelId: String) -> Binding<String> {
-        Binding(
-            get: { localModelContextOverrideDraftText(for: modelId) },
-            set: { localModelContextOverrideTextById[modelId] = $0 }
-        )
-    }
-
-    private func localModelTTLBinding(for modelId: String) -> Binding<String> {
-        Binding(
-            get: { localModelTTLDraftText(for: modelId) },
-            set: { localModelTTLTextById[modelId] = $0 }
-        )
-    }
-
-    private func localModelParallelBinding(for modelId: String) -> Binding<String> {
-        Binding(
-            get: { localModelParallelDraftText(for: modelId) },
-            set: { localModelParallelTextById[modelId] = $0 }
-        )
-    }
-
-    private func localModelIdentifierBinding(for modelId: String) -> Binding<String> {
-        Binding(
-            get: { localModelIdentifierDraftText(for: modelId) },
-            set: { localModelIdentifierById[modelId] = $0 }
-        )
-    }
-
-    private func localModelVisionImageMaxDimensionBinding(for modelId: String) -> Binding<String> {
-        Binding(
-            get: { localModelVisionImageMaxDimensionDraftText(for: modelId) },
-            set: { localModelVisionImageMaxDimensionTextById[modelId] = $0 }
-        )
-    }
-
-    private func localModelAdvancedExpandedBinding(for modelId: String) -> Binding<Bool> {
-        Binding(
-            get: { localModelAdvancedExpandedById[modelId] ?? false },
-            set: { localModelAdvancedExpandedById[modelId] = $0 }
-        )
-    }
-
-    private func localModelNoteBinding(for modelId: String) -> Binding<String> {
-        Binding(
-            get: { localModelNoteById[modelId] ?? "" },
-            set: { localModelNoteById[modelId] = $0 }
-        )
-    }
-
-    private func localModelContextOverrideDraftText(for modelId: String) -> String {
-        localModelContextOverrideTextById[modelId] ?? ""
-    }
-
-    private func localModelTTLDraftText(for modelId: String) -> String {
-        localModelTTLTextById[modelId] ?? ""
-    }
-
-    private func localModelParallelDraftText(for modelId: String) -> String {
-        localModelParallelTextById[modelId] ?? ""
-    }
-
-    private func localModelIdentifierDraftText(for modelId: String) -> String {
-        localModelIdentifierById[modelId] ?? ""
-    }
-
-    private func localModelVisionImageMaxDimensionDraftText(for modelId: String) -> String {
-        localModelVisionImageMaxDimensionTextById[modelId] ?? ""
-    }
-
-    private func localModelContextValidationError(for model: ModelCatalogEntry) -> String? {
-        let trimmed = localModelContextOverrideDraftText(for: model.id)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        guard let value = Int(trimmed) else {
-            return HubUIStrings.Settings.GRPC.EditDeviceSheet.contextLengthMustBeInteger
-        }
-        if value < 512 {
-            return HubUIStrings.Settings.GRPC.EditDeviceSheet.contextLengthMinimum(512)
-        }
-        if value > model.maxContextLength {
-            return HubUIStrings.Settings.GRPC.EditDeviceSheet.contextLengthMaximum(model.maxContextLength)
-        }
-        return nil
-    }
-
-    private func localModelValidationMessages(for model: ModelCatalogEntry) -> [String] {
-        var messages: [String] = []
-        if let contextError = localModelContextValidationError(for: model) {
-            messages.append(contextError)
-        }
-        if let ttlError = localModelPositiveIntegerValidationError(
-            localModelTTLDraftText(for: model.id),
-            field: HubUIStrings.Settings.GRPC.EditDeviceSheet.ttlField,
-            minimum: 1
-        ) {
-            messages.append(ttlError)
-        }
-        if let parallelError = localModelPositiveIntegerValidationError(
-            localModelParallelDraftText(for: model.id),
-            field: HubUIStrings.Settings.GRPC.EditDeviceSheet.parallelismField,
-            minimum: 1
-        ) {
-            messages.append(parallelError)
-        }
-        if let imageDimensionError = localModelPositiveIntegerValidationError(
-            localModelVisionImageMaxDimensionDraftText(for: model.id),
-            field: HubUIStrings.Settings.GRPC.EditDeviceSheet.visionImageMaxDimensionField,
-            minimum: 32,
-            maximum: 16_384
-        ) {
-            messages.append(imageDimensionError)
-        }
-        return messages
-    }
-
-    private func localModelPositiveIntegerValidationError(
-        _ rawText: String,
-        field: String,
-        minimum: Int,
-        maximum: Int? = nil
-    ) -> String? {
-        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        guard let value = Int(trimmed) else {
-            return HubUIStrings.Settings.GRPC.EditDeviceSheet.integerFieldError(field: field)
-        }
-        if value < minimum {
-            return HubUIStrings.Settings.GRPC.EditDeviceSheet.minimumFieldError(field: field, minimum: minimum)
-        }
-        if let maximum, value > maximum {
-            return HubUIStrings.Settings.GRPC.EditDeviceSheet.maximumFieldError(field: field, maximum: maximum)
-        }
-        return nil
-    }
-
-    private func localModelDraftOverrideProfile(for model: ModelCatalogEntry) -> LocalModelLoadProfileOverride? {
-        var draft = existingLocalModelProfiles[model.id]?.overrideProfile ?? LocalModelLoadProfileOverride()
-        let trimmed = localModelContextOverrideDraftText(for: model.id)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if trimmed.isEmpty {
-            draft.contextLength = nil
-        } else if let value = Int(trimmed) {
-            draft.contextLength = value
-        }
-
-        let ttlTrimmed = localModelTTLDraftText(for: model.id)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if ttlTrimmed.isEmpty {
-            draft.ttl = nil
-        } else if let value = Int(ttlTrimmed), value > 0 {
-            draft.ttl = value
-        }
-
-        let parallelTrimmed = localModelParallelDraftText(for: model.id)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if parallelTrimmed.isEmpty {
-            draft.parallel = nil
-        } else if let value = Int(parallelTrimmed), value > 0 {
-            draft.parallel = value
-        }
-
-        let identifierTrimmed = localModelIdentifierDraftText(for: model.id)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        draft.identifier = identifierTrimmed.isEmpty ? nil : identifierTrimmed
-
-        let imageMaxDimensionTrimmed = localModelVisionImageMaxDimensionDraftText(for: model.id)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if imageMaxDimensionTrimmed.isEmpty {
-            draft.vision = nil
-        } else if let value = Int(imageMaxDimensionTrimmed), value >= 32, value <= 16_384 {
-            draft.vision = LocalModelVisionLoadProfile(imageMaxDimension: value)
-        }
-
-        return draft.isEmpty ? nil : draft
-    }
-
-    private func localModelEffectiveLoadProfile(for model: ModelCatalogEntry) -> LocalModelLoadProfile {
-        model.defaultLoadProfile.merged(
-            with: localModelDraftOverrideProfile(for: model),
-            maxContextLength: model.maxContextLength
-        )
-    }
-
-    private func localModelEffectiveContextSource(for model: ModelCatalogEntry) -> String {
-        let trimmed = localModelContextOverrideDraftText(for: model.id)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "hub_default" }
-        guard let requested = Int(trimmed) else { return "device_override" }
-        let effective = localModelEffectiveLoadProfile(for: model)
-        if effective.contextLength != requested {
-            return "runtime_clamped"
-        }
-        return "device_override"
-    }
-
-    private func localModelHasHiddenNonContextFields(_ modelId: String) -> Bool {
-        guard let overrideProfile = existingLocalModelProfiles[modelId]?.overrideProfile else { return false }
-        return overrideProfile.gpuOffloadRatio != nil
-            || overrideProfile.ropeFrequencyBase != nil
-            || overrideProfile.ropeFrequencyScale != nil
-            || overrideProfile.evalBatchSize != nil
-    }
-
-    private func localModelAdvancedSummary(for profile: LocalModelLoadProfile) -> String {
-        var parts: [String] = []
-        if let ttl = profile.ttl {
-            parts.append(HubUIStrings.Settings.GRPC.EditDeviceSheet.advancedTTL(ttl))
-        }
-        if let parallel = profile.parallel {
-            parts.append(HubUIStrings.Settings.GRPC.EditDeviceSheet.advancedParallel(parallel))
-        }
-        if let identifier = profile.identifier,
-           !identifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            parts.append(HubUIStrings.Settings.GRPC.EditDeviceSheet.advancedIdentifier(identifier))
-        }
-        if let imageMaxDimension = profile.vision?.imageMaxDimension {
-            parts.append(HubUIStrings.Settings.GRPC.EditDeviceSheet.advancedImage(imageMaxDimension))
-        }
-        return parts.isEmpty
-            ? HubUIStrings.Settings.GRPC.EditDeviceSheet.inheritDefaults
-            : HubUIStrings.Settings.GRPC.EditDeviceSheet.advancedSummary(parts)
-    }
-
-    private func persistLocalModelProfiles() {
-        let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
-        for model in localModels {
-            var overrideProfile = existingLocalModelProfiles[model.id]?.overrideProfile ?? LocalModelLoadProfileOverride()
-            let contextText = localModelContextOverrideDraftText(for: model.id)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            overrideProfile.contextLength = Int(contextText)
-            let ttlText = localModelTTLDraftText(for: model.id)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            overrideProfile.ttl = Int(ttlText)
-            let parallelText = localModelParallelDraftText(for: model.id)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            overrideProfile.parallel = Int(parallelText)
-            let identifierText = localModelIdentifierDraftText(for: model.id)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            overrideProfile.identifier = identifierText.isEmpty ? nil : identifierText
-            let imageDimensionText = localModelVisionImageMaxDimensionDraftText(for: model.id)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if let value = Int(imageDimensionText), value >= 32, value <= 16_384 {
-                overrideProfile.vision = LocalModelVisionLoadProfile(imageMaxDimension: value)
-            } else {
-                overrideProfile.vision = nil
-            }
-
-            let note = (localModelNoteById[model.id] ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let existing = existingLocalModelProfiles[model.id]
-            let normalizedProfile = overrideProfile.isEmpty ? nil : overrideProfile
-
-            if let normalizedProfile {
-                let next = HubPairedTerminalLocalModelProfile(
-                    deviceId: client.deviceId,
-                    modelId: model.id,
-                    overrideProfile: normalizedProfile,
-                    updatedAtMs: nowMs,
-                    updatedBy: "hub_settings",
-                    note: note
-                )
-                let needsUpsert = existing?.overrideProfile != normalizedProfile
-                    || existing?.note != note
-                    || existing == nil
-                if needsUpsert {
-                    onUpsertLocalModelProfile(next)
-                }
-            } else if existing != nil {
-                onRemoveLocalModelProfile(client.deviceId, model.id)
-            }
-        }
-    }
-
-    private func parseList(_ text: String) -> [String] {
-        let raw = text
-            .split(whereSeparator: { ch in
-                ch == "," || ch == "\n" || ch == ";" || ch == "\t"
-            })
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        if raw.isEmpty { return [] }
-
-        // De-dup while preserving order.
-        var seen = Set<String>()
-        var out: [String] = []
-        for s in raw {
-            if seen.contains(s) { continue }
-            seen.insert(s)
-            out.append(s)
-        }
-        return out
-    }
-}
-
-extension SettingsSheetView {
-    private func badgeDetailText(dedupeKey: String, isEnabled: Bool) -> String {
-        // Dock badge integrations require Accessibility.
-        if isEnabled, (dedupeKey == "mail_unread" || dedupeKey == "messages_unread" || dedupeKey == "slack_updates"),
-           !DockBadgeReader.ensureAccessibilityTrusted(prompt: false) {
-            return HubUIStrings.Notifications.Unread.accessibilityRequired
-        }
-        if let n = store.notifications.first(where: { $0.dedupeKey == dedupeKey }) {
-            let c = firstInt(in: n.title) ?? firstInt(in: n.body) ?? 0
-            if c > 0 {
-                return HubUIStrings.Notifications.Unread.count(c)
-            }
-            return HubUIStrings.Notifications.Unread.noUnread
-        }
-        return HubUIStrings.Notifications.Unread.noUnread
-    }
-
-    private func firstInt(in s: String) -> Int? {
-        var digits = ""
-        for ch in s {
-            if ch.isNumber {
-                digits.append(ch)
-            } else if !digits.isEmpty {
-                break
-            }
-        }
-        return digits.isEmpty ? nil : Int(digits)
-    }
-}
-
-private struct IntegrationToggleRow: View {
-    let systemImage: String
-    let title: String
-    let detail: String
-    @Binding var isOn: Bool
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .frame(width: 18)
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.callout.weight(.semibold))
-                Text(detail)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer()
-            Toggle("", isOn: $isOn)
-                .labelsHidden()
-        }
-        .padding(.vertical, 2)
     }
 }

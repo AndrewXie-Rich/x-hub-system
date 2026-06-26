@@ -12,8 +12,10 @@ enum HubPaths {
     }
 
     private static let lock = DispatchQueue(label: "xterminal.hubpaths")
+    private static let pinnedOverrideLease = DispatchSemaphore(value: 1)
     private static var _baseDirOverride: URL? = nil
     private static var _baseDirOverridePinned: Bool = false
+    private static var _pinnedOverrideLeaseActive: Bool = false
     private static var _candidateBaseDirsOverrideForTesting: [URL]? = nil
     private static var _defaultGroupBaseDirOverrideForTesting: URL? = nil
     private static let runtimeDirectoryAliases = ["XHub", "RELFlowHub"]
@@ -26,21 +28,35 @@ enum HubPaths {
     }
 
     static func setPinnedBaseDirOverride(_ url: URL?) {
+        guard let url else {
+            clearPinnedBaseDirOverride()
+            return
+        }
+        pinnedOverrideLease.wait()
         lock.sync {
             _baseDirOverride = url
-            _baseDirOverridePinned = (url != nil)
+            _baseDirOverridePinned = true
+            _pinnedOverrideLeaseActive = true
         }
     }
 
     static func clearPinnedBaseDirOverride() {
-        lock.sync {
+        let shouldSignal = lock.sync { () -> Bool in
+            let wasActive = _pinnedOverrideLeaseActive
+            _pinnedOverrideLeaseActive = false
             _baseDirOverridePinned = false
             _baseDirOverride = nil
+            return wasActive
+        }
+        if shouldSignal {
+            pinnedOverrideLease.signal()
         }
     }
 
     static func baseDirOverride() -> URL? {
-        lock.sync { _baseDirOverride }
+        lock.sync {
+            _baseDirOverride
+        }
     }
 
     static func setCandidateBaseDirsOverrideForTesting(_ urls: [URL]?) {
@@ -215,7 +231,7 @@ enum HubPaths {
     }
 
     private static func hasRemotePairingState(fileManager: FileManager = .default) -> Bool {
-        let stateDir = XTProcessPaths.defaultAxhubStateDir(fileManager: fileManager)
+        let stateDir = XTProcessPaths.activeAxhubStateDir(fileManager: fileManager)
         let artifactNames = [
             "pairing.env",
             "connection.json",

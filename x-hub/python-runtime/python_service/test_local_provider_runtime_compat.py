@@ -1004,8 +1004,8 @@ def _test_provider_status_snapshot_exposes_llama_cpp_helper_runtime_truth_for_gg
         assert llama_cpp["unavailableTaskKinds"] == ["text_generate"]
 
 
-def _test_run_local_task_mlx_delegate() -> None:
-    with tempfile.TemporaryDirectory(prefix="xhub_py_lpr_delegate_") as base_dir:
+def _test_run_local_task_mlx_text_generate_fails_closed_without_runtime() -> None:
+    with tempfile.TemporaryDirectory(prefix="xhub_py_lpr_text_no_runtime_") as base_dir:
         write_json(
             os.path.join(base_dir, "models_catalog.json"),
             {
@@ -1023,6 +1023,7 @@ def _test_run_local_task_mlx_delegate() -> None:
             {
                 "task_kind": "text_generate",
                 "model_id": "mlx-qwen",
+                "prompt": "Say OK",
             },
             base_dir=base_dir,
         )
@@ -1030,16 +1031,118 @@ def _test_run_local_task_mlx_delegate() -> None:
         assert result["ok"] is False
         assert result["provider"] == "mlx"
         assert result["taskKind"] == "text_generate"
-        assert result["error"] == "delegate_to_runtime_loop:mlx"
+        assert result["error"] == "legacy_runtime_loop_required"
+
+
+def _test_run_local_task_mlx_text_generate_executes_resident_runtime() -> None:
+    class TextRuntime(StubMLXRuntime):
+        def __init__(self) -> None:
+            super().__init__(ok=False, loaded={})
+            self.load_calls: list[dict[str, Any]] = []
+            self.generate_calls: list[dict[str, Any]] = []
+            self.ensure_calls = 0
+            self.loaded = False
+
+        def _ensure_runtime_imported(self) -> bool:
+            self.ensure_calls += 1
+            self._mlx_ok = True
+            self._import_error = ""
+            return True
+
+        def is_loaded(self, model_id: str, **kwargs: Any) -> bool:
+            _ = model_id, kwargs
+            return self.loaded
+
+        def load(self, model_id: str, model_path: str, **kwargs: Any):
+            self.loaded = True
+            self.load_calls.append({"model_id": model_id, "model_path": model_path, "kwargs": dict(kwargs)})
+            self._loaded = {model_id: object()}
+            self._loaded_instances = [
+                {
+                    "instanceKey": kwargs.get("instance_key") or "mlx:mlx-text:test",
+                    "modelId": model_id,
+                    "taskKinds": list(kwargs.get("task_kinds") or []),
+                    "loadProfileHash": kwargs.get("load_profile_hash") or "test",
+                    "effectiveContextLength": kwargs.get("effective_context_length") or 0,
+                    "loadedAt": 1.0,
+                    "lastUsedAt": 1.0,
+                    "residency": "resident",
+                    "residencyScope": "legacy_runtime",
+                    "deviceBackend": "mps",
+                }
+            ]
+            return True, "ok", 1024
+
+        def generate_text(self, model_id: str, prompt: str, **kwargs: Any):
+            self.generate_calls.append({"model_id": model_id, "prompt": prompt, "kwargs": dict(kwargs)})
+            return True, "OK", {
+                "promptTokens": 3,
+                "generationTokens": 1,
+                "generationTPS": 10.0,
+                "instanceKey": kwargs.get("instance_key") or "mlx:mlx-text:test",
+                "loadProfileHash": kwargs.get("load_profile_hash") or "test",
+                "effectiveContextLength": kwargs.get("effective_context_length") or 0,
+            }
+
+    with tempfile.TemporaryDirectory(prefix="xhub_py_mlx_text_runtime_") as base_dir:
+        write_json(
+            os.path.join(base_dir, "models_catalog.json"),
+            {
+                "models": [
+                    {
+                        "id": "mlx-text",
+                        "name": "MLX Text",
+                        "backend": "mlx",
+                        "modelPath": "/models/mlx-text",
+                        "taskKinds": ["text_generate"],
+                    }
+                ]
+            },
+        )
+        runtime = TextRuntime()
+        build_registry(base_dir=base_dir, runtime=runtime)
+
+        result = run_local_task(
+            {
+                "provider": "mlx",
+                "task_kind": "text_generate",
+                "model_id": "mlx-text",
+                "prompt": "Say OK",
+                "max_tokens": 8,
+                "temperature": 0,
+                "input_sanitized": True,
+            },
+            base_dir=base_dir,
+        )
+        snapshot = provider_status_snapshot(base_dir)
+
+        assert result["ok"] is True
+        assert result["provider"] == "mlx"
+        assert result["taskKind"] == "text_generate"
+        assert result["text"] == "OK"
+        assert result["usage"]["promptTokens"] == 3
+        assert result["usage"]["generationTokens"] == 1
+        assert runtime.ensure_calls == 1
+        assert runtime.load_calls[0]["kwargs"]["task_kinds"] == ["text_generate"]
+        assert runtime.generate_calls[0]["prompt"] == "Say OK"
+        assert runtime.generate_calls[0]["kwargs"]["max_tokens"] == 8
+        assert snapshot["mlx"]["loadedInstances"][0]["taskKinds"] == ["text_generate"]
 
 
 def _test_run_local_task_mlx_embedding_executes_resident_runtime() -> None:
     class EmbeddingRuntime(StubMLXRuntime):
         def __init__(self) -> None:
-            super().__init__(ok=True, loaded={})
+            super().__init__(ok=False, loaded={})
             self.load_calls: list[dict[str, Any]] = []
             self.embedding_calls: list[dict[str, Any]] = []
+            self.ensure_calls = 0
             self.loaded = False
+
+        def _ensure_runtime_imported(self) -> bool:
+            self.ensure_calls += 1
+            self._mlx_ok = True
+            self._import_error = ""
+            return True
 
         def is_loaded(self, model_id: str, **kwargs: Any) -> bool:
             _ = model_id, kwargs
@@ -1105,6 +1208,7 @@ def _test_run_local_task_mlx_embedding_executes_resident_runtime() -> None:
         assert result["vectorCount"] == 1
         assert result["dims"] == 2
         assert result["vectors"] == [[0.6, 0.8]]
+        assert runtime.ensure_calls == 1
         assert runtime.load_calls[0]["kwargs"]["task_kinds"] == ["embedding"]
         assert runtime.embedding_calls[0]["texts"] == ["hello hub"]
         assert snapshot["mlx"]["loadedInstances"][0]["taskKinds"] == ["embedding"]
@@ -2858,6 +2962,52 @@ def _test_provider_status_snapshot_exposes_resource_policy_and_scheduler_state()
         assert scheduler["queuedTaskCount"] == 0
         assert scheduler["oldestWaiterStartedAt"] == 0
         assert scheduler["oldestWaiterAgeMs"] == 0
+
+
+def _test_provider_status_snapshot_applies_model_concurrency_policy() -> None:
+    with tempfile.TemporaryDirectory(prefix="xhub_py_lpr_scheduler_policy_") as base_dir:
+        write_json(
+            os.path.join(base_dir, "models_catalog.json"),
+            {
+                "models": [
+                    {
+                        "id": "hf-embed",
+                        "name": "HF Embed",
+                        "backend": "transformers",
+                        "modelPath": "/models/hf-embed",
+                        "taskKinds": ["embedding"],
+                        "resourceProfile": {
+                            "preferredDevice": "cpu",
+                            "memoryFloorMB": 1024,
+                            "dtype": "float32",
+                        },
+                    }
+                ]
+            },
+        )
+        write_json(
+            os.path.join(base_dir, "model_concurrency_policy.json"),
+            {
+                "schemaVersion": "xhub.model_concurrency_policy.v1",
+                "localDefaultConcurrencyLimit": 3,
+                "providerPolicies": {
+                    "transformers": {
+                        "taskLimits": {
+                            "embedding": 4,
+                        }
+                    }
+                },
+            },
+        )
+
+        snapshot = provider_status_snapshot(base_dir)
+        policy = snapshot["transformers"]["resourcePolicy"]
+        scheduler = snapshot["transformers"]["schedulerState"]
+
+        assert policy["policySource"] == "model_concurrency_policy"
+        assert policy["concurrencyLimit"] == 3
+        assert policy["taskLimits"]["embedding"] == 4
+        assert scheduler["concurrencyLimit"] == 3
 
 
 def _test_provider_status_snapshot_exposes_real_and_fallback_task_metadata() -> None:
@@ -6987,7 +7137,8 @@ run("run_local_bench executes llama.cpp text generation quick bench and records 
 run("provider pack inventory exposes builtin llama.cpp helper manifest", lambda: _test_provider_pack_inventory_exposes_builtin_llama_cpp_manifest())
 run("provider pack registry can disable providers fail-closed while preserving version truth", lambda: _test_provider_pack_registry_overrides_version_and_disables_provider_execution())
 run("provider_status_snapshot exposes llama.cpp helper runtime truth for gguf models", lambda: _test_provider_status_snapshot_exposes_llama_cpp_helper_runtime_truth_for_gguf_models())
-run("run_local_task preserves MLX legacy delegation contract", lambda: _test_run_local_task_mlx_delegate())
+run("run_local_task fails closed for MLX text generation without resident runtime", lambda: _test_run_local_task_mlx_text_generate_fails_closed_without_runtime())
+run("run_local_task executes MLX text generation through the resident runtime", lambda: _test_run_local_task_mlx_text_generate_executes_resident_runtime())
 run("run_local_task executes MLX embedding through the resident runtime", lambda: _test_run_local_task_mlx_embedding_executes_resident_runtime())
 run("mlx provider healthcheck preserves import error diagnostics", lambda: _test_mlx_provider_import_error())
 run("mlx provider healthcheck without runtime uses safe probe instead of module presence", lambda: _test_mlx_provider_without_runtime_uses_safe_probe_result())
@@ -7031,6 +7182,7 @@ run("transformers ocr contract executes through the real image runtime when avai
 run("transformers image validator rejects oversize dimensions fail-closed", lambda: _test_transformers_image_guard_rejects_overlarge_dimensions())
 run("transformers image validator honors effective load-profile image max dimension", lambda: _test_transformers_image_guard_uses_effective_load_profile_image_dimension())
 run("provider_status_snapshot exposes resource policy and scheduler telemetry", lambda: _test_provider_status_snapshot_exposes_resource_policy_and_scheduler_state())
+run("provider_status_snapshot applies model concurrency policy", lambda: _test_provider_status_snapshot_applies_model_concurrency_policy())
 run("provider_status_snapshot exposes real and fallback task metadata for monitor views", lambda: _test_provider_status_snapshot_exposes_real_and_fallback_task_metadata())
 run("provider_status_snapshot exposes lifecycle contract metadata for MLX legacy and warmable transformers", lambda: _test_provider_status_snapshot_exposes_lifecycle_contract_metadata())
 run("provider_status_snapshot exposes runtime resolution state and install hint", lambda: _test_provider_status_snapshot_exposes_runtime_resolution_state_and_hint())

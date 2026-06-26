@@ -80,6 +80,34 @@ final class LocalModelHealthScannerTests: XCTestCase {
         XCTAssertEqual(record.lastSuccessAt, previous.lastSuccessAt)
     }
 
+    func testPreflightOnlyDowngradesStaleHealthyHistoryToReview() async {
+        let model = makeModel(id: "mlx/stale")
+        let staleAt = Date().timeIntervalSince1970 - LocalModelHealthSupport.staleAfter - 60
+        let previous = LocalModelHealthRecord(
+            modelId: model.id,
+            providerID: model.backend,
+            state: .healthy,
+            summary: "ok",
+            detail: "ok",
+            lastCheckedAt: staleAt,
+            lastSuccessAt: staleAt
+        )
+
+        let record = await LocalModelHealthScanner.scan(
+            model: model,
+            mode: .preflightOnly,
+            previous: previous,
+            readinessResolver: { _ in .ready("已导入，可用于 Hub 本地执行。") },
+            trialRunner: { _ in
+                XCTFail("trialRunner should not run in preflight-only mode")
+                return ""
+            }
+        )
+
+        XCTAssertEqual(record.state, .degraded)
+        XCTAssertEqual(record.lastSuccessAt, previous.lastSuccessAt)
+    }
+
     func testScanMarksBlockedRuntimeWhenSmokeTrialFails() async {
         let model = makeModel(id: "llama.cpp/coder")
 

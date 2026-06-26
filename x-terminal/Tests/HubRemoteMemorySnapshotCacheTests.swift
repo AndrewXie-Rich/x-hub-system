@@ -84,9 +84,10 @@ struct HubRemoteMemorySnapshotCacheTests {
         )
 
         #expect(record.snapshot.source == "hub_memory_v1_grpc")
+        #expect(record.metadata.hubProfileID == "hub-default")
         #expect(record.metadata.mode == "project_chat")
         #expect(record.metadata.projectId == "proj-cache")
-        #expect(record.metadata.scope == "mode=project_chat project_id=proj-cache")
+        #expect(record.metadata.scope == "hub=hub-default mode=project_chat project_id=proj-cache")
         #expect(record.metadata.storedAtMs == 1_772_400_300_000)
         #expect(record.metadata.ageMs == 6_000)
         #expect(record.metadata.ttlRemainingMs == 9_000)
@@ -123,6 +124,29 @@ struct HubRemoteMemorySnapshotCacheTests {
 
         #expect(metadata.cachePosture == .resumeSafe)
         #expect(metadata.invalidationReason == .manualRefresh)
+    }
+
+    @Test
+    func separatesSnapshotsByHubProfile() async {
+        let cache = HubRemoteMemorySnapshotCache(ttlSeconds: 15)
+        let now = Date(timeIntervalSince1970: 1_772_400_390)
+        let homeKey = HubRemoteMemorySnapshotCache.Key(
+            hubProfileID: "hub-home",
+            mode: "project_chat",
+            projectId: "proj-alpha"
+        )
+        let officeKey = HubRemoteMemorySnapshotCache.Key(
+            hubProfileID: "hub-office",
+            mode: "project_chat",
+            projectId: "proj-alpha"
+        )
+
+        await cache.store(makeSnapshot(ok: true, source: "home"), for: homeKey, posture: .continuitySafe, now: now)
+        await cache.store(makeSnapshot(ok: true, source: "office"), for: officeKey, posture: .continuitySafe, now: now)
+        await cache.invalidate(projectId: "proj-alpha", hubProfileID: "hub-home", reason: .routeOrModelPreferenceChanged)
+
+        #expect(await cache.snapshot(for: homeKey, now: now) == nil)
+        #expect(await cache.snapshot(for: officeKey, now: now)?.source == "office")
     }
 
     private func makeSnapshot(

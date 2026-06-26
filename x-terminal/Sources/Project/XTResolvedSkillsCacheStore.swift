@@ -40,7 +40,8 @@ enum XTResolvedSkillsCacheStore {
 
     static func activeSnapshot(
         for ctx: AXProjectContext,
-        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000.0)
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000.0),
+        hubBaseDir: URL? = nil
     ) -> XTResolvedSkillsCacheSnapshot? {
         queue.sync {
             guard let snapshot = loadUnlocked(for: ctx) else { return nil }
@@ -50,13 +51,21 @@ enum XTResolvedSkillsCacheStore {
                snapshot.hubIndexUpdatedAtMs <= 0 {
                 return nil
             }
+            let snapshotHubProfileID = snapshot.hubProfileID?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let snapshotHubProfileID, !snapshotHubProfileID.isEmpty {
+                guard snapshotHubProfileID == XTHubProfilesStorage.activeCacheScopeID() else {
+                    return nil
+                }
+            } else if XTHubProfilesStorage.hasMultipleProfiles() {
+                return nil
+            }
             let config = try? AXProjectStore.loadOrCreateConfig(for: ctx)
             let currentEpoch = AXSkillsLibrary.resolvedSkillsCacheEpochState(
                 projectId: snapshot.projectId,
                 projectName: snapshot.projectName,
                 projectRoot: ctx.root,
                 config: config,
-                hubBaseDir: HubPaths.baseDir()
+                hubBaseDir: hubBaseDir ?? HubPaths.baseDir()
             )
             guard snapshot.profileEpoch == currentEpoch.profileEpoch,
                   snapshot.trustRootSetHash == currentEpoch.trustRootSetHash,
@@ -106,20 +115,26 @@ enum XTResolvedSkillsCacheStore {
         nowMs: Int64? = nil,
         force: Bool = false
     ) async -> XTResolvedSkillsCacheSnapshot? {
-        let effectiveRemoteStateDirPath =
+        let explicitRemoteStateDirPath =
             normalizedRemoteStateDirPath(remoteStateDirPath)
             ?? normalizedRemoteStateDirPath(load(for: context)?.remoteStateDirPath)
             ?? normalizedRemoteStateDirPath(ProcessInfo.processInfo.environment["AXHUBCTL_STATE_DIR"])
+        let effectiveRemoteStateDirPath =
+            explicitRemoteStateDirPath
+            ?? normalizedRemoteStateDirPath(XTProcessPaths.activeAxhubStateDir().path)
 
         return await remoteRefreshScope.withAXHubStateDir(effectiveRemoteStateDirPath) {
-            if !force, let active = activeSnapshot(for: context) {
+            if !force, let active = activeSnapshot(for: context, hubBaseDir: hubBaseDir) {
                 return active
             }
 
             let explicitStateDir = effectiveRemoteStateDirPath.map {
                 URL(fileURLWithPath: $0, isDirectory: true)
             }
-            if shouldAttemptImplicitRemoteRefresh(remoteStateDirPath: effectiveRemoteStateDirPath),
+            if shouldAttemptImplicitRemoteRefresh(
+                explicitRemoteStateDirPath: explicitRemoteStateDirPath,
+                effectiveRemoteStateDirPath: effectiveRemoteStateDirPath
+            ),
                await HubPairingCoordinator.shared.hasHubEnv(stateDir: explicitStateDir),
                let remote = await buildRemoteSnapshot(
                    projectId: projectId,
@@ -173,16 +188,22 @@ enum XTResolvedSkillsCacheStore {
     }
 
     private static func shouldAttemptImplicitRemoteRefresh(
-        remoteStateDirPath: String?
+        explicitRemoteStateDirPath: String?,
+        effectiveRemoteStateDirPath: String?
     ) -> Bool {
-        !hasExplicitLocalHubOverrideWithoutRemoteStateDir(remoteStateDirPath: remoteStateDirPath)
+        guard normalizedRemoteStateDirPath(effectiveRemoteStateDirPath) != nil else {
+            return false
+        }
+        return !hasExplicitLocalHubOverrideWithoutRemoteStateDir(
+            explicitRemoteStateDirPath: explicitRemoteStateDirPath
+        )
     }
 
     private static func hasExplicitLocalHubOverrideWithoutRemoteStateDir(
-        remoteStateDirPath: String?
+        explicitRemoteStateDirPath: String?
     ) -> Bool {
         guard HubPaths.baseDirOverride() != nil else { return false }
-        return normalizedRemoteStateDirPath(remoteStateDirPath) == nil
+        return normalizedRemoteStateDirPath(explicitRemoteStateDirPath) == nil
     }
 
     fileprivate static func normalizedRemoteStateDirPath(_ raw: String?) -> String? {
@@ -213,20 +234,12 @@ enum XTResolvedSkillsCacheStore {
         ).sorted()
 
         var manifestJSONBySHA: [String: String] = [:]
-        await withTaskGroup(of: (String, String?).self) { group in
-            for packageSHA256 in packageSHA256s {
-                group.addTask {
-                    let manifest = await HubIPCClient.getSkillManifest(packageSHA256: packageSHA256)
-                    guard manifest.ok else { return (packageSHA256, nil) }
-                    let normalizedManifest = manifest.manifestJSON.trimmingCharacters(in: .whitespacesAndNewlines)
-                    return (packageSHA256, normalizedManifest.isEmpty ? nil : normalizedManifest)
-                }
-            }
-
-            for await (packageSHA256, manifestJSON) in group {
-                guard let manifestJSON else { continue }
-                manifestJSONBySHA[packageSHA256] = manifestJSON
-            }
+        for packageSHA256 in packageSHA256s {
+            let manifest = await HubIPCClient.getSkillManifest(packageSHA256: packageSHA256)
+            guard manifest.ok else { continue }
+            let normalizedManifest = manifest.manifestJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedManifest.isEmpty else { continue }
+            manifestJSONBySHA[packageSHA256] = normalizedManifest
         }
 
         return AXSkillsLibrary.resolvedSkillsCacheSnapshot(
