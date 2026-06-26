@@ -11,7 +11,7 @@
 
 MCP standardized the protocol for connecting models to tool/data servers. It does not standardize how clients decide **which servers to trust**, what host resources each server is **permitted to touch**, or how to detect when a previously-installed server **silently expands its scope**.
 
-We've drafted a v0.1 spec for a trust layer that sits *above* MCP, without modifying it: federated, signed manifests with capability tokens, plus a local proxy that enforces capability at runtime. Full draft: [protocol-v0.1.md](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/mcp-trust-registry/protocol-v0.1.md).
+We've drafted a v0.1 spec for a trust layer that sits *above* MCP, without modifying it: federated, signed manifests with capability tokens, plus a local proxy that enforces capability at runtime. Full draft: [protocol-v0.1.md](https://github.com/AndrewXie-Rich/mcp-trust-registry/blob/main/spec/protocol-v0.1.md).
 
 **What we want from this thread:**
 
@@ -132,7 +132,7 @@ In rough order of value:
 
 ## About us
 
-The reference implementation lives inside [X-Hub-System](https://github.com/AndrewXie-Rich/x-hub-system) (a self-hosted AI agent governance plane) as its skills trust subsystem. We extracted the spec because the underlying primitive — attest, capability-scope, enforce, revoke — is independently useful to the MCP ecosystem regardless of whether anyone uses X-Hub.
+A reference implementation is being developed separately in X-Hub-System (a self-hosted AI agent governance plane) as its skills trust subsystem. We extracted the spec because the underlying primitive — attest, capability-scope, enforce, revoke — is independently useful to the MCP ecosystem regardless of whether anyone uses X-Hub.
 
 We are a small project (solo maintainer + small reviewer pool). We mention this because it directly bounds what we can do alone: write the spec, ship a reference Rust implementation on macOS and Linux, seed initial attestations. We cannot run a global trust registry as a service. The federated design isn't only philosophical; it's also what one person can realistically maintain.
 
@@ -142,7 +142,7 @@ That bound is exactly why we're posting this here: if the design only makes sens
 
 ## TL;DR (again, because long threads need it twice)
 
-- We drafted a spec for a trust layer above MCP. ([Full v0.1 draft.](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/mcp-trust-registry/protocol-v0.1.md))
+- We drafted a spec for a trust layer above MCP. ([Full v0.1 draft.](https://github.com/AndrewXie-Rich/mcp-trust-registry/blob/main/spec/protocol-v0.1.md))
 - It doesn't modify MCP. It uses federated signed attestations + capability tokens + a local proxy.
 - We want your pushback on three specific decisions (capability granularity, federation, relationship to the official registry) and pilot publishers from the maintainer community.
 - If this should fold into another effort, please say so — we care about the layer, not the badge.

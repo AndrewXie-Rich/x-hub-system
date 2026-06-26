@@ -2,9 +2,9 @@
 
 > **What this is.** A timestamped snapshot of where the X-Hub spinoff work stands. Read this AFTER `READ_FIRST.md`, BEFORE picking up any work order. If the state described here no longer matches the repo (commits have landed since), trust the repo, not this doc — but read on for the *plan* and *pitfalls*, which decay slower than file lists.
 >
-> **Snapshot date:** 2026-06-25, evening local time.
+> **Snapshot date:** 2026-06-26, afternoon local time.
 > **Branch:** `main`, up to date with `origin/main`.
-> **Last commit:** `8b4aabe Refine website release scope and deployment guidance`.
+> **Last pushed spec commit before this update:** `a6f9412 specs: standalone trust specs v0.1 drafts`.
 
 ---
 
@@ -13,7 +13,7 @@
 1. **All standalone spec drafts are complete** — mcp-trust-registry, hub-receipt, agent-2fa, plus their schemas / examples / READMEs / demo scripts. Validated.
 2. **All AI work orders except WO-04 are done.** WO-04 (main README pointer) is deferred until the in-tree README rewrite is committed.
 3. **Working tree is messy** — a parallel Rust refactor (138 files, ~31k LOC) is uncommitted on `main`, plus prior-session uncommitted work (README rewrite, ENTERPRISE/FAMILY split). **Use scoped staging; never `git add .`**.
-4. **User has 3 manual actions queued** (U-A1 commit, U-A2 placeholder repo, U-A3 submit RFC). Once these land, the RFC is out.
+4. **U-A1 and U-A2 are done.** `mcp-trust-registry` is public at `https://github.com/AndrewXie-Rich/mcp-trust-registry` and contains the public spec mirror. **U-A3 remains manual/browser-only** because GitHub GraphQL creation was blocked by the `modelcontextprotocol` org OAuth policy. The RFC body was copied to the clipboard and the `Ideas - Security` new Discussion page was opened.
 
 ---
 
@@ -131,9 +131,9 @@
 
 | Step | Owner | File / Action | Blocking |
 |---|---|---|---|
-| **U-A1** | User | scoped commit + push (see `USER_ACTIONS.md#u-a1`) | next steps |
-| **U-A2** | User | create placeholder repo `github.com/AndrewXie-Rich/mcp-trust-registry` | U-A3 |
-| **U-A3** | User | submit RFC to `modelcontextprotocol/specification` Discussions | community feedback |
+| **U-A1** | User/AI | scoped commit + push (see `USER_ACTIONS.md#u-a1`) | **Done 2026-06-25** |
+| **U-A2** | User/AI | create public repo `github.com/AndrewXie-Rich/mcp-trust-registry` with public spec mirror | **Done 2026-06-26** |
+| **U-A3** | User | submit RFC to `modelcontextprotocol/modelcontextprotocol` Discussions → `Ideas - Security` | pending browser submit; API blocked by org OAuth policy |
 
 ### Phase 2: Companion specs (AI work, safe to do anytime)
 
@@ -223,9 +223,17 @@ Then:
 
 ### Recommended next pickup
 
-If the user wants linear progress: **U-A1 → U-A2 → U-A3** is next. The AI-created spec artifacts are ready for a scoped commit and RFC submission.
+If the user wants linear progress: **U-A3 browser submit** is next. U-A1 and U-A2 are done; the public draft lives at `https://github.com/AndrewXie-Rich/mcp-trust-registry`.
 
-If the user wants more AI work before submission: the only clean remaining item is WO-04, but it must wait until the active root README rewrite is committed. Do not resume WO-04 while `README.md` / `README_zh.md` are dirty from another session.
+If the user wants more AI work before submission: there is no clean AI-side blocker left. The GitHub API cannot create the Discussion because of the target org's OAuth policy. Use the open browser page, title below, and the clipboard body.
+
+Title:
+
+```text
+RFC: A trust layer above MCP — federated attestation + capability tokens
+```
+
+After U-A3 lands, WO-04 remains deferred until the active root README rewrite is committed. Do not resume WO-04 while `README.md` / `README_zh.md` are dirty from another session.
 
 ---
 
