@@ -8,7 +8,7 @@
 
 > **A trust layer above MCP.** Sigstore-style attestations + capability tokens + a local enforcement proxy. So your AI agent can't `rm -rf` because an MCP server "just needed shell access".
 
-[Specification (v0.1 draft)](spec/protocol-v0.1.md) · [60-second demo](demo-60s.md) · [中文](README_zh.md)
+[Specification (v0.1 draft)](protocol-v0.1.md) · [60-second demo](demo-60s.md) · [Examples](examples/README.md) · 中文 (TBD)
 
 ## What you see
 
@@ -79,15 +79,16 @@ Full data model and wire format: [`spec/protocol-v0.1.md`](spec/protocol-v0.1.md
 | Component | State |
 |---|---|
 | Specification v0.1 | Draft, pre-RFC |
-| `mcp-trust-cli` (Rust) | Skeleton |
-| `mcp-trust-proxy` (Rust) | Skeleton |
+| JSON Schemas + examples | CI validated |
+| Example-chain verifier | Available at `scripts/verify_examples.js` |
+| `mcp-trust-cli` / `mcp-trust-proxy` (Rust) | Next deliverable |
 | Reference registry | Bootstrapping |
 | Seed attestations (top 20 MCP servers) | In progress |
 | Sigstore keyless signing | Planned for v0.2 |
 
-Schemas validated in CI: see [`scripts/check_mcp_trust_schemas.sh`](../../scripts/check_mcp_trust_schemas.sh).
+Schemas validate with the root repo script and the standalone repo script. Example cross-field consistency validates with `node specs/mcp-trust-registry/scripts/verify_examples.js --example`.
 
-A reference deployment of the proxy ships inside [X-Hub-System](https://github.com/AndrewXie-Rich/x-hub-system) as its skills trust subsystem.
+A reference deployment of the proxy is being developed in the X-Hub-System project as its skills trust subsystem.
 
 ## Relationship to MCP
 
@@ -103,7 +104,7 @@ We are pre-RFC. The most valuable contribution right now is **review of the spec
 - The federation model (§7) — does it survive realistic adversarial registries?
 - The threat model (§12) — what did we miss?
 
-Open issues at <https://github.com/mcp-trust/mcp-trust-registry/issues> (placeholder — repo not yet public). Until the repo is live, comment on the X-Hub-System repo's discussions.
+Open issues at <https://github.com/AndrewXie-Rich/mcp-trust-registry/issues>.
 
 ## License
 

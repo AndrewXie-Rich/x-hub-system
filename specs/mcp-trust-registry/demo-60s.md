@@ -132,7 +132,7 @@ $ claude "take another screenshot"
 ```text
 ─────────────────────────────────────────────
   mcp-trust-registry         spec v0.1 draft
-  github.com/mcp-trust/mcp-trust-registry
+  github.com/AndrewXie-Rich/mcp-trust-registry
 ─────────────────────────────────────────────
 ```
 

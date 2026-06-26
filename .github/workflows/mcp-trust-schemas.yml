@@ -26,3 +26,5 @@ jobs:
           node-version: '20'
       - name: Validate mcp-trust-registry schemas and examples
         run: ./scripts/check_mcp_trust_schemas.sh
+      - name: Verify mcp-trust-registry example chain consistency
+        run: node specs/mcp-trust-registry/scripts/verify_examples.js --example

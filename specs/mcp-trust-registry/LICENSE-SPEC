@@ -1,0 +1,18 @@
+mcp-trust-registry specification license
+
+SPDX-License-Identifier: CC-BY-4.0
+
+The specification text, schemas, examples, and explanatory documentation in
+this directory are licensed under the Creative Commons Attribution 4.0
+International license.
+
+Canonical license text:
+
+https://creativecommons.org/licenses/by/4.0/legalcode
+
+You may share and adapt the specification material for any purpose, including
+commercial use, provided that you give appropriate credit, provide a link to
+the license, and indicate whether changes were made.
+
+Reference implementations and executable tooling are intended to be licensed
+under Apache 2.0 unless a file states otherwise.
