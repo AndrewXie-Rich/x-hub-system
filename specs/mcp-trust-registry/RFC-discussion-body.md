@@ -93,19 +93,19 @@ We've been deliberate about scope:
 
 These are the three places where we want your read before we go further:
 
-### A. Capability token granularity for `net:fetch`
+### A. Capability token granularity for `net:fetch` ([tracking issue #1](https://github.com/AndrewXie-Rich/mcp-trust-registry/issues/1))
 
 Current spec: host-level (`net:fetch:api.github.com`). Reasoning: deeper than host (e.g., URL-path prefix) requires MITM-ing TLS, which we consider unsafe for an open-source tool to default to. But host-level lets a granted-but-malicious server exfiltrate to any path on a permitted host.
 
 Is host-level the right floor, or should v0.1 also define a normative path-prefix mode that requires opt-in MITM via user-installed CA?
 
-### B. Federation vs. official-registry-only
+### B. Federation vs. official-registry-only ([tracking issue #2](https://github.com/AndrewXie-Rich/mcp-trust-registry/issues/2))
 
 Current spec: anyone can run a registry; verifiers consult a list. This is great for offline deployments and antitrust, costly for ecosystem cohesion (will every org have its own registry of slightly-stale attestations?).
 
 Is the right v0.1 to ship federation, or to ship single-registry-with-mirroring (similar to Go's module proxy) and add federation in v0.2 once there's evidence of demand?
 
-### C. The role of this spec relative to the official MCP registry
+### C. The role of this spec relative to the official MCP registry ([tracking issue #3](https://github.com/AndrewXie-Rich/mcp-trust-registry/issues/3))
 
 Most charitable reading: this spec is what a future "MCP server provenance" extension to the official registry would look like, and we're prototyping it in the open so the working group can fork / absorb / reject it on its merits. Least charitable reading: this is an end-run around the official registry.
 
