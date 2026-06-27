@@ -447,6 +447,7 @@ fn serve_http(config: HubConfig) -> Result<(), String> {
 
     let shared = Arc::new(HubState::new(config));
     start_xt_classic_status_heartbeat_if_enabled(&shared.config);
+    xt_file_ipc::start_projection_prewarm_if_enabled(&shared.config);
     local_ml_bridge::start_resident_runtime_preheat_if_enabled(&shared.config);
     for stream in listener.incoming() {
         match stream {

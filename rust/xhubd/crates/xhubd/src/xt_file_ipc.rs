@@ -667,6 +667,18 @@ fn runtime_authority_sync_value(
         .map(|path| path.display().to_string())
         .unwrap_or_default();
 
+    if !requested_apply {
+        if let Some(value) = cached_runtime_authority_sync_value(
+            config,
+            source_base_dir.as_deref(),
+            requested_live_base_dir.as_deref(),
+            live_base_dir.as_deref(),
+            generated_at_ms,
+        ) {
+            return value;
+        }
+    }
+
     let deny_code = if live_base_dir.is_none() {
         "live_base_dir_missing"
     } else if requested_apply && source_base_dir.is_none() {
@@ -686,13 +698,15 @@ fn runtime_authority_sync_value(
     };
 
     if !deny_code.is_empty() {
-        return json!({
+        let value = json!({
             "schema_version": SCHEMA_XT_FILE_IPC_RUNTIME_AUTHORITY_SYNC_V1,
             "ok": false,
             "ready": false,
             "wrote": false,
             "dry_run": !requested_apply,
             "requested_apply": requested_apply,
+            "cache_hit": false,
+            "cache_ttl_ms": RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS.min(i64::MAX as u128) as i64,
             "deny_code": deny_code,
             "generated_at_ms": generated_at_ms.min(i64::MAX as u128) as i64,
             "mode": "rust_runtime_authority_sync_fail_closed",
@@ -706,6 +720,17 @@ fn runtime_authority_sync_value(
             "authority": runtime_authority_sync_authority_json(false),
             "checks": checks,
         });
+        if !requested_apply {
+            cache_runtime_authority_sync_value(
+                config,
+                source_base_dir.as_deref(),
+                requested_live_base_dir.as_deref(),
+                live_base_dir.as_deref(),
+                generated_at_ms,
+                &value,
+            );
+        }
+        return value;
     }
 
     let live_base_dir = live_base_dir.unwrap_or_default();
@@ -753,13 +778,15 @@ fn runtime_authority_sync_value(
     }
 
     let ok = issues.is_empty();
-    json!({
+    let value = json!({
         "schema_version": SCHEMA_XT_FILE_IPC_RUNTIME_AUTHORITY_SYNC_V1,
         "ok": ok,
         "ready": ok,
         "wrote": copied_count > 0,
         "dry_run": !requested_apply,
         "requested_apply": requested_apply,
+        "cache_hit": false,
+        "cache_ttl_ms": RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS.min(i64::MAX as u128) as i64,
         "deny_code": if ok { "" } else { "runtime_authority_file_sync_failed" },
         "issues": issues,
         "generated_at_ms": generated_at_ms.min(i64::MAX as u128) as i64,
@@ -773,7 +800,86 @@ fn runtime_authority_sync_value(
         "skipped_count": skipped_count,
         "authority": runtime_authority_sync_authority_json(copied_count > 0),
         "checks": checks,
-    })
+    });
+    if !requested_apply {
+        cache_runtime_authority_sync_value(
+            config,
+            source_base_dir.as_deref(),
+            requested_live_base_dir.as_deref(),
+            Some(live_base_dir.as_path()),
+            generated_at_ms,
+            &value,
+        );
+    }
+    value
+}
+
+fn cached_runtime_authority_sync_value(
+    config: &HubConfig,
+    source_base_dir: Option<&Path>,
+    requested_live_base_dir: Option<&Path>,
+    live_base_dir: Option<&Path>,
+    generated_at_ms: u128,
+) -> Option<Value> {
+    let root_dir = config.root_dir.display().to_string();
+    let source_base_dir = path_display_or_empty(source_base_dir);
+    let requested_live_base_dir = path_display_or_empty(requested_live_base_dir);
+    let live_base_dir = path_display_or_empty(live_base_dir);
+    let guard = runtime_authority_sync_cache().lock().ok()?;
+    let entry = guard.as_ref()?;
+    if entry.root_dir == root_dir
+        && entry.source_base_dir == source_base_dir
+        && entry.requested_live_base_dir == requested_live_base_dir
+        && entry.live_base_dir == live_base_dir
+        && generated_at_ms >= entry.checked_at_ms
+        && generated_at_ms.saturating_sub(entry.checked_at_ms) <= RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS
+    {
+        return Some(runtime_authority_sync_value_with_generated_at(
+            entry.value.clone(),
+            generated_at_ms,
+            true,
+        ));
+    }
+    None
+}
+
+fn cache_runtime_authority_sync_value(
+    config: &HubConfig,
+    source_base_dir: Option<&Path>,
+    requested_live_base_dir: Option<&Path>,
+    live_base_dir: Option<&Path>,
+    generated_at_ms: u128,
+    value: &Value,
+) {
+    let entry = RuntimeAuthoritySyncCacheEntry {
+        root_dir: config.root_dir.display().to_string(),
+        source_base_dir: path_display_or_empty(source_base_dir),
+        requested_live_base_dir: path_display_or_empty(requested_live_base_dir),
+        live_base_dir: path_display_or_empty(live_base_dir),
+        checked_at_ms: generated_at_ms,
+        value: value.clone(),
+    };
+    if let Ok(mut guard) = runtime_authority_sync_cache().lock() {
+        *guard = Some(entry);
+    }
+}
+
+fn runtime_authority_sync_value_with_generated_at(
+    mut value: Value,
+    generated_at_ms: u128,
+    cache_hit: bool,
+) -> Value {
+    let generated_at_i64 = generated_at_ms.min(i64::MAX as u128) as i64;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("generated_at_ms".to_string(), json!(generated_at_i64));
+        object.insert("cache_hit".to_string(), json!(cache_hit));
+    }
+    value
+}
+
+fn path_display_or_empty(path: Option<&Path>) -> String {
+    path.map(|path| path.display().to_string())
+        .unwrap_or_default()
 }
 
 fn runtime_authority_file_sync_value(
@@ -4250,6 +4356,34 @@ mod tests {
     }
 
     #[test]
+    fn live_status_short_cache_avoids_immediate_status_file_reread() {
+        let temp = unique_temp_dir("xhub-xt-file-ipc-live-status-cache-reread");
+        fs::create_dir_all(temp.join("ipc_events")).unwrap();
+        fs::write(
+            temp.join("hub_status.json"),
+            r#"{"updatedAt":1,"baseDir":"/old","ipcPath":"/old/ipc_events","protocolVersion":1,"marker":"first"}"#,
+        )
+        .unwrap();
+        let config = config_for_runtime_dir(temp.clone());
+
+        let first = live_status_value(&config, 300_000);
+        fs::write(
+            temp.join("hub_status.json"),
+            r#"{"updatedAt":2,"baseDir":"/new","ipcPath":"/new/ipc_events","protocolVersion":1,"marker":"second"}"#,
+        )
+        .unwrap();
+        let second = live_status_value(&config, 300_100);
+        let third = live_status_value(&config, 300_000 + LIVE_STATUS_CACHE_TTL_MS + 1);
+
+        assert_eq!(first["status"]["marker"], "first");
+        assert_eq!(second["generated_at_ms"], 300_100);
+        assert_eq!(second["status"]["marker"], "first");
+        assert_eq!(third["status"]["marker"], "second");
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
     fn runtime_authority_sync_dry_run_reports_would_copy_without_writing() {
         let temp = unique_temp_dir("xhub-xt-runtime-authority-dry");
         let source = temp.join("app");
@@ -4275,6 +4409,43 @@ mod tests {
         assert_eq!(value["would_copy_count"], 1);
         assert_eq!(value["copied_count"], 0);
         assert!(!live.join("models_state.json").exists());
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn runtime_authority_sync_dry_run_short_cache_avoids_immediate_file_rescan() {
+        let temp = unique_temp_dir("xhub-xt-runtime-authority-cache");
+        let source = temp.join("app");
+        let live = temp.join("live");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&live).unwrap();
+        fs::write(
+            source.join("models_state.json"),
+            r#"{"schema_version":"xhub.models_state.v1","models":[]}"#,
+        )
+        .unwrap();
+        let config = config_for_runtime_dir(live.clone());
+        let body = json!({
+            "source_base_dir": source.display().to_string(),
+            "live_base_dir": live.display().to_string(),
+        });
+
+        let first = runtime_authority_sync_value(&config, &body, false, 500_000);
+        fs::remove_file(source.join("models_state.json")).unwrap();
+        let second = runtime_authority_sync_value(&config, &body, false, 500_100);
+        let third =
+            runtime_authority_sync_value(&config, &body, false, 500_000 + RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS + 1);
+
+        assert_eq!(first["cache_hit"], false);
+        assert_eq!(first["would_copy_count"], 1);
+        assert_eq!(second["cache_hit"], true);
+        assert_eq!(second["generated_at_ms"], 500_100);
+        assert_eq!(second["would_copy_count"], 1);
+        assert_eq!(second["files"][0]["source_exists"], true);
+        assert_eq!(third["cache_hit"], false);
+        assert_eq!(third["would_copy_count"], 0);
+        assert_eq!(third["skipped_count"], 2);
 
         let _ = fs::remove_dir_all(temp);
     }
