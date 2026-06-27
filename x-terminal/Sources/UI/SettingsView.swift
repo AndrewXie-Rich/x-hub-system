@@ -343,7 +343,7 @@ enum XTSettingsSurfacePlanner {
         let userAction: String
         if localHubBlocked {
             whyItHappened = "XT 当前只看见本机 loopback Hub；与此同时，本机 fallback Hub 也处于 \(rootCause.isEmpty ? "bridge_unavailable" : rootCause) 降级，\(blockedCapabilities) 仍被挡住。继续让设置中心显示成“只差一点点”只会把问题延后到真正执行时才爆。"
-            userAction = "先到系统设置 → 隐私与安全性 → 本地网络允许 X-Terminal；如果已经允许，再检查当前 Wi-Fi / AP 是否开启了 client isolation。若暂时只能走本机路径，再到 REL Flow Hub → Diagnostics & Recovery 修复 \(rootCause.isEmpty ? "本机 bridge" : rootCause)。"
+            userAction = "先到系统设置 → 隐私与安全性 → 本地网络允许 X-Terminal；如果已经允许，再检查当前 Wi-Fi / AP 是否开启了 client isolation。若暂时只能走本机路径，再到 X-Hub → Diagnostics & Recovery 修复 \(rootCause.isEmpty ? "本机 bridge" : rootCause)。"
         } else {
             whyItHappened = "XT 当前只看见本机 loopback Hub。最常见原因是 macOS 本地网络权限没生效，或当前 Wi-Fi / AP 开了 client isolation，所以同网远端 Hub 没法进入 pairing。"
             userAction = "先到系统设置 → 隐私与安全性 → 本地网络允许 X-Terminal；如果已经允许，再检查当前 Wi-Fi / AP 是否开启了 client isolation。"
@@ -381,7 +381,7 @@ enum XTSettingsSurfacePlanner {
         let rootCause = launchStatus.rootCauseErrorCode.isEmpty
             ? "本机 bridge"
             : launchStatus.rootCauseErrorCode
-        return "XT 只看见本机 loopback Hub；另外本机 fallback Hub 也处于 \(rootCause)，\(launchStatus.blockedCapabilitiesSummary) 仍被阻塞。先修本地网络，再到 REL Flow Hub → Diagnostics & Recovery 修 bridge。"
+        return "XT 只看见本机 loopback Hub；另外本机 fallback Hub 也处于 \(rootCause)，\(launchStatus.blockedCapabilitiesSummary) 仍被阻塞。先修本地网络，再到 X-Hub → Diagnostics & Recovery 修 bridge。"
     }
 
     private static func localHubLaunchStatusIfNeeded(
@@ -1370,7 +1370,7 @@ struct SettingsView: View {
                     )
                 }
 
-                Text("建议至少先配置 coder 与 supervisor；如果付费模型被授权拦住，先去 REL Flow Hub → Models & Paid Access / Grants & Permissions，再回统一模型入口确认实际可执行列表。")
+                Text("建议至少先配置 coder 与 supervisor；如果付费模型被授权拦住，先去 X-Hub → Models & Paid Access / Grants & Permissions，再回统一模型入口确认实际可执行列表。")
                     .foregroundStyle(.secondary)
                     .font(.caption)
             }

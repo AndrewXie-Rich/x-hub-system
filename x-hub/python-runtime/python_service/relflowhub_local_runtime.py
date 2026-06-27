@@ -910,7 +910,21 @@ def _runtime_supports_command_proxy(base_dir: str, *, max_age_sec: float = 5.0) 
     if (_now() - updated_at) > max(1.0, float(max_age_sec or 0.0)):
         return False
     runtime_pid = max(0, _safe_int(obj.get("pid"), 0))
-    return runtime_pid > 1 and runtime_pid != os.getpid()
+    return runtime_pid > 1 and runtime_pid != os.getpid() and _runtime_pid_is_alive(runtime_pid)
+
+
+def _runtime_pid_is_alive(pid: int) -> bool:
+    if pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception:
+        return False
 
 
 def _proxy_runtime_command(

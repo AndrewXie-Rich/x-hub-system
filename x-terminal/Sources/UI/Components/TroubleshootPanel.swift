@@ -106,19 +106,19 @@ enum UITroubleshootDestination: String, Codable, Sendable {
         case .xtExternalTerminals:
             return "XT 设置 → 非 XT Terminal 访问"
         case .hubLAN:
-            return "REL Flow Hub → 网络连接"
+            return "X-Hub → 网络连接"
         case .hubPairing:
-            return "REL Flow Hub → 配对与设备信任"
+            return "X-Hub → 配对与设备信任"
         case .hubProviderKeys:
-            return "REL Flow Hub → 设置 → Provider Key 管理"
+            return "X-Hub → 设置 → Provider Key 管理"
         case .hubModels:
-            return "REL Flow Hub → 模型与付费访问"
+            return "X-Hub → 模型与付费访问"
         case .hubGrants:
-            return "REL Flow Hub → 授权与权限"
+            return "X-Hub → 授权与权限"
         case .hubSecurity:
-            return "REL Flow Hub → 安全边界"
+            return "X-Hub → 安全边界"
         case .hubDiagnostics:
-            return "REL Flow Hub → 诊断与恢复"
+            return "X-Hub → 诊断与恢复"
         case .systemPermissions:
             return "系统设置 → 权限"
         case .homeSupervisor:
@@ -393,7 +393,7 @@ enum UITroubleshootKnowledgeBase {
                 summary: issue.summary,
                 steps: [
                     UITroubleshootStep(index: 1, instruction: "先在 Supervisor 控制中心 → AI 模型核对当前模型 ID、配置链路和最近一次实际命中的链路，避免把路由阻塞误判成授权问题。", destination: .xtChooseModel),
-                    UITroubleshootStep(index: 2, instruction: "到 REL Flow Hub → 模型与付费访问 查看真实可用模型清单、提供方就绪状态，以及当前绑定是否还存在。", destination: .hubModels),
+                    UITroubleshootStep(index: 2, instruction: "到 X-Hub → 模型与付费访问 查看真实可用模型清单、提供方就绪状态，以及当前绑定是否还存在。", destination: .hubModels),
                     UITroubleshootStep(index: 3, instruction: "修复后回 XT 设置 → 诊断与核对，重跑一次路由诊断，确认原始拒绝原因不再出现。", destination: .xtDiagnostics)
                 ]
             ))
@@ -403,8 +403,8 @@ enum UITroubleshootKnowledgeBase {
                 summary: issue.summary,
                 steps: [
                     UITroubleshootStep(index: 1, instruction: "先到 XT 设置 → 诊断与核对 或路由诊断里记下这次拒绝原因、审计编号和实际回退路径，确认当前不是模型缺失或 Hub 不可达。", destination: .xtDiagnostics),
-                    UITroubleshootStep(index: 2, instruction: "再到 REL Flow Hub → 诊断与恢复 查看远端导出开关、恢复建议和对应审计；如果看到远端导出被拦，优先从这里定位。", destination: .hubDiagnostics),
-                    UITroubleshootStep(index: 3, instruction: "再按这次拒绝原因修边界：设备或策略拦截优先看 REL Flow Hub → 安全边界；预算拦截看模型与付费访问；如果只是用户自己关掉了远端偏好，就回 XT 调整后再重试。", destination: .hubSecurity)
+                    UITroubleshootStep(index: 2, instruction: "再到 X-Hub → 诊断与恢复 查看远端导出开关、恢复建议和对应审计；如果看到远端导出被拦，优先从这里定位。", destination: .hubDiagnostics),
+                    UITroubleshootStep(index: 3, instruction: "再按这次拒绝原因修边界：设备或策略拦截优先看 X-Hub → 安全边界；预算拦截看模型与付费访问；如果只是用户自己关掉了远端偏好，就回 XT 调整后再重试。", destination: .hubSecurity)
                 ]
             ))
         case .paidModelAccessBlocked:
@@ -431,7 +431,7 @@ enum UITroubleshootKnowledgeBase {
                 steps: [
                     UITroubleshootStep(index: 1, instruction: "先确认当前选中的 model_id 是否就是被拦截的付费模型，并在 Supervisor 控制中心 → AI 模型记录 device_name / model_id / policy_mode。", destination: .xtChooseModel),
                     UITroubleshootStep(index: 2, instruction: "到 Hub 配对与设备信任页检查该设备是 new_profile 还是 legacy_grant，以及付费模型模式 / allowlist 是否允许当前请求。", destination: .hubPairing),
-                    UITroubleshootStep(index: 3, instruction: "再到 REL Flow Hub → 模型与付费访问 查看 daily / single-request budget；修复后回 XT 设置 → 诊断 重试。\(budgetHintSuffix)", destination: .hubModels)
+                    UITroubleshootStep(index: 3, instruction: "再到 X-Hub → 模型与付费访问 查看 daily / single-request budget；修复后回 XT 设置 → 诊断 重试。\(budgetHintSuffix)", destination: .hubModels)
                 ]
             ))
         case .externalTerminalAccessBlocked:
@@ -462,7 +462,7 @@ enum UITroubleshootKnowledgeBase {
                 summary: issue.summary,
                 steps: [
                     UITroubleshootStep(index: 1, instruction: "先回 XT 设置 → 连接 Hub 记下当前配对端口和 gRPC 端口，避免继续拿旧端口反复重连。", destination: .xtPairHub),
-                    UITroubleshootStep(index: 2, instruction: "到 REL Flow Hub → 网络连接 或 REL Flow Hub → 诊断与恢复 把 Hub 切到空闲端口，或释放已经占用该端口的进程，直到端口占用提示消失。", destination: .hubLAN),
+                    UITroubleshootStep(index: 2, instruction: "到 X-Hub → 网络连接 或 X-Hub → 诊断与恢复 把 Hub 切到空闲端口，或释放已经占用该端口的进程，直到端口占用提示消失。", destination: .hubLAN),
                     UITroubleshootStep(index: 3, instruction: "把新端口同步回 XT 后重新执行重连自检，确认配对和 gRPC 都恢复。", destination: .xtDiagnostics)
                 ]
             )
@@ -496,7 +496,7 @@ enum UITroubleshootKnowledgeBase {
                 summary: "当前更像是正式异网路径被 pairing / identity 边界拦住，而不是普通网络波动。XT 侧同网首配已经到位，但旧令牌、证书或设备信任和 Hub 上的当前记录不再匹配；不要继续拿旧入口反复重试。",
                 steps: [
                     UITroubleshootStep(index: 1, instruction: "先回 XT 设置 → 连接 Hub 执行“清除配对后重连”，重新载入当前 Hub 的邀请、主机和端口；不要继续保留旧 token 或旧证书。", destination: .xtPairHub),
-                    UITroubleshootStep(index: 2, instruction: "再到 REL Flow Hub → 配对与设备信任 → 设备列表（允许清单）删除旧设备条目，并重新复制或轮换邀请令牌；重新批准当前设备后再导出接入包。", destination: .hubPairing),
+                    UITroubleshootStep(index: 2, instruction: "再到 X-Hub → 配对与设备信任 → 设备列表（允许清单）删除旧设备条目，并重新复制或轮换邀请令牌；重新批准当前设备后再导出接入包。", destination: .hubPairing),
                     UITroubleshootStep(index: 3, instruction: "修复后回 XT 重跑重连自检；只有 invite / unauthenticated / certificate 这类身份错误消失后，才算这次配对修复完成。", destination: .hubDiagnostics)
                 ]
             )
@@ -508,7 +508,7 @@ enum UITroubleshootKnowledgeBase {
                 summary: "同网首配已经完成，XT 也已经拿到稳定异网入口；当前正式异网路径还在验证中。除非你现在明确看到 invite_token / unauthenticated / certificate 这类身份错误，否则不要先清空现有配对。",
                 steps: [
                     UITroubleshootStep(index: 1, instruction: "先回 XT 设置 → 连接 Hub 核对当前 Internet Host、配对端口和 gRPC 端口与 Hub 最新导出一致；如果这次只是离网后的首次异网验证，先保留现有配对。", destination: .xtPairHub),
-                    UITroubleshootStep(index: 2, instruction: "再到 REL Flow Hub → 配对与设备信任 确认当前设备条目、邀请状态和设备信任仍有效；不要继续拿旧邀请链接覆盖新配置。", destination: .hubPairing),
+                    UITroubleshootStep(index: 2, instruction: "再到 X-Hub → 配对与设备信任 确认当前设备条目、邀请状态和设备信任仍有效；不要继续拿旧邀请链接覆盖新配置。", destination: .hubPairing),
                     UITroubleshootStep(index: 3, instruction: "如果随后仍出现明确的 invite / certificate / unauthenticated 失败，再执行“清除配对后重连”；否则优先回 XT / Hub 诊断补跑正式异网验证。", destination: .hubDiagnostics)
                 ]
             )
@@ -519,7 +519,7 @@ enum UITroubleshootKnowledgeBase {
             summary: issue.summary,
             steps: [
                 UITroubleshootStep(index: 1, instruction: "先回 XT 设置 → 连接 Hub 执行“清除配对后重连”；如果刚看到 `first_pair_requires_same_lan`，先把 XT 和 Hub 放回同一 Wi‑Fi / 同一局域网，再继续。注意同一个 SSID 不一定等于同一 LAN：若仍失败，优先检查 AP 是否开启了 client isolation 或把设备分到不同 VLAN。若你是通过邀请接入，优先重新打开 Hub 邀请链接，让主机、端口和令牌自动填入，不要手填旧令牌。", destination: .xtPairHub),
-                UITroubleshootStep(index: 2, instruction: "再到 REL Flow Hub → 配对与设备信任 → 设备列表（允许清单）；若刚看到 invite_token_required / invite_token_invalid，让 Hub 重新复制或轮换邀请令牌，再删除旧设备条目并重新批准当前设备。", destination: .hubPairing),
+                UITroubleshootStep(index: 2, instruction: "再到 X-Hub → 配对与设备信任 → 设备列表（允许清单）；若刚看到 invite_token_required / invite_token_invalid，让 Hub 重新复制或轮换邀请令牌，再删除旧设备条目并重新批准当前设备。", destination: .hubPairing),
                 UITroubleshootStep(index: 3, instruction: "重配完成后重新执行一键配置或重连自检，确认原始认证失败不再出现。", destination: .hubDiagnostics)
             ]
         )
@@ -547,8 +547,8 @@ enum UITroubleshootKnowledgeBase {
                     summary: "Hub 当前不可达，但首配完成证明显示同网首配已经通过，正式异网路径现在是被 pairing / identity 边界挡住，而不是普通网络抖动。继续切网重试旧入口没有意义。",
                     steps: [
                         UITroubleshootStep(index: 1, instruction: "先回 XT 设置 → 连接 Hub 核对 Internet Host \(hostInstructionTarget) 和端口是否来自最新邀请；如果不是，重新打开 Hub 邀请链接，不要继续用旧入口。", destination: .xtPairHub),
-                        UITroubleshootStep(index: 2, instruction: "再到 REL Flow Hub → 配对与设备信任 删除旧设备、轮换邀请令牌或刷新设备信任；确认当前设备重新批准后再导出接入包。", destination: .hubPairing),
-                        UITroubleshootStep(index: 3, instruction: "修复 pairing / identity 后到 REL Flow Hub → 诊断与恢复 重新跑异网诊断，再回 XT 重连自检。", destination: .hubDiagnostics)
+                        UITroubleshootStep(index: 2, instruction: "再到 X-Hub → 配对与设备信任 删除旧设备、轮换邀请令牌或刷新设备信任；确认当前设备重新批准后再导出接入包。", destination: .hubPairing),
+                        UITroubleshootStep(index: 3, instruction: "修复 pairing / identity 后到 X-Hub → 诊断与恢复 重新跑异网诊断，再回 XT 重连自检。", destination: .hubDiagnostics)
                     ]
                 )
             }
@@ -561,8 +561,8 @@ enum UITroubleshootKnowledgeBase {
                     summary: degradedSummary,
                     steps: [
                         UITroubleshootStep(index: 1, instruction: "先回 XT 设置 → 连接 Hub 核对 Internet Host \(hostInstructionTarget)、配对端口和 gRPC 端口与当前 Hub 导出一致；先保留现有配对资料。", destination: .xtPairHub),
-                        UITroubleshootStep(index: 2, instruction: "再到 REL Flow Hub → 网络连接 检查 app 没休眠、pairing / gRPC 端口正在监听，并确认防火墙、NAT 或 relay 转发仍指向当前 Hub。", destination: .hubLAN),
-                        UITroubleshootStep(index: 3, instruction: "然后到 REL Flow Hub → 诊断与恢复 重跑正式异网验证；如果仍失败，再按最新 reason code 继续修。", destination: .hubDiagnostics)
+                        UITroubleshootStep(index: 2, instruction: "再到 X-Hub → 网络连接 检查 app 没休眠、pairing / gRPC 端口正在监听，并确认防火墙、NAT 或 relay 转发仍指向当前 Hub。", destination: .hubLAN),
+                        UITroubleshootStep(index: 3, instruction: "然后到 X-Hub → 诊断与恢复 重跑正式异网验证；如果仍失败，再按最新 reason code 继续修。", destination: .hubDiagnostics)
                     ]
                 )
             }
@@ -574,8 +574,8 @@ enum UITroubleshootKnowledgeBase {
                     summary: "Hub 当前不可达，但 XT 之前已经验证过正式异网入口\(hostPhrase)。这次更像是当前 Hub 服务、监听或转发临时回退，不是缺少首配或邀请。",
                     steps: [
                         UITroubleshootStep(index: 1, instruction: "先回 XT 设置 → 连接 Hub 核对 Internet Host \(hostInstructionTarget)、配对端口和 gRPC 端口与当前 Hub 导出一致；不要先清除已验证过的配对。", destination: .xtPairHub),
-                        UITroubleshootStep(index: 2, instruction: "再到 REL Flow Hub → 网络连接 检查 app 没休眠、pairing / gRPC 端口正在监听，并确认防火墙、NAT 或 relay 转发没有临时回退。", destination: .hubLAN),
-                        UITroubleshootStep(index: 3, instruction: "如果命名入口和端口都正确，继续到 REL Flow Hub → 诊断与恢复 重跑远端诊断；修好后回 XT 重新执行重连自检。", destination: .hubDiagnostics)
+                        UITroubleshootStep(index: 2, instruction: "再到 X-Hub → 网络连接 检查 app 没休眠、pairing / gRPC 端口正在监听，并确认防火墙、NAT 或 relay 转发没有临时回退。", destination: .hubLAN),
+                        UITroubleshootStep(index: 3, instruction: "如果命名入口和端口都正确，继续到 X-Hub → 诊断与恢复 重跑远端诊断；修好后回 XT 重新执行重连自检。", destination: .hubDiagnostics)
                     ]
                 )
             }
@@ -590,8 +590,8 @@ enum UITroubleshootKnowledgeBase {
                     summary: "Hub 当前不可达，但同网首配已经完成，XT 也拿到了稳定异网入口\(hostPhrase)。当前更像是正式异网路径\(verificationPhrase)，不要先把这当成要重新配对。",
                     steps: [
                         UITroubleshootStep(index: 1, instruction: "先回 XT 设置 → 连接 Hub 核对 Internet Host \(hostInstructionTarget) 和端口与当前 Hub 导出一致；不要先清空当前配对。", destination: .xtPairHub),
-                        UITroubleshootStep(index: 2, instruction: "再到 REL Flow Hub → 网络连接 确认稳定入口、relay / tailnet / DNS、监听端口和保活状态都正常；Hub 需要保持在线。", destination: .hubLAN),
-                        UITroubleshootStep(index: 3, instruction: "到 REL Flow Hub → 诊断与恢复 等待当前正式异网验证完成，或手动重跑远端诊断；通过后再离网重试。", destination: .hubDiagnostics)
+                        UITroubleshootStep(index: 2, instruction: "再到 X-Hub → 网络连接 确认稳定入口、relay / tailnet / DNS、监听端口和保活状态都正常；Hub 需要保持在线。", destination: .hubLAN),
+                        UITroubleshootStep(index: 3, instruction: "到 X-Hub → 诊断与恢复 等待当前正式异网验证完成，或手动重跑远端诊断；通过后再离网重试。", destination: .hubDiagnostics)
                     ]
                 )
             }
@@ -604,8 +604,8 @@ enum UITroubleshootKnowledgeBase {
                 summary: "Hub 当前不可达，而且 XT 还没有正式远端入口。只要 Internet Host 为空，离开同一 Wi‑Fi / 同一局域网后就没有可复用的命名入口，这不是普通的短时网络波动。",
                 steps: [
                     UITroubleshootStep(index: 1, instruction: "先回 XT 设置 → 连接 Hub 确认 Internet Host 仍为空；如果这是第一次配对，请先把 XT 和 Hub 放回同一 Wi‑Fi / 同一局域网完成首配。", destination: .xtPairHub),
-                    UITroubleshootStep(index: 2, instruction: "再到 REL Flow Hub → 网络连接 配置稳定主机名，例如 tailnet、relay 或 DNS 主机名；不要继续只依赖局域网发现。", destination: .hubLAN),
-                    UITroubleshootStep(index: 3, instruction: "导出新的正式接入包后回 XT 重试；必要时再到 REL Flow Hub → 诊断与恢复 确认远端入口已经在线。", destination: .hubDiagnostics)
+                    UITroubleshootStep(index: 2, instruction: "再到 X-Hub → 网络连接 配置稳定主机名，例如 tailnet、relay 或 DNS 主机名；不要继续只依赖局域网发现。", destination: .hubLAN),
+                    UITroubleshootStep(index: 3, instruction: "导出新的正式接入包后回 XT 重试；必要时再到 X-Hub → 诊断与恢复 确认远端入口已经在线。", destination: .hubDiagnostics)
                 ]
             )
         case .lanOnly:
@@ -614,8 +614,8 @@ enum UITroubleshootKnowledgeBase {
                 summary: "Hub 当前不可达，而且 XT 记录的 Internet Host 还是 \(host)，当前只有同网入口。这类入口只适合同一 Wi‑Fi、同一局域网或同一 VPN；一旦换到别的互联网，它就不是稳定远端入口。",
                 steps: [
                     UITroubleshootStep(index: 1, instruction: "先回 XT 设置 → 连接 Hub 确认 Internet Host 仍是 \(host)；如果你现在就在同一局域网，优先回同网完成首次配对或重连。", destination: .xtPairHub),
-                    UITroubleshootStep(index: 2, instruction: "如果要长期异网接入，到 REL Flow Hub → 网络连接 配置稳定主机名或 relay，不要继续把 .local / localhost 当正式外网入口。", destination: .hubLAN),
-                    UITroubleshootStep(index: 3, instruction: "更新 XT 的接入包后重新执行重连自检，再到 REL Flow Hub → 诊断与恢复 确认新的远端入口可用。", destination: .hubDiagnostics)
+                    UITroubleshootStep(index: 2, instruction: "如果要长期异网接入，到 X-Hub → 网络连接 配置稳定主机名或 relay，不要继续把 .local / localhost 当正式外网入口。", destination: .hubLAN),
+                    UITroubleshootStep(index: 3, instruction: "更新 XT 的接入包后重新执行重连自检，再到 X-Hub → 诊断与恢复 确认新的远端入口可用。", destination: .hubDiagnostics)
                 ]
             )
         case .rawIP(let scope):
@@ -625,8 +625,8 @@ enum UITroubleshootKnowledgeBase {
                     summary: "Hub 当前不可达，但 XT 记录的是 Tailscale IP \(host)。这属于安全等级高的正式异网入口；问题更可能在 tailnet 登录状态、Hub 主机在线状态、端口监听或本机防火墙。",
                     steps: [
                         UITroubleshootStep(index: 1, instruction: "先回 XT 设置 → 连接 Hub 确认 Internet Host \(host)、配对端口和 gRPC 端口与 Hub 导出的 Tailscale 接入包一致。", destination: .xtPairHub),
-                        UITroubleshootStep(index: 2, instruction: "再确认 XT 和 Hub 都登录同一个 Tailscale tailnet；到 REL Flow Hub → 网络连接 检查 app 没休眠、pairing / gRPC 端口正在监听。", destination: .hubLAN),
-                        UITroubleshootStep(index: 3, instruction: "修好后重跑 XT 重连自检；必要时到 REL Flow Hub → 诊断与恢复 核对 Tailscale 入口状态。", destination: .hubDiagnostics)
+                        UITroubleshootStep(index: 2, instruction: "再确认 XT 和 Hub 都登录同一个 Tailscale tailnet；到 X-Hub → 网络连接 检查 app 没休眠、pairing / gRPC 端口正在监听。", destination: .hubLAN),
+                        UITroubleshootStep(index: 3, instruction: "修好后重跑 XT 重连自检；必要时到 X-Hub → 诊断与恢复 核对 Tailscale 入口状态。", destination: .hubDiagnostics)
                     ]
                 )
             }
@@ -635,8 +635,8 @@ enum UITroubleshootKnowledgeBase {
                 summary: "Hub 当前不可达，而且 XT 记录的是\(scope.doctorLabel) \(host) 这类临时 raw IP。公网 IP 可以临时直连，但在换网、休眠、NAT 或公网 IP 变化后很容易失效，不适合作为长期稳定入口。",
                 steps: [
                     UITroubleshootStep(index: 1, instruction: "先回 XT 设置 → 连接 Hub 确认 raw IP \(host) 仍指向当前目标 Hub，且配对端口和 gRPC 端口没有抄错。", destination: .xtPairHub),
-                    UITroubleshootStep(index: 2, instruction: "再到 REL Flow Hub → 网络连接 把入口改成 Tailscale IP、稳定命名入口/域名、relay、Cloudflare Spectrum 或 VPS TCP 转发；不要长期依赖\(scope.doctorLabel) raw IP。", destination: .hubLAN),
-                    UITroubleshootStep(index: 3, instruction: "更新 XT 的正式接入包后重跑重连自检；必要时到 REL Flow Hub → 诊断与恢复 核对新的命名入口和转发状态。", destination: .hubDiagnostics)
+                    UITroubleshootStep(index: 2, instruction: "再到 X-Hub → 网络连接 把入口改成 Tailscale IP、稳定命名入口/域名、relay、Cloudflare Spectrum 或 VPS TCP 转发；不要长期依赖\(scope.doctorLabel) raw IP。", destination: .hubLAN),
+                    UITroubleshootStep(index: 3, instruction: "更新 XT 的正式接入包后重跑重连自检；必要时到 X-Hub → 诊断与恢复 核对新的命名入口和转发状态。", destination: .hubDiagnostics)
                 ]
             )
         case .stableNamed:
@@ -645,8 +645,8 @@ enum UITroubleshootKnowledgeBase {
                 summary: "Hub 当前不可达，但 XT 已经有正式异网入口 \(host)。这更像是 Hub 服务休眠、pairing / gRPC 端口没监听、防火墙拦截，或 relay / NAT 没把流量转到当前这台 Hub。",
                 steps: [
                     UITroubleshootStep(index: 1, instruction: "先回 XT 设置 → 连接 Hub 核对 Internet Host \(host)、配对端口和 gRPC 端口与当前 Hub 导出的值完全一致。", destination: .xtPairHub),
-                    UITroubleshootStep(index: 2, instruction: "再到 REL Flow Hub → 网络连接 检查 app 没休眠、pairing / gRPC 端口正在监听，并确认防火墙、NAT 或 relay 转发没有断开。", destination: .hubLAN),
-                    UITroubleshootStep(index: 3, instruction: "如果命名入口和端口都正确，继续到 REL Flow Hub → 诊断与恢复 重跑远端诊断；修好后回 XT 重新执行重连自检。", destination: .hubDiagnostics)
+                    UITroubleshootStep(index: 2, instruction: "再到 X-Hub → 网络连接 检查 app 没休眠、pairing / gRPC 端口正在监听，并确认防火墙、NAT 或 relay 转发没有断开。", destination: .hubLAN),
+                    UITroubleshootStep(index: 3, instruction: "如果命名入口和端口都正确，继续到 X-Hub → 诊断与恢复 重跑远端诊断；修好后回 XT 重新执行重连自检。", destination: .hubDiagnostics)
                 ]
             )
         }
@@ -865,7 +865,7 @@ enum UITroubleshootKnowledgeBase {
         case .hubPortConflict:
             return "Hub 换到空闲端口或释放占用 -> XT 同步新的配对 / gRPC 端口 -> 重连自检"
         case .modelNotReady:
-            return "XT 核对当前模型和实际路由记录 -> REL Flow Hub 检查模型清单和提供方状态 -> XT 诊断与核对重跑"
+            return "XT 核对当前模型和实际路由记录 -> X-Hub 检查模型清单和提供方状态 -> XT 诊断与核对重跑"
         case .connectorScopeBlocked:
             return "XT 诊断与核对记下实际路由记录 / 审计编号 / 拒绝原因 -> Hub 排障查看远端导出开关 -> 按安全边界或预算入口修复"
         case .externalTerminalAccessBlocked:

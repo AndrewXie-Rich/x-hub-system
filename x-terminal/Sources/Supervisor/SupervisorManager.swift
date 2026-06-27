@@ -8823,15 +8823,15 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         case .allowedByDevicePolicy:
             return "当前设备策略已允许该模型，直接重试当前请求即可。"
         case .blockedPaidModelDisabled:
-            return "到 REL Flow Hub → Pairing & Device Trust 为这台设备开启 paid model 访问。"
+            return "到 X-Hub → Pairing & Device Trust 为这台设备开启 paid model 访问。"
         case .blockedModelNotInCustomAllowlist:
-            return "到 REL Flow Hub → Pairing & Device Trust 把 \(resolution.modelId) 加入该设备 allowlist。"
+            return "到 X-Hub → Pairing & Device Trust 把 \(resolution.modelId) 加入该设备 allowlist。"
         case .blockedDailyBudgetExceeded:
-            return "到 REL Flow Hub → Models & Paid Access 提升 daily token limit，或等待下一配额窗口。"
+            return "到 X-Hub → Models & Paid Access 提升 daily token limit，或等待下一配额窗口。"
         case .blockedSingleRequestBudgetExceeded:
-            return "缩小这次请求，或到 REL Flow Hub → Models & Paid Access 提升 single request token limit。"
+            return "缩小这次请求，或到 X-Hub → Models & Paid Access 提升 single request token limit。"
         case .legacyGrantFlowRequired:
-            return "临时放行：到 REL Flow Hub → Grants & Permissions 完成一次 legacy grant。"
+            return "临时放行：到 X-Hub → Grants & Permissions 完成一次 legacy grant。"
         }
     }
 
@@ -8844,7 +8844,7 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         case .blockedDailyBudgetExceeded, .blockedSingleRequestBudgetExceeded:
             return "如果暂时不改预算，可先切到本地模型或缩短上下文后再试。"
         case .legacyGrantFlowRequired:
-            return "长期修复：到 REL Flow Hub → Pairing & Device Trust 把这台设备升级到新 trust profile。"
+            return "长期修复：到 X-Hub → Pairing & Device Trust 把这台设备升级到新 trust profile。"
         }
     }
 
@@ -38457,7 +38457,7 @@ Coder 下一步建议：
             lines.append("1. 先修复远端 Hub 的 pairing / reachability，确认 XT 能连到 Hub 的 pairing / gRPC 入口。")
         }
         if localLaunchStatus?.blocksPaidOrWebCapabilities == true {
-            lines.append("2. 如果暂时只能走本机路径，到 REL Flow Hub → Diagnostics & Recovery 修复 bridge，至少先解除 ai.generate.paid / web.fetch 的阻塞。")
+            lines.append("2. 如果暂时只能走本机路径，到 X-Hub → Diagnostics & Recovery 修复 bridge，至少先解除 ai.generate.paid / web.fetch 的阻塞。")
         } else {
             lines.append("2. 远端连接恢复后，再重试当前请求。")
         }

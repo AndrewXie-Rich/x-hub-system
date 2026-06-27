@@ -446,14 +446,14 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 headline: "检测到远端导出或 connector scope 被阻断，先检查 Hub Recovery",
                 whatHappened: "lane launch deny 指向 remote export gate、设备远端导出策略、预算边界或用户远端偏好，当前 paid 远端不会被装成已可继续。",
                 whyItHappened: "如果 cockpit 继续只显示授权未完成或权限链路拒绝，会把真正的 Hub Recovery 和边界修复入口藏掉。",
-                userAction: directedResumeSummary ?? "先看 deny_code / audit_ref，再到 REL Flow Hub → 诊断与恢复检查 remote export gate。",
+                userAction: directedResumeSummary ?? "先看 deny_code / audit_ref，再到 X-Hub → 诊断与恢复检查 remote export gate。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "connector_scope_blocked must remain visible",
                 highlights: [
                     contractSummary,
                     topLaunchDenyHighlight,
                     topLaunchIssueHighlight,
-                    "repair_entry=REL Flow Hub → 诊断与恢复"
+                    "repair_entry=X-Hub → 诊断与恢复"
                 ].filter { !$0.isEmpty }
             )
             blockerStatus = StatusExplanation(
@@ -480,7 +480,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                     contractSummary,
                     topLaunchDenyHighlight,
                     topLaunchIssueHighlight,
-                    "repair_entry=REL Flow Hub → 模型与付费访问"
+                    "repair_entry=X-Hub → 模型与付费访问"
                 ].filter { !$0.isEmpty }
             )
             blockerStatus = StatusExplanation(

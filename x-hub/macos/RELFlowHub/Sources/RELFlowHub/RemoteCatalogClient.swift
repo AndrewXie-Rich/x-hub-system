@@ -33,7 +33,7 @@ enum RemoteCatalogClient {
         if !key.isEmpty {
             req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
-        req.setValue("RELFlowHub/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("X-Hub/1.0", forHTTPHeaderField: "User-Agent")
 
         let (data, resp) = try await URLSession.shared.data(for: req)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0

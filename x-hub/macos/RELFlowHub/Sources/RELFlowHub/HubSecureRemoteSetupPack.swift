@@ -34,7 +34,7 @@ enum HubSecureRemoteSetupPackBuilder {
         )
 
         return """
-REL Flow Hub Remote Setup
+X-Hub Remote Setup
 
 Choose one remote entry:
 - Secure non-Tailscale path: stable DNS name -> Cloudflare Spectrum or your VPS raw TCP relay -> Hub 50051/50052, with mTLS enabled.

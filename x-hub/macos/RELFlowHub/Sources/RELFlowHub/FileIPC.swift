@@ -80,7 +80,7 @@ final class FileIPC: @unchecked Sendable {
     init(store: HubStore) {
         self.store = store
 
-        // Preferred shared base dir for the whole REL Flow Hub suite.
+        // Preferred shared base dir for the whole X-Hub suite.
         //
         // - In signed/distributed builds, App Group gives us a stable cross-app directory.
         // - In dev/ad-hoc builds, SharedPaths.appGroupDirectory() returns nil to avoid TCC spam,

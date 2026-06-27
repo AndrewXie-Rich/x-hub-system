@@ -108,8 +108,8 @@ struct SupervisorFailureFormattingTests {
         )
 
         #expect(rendered.contains("Supervisor 当前无法调用已分配模型"))
-        #expect(rendered.contains("临时放行：到 REL Flow Hub → Grants & Permissions 完成一次 legacy grant。"))
-        #expect(rendered.contains("长期修复：到 REL Flow Hub → Pairing & Device Trust 把这台设备升级到新 trust profile。"))
+        #expect(rendered.contains("临时放行：到 X-Hub → Grants & Permissions 完成一次 legacy grant。"))
+        #expect(rendered.contains("长期修复：到 X-Hub → Pairing & Device Trust 把这台设备升级到新 trust profile。"))
         #expect(rendered.contains("以下为本地直答结果："))
         #expect(rendered.contains("⚠️ Hub Brief 暂不可用 · xterminal-supervisor-manager-automation"))
         #expect(rendered.contains("按当前 fail-closed 规则，我先不在 XT 本地即兴拼接 Supervisor brief。"))
@@ -198,7 +198,7 @@ struct SupervisorFailureFormattingTests {
         #expect(rendered.contains("这次 paid model 请求超过了单次额度上限"))
         #expect(rendered.contains("当前设备真值：单次 256 tok · 当日 640 tok · 策略 全部付费模型"))
         #expect(rendered.contains("本轮远端 prompt：rescue 档 · 输入约 220 tokens · 输出上限 36 · 总量约 256 · 设备单次额度 256"))
-        #expect(rendered.contains("缩小这次请求，或到 REL Flow Hub → Models & Paid Access 提升 single request token limit。"))
+        #expect(rendered.contains("缩小这次请求，或到 X-Hub → Models & Paid Access 提升 single request token limit。"))
         #expect(!rendered.contains("device_single_request_token_exceeded"))
     }
 

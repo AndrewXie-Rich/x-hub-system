@@ -11,6 +11,14 @@ use xhub_core::{json_escape, now_ms, path_exists, HubConfig};
 
 pub const LOCAL_ML_BRIDGE_SCHEMA: &str = "xhub.rust_hub.local_ml_execution_bridge.v1";
 pub const LOCAL_ML_READINESS_SCHEMA: &str = "xhub.rust_hub.local_ml_execution_readiness.v1";
+const LOCAL_RUNTIME_COMMAND_IPC_VERSION: &str = "xhub.local_runtime_command_ipc.v1";
+const LOCAL_RUNTIME_COMMAND_POLL_MS: u64 = 30;
+
+#[cfg(unix)]
+unsafe extern "C" {
+    #[link_name = "kill"]
+    fn libc_kill(pid: i32, sig: i32) -> i32;
+}
 
 #[derive(Debug, Clone)]
 pub struct LocalMlReadiness {
@@ -22,6 +30,7 @@ pub struct LocalMlReadiness {
     pub script_exists: bool,
     pub python_executable: String,
     pub python_available: bool,
+    pub command_proxy_ready: bool,
     pub authority: String,
     pub blocker: String,
 }
@@ -44,6 +53,8 @@ fn readiness_for_runtime_base_dir(config: &HubConfig, runtime_base_dir: &Path) -
     let script_exists = script_path.is_file();
     let python_executable = resolve_python_executable(runtime_base_dir).unwrap_or_default();
     let python_available = !python_executable.is_empty();
+    let command_proxy_ready =
+        local_runtime_command_proxy_ready(runtime_base_dir, Duration::from_secs(5));
     let ready = enabled && runtime_base_dir_exists && script_exists && python_available;
     let blocker = if !enabled {
         "authority_disabled"
@@ -65,6 +76,7 @@ fn readiness_for_runtime_base_dir(config: &HubConfig, runtime_base_dir: &Path) -
         script_exists,
         python_executable,
         python_available,
+        command_proxy_ready,
         authority: if ready {
             "rust_admission_python_engine".to_string()
         } else if enabled {
@@ -87,6 +99,21 @@ pub fn readiness_http_json(config: &HubConfig, query: &str) -> (&'static str, St
         .unwrap_or_else(|| config.runtime_base_dir.clone());
     let status = readiness_for_runtime_base_dir(config, &runtime_base_dir);
     ("200 OK", format!("{}\n", readiness_to_value(&status)))
+}
+
+pub fn start_resident_runtime_preheat_if_enabled(config: &HubConfig) {
+    if !env_bool("XHUB_RUST_LOCAL_ML_RESIDENT_RUNTIME_PREHEAT", true) {
+        return;
+    }
+    let config = config.clone();
+    thread::spawn(move || {
+        let delay_ms =
+            env_u64("XHUB_RUST_LOCAL_ML_RESIDENT_RUNTIME_PREHEAT_DELAY_MS", 500).clamp(0, 60_000);
+        if delay_ms > 0 {
+            thread::sleep(Duration::from_millis(delay_ms));
+        }
+        let _ = resident_runtime_preheat_once(&config);
+    });
 }
 
 pub fn execute_http_json(config: &HubConfig, method: &str, body: &str) -> (&'static str, String) {
@@ -207,18 +234,51 @@ fn execute_from_body(config: &HubConfig, body: &str) -> Result<Value, Value> {
         );
     }
 
-    let execution = run_python_local_runtime(
-        &status.python_executable,
-        &status.script_path,
-        "run-local-task",
-        &normalized_request,
-        &runtime_base_dir,
-        timeout_ms,
-    );
+    maybe_start_resident_local_runtime(&status);
+
+    let proxy_ready_for_execution =
+        local_runtime_command_proxy_ready(&runtime_base_dir, Duration::from_secs(5));
+    let execution =
+        if env_bool("XHUB_RUST_LOCAL_ML_COMMAND_PROXY", true) && proxy_ready_for_execution {
+            match run_local_runtime_command_proxy(
+                "run_local_task",
+                &normalized_request,
+                &runtime_base_dir,
+                timeout_ms,
+                &request_id,
+                started_at_ms,
+            ) {
+                Ok(result) => Ok((result, "resident_command_proxy")),
+                Err(err) if command_proxy_error_safe_to_fallback(&err) => {
+                    let fallback_request = disable_short_process_daemon_proxy(&normalized_request);
+                    run_python_local_runtime(
+                        &status.python_executable,
+                        &status.script_path,
+                        "run-local-task",
+                        &fallback_request,
+                        &runtime_base_dir,
+                        timeout_ms,
+                    )
+                    .map(|result| (result, "short_process_after_proxy_submit_error"))
+                }
+                Err(err) => Err(err),
+            }
+        } else {
+            let fallback_request = disable_short_process_daemon_proxy(&normalized_request);
+            run_python_local_runtime(
+                &status.python_executable,
+                &status.script_path,
+                "run-local-task",
+                &fallback_request,
+                &runtime_base_dir,
+                timeout_ms,
+            )
+            .map(|result| (result, "short_process"))
+        };
     let finished_at_ms = now_ms_u64();
     let duration_ms = finished_at_ms.saturating_sub(started_at_ms);
     let audit_ref = format!("rust-local-ml-{request_id}-{started_at_ms}");
-    let result = match execution {
+    let (result, execution_path) = match execution {
         Ok(result) => result,
         Err(err) => {
             let value = fail_value(
@@ -260,6 +320,8 @@ fn execute_from_body(config: &HubConfig, body: &str) -> Result<Value, Value> {
         "duration_ms": duration_ms,
         "audit_ref": audit_ref,
         "error_code": error_code,
+        "execution_path": execution_path,
+        "command_proxy_ready_for_execution": proxy_ready_for_execution,
         "readiness": readiness_to_value(&status),
         "result": result,
     });
@@ -268,6 +330,241 @@ fn execute_from_body(config: &HubConfig, body: &str) -> Result<Value, Value> {
         Ok(value)
     } else {
         Err(value)
+    }
+}
+
+fn resident_runtime_preheat_once(config: &HubConfig) -> Value {
+    let started_at_ms = now_ms_u64();
+    let status = readiness(config);
+    let before_command_proxy_ready = status.command_proxy_ready;
+    let mut action = "skipped";
+    let mut reason = String::new();
+    if status.ready {
+        if before_command_proxy_ready {
+            action = "already_ready";
+        } else {
+            action = "start_resident_runtime";
+        }
+    } else {
+        reason = status.blocker.clone();
+    }
+    let startup_wait_ms = env_u64(
+        "XHUB_RUST_LOCAL_ML_RESIDENT_RUNTIME_PREHEAT_STARTUP_WAIT_MS",
+        env_u64(
+            "XHUB_RUST_LOCAL_ML_RESIDENT_RUNTIME_STARTUP_WAIT_MS",
+            30_000,
+        ),
+    )
+    .clamp(0, 60_000);
+    let ready_after_start_wait = if status.ready && !before_command_proxy_ready {
+        maybe_start_resident_local_runtime_with_wait(&status, startup_wait_ms)
+    } else {
+        before_command_proxy_ready
+    };
+    let after_command_proxy_ready =
+        local_runtime_command_proxy_ready(&status.runtime_base_dir, Duration::from_secs(5));
+    if status.ready && !after_command_proxy_ready && reason.is_empty() {
+        reason = "resident_runtime_start_wait_timeout".to_string();
+    }
+    let model_prewarm = maybe_prewarm_resident_model(&status, after_command_proxy_ready);
+    let finished_at_ms = now_ms_u64();
+    let value = json!({
+        "schema_version": "xhub.rust_hub.local_ml_resident_preheat.v1",
+        "ok": status.ready && after_command_proxy_ready,
+        "command": "resident-runtime-preheat",
+        "action": action,
+        "reason": reason,
+        "production_authority_change": false,
+        "runtime_base_dir": status.runtime_base_dir.display().to_string(),
+        "started_at_ms": started_at_ms,
+        "finished_at_ms": finished_at_ms,
+        "duration_ms": finished_at_ms.saturating_sub(started_at_ms),
+        "before_command_proxy_ready": before_command_proxy_ready,
+        "startup_wait_ms": startup_wait_ms,
+        "ready_after_start_wait": ready_after_start_wait,
+        "after_command_proxy_ready": after_command_proxy_ready,
+        "model_prewarm": model_prewarm,
+        "readiness": readiness_to_value(&status),
+    });
+    append_audit(&status.runtime_base_dir, &value);
+    value
+}
+
+fn maybe_prewarm_resident_model(status: &LocalMlReadiness, command_proxy_ready: bool) -> Value {
+    if !env_bool("XHUB_RUST_LOCAL_ML_RESIDENT_MODEL_PREWARM", false) {
+        return json!({
+            "enabled": false,
+            "attempted": false,
+        });
+    }
+    if !status.ready || !command_proxy_ready {
+        return json!({
+            "enabled": true,
+            "attempted": false,
+            "ok": false,
+            "reason": if status.ready { "command_proxy_not_ready" } else { "local_ml_not_ready" },
+        });
+    }
+    let model_id = env_string("XHUB_RUST_LOCAL_ML_RESIDENT_MODEL_PREWARM_MODEL_ID")
+        .or_else(|| env_string("XHUB_RUST_LOCAL_ML_MODEL_PREWARM_MODEL_ID"))
+        .unwrap_or_default();
+    if model_id.is_empty() {
+        return json!({
+            "enabled": true,
+            "attempted": false,
+            "ok": false,
+            "reason": "model_id_missing",
+        });
+    }
+    let provider = env_string("XHUB_RUST_LOCAL_ML_RESIDENT_MODEL_PREWARM_PROVIDER")
+        .or_else(|| env_string("XHUB_RUST_LOCAL_ML_MODEL_PREWARM_PROVIDER"))
+        .unwrap_or_default();
+    let task_kind = env_string("XHUB_RUST_LOCAL_ML_RESIDENT_MODEL_PREWARM_TASK_KIND")
+        .or_else(|| env_string("XHUB_RUST_LOCAL_ML_MODEL_PREWARM_TASK_KIND"))
+        .unwrap_or_else(|| "text_generate".to_string());
+    let timeout_ms = env_u64(
+        "XHUB_RUST_LOCAL_ML_RESIDENT_MODEL_PREWARM_TIMEOUT_MS",
+        120_000,
+    )
+    .clamp(1_000, 300_000);
+    let started_at_ms = now_ms_u64();
+    let mut request = serde_json::Map::new();
+    request.insert("action".to_string(), json!("warmup_local_model"));
+    request.insert("model_id".to_string(), json!(model_id));
+    request.insert("modelId".to_string(), json!(model_id));
+    request.insert("task_kind".to_string(), json!(task_kind));
+    request.insert("taskKind".to_string(), json!(task_kind));
+    request.insert(
+        "source".to_string(),
+        json!("rust_local_ml_resident_model_prewarm"),
+    );
+    if !provider.is_empty() {
+        request.insert("provider".to_string(), json!(provider));
+    }
+    let result = run_local_runtime_command_proxy(
+        "manage_local_model",
+        &Value::Object(request),
+        &status.runtime_base_dir,
+        timeout_ms,
+        "rust_local_ml_resident_model_prewarm",
+        started_at_ms,
+    );
+    let finished_at_ms = now_ms_u64();
+    match result {
+        Ok(value) => json!({
+            "enabled": true,
+            "attempted": true,
+            "ok": value.get("ok").and_then(Value::as_bool).unwrap_or(false),
+            "action": value.get("action").cloned().unwrap_or(Value::Null),
+            "provider": value.get("provider").cloned().unwrap_or(Value::Null),
+            "model_id": value.get("modelId").or_else(|| value.get("model_id")).cloned().unwrap_or(Value::Null),
+            "task_kind": value.get("taskKind").or_else(|| value.get("task_kind")).cloned().unwrap_or(Value::Null),
+            "error": value.get("error").cloned().unwrap_or(Value::Null),
+            "duration_ms": finished_at_ms.saturating_sub(started_at_ms),
+        }),
+        Err(err) => json!({
+            "enabled": true,
+            "attempted": true,
+            "ok": false,
+            "error": err,
+            "duration_ms": finished_at_ms.saturating_sub(started_at_ms),
+        }),
+    }
+}
+
+fn run_local_runtime_command_proxy(
+    command: &str,
+    request: &Value,
+    runtime_base_dir: &Path,
+    timeout_ms: u64,
+    request_id: &str,
+    started_at_ms: u64,
+) -> Result<Value, String> {
+    let command_dir = runtime_base_dir.join("local_runtime_commands");
+    let result_dir = runtime_base_dir.join("local_runtime_command_results");
+    fs::create_dir_all(&command_dir)
+        .map_err(|err| format!("create_local_runtime_command_dir_failed:{err}"))?;
+    fs::create_dir_all(&result_dir)
+        .map_err(|err| format!("create_local_runtime_result_dir_failed:{err}"))?;
+
+    let req_id = local_runtime_command_req_id(request_id, started_at_ms);
+    let command_path = command_dir.join(format!("cmd_{req_id}.json"));
+    let tmp_path = command_dir.join(format!(".cmd_{req_id}.tmp"));
+    let result_path = result_dir.join(format!("resp_{req_id}.json"));
+    let _ = fs::remove_file(&result_path);
+
+    let payload = json!({
+        "type": "local_runtime_command",
+        "req_id": req_id,
+        "command": command,
+        "request": request,
+        "requested_at": now_ms_u64() as f64 / 1000.0,
+        "requested_at_ms": now_ms_u64(),
+    });
+    let payload_text = serde_json::to_string(&payload)
+        .map_err(|err| format!("serialize_proxy_request_failed:{err}"))?;
+    fs::write(&tmp_path, payload_text)
+        .map_err(|err| format!("local_runtime_command_submit_failed:write:{err}"))?;
+    fs::rename(&tmp_path, &command_path)
+        .map_err(|err| format!("local_runtime_command_submit_failed:rename:{err}"))?;
+
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1_000));
+    loop {
+        if result_path.exists() {
+            let raw = fs::read_to_string(&result_path)
+                .map_err(|err| format!("local_runtime_command_response_read_failed:{err}"))?;
+            let _ = fs::remove_file(&result_path);
+            let value = serde_json::from_str::<Value>(&raw)
+                .map_err(|err| format!("local_runtime_command_response_invalid_json:{err}"))?;
+            if value.as_object().is_none() {
+                return Err("local_runtime_command_response_invalid_shape".to_string());
+            }
+            return Ok(value);
+        }
+        if Instant::now() >= deadline {
+            let _ = fs::remove_file(&command_path);
+            return Err(format!(
+                "local_runtime_command_timeout:{}",
+                if command.trim().is_empty() {
+                    "unknown"
+                } else {
+                    command.trim()
+                }
+            ));
+        }
+        thread::sleep(Duration::from_millis(LOCAL_RUNTIME_COMMAND_POLL_MS));
+    }
+}
+
+fn command_proxy_error_safe_to_fallback(error: &str) -> bool {
+    error.starts_with("create_local_runtime_command_dir_failed:")
+        || error.starts_with("create_local_runtime_result_dir_failed:")
+        || error.starts_with("serialize_proxy_request_failed:")
+        || error.starts_with("local_runtime_command_submit_failed:")
+}
+
+fn local_runtime_command_req_id(request_id: &str, started_at_ms: u64) -> String {
+    let seed = if request_id.trim().is_empty() {
+        "rust_local_ml".to_string()
+    } else {
+        request_id.trim().to_string()
+    };
+    let mut sanitized = String::with_capacity(seed.len().min(80));
+    for ch in seed.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            sanitized.push(ch);
+        } else {
+            sanitized.push('_');
+        }
+        if sanitized.len() >= 80 {
+            break;
+        }
+    }
+    let prefix = sanitized.trim_matches('_');
+    if prefix.is_empty() {
+        format!("rust_local_ml_{started_at_ms}")
+    } else {
+        format!("{prefix}_{started_at_ms}")
     }
 }
 
@@ -358,6 +655,84 @@ fn run_python_local_runtime(
     })
 }
 
+fn maybe_start_resident_local_runtime(status: &LocalMlReadiness) {
+    let wait_ms =
+        env_u64("XHUB_RUST_LOCAL_ML_RESIDENT_RUNTIME_STARTUP_WAIT_MS", 8_000).clamp(0, 30_000);
+    let _ = maybe_start_resident_local_runtime_with_wait(status, wait_ms);
+}
+
+fn maybe_start_resident_local_runtime_with_wait(status: &LocalMlReadiness, wait_ms: u64) -> bool {
+    if !env_bool("XHUB_RUST_LOCAL_ML_RESIDENT_RUNTIME_AUTOSTART", true) {
+        return false;
+    }
+    if !status.ready || status.command_proxy_ready {
+        return status.command_proxy_ready;
+    }
+    if local_runtime_command_proxy_ready(&status.runtime_base_dir, Duration::from_secs(5)) {
+        return true;
+    }
+
+    let spawn_result = Command::new(&status.python_executable)
+        .arg(&status.script_path)
+        .env("REL_FLOW_HUB_BASE_DIR", &status.runtime_base_dir)
+        .env("PYTHONUNBUFFERED", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = spawn_result else {
+        return false;
+    };
+
+    let deadline = Instant::now() + Duration::from_millis(wait_ms);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return false,
+            Ok(None) => {}
+            Err(_) => return false,
+        }
+        if local_runtime_command_proxy_ready(&status.runtime_base_dir, Duration::from_secs(5)) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn local_runtime_command_proxy_ready(runtime_base_dir: &Path, max_age: Duration) -> bool {
+    let path = runtime_base_dir.join("ai_runtime_status.json");
+    let Ok(raw) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+        return false;
+    };
+    let version = first_string(
+        &value,
+        &["localCommandIpcVersion", "local_command_ipc_version"],
+    )
+    .unwrap_or_default();
+    if version != LOCAL_RUNTIME_COMMAND_IPC_VERSION {
+        return false;
+    }
+    let updated_at = value_f64(&value, "updatedAt")
+        .or_else(|| value_f64(&value, "updated_at"))
+        .unwrap_or(0.0);
+    if updated_at <= 0.0 {
+        return false;
+    }
+    let age_sec = (now_ms_u64() as f64 / 1000.0) - updated_at;
+    if age_sec.is_sign_negative() || age_sec > max_age.as_secs_f64().max(1.0) {
+        return false;
+    }
+    let pid = value_u64(&value, "pid")
+        .or_else(|| value_u64(&value, "runtime_pid"))
+        .unwrap_or(0);
+    process_alive(pid)
+}
+
 fn readiness_to_value(status: &LocalMlReadiness) -> Value {
     json!({
         "schema_version": LOCAL_ML_READINESS_SCHEMA,
@@ -374,6 +749,7 @@ fn readiness_to_value(status: &LocalMlReadiness) -> Value {
         "script_exists": status.script_exists,
         "python_available": status.python_available,
         "python_executable": status.python_executable,
+        "command_proxy_ready": status.command_proxy_ready,
         "blocker": status.blocker,
     })
 }
@@ -558,6 +934,28 @@ fn ensure_local_text_task_kind(request: &mut Value) {
     }
 }
 
+fn disable_short_process_daemon_proxy(request: &Value) -> Value {
+    let mut out = request.clone();
+    if let Value::Object(map) = &mut out {
+        map.insert("allow_daemon_proxy".to_string(), Value::Bool(false));
+        map.insert("allowDaemonProxy".to_string(), Value::Bool(false));
+    }
+    out
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u64) -> bool {
+    if pid <= 1 || pid > i32::MAX as u64 {
+        return false;
+    }
+    unsafe { libc_kill(pid as i32, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn process_alive(pid: u64) -> bool {
+    pid > 1
+}
+
 fn request_id_from_envelope(value: &Value) -> String {
     first_string(value, &["request_id", "requestId", "req_id", "reqId"]).unwrap_or_default()
 }
@@ -712,6 +1110,36 @@ fn env_bool(key: &str, fallback: bool) -> bool {
     }
 }
 
+fn env_string(key: &str) -> Option<String> {
+    env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn env_u64(key: &str, fallback: u64) -> u64 {
+    env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(fallback)
+}
+
+fn value_u64(value: &Value, key: &str) -> Option<u64> {
+    let raw = value.as_object()?.get(key)?;
+    if let Some(number) = raw.as_u64() {
+        return Some(number);
+    }
+    raw.as_str()?.trim().parse::<u64>().ok()
+}
+
+fn value_f64(value: &Value, key: &str) -> Option<f64> {
+    let raw = value.as_object()?.get(key)?;
+    if let Some(number) = raw.as_f64() {
+        return Some(number);
+    }
+    raw.as_str()?.trim().parse::<f64>().ok()
+}
+
 fn now_ms_u64() -> u64 {
     now_ms().min(u64::MAX as u128) as u64
 }
@@ -747,6 +1175,22 @@ mod tests {
     }
 
     #[test]
+    fn short_process_fallback_disables_daemon_proxy() {
+        let value = disable_short_process_daemon_proxy(&json!({
+            "model_id": "local-test",
+            "allowDaemonProxy": true,
+        }));
+        assert_eq!(
+            value.get("allow_daemon_proxy").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            value.get("allowDaemonProxy").and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn runtime_status_python_candidates_ignore_runtime_source_path() {
         let dir = env::temp_dir().join(format!("xhub-local-ml-test-{}", now_ms_u64()));
         fs::create_dir_all(&dir).unwrap();
@@ -775,5 +1219,183 @@ mod tests {
             "/Users/test/.lmstudio/bin/lms"
         ));
         assert!(path_basename_contains_python("/opt/homebrew/bin/python3"));
+    }
+
+    #[test]
+    fn command_proxy_ready_requires_fresh_runtime_marker() {
+        let dir = env::temp_dir().join(format!("xhub-local-ml-proxy-{}", now_ms_u64()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("ai_runtime_status.json"),
+            json!({
+                "localCommandIpcVersion": LOCAL_RUNTIME_COMMAND_IPC_VERSION,
+                "updatedAt": now_ms_u64() as f64 / 1000.0,
+                "pid": std::process::id(),
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(local_runtime_command_proxy_ready(
+            &dir,
+            Duration::from_secs(5)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn command_proxy_ready_rejects_dead_runtime_pid() {
+        let dir = env::temp_dir().join(format!("xhub-local-ml-proxy-dead-{}", now_ms_u64()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut child = Command::new("sleep").arg("1").spawn().unwrap();
+        let pid = child.id();
+        child.kill().unwrap();
+        let _ = child.wait();
+        fs::write(
+            dir.join("ai_runtime_status.json"),
+            json!({
+                "localCommandIpcVersion": LOCAL_RUNTIME_COMMAND_IPC_VERSION,
+                "updatedAt": now_ms_u64() as f64 / 1000.0,
+                "pid": pid,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(!local_runtime_command_proxy_ready(
+            &dir,
+            Duration::from_secs(5)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn command_proxy_ready_rejects_stale_runtime_marker() {
+        let dir = env::temp_dir().join(format!("xhub-local-ml-proxy-stale-{}", now_ms_u64()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("ai_runtime_status.json"),
+            json!({
+                "localCommandIpcVersion": LOCAL_RUNTIME_COMMAND_IPC_VERSION,
+                "updatedAt": (now_ms_u64() as f64 / 1000.0) - 60.0,
+                "pid": 4242,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(!local_runtime_command_proxy_ready(
+            &dir,
+            Duration::from_secs(5)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_runtime_command_proxy_round_trips_result() {
+        let dir = env::temp_dir().join(format!("xhub-local-ml-proxy-roundtrip-{}", now_ms_u64()));
+        fs::create_dir_all(&dir).unwrap();
+        let responder_dir = dir.clone();
+        let handle = thread::spawn(move || {
+            let command_dir = responder_dir.join("local_runtime_commands");
+            let result_dir = responder_dir.join("local_runtime_command_results");
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if Instant::now() >= deadline {
+                    panic!("proxy command was not observed");
+                }
+                let entries = fs::read_dir(&command_dir)
+                    .ok()
+                    .into_iter()
+                    .flat_map(|items| items.filter_map(Result::ok))
+                    .collect::<Vec<_>>();
+                if let Some(entry) = entries
+                    .into_iter()
+                    .find(|entry| entry.file_name().to_string_lossy().starts_with("cmd_"))
+                {
+                    let command_path = entry.path();
+                    let raw = fs::read_to_string(&command_path).unwrap();
+                    let observed = serde_json::from_str::<Value>(&raw).unwrap();
+                    let req_id = observed
+                        .get("req_id")
+                        .and_then(Value::as_str)
+                        .unwrap()
+                        .to_string();
+                    fs::create_dir_all(&result_dir).unwrap();
+                    fs::write(
+                        result_dir.join(format!("resp_{req_id}.json")),
+                        json!({
+                            "ok": true,
+                            "command": "run_local_task",
+                            "via": "resident_command_proxy_test"
+                        })
+                        .to_string(),
+                    )
+                    .unwrap();
+                    let _ = fs::remove_file(command_path);
+                    return observed;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        let result = run_local_runtime_command_proxy(
+            "run_local_task",
+            &json!({
+                "provider": "transformers",
+                "model_id": "hf-embed",
+                "task_kind": "embedding"
+            }),
+            &dir,
+            2_000,
+            "req direct/proxy",
+            now_ms_u64(),
+        )
+        .unwrap();
+        let observed = handle.join().unwrap();
+
+        assert_eq!(
+            observed.get("type").and_then(Value::as_str),
+            Some("local_runtime_command")
+        );
+        assert_eq!(
+            observed.get("command").and_then(Value::as_str),
+            Some("run_local_task")
+        );
+        assert_eq!(
+            observed
+                .get("request")
+                .and_then(|request| request.get("model_id"))
+                .and_then(Value::as_str),
+            Some("hf-embed")
+        );
+        assert_eq!(result.get("ok").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            result.get("via").and_then(Value::as_str),
+            Some("resident_command_proxy_test")
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_runtime_command_proxy_timeout_cleans_command_file() {
+        let dir = env::temp_dir().join(format!("xhub-local-ml-proxy-timeout-{}", now_ms_u64()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let err = run_local_runtime_command_proxy(
+            "run_local_task",
+            &json!({ "provider": "mlx", "task_kind": "text_generate" }),
+            &dir,
+            1,
+            "timeout-request",
+            now_ms_u64(),
+        )
+        .unwrap_err();
+
+        assert!(err.starts_with("local_runtime_command_timeout:"));
+        let remaining = fs::read_dir(dir.join("local_runtime_commands"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        assert!(remaining.is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

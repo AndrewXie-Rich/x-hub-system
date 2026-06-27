@@ -303,6 +303,83 @@ final class RustLiveFileIPCBridgeTests: XCTestCase {
         XCTAssertEqual((object["rustHub"] as? [String: Any])?["authority"] as? String, "swift_shell_http_health_fallback")
     }
 
+    func testHTTPFallbackRefreshCoalescesConcurrentHotPathCalls() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let containerBase = root.appendingPathComponent("container/RELFlowHub", isDirectory: true)
+        let liveBase = root.appendingPathComponent("RELFlowHub", isDirectory: true)
+        let now: TimeInterval = 1_778_900_170.5
+        try writeLiveStatus(baseDir: containerBase, now: now)
+
+        let started = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let done = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var fallbackCallCount = 0
+        var firstResult = false
+
+        let bridge = RustLiveFileIPCBridge(
+            appBaseDir: containerBase,
+            appEventsDir: containerBase.appendingPathComponent("ipc_events", isDirectory: true),
+            appResponsesDir: containerBase.appendingPathComponent("ipc_responses", isDirectory: true),
+            appStatusFile: containerBase.appendingPathComponent("hub_status.json"),
+            compatBaseDirs: [],
+            liveBaseDirCandidates: { [containerBase] },
+            httpLiveStatusOverride: { overrideNow in
+                lock.lock()
+                fallbackCallCount += 1
+                lock.unlock()
+                started.signal()
+                _ = release.wait(timeout: .now() + 2)
+                return RustLiveFileIPCBridge.LiveStatus(
+                    raw: [
+                        "updatedAt": overrideNow,
+                        "ipcMode": "file",
+                        "ipcPath": liveBase.appendingPathComponent("ipc_events", isDirectory: true).path,
+                        "baseDir": liveBase.path,
+                        "protocolVersion": 1,
+                        "rustHub": [
+                            "schema_version": "xhub.rust_hub.xt_classic_status.v1",
+                            "authority": "swift_shell_http_health_fallback",
+                        ],
+                    ],
+                    baseDir: liveBase,
+                    eventsDir: liveBase.appendingPathComponent("ipc_events", isDirectory: true),
+                    responsesDir: liveBase.appendingPathComponent("ipc_responses", isDirectory: true),
+                    updatedAt: overrideNow
+                )
+            },
+            useRustLiveStatusHTTP: false
+        )
+
+        DispatchQueue.global(qos: .utility).async {
+            firstResult = bridge.publishAliasHeartbeat(
+                fallbackStatus: self.makeFallbackStatus(baseDir: containerBase, now: now),
+                now: now + 0.1
+            )
+            done.signal()
+        }
+
+        XCTAssertEqual(started.wait(timeout: .now() + 2), .success)
+        let secondResult = bridge.publishAliasHeartbeat(
+            fallbackStatus: makeFallbackStatus(baseDir: containerBase, now: now + 0.02),
+            now: now + 0.12
+        )
+        XCTAssertFalse(secondResult)
+
+        release.signal()
+        XCTAssertEqual(done.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(firstResult)
+        lock.lock()
+        let calls = fallbackCallCount
+        lock.unlock()
+        XCTAssertEqual(calls, 1)
+
+        let object = try readJSONObject(containerBase.appendingPathComponent("hub_status.json"))
+        XCTAssertEqual(object["baseDir"] as? String, liveBase.path)
+    }
+
     func testUsesRecentStaleLiveStatusOnHotPathWhenRefreshIsDue() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

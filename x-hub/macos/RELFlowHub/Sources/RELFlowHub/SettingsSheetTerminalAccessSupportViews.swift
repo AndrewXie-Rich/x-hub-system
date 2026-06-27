@@ -1,7 +1,230 @@
 import SwiftUI
+import AppKit
 import RELFlowHubCore
 
 extension SettingsSheetView {
+    var terminalAccessSortedKeys: [HubTerminalAccessKey] {
+        terminalAccessKeys.sorted { left, right in
+            if left.updatedAtMs != right.updatedAtMs {
+                return left.updatedAtMs > right.updatedAtMs
+            }
+            if left.createdAtMs != right.createdAtMs {
+                return left.createdAtMs > right.createdAtMs
+            }
+            return left.resolvedName.localizedCaseInsensitiveCompare(right.resolvedName) == .orderedAscending
+        }
+    }
+
+    var terminalAccessReadyCount: Int {
+        terminalAccessKeys.filter { $0.status.lowercased() == "ready" }.count
+    }
+
+    var terminalAccessCurrentBaseURL: String {
+        if let resolved = terminalAccessKeys
+            .compactMap({ $0.openAICompat?.baseURL.trimmingCharacters(in: .whitespacesAndNewlines) })
+            .first(where: { !$0.isEmpty }) {
+            return resolved
+        }
+        let host = (grpc.xtTerminalInternetHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedHost = host.isEmpty ? "127.0.0.1" : host
+        let pairingPort = TerminalAccessKeyHTTPClient.pairingPort(grpcPort: grpc.port)
+        if resolvedHost.contains(":") {
+            return "http://\(resolvedHost)/v1"
+        }
+        return "http://\(resolvedHost):\(pairingPort)/v1"
+    }
+
+    var terminalAccessSectionSummaryText: String {
+        let blocked = max(0, terminalAccessKeys.count - terminalAccessReadyCount)
+        let baseURL = terminalAccessCurrentBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "keys \(terminalAccessKeys.count) • ready \(terminalAccessReadyCount) • blocked \(blocked) • daily quota \(terminalAccessIntText(terminalAccessOverviewQuotaTotal)) • \(baseURL)"
+    }
+
+    var terminalAccessOverviewQuotaTotal: Int64 {
+        terminalAccessSortedKeys.reduce(Int64(0)) { partialResult, item in
+            partialResult + terminalAccessQuotaLimit(for: item, deviceStatus: terminalAccessDeviceStatus(for: item))
+        }
+    }
+
+    var terminalAccessOverviewUsedTotal: Int64 {
+        terminalAccessSortedKeys.reduce(Int64(0)) { partialResult, item in
+            partialResult + terminalAccessQuotaUsed(deviceStatus: terminalAccessDeviceStatus(for: item))
+        }
+    }
+
+    var terminalAccessOverviewRemainingTotal: Int64 {
+        terminalAccessSortedKeys.reduce(Int64(0)) { partialResult, item in
+            let status = terminalAccessDeviceStatus(for: item)
+            let limit = terminalAccessQuotaLimit(for: item, deviceStatus: status)
+            let used = terminalAccessQuotaUsed(deviceStatus: status)
+            return partialResult + terminalAccessQuotaRemaining(limit: limit, used: used, deviceStatus: status)
+        }
+    }
+
+    var terminalAccessPendingRevokeAccessKey: HubTerminalAccessKey? {
+        terminalAccessKeys.first { $0.accessKeyID == terminalAccessPendingRevokeAccessKeyID }
+    }
+
+    var terminalAccessRevokeDialogPresented: Binding<Bool> {
+        Binding(
+            get: { !terminalAccessPendingRevokeAccessKeyID.isEmpty },
+            set: { presented in
+                if !presented {
+                    terminalAccessPendingRevokeAccessKeyID = ""
+                }
+            }
+        )
+    }
+
+    func terminalAccessBaseURL(for accessKey: HubTerminalAccessKey) -> String {
+        accessKey.openAICompat?.baseURL.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    func terminalAccessStatusTint(_ accessKey: HubTerminalAccessKey) -> Color {
+        switch accessKey.status.lowercased() {
+        case "ready":
+            return .green
+        case "revoked":
+            return .red
+        case "expired", "disabled":
+            return .orange
+        default:
+            return .blue
+        }
+    }
+
+    func terminalAccessStatusIcon(_ accessKey: HubTerminalAccessKey) -> String {
+        switch accessKey.status.lowercased() {
+        case "ready":
+            return "checkmark.shield.fill"
+        case "revoked":
+            return "xmark.shield.fill"
+        case "expired":
+            return "clock.badge.exclamationmark.fill"
+        case "disabled":
+            return "pause.circle.fill"
+        default:
+            return "key.fill"
+        }
+    }
+
+    func terminalAccessSecretEnvelope(for accessKey: HubTerminalAccessKey) -> HubTerminalAccessKeySecretEnvelope? {
+        guard let lastSecret = terminalAccessLastSecret else { return nil }
+        return lastSecret.accessKey.accessKeyID == accessKey.accessKeyID ? lastSecret : nil
+    }
+
+    func terminalAccessDeliveryPack(for accessKey: HubTerminalAccessKey) -> HubTerminalAccessDeliveryPack {
+        if let secret = terminalAccessSecretEnvelope(for: accessKey) {
+            return secret.deliveryPack
+        }
+        return accessKey.deliveryPack()
+    }
+
+    func terminalAccessExampleText(for deliveryPack: HubTerminalAccessDeliveryPack) -> String {
+        switch terminalAccessExampleKind {
+        case .shell:
+            return deliveryPack.shellExports
+        case .python:
+            return deliveryPack.pythonSnippet
+        case .node:
+            return deliveryPack.nodeSnippet
+        case .curl:
+            return deliveryPack.curlCommand
+        }
+    }
+
+    func terminalAccessDeviceStatus(for accessKey: HubTerminalAccessKey) -> GRPCDeviceStatusEntry? {
+        grpcDevicesStatus.devices.first { row in
+            row.deviceId.trimmingCharacters(in: .whitespacesAndNewlines) == accessKey.deviceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    func terminalAccessQuotaLimit(
+        for accessKey: HubTerminalAccessKey,
+        deviceStatus: GRPCDeviceStatusEntry?
+    ) -> Int64 {
+        let snapshotLimit = max(0, deviceStatus?.dailyTokenLimit ?? 0)
+        if snapshotLimit > 0 {
+            return snapshotLimit
+        }
+        return Int64(max(0, accessKey.dailyTokenLimit))
+    }
+
+    func terminalAccessQuotaUsed(deviceStatus: GRPCDeviceStatusEntry?) -> Int64 {
+        max(0, deviceStatus?.dailyTokenUsed ?? 0)
+    }
+
+    func terminalAccessQuotaRemaining(
+        limit: Int64,
+        used: Int64,
+        deviceStatus: GRPCDeviceStatusEntry?
+    ) -> Int64 {
+        let explicitRemaining = max(
+            max(0, deviceStatus?.remainingDailyTokenBudget ?? 0),
+            max(0, deviceStatus?.dailyTokenRemaining ?? 0)
+        )
+        if explicitRemaining > 0 || (deviceStatus != nil && used > 0) {
+            return explicitRemaining
+        }
+        if limit <= 0 {
+            return 0
+        }
+        return max(0, limit - used)
+    }
+
+    func terminalAccessSummaryLine(_ accessKey: HubTerminalAccessKey, quotaLimit: Int64) -> String {
+        let paidModelText = accessKey.paidModelSelectionMode == .off ? "paid off" : "paid on"
+        let webFetchText = accessKey.defaultWebFetchEnabled ? "web.fetch on" : "web.fetch off"
+        let userText = accessKey.userID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "anonymous" : accessKey.userID
+        return [
+            "user \(userText)",
+            "quota \(terminalAccessIntText(quotaLimit))/day",
+            paidModelText,
+            webFetchText,
+            accessKey.tokenRedacted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : accessKey.tokenRedacted,
+        ]
+        .compactMap { $0 }
+        .joined(separator: " • ")
+    }
+
+    func terminalAccessLiveUsageLine(_ deviceStatus: GRPCDeviceStatusEntry) -> String {
+        let topModel = deviceStatus.topModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let topModelSuffix = topModel.isEmpty ? "" : " • top \(topModel)"
+        return [
+            deviceStatus.connected ? "connected" : "offline",
+            "requests \(deviceStatus.requestsToday)",
+            "blocked \(deviceStatus.blockedToday)",
+            "remaining \(terminalAccessIntText(max(0, deviceStatus.remainingDailyTokenBudget)))",
+        ].joined(separator: " • ") + topModelSuffix
+    }
+
+    func terminalAccessIntText(_ value: Int64) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.groupingSeparator = ","
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter.string(from: NSNumber(value: max(0, value))) ?? String(max(0, value))
+    }
+
+    func terminalAccessIntegerFormatter(minimum: Int, maximum: Int) -> NumberFormatter {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.allowsFloats = false
+        formatter.minimum = NSNumber(value: minimum)
+        formatter.maximum = NSNumber(value: maximum)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter
+    }
+
+    func terminalAccessCopyToPasteboard(_ text: String, successText: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(trimmed, forType: .string)
+        terminalAccessErrorText = ""
+        terminalAccessActionText = successText
+    }
+
     func terminalAccessFeedbackBanner(text: String, tint: Color, systemName: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: systemName)

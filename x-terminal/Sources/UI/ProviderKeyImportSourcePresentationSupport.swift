@@ -189,46 +189,46 @@ enum XTProviderKeyImportSourcePresentation {
         case "missing":
             return XTL10n.text(
                 language,
-                zhHans: "到 REL Flow Hub → 设置 → Provider Key 管理，恢复或重新指定这个导入源：\(ref)。如果它本来就不该再存在，就重新导入正确的目录/配置，让 Hub 用新的源重建 key 池。",
-                en: "Go to REL Flow Hub → Settings → Provider Key Management and restore or repoint this import source: \(ref). If it should no longer exist, re-import the correct directory/config so Hub can rebuild the key pool from a valid source."
+                zhHans: "到 X-Hub → 设置 → Provider Key 管理，恢复或重新指定这个导入源：\(ref)。如果它本来就不该再存在，就重新导入正确的目录/配置，让 Hub 用新的源重建 key 池。",
+                en: "Go to X-Hub → Settings → Provider Key Management and restore or repoint this import source: \(ref). If it should no longer exist, re-import the correct directory/config so Hub can rebuild the key pool from a valid source."
             )
         default:
             switch normalizedToken(issue.errorCode) {
             case "unsupported_toml_config":
                 return XTL10n.text(
                     language,
-                    zhHans: "到 REL Flow Hub → 设置 → Provider Key 管理，把 \(ref) 改成当前支持的 Codex CLI TOML / YAML，或者直接改为导入 auth 目录；当前这份 TOML 结构 Hub 不认。",
-                    en: "Go to REL Flow Hub → Settings → Provider Key Management and change \(ref) to a supported Codex CLI TOML/YAML, or import the auth directory directly; Hub does not recognize the current TOML structure."
+                    zhHans: "到 X-Hub → 设置 → Provider Key 管理，把 \(ref) 改成当前支持的 Codex CLI TOML / YAML，或者直接改为导入 auth 目录；当前这份 TOML 结构 Hub 不认。",
+                    en: "Go to X-Hub → Settings → Provider Key Management and change \(ref) to a supported Codex CLI TOML/YAML, or import the auth directory directly; Hub does not recognize the current TOML structure."
                 )
             case "toml_read_failed", "yaml_parse_failed":
                 return XTL10n.text(
                     language,
-                    zhHans: "到 REL Flow Hub → 设置 → Provider Key 管理，先修复 \(ref) 的读取/语法错误，再刷新 Provider Key；当前文件内容还没法被 Hub 正常解析。",
-                    en: "Go to REL Flow Hub → Settings → Provider Key Management and fix the read/syntax error in \(ref), then refresh Provider Keys; Hub cannot parse the current file content."
+                    zhHans: "到 X-Hub → 设置 → Provider Key 管理，先修复 \(ref) 的读取/语法错误，再刷新 Provider Key；当前文件内容还没法被 Hub 正常解析。",
+                    en: "Go to X-Hub → Settings → Provider Key Management and fix the read/syntax error in \(ref), then refresh Provider Keys; Hub cannot parse the current file content."
                 )
             case "invalid_config", "invalid_account":
                 return XTL10n.text(
                     language,
-                    zhHans: "到 REL Flow Hub → 设置 → Provider Key 管理，检查 \(ref) 里的 provider、token 和基础字段是否完整；当前导入内容缺少 Hub 组装账号所需的关键信息。",
-                    en: "Go to REL Flow Hub → Settings → Provider Key Management and verify that \(ref) contains the provider, token, and required base fields; the imported content is missing fields Hub needs to build an account."
+                    zhHans: "到 X-Hub → 设置 → Provider Key 管理，检查 \(ref) 里的 provider、token 和基础字段是否完整；当前导入内容缺少 Hub 组装账号所需的关键信息。",
+                    en: "Go to X-Hub → Settings → Provider Key Management and verify that \(ref) contains the provider, token, and required base fields; the imported content is missing fields Hub needs to build an account."
                 )
             case "duplicate_api_key":
                 return XTL10n.text(
                     language,
-                    zhHans: "到 REL Flow Hub → 设置 → Provider Key 管理，检查 \(ref) 是否重复导入了当前池里已有的 key；如果是同一把 key，只保留一个源即可。",
-                    en: "Go to REL Flow Hub → Settings → Provider Key Management and check whether \(ref) is re-importing a key already present in the pool; if it is the same key, keep only one source."
+                    zhHans: "到 X-Hub → 设置 → Provider Key 管理，检查 \(ref) 是否重复导入了当前池里已有的 key；如果是同一把 key，只保留一个源即可。",
+                    en: "Go to X-Hub → Settings → Provider Key Management and check whether \(ref) is re-importing a key already present in the pool; if it is the same key, keep only one source."
                 )
             case "max_accounts_reached":
                 return XTL10n.text(
                     language,
-                    zhHans: "到 REL Flow Hub → 设置 → Provider Key 管理，清理这个 provider 下已经废弃的账号，或把导入拆到更合适的 provider/pool；当前 provider 账号数已达上限。",
-                    en: "Go to REL Flow Hub → Settings → Provider Key Management and remove stale accounts under this provider, or split the import into a better provider/pool; the provider account limit has been reached."
+                    zhHans: "到 X-Hub → 设置 → Provider Key 管理，清理这个 provider 下已经废弃的账号，或把导入拆到更合适的 provider/pool；当前 provider 账号数已达上限。",
+                    en: "Go to X-Hub → Settings → Provider Key Management and remove stale accounts under this provider, or split the import into a better provider/pool; the provider account limit has been reached."
                 )
             default:
                 return XTL10n.text(
                     language,
-                    zhHans: "到 REL Flow Hub → 设置 → Provider Key 管理，按这个导入源的最近错误修复 \(ref)，再刷新 Provider Key 和模型路由诊断。",
-                    en: "Go to REL Flow Hub → Settings → Provider Key Management, fix \(ref) according to the latest import error, then refresh Provider Keys and rerun model-route diagnostics."
+                    zhHans: "到 X-Hub → 设置 → Provider Key 管理，按这个导入源的最近错误修复 \(ref)，再刷新 Provider Key 和模型路由诊断。",
+                    en: "Go to X-Hub → Settings → Provider Key Management, fix \(ref) according to the latest import error, then refresh Provider Keys and rerun model-route diagnostics."
                 )
             }
         }

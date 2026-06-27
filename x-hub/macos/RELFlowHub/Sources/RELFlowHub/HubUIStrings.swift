@@ -323,7 +323,7 @@ enum HubUIStrings {
     }
 
     enum Menu {
-        static let title = "REL Flow Hub"
+        static let title = "X-Hub"
         static let displaySection = "显示"
         static let floatingMode = "关闭主窗口后显示"
         static let calendarMigrated = "日历已迁移到 X-Terminal"
@@ -4253,6 +4253,19 @@ enum HubUIStrings {
                 static let start = "启动"
                 static let stop = "停止"
                 static let openLog = "打开日志"
+                static let rustAuthorityTitle = "Rust 本地模型执行"
+                static let rustAuthorityBadge = "Rust authority"
+                static let rustReadinessStatus = "Readiness"
+                static let refreshRustReadiness = "刷新 Rust 状态"
+                static let rustAuthority = "Authority"
+                static let rustEngine = "Engine"
+                static let rustCommandProxy = "Command proxy"
+                static let rustPython = "Python"
+                static let rustRuntimeBaseDir = "Runtime base"
+                static let rustScript = "Script"
+                static let rustLastUpdated = "更新"
+                static let rustAwaitingRefresh = "等待首次刷新"
+                static let rustSwiftShellBoundary = "Swift shell 只展示和调用 Rust 状态；旧 Python runtime 控制已收起。"
                 static let configuration = "运行时配置"
                 static let pythonPath = "Python 路径"
                 static let pythonPathPlaceholder = "Python 可执行路径（例如 /usr/bin/python3）"
@@ -4455,7 +4468,7 @@ enum HubUIStrings {
 
         enum Quit {
             static let sectionTitle = "退出"
-            static let quitApp = "退出 REL Flow Hub"
+            static let quitApp = "退出 X-Hub"
 
             static func version(_ version: String, _ build: String) -> String {
                 "版本 \(version) (\(build))"
@@ -5617,7 +5630,7 @@ enum HubUIStrings {
             static let card = "卡片"
             static let particleDensity = "Orb 粒子密度"
             static let particleSize = "Orb 粒子大小"
-            static let displayHint = "关闭主窗口后可以不显示悬浮层，也可以保留 Orb 或卡片作为 Hub 状态入口。"
+            static let displayHint = "默认不显示悬浮层；需要常驻视觉入口时，可在这里打开 Orb 或卡片。右上角闪电始终作为 Hub 状态入口。"
             static let reminderHint = displayHint
 
             enum Density {
@@ -5775,8 +5788,8 @@ enum HubUIStrings {
                 static let statusSystemAndDisplay = "系统 + 屏幕保活"
                 static let disabledDetail = "Hub 不会申请防休眠；如果电脑因空闲进入睡眠，异网设备会失去连接。"
                 static let standbyDetail = "当前 Hub 接入没有启用，所以还不会申请防休眠。"
-                static let systemAssertionReason = "REL Flow Hub remote serving stays available"
-                static let displayAssertionReason = "REL Flow Hub dashboard stays visible"
+                static let systemAssertionReason = "X-Hub remote serving stays available"
+                static let displayAssertionReason = "X-Hub dashboard stays visible"
 
                 static func activeDetail(running: Bool, externalHost: String?, displayAwake: Bool) -> String {
                     let state = running

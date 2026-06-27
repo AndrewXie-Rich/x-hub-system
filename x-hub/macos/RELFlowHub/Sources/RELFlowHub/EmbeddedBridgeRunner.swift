@@ -2,7 +2,7 @@ import Foundation
 import RELFlowHubCore
 
 // Embedded networking helper running inside the Hub app.
-// It preserves the same filesystem IPC contract as RELFlowHubBridge.
+// It preserves the same filesystem IPC contract as the legacy Bridge helper.
 
 @MainActor
 final class EmbeddedBridgeRunner {
@@ -420,7 +420,7 @@ final class EmbeddedBridgeRunner {
             req.setValue(hv, forHTTPHeaderField: hk)
         }
         if req.value(forHTTPHeaderField: "User-Agent") == nil {
-            req.setValue("RELFlowHubBridge/1.0", forHTTPHeaderField: "User-Agent")
+            req.setValue("X-Hub-Bridge/1.0", forHTTPHeaderField: "User-Agent")
         }
 
         do {

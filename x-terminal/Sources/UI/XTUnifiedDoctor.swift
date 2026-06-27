@@ -4956,7 +4956,7 @@ enum XTUnifiedDoctorBuilder {
             case .pairingRepairRequired:
                 headline = "Hub 配对引导已卡住，需要修复现有配对"
                 summary = "XT 仍处在连接恢复流程里，但最近一次失败已经不是“单纯等待上游”，而是配对档案、令牌或证书材料本身有问题。继续原地等待不会恢复。"
-                nextStep = "先在 XT 连接 Hub 里清除旧配对后重连，再到 REL Flow Hub → 配对与设备信任清理旧设备条目并重新批准。"
+                nextStep = "先在 XT 连接 Hub 里清除旧配对后重连，再到 X-Hub → 配对与设备信任清理旧设备条目并重新批准。"
             case .hubUnreachable:
                 return buildHubUnreachableSection(
                     route: route,
@@ -5032,7 +5032,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .diagnosticRequired,
                 headline: "Hub 端口冲突，必须先修复网络端口",
                 summary: "当前阻塞更像是目标 Hub 的 gRPC 端口或配对端口已被占用；只要端口占用问题还在，系统就不能把连接链路当成可恢复。",
-                nextStep: "先到 REL Flow Hub → 网络连接 或 REL Flow Hub → 诊断与恢复切换到空闲端口，或释放占用进程；再把新端口同步回 XT 后重跑重连自检。",
+                nextStep: "先到 X-Hub → 网络连接 或 X-Hub → 诊断与恢复切换到空闲端口，或释放占用进程；再把新端口同步回 XT 后重跑重连自检。",
                 repairEntry: .xtPairHub,
                 detailLines: [
                     "transport=\(route.transportMode)",
@@ -5059,7 +5059,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .diagnosticRequired,
                 headline: "现有配对档案已失效，需要清理并重配",
                 summary: "当前不是单纯的 Hub 不可达，更像是本地缓存的令牌、客户端证书或旧配对档案已经失效；继续拿旧档案重连只会反复失败。",
-                nextStep: "先在 XT 连接 Hub 执行“清除配对后重连”，再到 REL Flow Hub → 配对与设备信任清理旧设备条目并重新批准。",
+                nextStep: "先在 XT 连接 Hub 执行“清除配对后重连”，再到 X-Hub → 配对与设备信任清理旧设备条目并重新批准。",
                 repairEntry: .xtPairHub,
                 detailLines: hubReachabilityDiagnosticLines(
                     route: route,
@@ -5114,7 +5114,7 @@ enum XTUnifiedDoctorBuilder {
         } else if normalized.contains("pairing_approval_timeout") {
             headline = "Hub 本地批准超时，首次配对没有完成"
             summary = "Hub 已经发现这台 XT，但主机侧的本地批准没有在时限内完成。当前不是单纯网络不可达，而是安全确认链停在 Hub 本机。"
-            nextStep = "回到 Hub 机器，打开 REL Flow Hub 的首次配对审批卡，用 Touch ID、Face ID 或本机密码完成批准；若审批卡已消失，就在 XT 重新发起一次连接。"
+            nextStep = "回到 Hub 机器，打开 X-Hub 的首次配对审批卡，用 Touch ID、Face ID 或本机密码完成批准；若审批卡已消失，就在 XT 重新发起一次连接。"
         } else if normalized.contains("pairing_owner_auth_cancelled") {
             headline = "Hub 本地批准被取消，首次配对未生效"
             summary = "Hub 主机侧已经弹出本地认证，但这次 Touch ID、Face ID 或本机密码确认被取消，所以配对材料没有签发。"
@@ -5254,7 +5254,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .diagnosticRequired,
                 headline: "现有配对档案已失效，需要清理并重配",
                 summary: "当前不是单纯的 Hub 不可达，更像是本地缓存的令牌、客户端证书或旧配对档案已经失效；继续拿旧档案重连只会反复失败。",
-                nextStep: "先在 XT 连接 Hub 执行“清除配对后重连”，再到 REL Flow Hub → 配对与设备信任清理旧设备条目并重新批准。",
+                nextStep: "先在 XT 连接 Hub 执行“清除配对后重连”，再到 X-Hub → 配对与设备信任清理旧设备条目并重新批准。",
                 repairEntry: .xtPairHub,
                 detailLines: hubReachabilityDiagnosticLines(
                     route: route,
@@ -5284,7 +5284,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .diagnosticRequired,
                 headline: "Hub 端口冲突，必须先修复网络端口",
                 summary: "当前阻塞更像是目标 Hub 的 gRPC 端口或配对端口已被占用；只要端口占用问题还在，系统就不能把连接链路当成可恢复。",
-                nextStep: "先到 REL Flow Hub → 网络连接 或 REL Flow Hub → 诊断与恢复切换到空闲端口，或释放占用进程；再把新端口同步回 XT 后重跑重连自检。",
+                nextStep: "先到 X-Hub → 网络连接 或 X-Hub → 诊断与恢复切换到空闲端口，或释放占用进程；再把新端口同步回 XT 后重跑重连自检。",
                 repairEntry: .xtPairHub,
                 detailLines: hubReachabilityDiagnosticLines(
                     route: route,
@@ -5436,7 +5436,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .diagnosticRequired,
                 headline: "配对参数暂时无效",
                 summary: "在继续引导之前，配对端口和 gRPC 端口必须是明确且彼此不同的值，不能让用户靠猜。",
-                nextStep: "去 REL Flow Hub → 网络连接复制配对端口和 gRPC 端口，然后重新执行连接 Hub。",
+                nextStep: "去 X-Hub → 网络连接复制配对端口和 gRPC 端口，然后重新执行连接 Hub。",
                 repairEntry: .xtPairHub,
                 detailLines: details
             )
@@ -5472,7 +5472,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .inProgress,
                 headline: "本机链路可用，但远端引导参数还不完整",
                 summary: "同机验证可以继续，但 Internet Host 仍为空，所以第二台设备还不知道该填什么。",
-                nextStep: "先去 REL Flow Hub → 网络连接 复制 Internet Host 到 X-Terminal，再做远端配对。",
+                nextStep: "先去 X-Hub → 网络连接 复制 Internet Host 到 X-Terminal，再做远端配对。",
                 repairEntry: .xtPairHub,
                 detailLines: details
             )
@@ -5483,7 +5483,7 @@ enum XTUnifiedDoctorBuilder {
             state: .diagnosticRequired,
             headline: "配对参数不足以完成引导",
             summary: "如果没有明确的 Internet Host，面向局域网、VPN 或隧道设备的配对路径就是不完整的。",
-            nextStep: "去 REL Flow Hub → 网络连接 复制 Internet Host，然后重新执行一键设置。",
+            nextStep: "去 X-Hub → 网络连接 复制 Internet Host，然后重新执行一键设置。",
             repairEntry: .xtPairHub,
             detailLines: details
         )
@@ -5802,7 +5802,7 @@ enum XTUnifiedDoctorBuilder {
                     state: .diagnosticRequired,
                     headline: "本地 provider 心跳已过期，模型清单当前不可信",
                     summary: "Hub 已可达，但本地 runtime/provider 心跳已过期，所以 XT 当前拿不到可信的本地模型清单。",
-                    nextStep: "先到 REL Flow Hub 重启或刷新本地运行时，再回到 Supervisor Control Center · AI 模型刷新真实可执行列表，然后重新检查当前状态。",
+                    nextStep: "先到 X-Hub 重启或刷新本地运行时，再回到 Supervisor Control Center · AI 模型刷新真实可执行列表，然后重新检查当前状态。",
                     repairEntry: .xtChooseModel,
                     detailLines: details
                 )
@@ -5814,7 +5814,7 @@ enum XTUnifiedDoctorBuilder {
                     state: .diagnosticRequired,
                     headline: "本地 provider 全部未就绪，模型路由当前不可用",
                     summary: "Hub 已可达，但本地 provider 当前全部未就绪，所以 XT 还看不到任何真正可执行的本地模型。",
-                    nextStep: "先到 REL Flow Hub → Models & Paid Access 检查 provider pack、helper 服务和导入失败原因，确认至少有一个 provider ready；再回到 Supervisor Control Center · AI 模型刷新真实可执行列表。",
+                    nextStep: "先到 X-Hub → Models & Paid Access 检查 provider pack、helper 服务和导入失败原因，确认至少有一个 provider ready；再回到 Supervisor Control Center · AI 模型刷新真实可执行列表。",
                     repairEntry: .xtChooseModel,
                     detailLines: details
                 )
@@ -5826,7 +5826,7 @@ enum XTUnifiedDoctorBuilder {
                     state: .diagnosticRequired,
                     headline: "本地 provider 只有部分就绪，当前模型清单可能缺项",
                     summary: "Hub 已可达，但本地 provider 只起来了一部分，所以 XT 现在看到的模型目录和能力覆盖还不完整。",
-                    nextStep: "先到 REL Flow Hub → Models & Paid Access 检查还没起来的 provider pack 和 runtime；确认目标 provider ready 后，再回 Supervisor Control Center · AI 模型刷新列表。",
+                    nextStep: "先到 X-Hub → Models & Paid Access 检查还没起来的 provider pack 和 runtime；确认目标 provider ready 后，再回 Supervisor Control Center · AI 模型刷新列表。",
                     repairEntry: .xtChooseModel,
                     detailLines: details
                 )
@@ -5837,7 +5837,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .diagnosticRequired,
                 headline: "配对已通，但模型路由不可用",
                 summary: "Hub 已可达，但 XT 还看不到任何可用模型。这个问题需要和配对失败、授权失败区分开。",
-                nextStep: "先到 REL Flow Hub → 模型与付费访问，确认至少有一个模型已激活且服务方可用；再回到 Supervisor Control Center · AI 模型确认它进入真实可执行列表，然后重新检查当前状态。",
+                nextStep: "先到 X-Hub → 模型与付费访问，确认至少有一个模型已激活且服务方可用；再回到 Supervisor Control Center · AI 模型确认它进入真实可执行列表，然后重新检查当前状态。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -5861,7 +5861,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .diagnosticRequired,
                 headline: "XT 的角色分配指向了当前未暴露的模型",
                 summary: "虽然配对成功，但至少有一个已分配的模型 ID 不在当前的 Hub 模型清单里。",
-                nextStep: "去 Supervisor Control Center · AI 模型替换过期模型 ID；如果目标模型已在 Hub 侧停用，再到 REL Flow Hub → Models & Paid Access 重新启用。",
+                nextStep: "去 Supervisor Control Center · AI 模型替换过期模型 ID；如果目标模型已在 Hub 侧停用，再到 X-Hub → Models & Paid Access 重新启用。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -5873,7 +5873,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .diagnosticRequired,
                 headline: "当前走纯本地，但本地 provider 心跳已过期",
                 summary: "XT 现在只剩本地模型路径，但本地 runtime/provider 心跳已过期，所以这条执行链不应继续当成可信状态。",
-                nextStep: "先到 REL Flow Hub 重启或刷新本地运行时，确认 provider 心跳恢复后，再回 Supervisor Control Center · AI 模型重新验证。",
+                nextStep: "先到 X-Hub 重启或刷新本地运行时，确认 provider 心跳恢复后，再回 Supervisor Control Center · AI 模型重新验证。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -5885,7 +5885,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .diagnosticRequired,
                 headline: "当前走纯本地，但本地 provider 全部未就绪",
                 summary: "XT 当前只看到本地模型路径，可 Hub 报告本地 provider 全部未就绪，所以这条纯本地执行链还不能继续当成可执行状态。",
-                nextStep: "先到 REL Flow Hub → Models & Paid Access 修复本地 provider，就绪后再回 Supervisor Control Center · AI 模型重新验证。",
+                nextStep: "先到 X-Hub → Models & Paid Access 修复本地 provider，就绪后再回 Supervisor Control Center · AI 模型重新验证。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -5903,15 +5903,15 @@ enum XTUnifiedDoctorBuilder {
         case ("remote_only", "no_ready_provider"):
             readyHeadline = "模型路由已就绪（当前无本地兜底）"
             readySummary = "当前角色分配还能命中远端模型，所以首个任务可以继续；但本地 provider 当前全部未就绪，远端失联时不会有本地兜底。"
-            readyNextStep = "如果你只依赖远端链路，先继续桥接 / 工具链验证；如果你也要本地兜底，再去 REL Flow Hub → Models & Paid Access 修复本地 provider。"
+            readyNextStep = "如果你只依赖远端链路，先继续桥接 / 工具链验证；如果你也要本地兜底，再去 X-Hub → Models & Paid Access 修复本地 provider。"
         case ("remote_only", "runtime_heartbeat_stale"):
             readyHeadline = "模型路由已就绪，但本地运行时状态已过期"
             readySummary = "当前角色分配还能命中远端模型，所以首个任务可以继续；但本地 runtime/provider 心跳已过期，本地兜底当前不可信。"
-            readyNextStep = "先继续桥接 / 工具链验证；如果你需要本地兜底，再到 REL Flow Hub 重启本地运行时并刷新模型列表。"
+            readyNextStep = "先继续桥接 / 工具链验证；如果你需要本地兜底，再到 X-Hub 重启本地运行时并刷新模型列表。"
         case (_, "provider_partial_readiness"):
             readyHeadline = "模型路由已就绪，但本地能力覆盖还不完整"
             readySummary = "当前角色分配能命中可见模型，仍可继续首个任务；但部分本地 provider 未就绪，所以模型目录和能力覆盖可能不完整。"
-            readyNextStep = "继续桥接 / 工具链验证；如果你需要更完整的本地能力覆盖，再去 REL Flow Hub → Models & Paid Access 检查未就绪 provider。"
+            readyNextStep = "继续桥接 / 工具链验证；如果你需要更完整的本地能力覆盖，再去 X-Hub → Models & Paid Access 检查未就绪 provider。"
         default:
             readyHeadline = "模型路由已就绪"
             readySummary = "XT 已经能看到可用的 Hub 模型，当前角色分配也都映射到了可见模型 ID。"
@@ -6166,7 +6166,7 @@ enum XTUnifiedDoctorBuilder {
                 state: state,
                 headline: headline,
                 summary: summary,
-                nextStep: "先到 Supervisor Control Center · AI 模型核对当前模型 ID、配置链路和实际命中的链路；再到 REL Flow Hub → 模型与付费访问检查提供方是否就绪以及真实可用清单；修复后回 XT 设置 → 诊断与核对 或 `/route diagnose` 重跑一次路由验证。",
+                nextStep: "先到 Supervisor Control Center · AI 模型核对当前模型 ID、配置链路和实际命中的链路；再到 X-Hub → 模型与付费访问检查提供方是否就绪以及真实可用清单；修复后回 XT 设置 → 诊断与核对 或 `/route diagnose` 重跑一次路由验证。",
                 repairEntry: .xtChooseModel,
                 detailLines: detailLines
             )
@@ -6195,7 +6195,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .diagnosticRequired,
                 headline: headline,
                 summary: "最近一次模型路由核对显示付费远端路由被导出开关、设备范围、策略或预算边界挡住了；这不是模型缺失，也不是连接 Hub 没连上。",
-                nextStep: "先在 XT 设置 → 诊断与核对 或 `/route diagnose` 记下这次拒绝原因和审计编号；再到 REL Flow Hub → 诊断与恢复检查远端导出开关；如果拒绝原因指向策略、设备边界、预算或用户偏好，再继续去 REL Flow Hub → 安全边界、模型与付费访问，或 XT 的远端偏好入口修复。",
+                nextStep: "先在 XT 设置 → 诊断与核对 或 `/route diagnose` 记下这次拒绝原因和审计编号；再到 X-Hub → 诊断与恢复检查远端导出开关；如果拒绝原因指向策略、设备边界、预算或用户偏好，再继续去 X-Hub → 安全边界、模型与付费访问，或 XT 的远端偏好入口修复。",
                 repairEntry: .hubDiagnostics,
                 detailLines: detailLines
             )
@@ -6220,7 +6220,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .diagnosticRequired,
                 headline: headline,
                 summary: "最近一次模型路由核对显示付费模型白名单、设备级付费策略或预算把请求挡住了；当前不能再把模型路由显示成已就绪。",
-                nextStep: "先到 Supervisor Control Center · AI 模型确认被拦截的模型 ID；再到 REL Flow Hub → 配对与设备信任检查设备的付费模型模式和白名单，必要时到 REL Flow Hub → 模型与付费访问核对预算；修复后回 XT 设置 → 诊断与核对 或 `/route diagnose` 重跑一次路由验证。",
+                nextStep: "先到 Supervisor Control Center · AI 模型确认被拦截的模型 ID；再到 X-Hub → 配对与设备信任检查设备的付费模型模式和白名单，必要时到 X-Hub → 模型与付费访问核对预算；修复后回 XT 设置 → 诊断与核对 或 `/route diagnose` 重跑一次路由验证。",
                 repairEntry: .xtChooseModel,
                 detailLines: detailLines
             )

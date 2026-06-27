@@ -1762,14 +1762,14 @@ struct GlobalHomePresentation: Codable, Equatable {
                 headline: "远端能力被安全边界拦住了",
                 whatHappened: "最近一次阻塞指向远端导出策略、设备安全边界或预算边界，所以当前远端能力不会被显示成可自动继续。",
                 whyItHappened: "如果这里只显示成普通授权或 ready，会把真正的 Hub Recovery 和安全边界修复入口藏掉。",
-                userAction: directedResumeSummary ?? "先到 XT 设置 → 诊断记录这次拒绝原因和审计编号，再去 REL Flow Hub → 诊断与恢复检查远端导出开关。",
+                userAction: directedResumeSummary ?? "先到 XT 设置 → 诊断记录这次拒绝原因和审计编号，再去 X-Hub → 诊断与恢复检查远端导出开关。",
                 machineStatusRef: machineStatusRef,
                 hardLine: "安全边界解除前，不继续放行",
                 highlights: [
                     contractSummary,
                     topDenyCodeHighlight,
                     topLaunchIssueHighlight,
-                    "repair_entry=REL Flow Hub → 诊断与恢复"
+                    "repair_entry=X-Hub → 诊断与恢复"
                 ].filter { !$0.isEmpty }
             )
         } else if topLaunchIssue == .paidModelAccessBlocked {
@@ -1778,14 +1778,14 @@ struct GlobalHomePresentation: Codable, Equatable {
                 headline: "付费模型访问受阻",
                 whatHappened: "最近一次阻塞指向付费模型 allowlist、预算或设备级 paid policy，当前入口不会假装这条路已经可继续。",
                 whyItHappened: "这类问题需要回真实模型与预算边界修复，而不是退回一个模糊的 ready。",
-                userAction: directedResumeSummary ?? "先去 Supervisor 控制中心和 REL Flow Hub → 模型与付费访问检查 allowlist、预算和模型绑定。",
+                userAction: directedResumeSummary ?? "先去 Supervisor 控制中心和 X-Hub → 模型与付费访问检查 allowlist、预算和模型绑定。",
                 machineStatusRef: machineStatusRef,
                 hardLine: "付费模型访问恢复前，不继续放行",
                 highlights: [
                     contractSummary,
                     topDenyCodeHighlight,
                     topLaunchIssueHighlight,
-                    "repair_entry=REL Flow Hub → 模型与付费访问"
+                    "repair_entry=X-Hub → 模型与付费访问"
                 ].filter { !$0.isEmpty }
             )
         } else if topLaunchIssue == .pairingRepairRequired

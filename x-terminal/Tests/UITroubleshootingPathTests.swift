@@ -65,10 +65,10 @@ struct UITroubleshootingPathTests {
         #expect(externalGuide.summary.contains("HUB_CLIENT_TOKEN"))
         #expect(externalGuide.steps[1].instruction.contains("轮换"))
         #expect(externalGuide.steps[2].instruction.contains("HUB_CLIENT_TOKEN"))
-        #expect(modelGuide.steps[1].instruction.contains("REL Flow Hub → 模型与付费访问"))
-        #expect(paidGuide.steps[2].instruction.contains("REL Flow Hub → 模型与付费访问"))
+        #expect(modelGuide.steps[1].instruction.contains("X-Hub → 模型与付费访问"))
+        #expect(paidGuide.steps[2].instruction.contains("X-Hub → 模型与付费访问"))
         #expect(connectorGuide.summary.contains("远端导出开关"))
-        #expect(connectorGuide.steps[1].instruction.contains("REL Flow Hub → 诊断与恢复"))
+        #expect(connectorGuide.steps[1].instruction.contains("X-Hub → 诊断与恢复"))
     }
 
     @Test
@@ -440,17 +440,17 @@ struct UITroubleshootingPathTests {
         #expect(settingsActions.last?.title == "查看授权与排障")
         #expect(settingsActions.last?.subtitle == "模型未就绪；先打开排障入口")
         #expect(UITroubleshootDestination.xtExternalTerminals.label == "XT 设置 → 非 XT Terminal 访问")
-        #expect(UITroubleshootDestination.hubProviderKeys.label == "REL Flow Hub → 设置 → Provider Key 管理")
-        #expect(UITroubleshootDestination.hubModels.label == "REL Flow Hub → 模型与付费访问")
-        #expect(UITroubleshootDestination.hubLAN.label == "REL Flow Hub → 网络连接")
-        #expect(UITroubleshootDestination.hubPairing.label == "REL Flow Hub → 配对与设备信任")
-        #expect(UITroubleshootDestination.hubGrants.label == "REL Flow Hub → 授权与权限")
+        #expect(UITroubleshootDestination.hubProviderKeys.label == "X-Hub → 设置 → Provider Key 管理")
+        #expect(UITroubleshootDestination.hubModels.label == "X-Hub → 模型与付费访问")
+        #expect(UITroubleshootDestination.hubLAN.label == "X-Hub → 网络连接")
+        #expect(UITroubleshootDestination.hubPairing.label == "X-Hub → 配对与设备信任")
+        #expect(UITroubleshootDestination.hubGrants.label == "X-Hub → 授权与权限")
         #expect(UITroubleshootDestination.homeSupervisor.label == "首页 / Supervisor → 开始第一个任务")
         #expect(
             UITroubleshootKnowledgeBase.repairEntryDetail(
                 for: .modelNotReady,
                 runtime: .empty
-            ).contains("REL Flow Hub 检查模型清单和提供方状态")
+            ).contains("X-Hub 检查模型清单和提供方状态")
         )
     }
 
@@ -812,14 +812,14 @@ struct UITroubleshootingPathTests {
             return
         }
 
-        let hubSettingsPath = hubSourceRoot.appendingPathComponent("SettingsSheetView.swift")
+        let hubOverviewPath = hubSourceRoot.appendingPathComponent("SettingsSheetOverviewFastPathSection.swift")
         let hubStringsPath = hubSourceRoot.appendingPathComponent("HubUIStrings.swift")
         let hubCardPath = hubSourceRoot.appendingPathComponent("UI/HubSectionCard.swift")
 
-        let hubSettingsSource = try String(contentsOf: hubSettingsPath, encoding: .utf8)
-        #expect(hubSettingsSource.contains("Section(HubUIStrings.Settings.Overview.sectionTitle)"))
-        #expect(hubSettingsSource.contains("Section(HubUIStrings.Settings.FirstRun.sectionTitle)"))
-        #expect(hubSettingsSource.contains("Section(HubUIStrings.Settings.Troubleshoot.sectionTitle)"))
+        let hubOverviewSource = try String(contentsOf: hubOverviewPath, encoding: .utf8)
+        #expect(hubOverviewSource.contains("Section(HubUIStrings.Settings.Overview.sectionTitle)"))
+        #expect(hubOverviewSource.contains("Section(HubUIStrings.Settings.FirstRun.sectionTitle)"))
+        #expect(hubOverviewSource.contains("Section(HubUIStrings.Settings.Troubleshoot.sectionTitle)"))
 
         let hubStringsSource = try String(contentsOf: hubStringsPath, encoding: .utf8)
         #expect(hubStringsSource.contains("static let sectionTitle = \"设置总览\""))

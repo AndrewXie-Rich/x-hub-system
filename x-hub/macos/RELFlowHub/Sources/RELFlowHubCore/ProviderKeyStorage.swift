@@ -410,6 +410,14 @@ public struct ProviderKeyImportSyncResult: Equatable, Sendable {
     public var errors: [String]
 }
 
+public struct ProviderKeyImportSourceRemovalResult: Equatable, Sendable {
+    public var ok: Bool
+    public var removedSourceCount: Int
+    public var removedAccountCount: Int
+    public var detachedAccountCount: Int
+    public var errors: [String]
+}
+
 public struct ProviderKeyPoolMemberState: Identifiable, Equatable, Sendable {
     public var id: String { account.accountKey }
     public var account: ProviderKeyAccount
@@ -1367,6 +1375,99 @@ public enum ProviderKeyStorage {
         )
         raw["updated_at_ms"] = nowMs
         return writeMutableSnapshot(raw, to: destination)
+    }
+
+    @discardableResult
+    public static func removeImportSource(
+        _ source: ProviderKeyImportSourceStatus,
+        removeOwnedAccounts: Bool
+    ) -> ProviderKeyImportSourceRemovalResult {
+        removeImportSource(
+            sourceKey: source.sourceKey,
+            kind: source.kind,
+            sourceRef: source.sourceRef,
+            removeOwnedAccounts: removeOwnedAccounts
+        )
+    }
+
+    @discardableResult
+    public static func removeImportSource(
+        sourceKey rawSourceKey: String,
+        kind rawKind: String = "",
+        sourceRef rawSourceRef: String = "",
+        removeOwnedAccounts: Bool = false
+    ) -> ProviderKeyImportSourceRemovalResult {
+        let sourceKey = firstNonEmpty(
+            stringValue(rawSourceKey),
+            normalizedImportSourceKey(
+                ProviderKeyImportSource(kind: rawKind, sourceRef: rawSourceRef)
+            ) ?? ""
+        )
+        guard !sourceKey.isEmpty else {
+            return ProviderKeyImportSourceRemovalResult(
+                ok: false,
+                removedSourceCount: 0,
+                removedAccountCount: 0,
+                detachedAccountCount: 0,
+                errors: ["missing_import_source_key"]
+            )
+        }
+
+        let candidate = candidateURLs().first { url in
+            guard let raw = readMutableSnapshot(at: url) else { return false }
+            return mutableSnapshotContainsImportSource(raw, sourceKey: sourceKey)
+        } ?? url()
+
+        guard var raw = readMutableSnapshot(at: candidate) else {
+            return ProviderKeyImportSourceRemovalResult(
+                ok: false,
+                removedSourceCount: 0,
+                removedAccountCount: 0,
+                detachedAccountCount: 0,
+                errors: ["provider_key_store_missing"]
+            )
+        }
+
+        guard mutableSnapshotContainsImportSource(raw, sourceKey: sourceKey) else {
+            return ProviderKeyImportSourceRemovalResult(
+                ok: false,
+                removedSourceCount: 0,
+                removedAccountCount: 0,
+                detachedAccountCount: 0,
+                errors: ["import_source_not_found"]
+            )
+        }
+
+        let nowMs = currentTimestampMs()
+        let removedSourceCount = removeImportSourceMetadata(
+            from: &raw,
+            sourceKey: sourceKey
+        )
+        let accountRemoval = removeImportSourceOwnership(
+            from: &raw,
+            ownerKey: sourceKey,
+            removeOwnedAccounts: removeOwnedAccounts,
+            nowMs: nowMs
+        )
+
+        raw["updated_at_ms"] = nowMs
+        guard writeMutableSnapshot(raw, to: candidate) else {
+            return ProviderKeyImportSourceRemovalResult(
+                ok: false,
+                removedSourceCount: 0,
+                removedAccountCount: 0,
+                detachedAccountCount: 0,
+                errors: ["save_failed"]
+            )
+        }
+
+        return ProviderKeyImportSourceRemovalResult(
+            ok: true,
+            removedSourceCount: removedSourceCount,
+            removedAccountCount: accountRemoval.removedCount,
+            detachedAccountCount: accountRemoval.detachedCount,
+            errors: []
+        )
     }
 
     private static func parseSnapshot(_ raw: [String: Any]) -> ProviderKeyStoreSnapshot {
@@ -2406,6 +2507,90 @@ public enum ProviderKeyStorage {
 
         raw["providers"] = providers
         return removedCount
+    }
+
+    private static func mutableSnapshotContainsImportSource(
+        _ raw: [String: Any],
+        sourceKey: String
+    ) -> Bool {
+        if stringArrayValue(raw["import_sources"]).contains(sourceKey) {
+            return true
+        }
+        if let statuses = raw["import_source_statuses"] as? [String: Any],
+           statuses[sourceKey] != nil {
+            return true
+        }
+        return countOwnedAccounts(in: raw, ownerKey: sourceKey) > 0
+    }
+
+    private static func removeImportSourceMetadata(
+        from raw: inout [String: Any],
+        sourceKey: String
+    ) -> Int {
+        var removed = false
+
+        let sources = stringArrayValue(raw["import_sources"])
+        let nextSources = sources.filter { $0 != sourceKey }
+        if nextSources.count != sources.count {
+            removed = true
+            raw["import_sources"] = nextSources
+        }
+
+        var statuses = raw["import_source_statuses"] as? [String: Any] ?? [:]
+        if statuses.removeValue(forKey: sourceKey) != nil {
+            removed = true
+            raw["import_source_statuses"] = statuses
+        }
+
+        return removed ? 1 : 0
+    }
+
+    private static func removeImportSourceOwnership(
+        from raw: inout [String: Any],
+        ownerKey: String,
+        removeOwnedAccounts: Bool,
+        nowMs: Int64
+    ) -> (removedCount: Int, detachedCount: Int) {
+        var providers = raw["providers"] as? [String: Any] ?? [:]
+        var removedCount = 0
+        var detachedCount = 0
+
+        for (providerKey, providerValue) in providers {
+            guard var providerObject = providerValue as? [String: Any],
+                  let accountRows = providerObject["accounts"] as? [[String: Any]] else {
+                continue
+            }
+
+            var nextRows: [[String: Any]] = []
+            for var row in accountRows {
+                let owners = uniqueStrings(stringArrayValue(row["source_owners"]))
+                guard owners.contains(ownerKey) else {
+                    nextRows.append(row)
+                    continue
+                }
+
+                let remainingOwners = owners.filter { $0 != ownerKey }
+                if removeOwnedAccounts, remainingOwners.isEmpty {
+                    removedCount += 1
+                    continue
+                }
+
+                row["source_owners"] = remainingOwners
+                row["updated_at_ms"] = nowMs
+                detachedCount += 1
+                nextRows.append(row)
+            }
+
+            if nextRows.isEmpty {
+                providers.removeValue(forKey: providerKey)
+            } else {
+                providerObject["accounts"] = nextRows
+                providers[providerKey] = providerObject
+            }
+        }
+
+        raw["providers"] = providers
+        return (removedCount, detachedCount)
     }
 
     private static func countOwnedAccounts(

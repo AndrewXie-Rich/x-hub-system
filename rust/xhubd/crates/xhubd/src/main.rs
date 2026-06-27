@@ -447,6 +447,7 @@ fn serve_http(config: HubConfig) -> Result<(), String> {
 
     let shared = Arc::new(HubState::new(config));
     start_xt_classic_status_heartbeat_if_enabled(&shared.config);
+    local_ml_bridge::start_resident_runtime_preheat_if_enabled(&shared.config);
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -2184,6 +2185,11 @@ fn product_process_sanity_from_ps_output(
         .filter(|row| is_external_relflowhub_command(row.command.as_str()))
         .cloned()
         .collect::<Vec<_>>();
+    let legacy_container_runtime_processes = process_rows
+        .iter()
+        .filter(|row| is_legacy_container_runtime_command(row.command.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
     let high_cpu_product_processes = if max_product_cpu_percent > 0.0 {
         product_processes
             .iter()
@@ -2219,6 +2225,9 @@ fn product_process_sanity_from_ps_output(
     if !mounted_app_processes.is_empty() {
         issues.push("stale_mounted_app_process_present");
     }
+    if !legacy_container_runtime_processes.is_empty() {
+        issues.push("legacy_container_runtime_process_present");
+    }
     if product_cpu_over_budget {
         issues.push("product_process_cpu_over_budget");
     }
@@ -2226,6 +2235,9 @@ fn product_process_sanity_from_ps_output(
     let mut recommendations = Vec::new();
     if !mounted_app_processes.is_empty() {
         recommendations.push("Close stale /Volumes X-Hub app and sidecar processes after confirming they are not the current /Applications app.");
+    }
+    if !legacy_container_runtime_processes.is_empty() {
+        recommendations.push("Stop stale container-hosted RELFlowHub local runtime processes; live local ML runtime should be owned by the Rust Hub launchd daemon and /Applications/X-Hub.app.");
     }
     if product_cpu_over_budget {
         recommendations
@@ -2258,6 +2270,7 @@ fn product_process_sanity_from_ps_output(
         "target_xhubd_process_count": target_xhubd_processes.len(),
         "mounted_app_process_count": mounted_app_processes.len(),
         "external_relflowhub_process_count": external_relflowhub_processes.len(),
+        "legacy_container_runtime_process_count": legacy_container_runtime_processes.len(),
         "high_cpu_product_process_count": high_cpu_product_processes.len(),
         "product_total_cpu_percent": round2(product_total_cpu_percent),
         "product_max_cpu_percent": round2(product_max_cpu_percent),
@@ -2268,6 +2281,7 @@ fn product_process_sanity_from_ps_output(
         "target_xhubd_processes": target_xhubd_processes.iter().map(product_process_row_json).collect::<Vec<_>>(),
         "mounted_app_processes": mounted_app_processes.iter().map(product_process_row_json).collect::<Vec<_>>(),
         "external_relflowhub_processes": external_relflowhub_processes.iter().map(product_process_row_json).collect::<Vec<_>>(),
+        "legacy_container_runtime_processes": legacy_container_runtime_processes.iter().map(product_process_row_json).collect::<Vec<_>>(),
         "high_cpu_product_processes": high_cpu_product_processes.iter().map(product_process_row_json).collect::<Vec<_>>(),
         "issues": issues,
         "recommendations": recommendations,
@@ -2372,6 +2386,17 @@ fn is_x_hub_python_runtime_command(command: &str) -> bool {
         && !is_external_relflowhub_command(command)
         && (command.contains("relflowhub_local_runtime.py")
             || command.contains("relflowhub_mlx_runtime.py"))
+}
+
+fn is_legacy_container_runtime_command(command: &str) -> bool {
+    let is_runtime = command.contains("relflowhub_local_runtime.py")
+        || command.contains("relflowhub_mlx_runtime.py");
+    if !is_runtime || command.contains("/Applications/X-Hub.app/") {
+        return false;
+    }
+    command.contains("/Library/Containers/com.rel.flowhub/Data/RELFlowHub/ai_runtime/")
+        || command.contains("/Library/Containers/com.rel.flowhub/Data/XHub/ai_runtime/")
+        || command.contains("/Library/Group Containers/group.rel.flowhub/")
 }
 
 fn is_target_xhubd_command(command: &str) -> bool {
@@ -5867,6 +5892,37 @@ mod tests {
             .expect("command should be present");
         assert!(command.contains("--access-key [REDACTED]"));
         assert!(!command.contains("other-secret"));
+    }
+
+    #[test]
+    fn product_process_sanity_detects_legacy_container_runtime() {
+        let ps_output = "\
+123 1 S 0.2 0.1 00:01 /Users/test/Library/Application Support/AX/rust-hub/local/bin/xhubd serve
+124 1 S 1.0 0.3 04:05 /Library/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python /Users/test/Library/Containers/com.rel.flowhub/Data/RELFlowHub/ai_runtime/python_service/relflowhub_local_runtime.py
+125 1 S 0.5 0.2 00:30 /Library/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python /Applications/X-Hub.app/Contents/Resources/python_service/relflowhub_local_runtime.py
+";
+        let value = product_process_sanity_from_ps_output(
+            true,
+            String::new(),
+            ps_output,
+            80.0,
+            true,
+            false,
+            true,
+        );
+
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["legacy_container_runtime_process_count"], 1);
+        assert_eq!(value["legacy_container_runtime_processes"][0]["pid"], 124);
+        let issues = value["issues"].as_array().expect("issues should be array");
+        assert!(issues.contains(&json!("legacy_container_runtime_process_present")));
+        let recommendations = value["recommendations"]
+            .as_array()
+            .expect("recommendations should be array");
+        assert!(recommendations.iter().any(|item| item
+            .as_str()
+            .unwrap_or_default()
+            .contains("container-hosted RELFlowHub local runtime")));
     }
 
     #[test]

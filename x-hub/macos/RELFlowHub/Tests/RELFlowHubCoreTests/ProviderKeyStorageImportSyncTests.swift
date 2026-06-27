@@ -275,6 +275,105 @@ final class ProviderKeyStorageImportSyncTests: XCTestCase {
         XCTAssertEqual(prunedSnapshot.importSources.first?.ownedAccountCount, 0)
     }
 
+    func testRemoveImportSourceOnlyDetachesAccountsAndPreservesCredentialSecrets() throws {
+        let home = try makeTempHome()
+        setenv("XHUB_SOURCE_RUN_HOME", home.path, 1)
+
+        let codexDir = home.appendingPathComponent(".codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDir, withIntermediateDirectories: true)
+        let auth = codexDir.appendingPathComponent("auth-detach.json")
+        let config = codexDir.appendingPathComponent("config-detach.toml")
+        try "".write(to: auth, atomically: true, encoding: .utf8)
+        try "".write(to: config, atomically: true, encoding: .utf8)
+
+        let sync = ProviderKeyStorage.syncImportedAccounts(
+            [
+                makeImportedOAuthInput(
+                    apiKey: "ey-detach-access-token",
+                    refreshToken: "refresh-detach-token",
+                    sourceRef: auth.path,
+                    accountID: "acct-detach"
+                ),
+            ],
+            importSource: ProviderKeyImportSource(kind: "config_path", sourceRef: config.path)
+        )
+        XCTAssertTrue(sync.ok)
+
+        let source = try XCTUnwrap(ProviderKeyStorage.load().importSources.first)
+        let removal = ProviderKeyStorage.removeImportSource(source, removeOwnedAccounts: false)
+        XCTAssertTrue(removal.ok)
+        XCTAssertEqual(removal.removedSourceCount, 1)
+        XCTAssertEqual(removal.removedAccountCount, 0)
+        XCTAssertEqual(removal.detachedAccountCount, 1)
+
+        let snapshot = ProviderKeyStorage.load()
+        XCTAssertEqual(snapshot.importSources.count, 0)
+        XCTAssertEqual(snapshot.totalAccounts, 1)
+
+        let account = try XCTUnwrap(snapshot.allAccounts.first)
+        let resolved = try XCTUnwrap(
+            ProviderKeyStorage.loadResolvedCredential(accountKey: account.accountKey)
+        )
+        XCTAssertEqual(resolved.refreshToken, "refresh-detach-token")
+
+        let raw = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: ProviderKeyStorage.url())) as? [String: Any]
+        )
+        let providers = try XCTUnwrap(raw["providers"] as? [String: Any])
+        let provider = try XCTUnwrap(providers["codex"] as? [String: Any])
+        let accounts = try XCTUnwrap(provider["accounts"] as? [[String: Any]])
+        let rawAccount = try XCTUnwrap(accounts.first)
+        let sourceOwners = rawAccount["source_owners"] as? [String] ?? []
+        XCTAssertFalse(sourceOwners.contains(source.sourceKey))
+    }
+
+    func testRemoveImportSourceWithAccountsKeepsSharedAccountsThenRemovesExclusiveOwner() throws {
+        let home = try makeTempHome()
+        setenv("XHUB_SOURCE_RUN_HOME", home.path, 1)
+
+        let codexDir = home.appendingPathComponent(".codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDir, withIntermediateDirectories: true)
+        let auth = codexDir.appendingPathComponent("auth-shared.json")
+        let config = codexDir.appendingPathComponent("config-shared.toml")
+        try "".write(to: auth, atomically: true, encoding: .utf8)
+        try "".write(to: config, atomically: true, encoding: .utf8)
+
+        let input = makeImportedOAuthInput(
+            apiKey: "ey-shared-access-token",
+            refreshToken: "refresh-shared-token",
+            sourceRef: auth.path,
+            accountID: "acct-shared"
+        )
+        let authDirSource = ProviderKeyImportSource(kind: "auth_dir", sourceRef: codexDir.path)
+        let configSource = ProviderKeyImportSource(kind: "config_path", sourceRef: config.path)
+
+        XCTAssertTrue(ProviderKeyStorage.syncImportedAccounts([input], importSource: authDirSource).ok)
+        XCTAssertTrue(ProviderKeyStorage.syncImportedAccounts([input], importSource: configSource).ok)
+
+        let initial = ProviderKeyStorage.load()
+        XCTAssertEqual(initial.importSources.count, 2)
+        XCTAssertEqual(initial.totalAccounts, 1)
+
+        let authDirStatus = try XCTUnwrap(initial.importSources.first { $0.kind == "auth_dir" })
+        let configStatus = try XCTUnwrap(initial.importSources.first { $0.kind == "config_path" })
+        let firstRemoval = ProviderKeyStorage.removeImportSource(authDirStatus, removeOwnedAccounts: true)
+        XCTAssertTrue(firstRemoval.ok)
+        XCTAssertEqual(firstRemoval.removedAccountCount, 0)
+        XCTAssertEqual(firstRemoval.detachedAccountCount, 1)
+
+        let afterFirstRemoval = ProviderKeyStorage.load()
+        XCTAssertEqual(afterFirstRemoval.importSources.map(\.kind), ["config_path"])
+        XCTAssertEqual(afterFirstRemoval.totalAccounts, 1)
+
+        let secondRemoval = ProviderKeyStorage.removeImportSource(configStatus, removeOwnedAccounts: true)
+        XCTAssertTrue(secondRemoval.ok)
+        XCTAssertEqual(secondRemoval.removedAccountCount, 1)
+
+        let afterSecondRemoval = ProviderKeyStorage.load()
+        XCTAssertEqual(afterSecondRemoval.importSources.count, 0)
+        XCTAssertEqual(afterSecondRemoval.totalAccounts, 0)
+    }
+
     func testLoadPreservesProviderQuotaUsageWindows() throws {
         let home = try makeTempHome()
         setenv("XHUB_SOURCE_RUN_HOME", home.path, 1)
@@ -434,6 +533,37 @@ final class ProviderKeyStorageImportSyncTests: XCTestCase {
             .appendingPathComponent("provider-key-sync-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         return home
+    }
+
+    private func makeImportedOAuthInput(
+        apiKey: String,
+        refreshToken: String,
+        sourceRef: String,
+        accountID: String
+    ) -> ProviderKeyImportedAccountInput {
+        ProviderKeyImportedAccountInput(
+            provider: "codex",
+            email: "",
+            apiKey: apiKey,
+            refreshToken: refreshToken,
+            baseURL: "https://api.openai.com/v1",
+            proxyURL: "",
+            enabled: true,
+            authType: "oauth",
+            wireAPI: "chat_completions",
+            expiresAtMs: 0,
+            tier: "",
+            customHeaders: [:],
+            models: ["gpt-5.5"],
+            notes: "test import source removal",
+            priority: 0,
+            accountID: accountID,
+            sourceType: "auth_file",
+            sourceRef: sourceRef,
+            oauthSourceKey: "chatgpt",
+            authIndex: 0,
+            sourceOwners: []
+        )
     }
 
     private func makeOpenAIPoolInput(

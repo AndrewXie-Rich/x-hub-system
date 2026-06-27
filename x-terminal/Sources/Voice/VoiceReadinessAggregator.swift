@@ -415,7 +415,7 @@ enum VoiceReadinessAggregator {
                 reasonCode: "pairing_values_invalid",
                 headline: "配对参数暂时无效",
                 summary: "在信任语音 / 运行时引导之前，Pairing Port 和 gRPC Port 必须是明确且彼此不同的值。",
-                nextStep: "去 REL Flow Hub → LAN (gRPC) 复制 Pairing Port 和 gRPC Port，然后重新执行 Pair Hub。",
+                nextStep: "去 X-Hub → LAN (gRPC) 复制 Pairing Port 和 gRPC Port，然后重新执行 Pair Hub。",
                 repairEntry: .xtPairHub,
                 detailLines: details
             )
@@ -454,7 +454,7 @@ enum VoiceReadinessAggregator {
                 reasonCode: "remote_bootstrap_values_incomplete",
                 headline: "本机链路可用，但远端引导参数还不完整",
                 summary: "同机验证可以继续，但 Internet Host 仍为空，所以第二台设备还不知道该填什么。",
-                nextStep: "先去 REL Flow Hub → LAN (gRPC) 复制 Internet Host 到 X-Terminal，再做远端配对。",
+                nextStep: "先去 X-Hub → LAN (gRPC) 复制 Internet Host 到 X-Terminal，再做远端配对。",
                 repairEntry: .xtPairHub,
                 detailLines: details
             )
@@ -466,7 +466,7 @@ enum VoiceReadinessAggregator {
             reasonCode: "pairing_values_incomplete_for_bootstrap",
             headline: "配对参数不足以完成引导",
             summary: "如果没有明确的 Internet Host，面向 LAN / VPN / 隧道设备的配对路径就是不完整的。",
-            nextStep: "去 REL Flow Hub → LAN (gRPC) 复制 Internet Host，然后重新执行一键设置。",
+            nextStep: "去 X-Hub → LAN (gRPC) 复制 Internet Host，然后重新执行一键设置。",
             repairEntry: .xtPairHub,
             detailLines: details
         )
@@ -684,7 +684,7 @@ enum VoiceReadinessAggregator {
                     reasonCode: "runtime_heartbeat_stale",
                     headline: "本地 provider 心跳已过期，模型清单当前不可信",
                     summary: "Hub 已可达，但本地 runtime/provider 心跳已过期，所以 XT 当前拿不到可信的本地模型清单。",
-                    nextStep: "先到 REL Flow Hub 重启或刷新本地运行时，再回到 Supervisor Control Center · AI 模型刷新真实可执行列表，然后重新执行 Verify。",
+                    nextStep: "先到 X-Hub 重启或刷新本地运行时，再回到 Supervisor Control Center · AI 模型刷新真实可执行列表，然后重新执行 Verify。",
                     repairEntry: .xtChooseModel,
                     detailLines: details
                 )
@@ -697,7 +697,7 @@ enum VoiceReadinessAggregator {
                     reasonCode: "no_ready_provider",
                     headline: "本地 provider 全部未就绪，模型路由当前不可用",
                     summary: "Hub 已可达，但本地 provider 当前全部未就绪，所以 XT 还看不到任何真正可执行的本地模型。",
-                    nextStep: "先到 REL Flow Hub → Models & Paid Access 检查 provider pack、helper 服务和导入失败原因，确认至少有一个 provider ready；再回到 Supervisor Control Center · AI 模型刷新真实可执行列表。",
+                    nextStep: "先到 X-Hub → Models & Paid Access 检查 provider pack、helper 服务和导入失败原因，确认至少有一个 provider ready；再回到 Supervisor Control Center · AI 模型刷新真实可执行列表。",
                     repairEntry: .xtChooseModel,
                     detailLines: details
                 )
@@ -710,7 +710,7 @@ enum VoiceReadinessAggregator {
                     reasonCode: "provider_partial_readiness",
                     headline: "本地 provider 只有部分就绪，当前模型清单可能缺项",
                     summary: "Hub 已可达，但本地 provider 只起来了一部分，所以 XT 现在看到的模型目录和能力覆盖还不完整。",
-                    nextStep: "先到 REL Flow Hub → Models & Paid Access 检查还没起来的 provider pack 和 runtime；确认目标 provider ready 后，再回 Supervisor Control Center · AI 模型刷新列表。",
+                    nextStep: "先到 X-Hub → Models & Paid Access 检查还没起来的 provider pack 和 runtime；确认目标 provider ready 后，再回 Supervisor Control Center · AI 模型刷新列表。",
                     repairEntry: .xtChooseModel,
                     detailLines: details
                 )
@@ -722,7 +722,7 @@ enum VoiceReadinessAggregator {
                 reasonCode: "model_inventory_empty",
                 headline: "配对已通，但模型路由不可用",
                 summary: "Hub 已可达，但 XT 还看不到任何可用模型。这个问题需要和配对失败、授权失败区分开。",
-                nextStep: "先到 REL Flow Hub → Models & Paid Access 确认至少有一个模型已激活且 provider ready；再回到 Supervisor Control Center · AI 模型确认它进入真实可执行列表，然后重新执行 Verify。",
+                nextStep: "先到 X-Hub → Models & Paid Access 确认至少有一个模型已激活且 provider ready；再回到 Supervisor Control Center · AI 模型确认它进入真实可执行列表，然后重新执行 Verify。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -748,7 +748,7 @@ enum VoiceReadinessAggregator {
                 reasonCode: "assigned_model_missing_from_inventory",
                 headline: "XT 的角色分配指向了当前未暴露的模型",
                 summary: "虽然配对成功，但至少有一个已分配的模型 ID 不在当前的 Hub 模型清单里。",
-                nextStep: "去 Supervisor Control Center · AI 模型替换过期模型 ID；如果目标模型已在 Hub 侧停用，再到 REL Flow Hub → Models & Paid Access 重新启用。",
+                nextStep: "去 Supervisor Control Center · AI 模型替换过期模型 ID；如果目标模型已在 Hub 侧停用，再到 X-Hub → Models & Paid Access 重新启用。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -761,7 +761,7 @@ enum VoiceReadinessAggregator {
                 reasonCode: "runtime_heartbeat_stale",
                 headline: "当前走纯本地，但本地 provider 心跳已过期",
                 summary: "XT 现在只剩本地模型路径，但本地 runtime/provider 心跳已过期，所以这条执行链不应继续当成可信状态。",
-                nextStep: "先到 REL Flow Hub 重启或刷新本地运行时，确认 provider 心跳恢复后，再回 Supervisor Control Center · AI 模型重新验证。",
+                nextStep: "先到 X-Hub 重启或刷新本地运行时，确认 provider 心跳恢复后，再回 Supervisor Control Center · AI 模型重新验证。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -774,7 +774,7 @@ enum VoiceReadinessAggregator {
                 reasonCode: "no_ready_provider",
                 headline: "当前走纯本地，但本地 provider 全部未就绪",
                 summary: "XT 当前只看到本地模型路径，可 Hub 报告本地 provider 全部未就绪，所以这条纯本地执行链还不能继续当成可执行状态。",
-                nextStep: "先到 REL Flow Hub → Models & Paid Access 修复本地 provider，就绪后再回 Supervisor Control Center · AI 模型重新验证。",
+                nextStep: "先到 X-Hub → Models & Paid Access 修复本地 provider，就绪后再回 Supervisor Control Center · AI 模型重新验证。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -792,15 +792,15 @@ enum VoiceReadinessAggregator {
         case ("remote_only", "no_ready_provider"):
             readyHeadline = "模型路由已就绪（当前无本地兜底）"
             readySummary = "当前角色分配还能命中远端模型，所以首个任务可以继续；但本地 provider 当前全部未就绪，远端失联时不会有本地兜底。"
-            readyNextStep = "如果你只依赖远端链路，先继续桥接 / 工具链验证；如果你也要本地兜底，再去 REL Flow Hub → Models & Paid Access 修复本地 provider。"
+            readyNextStep = "如果你只依赖远端链路，先继续桥接 / 工具链验证；如果你也要本地兜底，再去 X-Hub → Models & Paid Access 修复本地 provider。"
         case ("remote_only", "runtime_heartbeat_stale"):
             readyHeadline = "模型路由已就绪，但本地运行时状态已过期"
             readySummary = "当前角色分配还能命中远端模型，所以首个任务可以继续；但本地 runtime/provider 心跳已过期，本地兜底当前不可信。"
-            readyNextStep = "先继续桥接 / 工具链验证；如果你需要本地兜底，再到 REL Flow Hub 重启本地运行时并刷新模型列表。"
+            readyNextStep = "先继续桥接 / 工具链验证；如果你需要本地兜底，再到 X-Hub 重启本地运行时并刷新模型列表。"
         case (_, "provider_partial_readiness"):
             readyHeadline = "模型路由已就绪，但本地能力覆盖还不完整"
             readySummary = "当前角色分配能命中可见模型，所以首个任务可以继续；但仍有部分本地 provider 未就绪，模型目录和能力覆盖可能不完整。"
-            readyNextStep = "先继续桥接 / 工具链验证；如果你需要更完整的本地能力覆盖，再去 REL Flow Hub → Models & Paid Access 检查未就绪 provider。"
+            readyNextStep = "先继续桥接 / 工具链验证；如果你需要更完整的本地能力覆盖，再去 X-Hub → Models & Paid Access 检查未就绪 provider。"
         default:
             readyHeadline = "模型路由已就绪"
             readySummary = "XT 已经能看到可用的 Hub 模型，当前角色分配也都映射到了可见模型 ID。"

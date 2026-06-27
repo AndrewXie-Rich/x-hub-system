@@ -67,6 +67,7 @@ extension SettingsSheetView {
                         help: nil
                     ) {
                         refreshRustHubRuntimeSnapshot(force: true)
+                        refreshRustLocalMLExecutionReadiness(force: true)
                         refreshRustLocalModelRepairPlan(force: true)
                         refreshRustLocalModelRepairJobs(force: true)
                     }

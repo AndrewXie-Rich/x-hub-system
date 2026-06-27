@@ -31,6 +31,7 @@ const MAX_REQUEST_FILE_BYTES: u64 = 1_048_576;
 const MAX_REQUEST_PROMPT_CHARS: usize = 200_000;
 const MAX_RUNTIME_AUTHORITY_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const LIVE_STATUS_CACHE_TTL_MS: u128 = 250;
+const RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS: u128 = 250;
 const RUNTIME_AUTHORITY_FILE_NAMES: &[&str] = &["models_state.json", "hub_provider_keys.json"];
 
 #[derive(Clone, Debug)]
@@ -70,13 +71,24 @@ struct LiveStatusCacheEntry {
     root_dir: String,
     base_dir: String,
     status_path: String,
-    status_file_modified_at_ms: i64,
+    checked_at_ms: u128,
+    value: Value,
+}
+
+#[derive(Clone, Debug)]
+struct RuntimeAuthoritySyncCacheEntry {
+    root_dir: String,
+    source_base_dir: String,
+    requested_live_base_dir: String,
+    live_base_dir: String,
     checked_at_ms: u128,
     value: Value,
 }
 
 static BACKGROUND_WATCHER: OnceLock<Mutex<BackgroundWatcherRuntime>> = OnceLock::new();
 static LIVE_STATUS_CACHE: OnceLock<Mutex<Option<LiveStatusCacheEntry>>> = OnceLock::new();
+static RUNTIME_AUTHORITY_SYNC_CACHE: OnceLock<Mutex<Option<RuntimeAuthoritySyncCacheEntry>>> =
+    OnceLock::new();
 
 fn background_watcher_runtime() -> &'static Mutex<BackgroundWatcherRuntime> {
     BACKGROUND_WATCHER.get_or_init(|| Mutex::new(BackgroundWatcherRuntime::default()))
@@ -84,6 +96,10 @@ fn background_watcher_runtime() -> &'static Mutex<BackgroundWatcherRuntime> {
 
 fn live_status_cache() -> &'static Mutex<Option<LiveStatusCacheEntry>> {
     LIVE_STATUS_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn runtime_authority_sync_cache() -> &'static Mutex<Option<RuntimeAuthoritySyncCacheEntry>> {
+    RUNTIME_AUTHORITY_SYNC_CACHE.get_or_init(|| Mutex::new(None))
 }
 
 impl XtFileIpcShadowInput {
@@ -349,6 +365,19 @@ pub fn runtime_authority_sync_http_json(
     (status, format!("{value}\n"))
 }
 
+pub fn start_projection_prewarm_if_enabled(config: &HubConfig) {
+    if !env_bool("XHUB_RUST_XT_FILE_IPC_PROJECTION_PREWARM", true) {
+        return;
+    }
+
+    let config = config.clone();
+    thread::spawn(move || {
+        let started = now_ms();
+        let _ = live_status_value(&config, started);
+        let _ = runtime_authority_sync_value(&config, &json!({}), false, now_ms());
+    });
+}
+
 fn shadow_status_value(config: &HubConfig) -> Value {
     let input = XtFileIpcShadowInput {
         root_dir: config.root_dir.clone(),
@@ -541,7 +570,6 @@ fn cached_live_status_value(
     status_path: &Path,
     generated_at_ms: u128,
 ) -> Option<Value> {
-    let status_file_modified_at_ms = file_modified_at_ms(status_path);
     let root_dir = config.root_dir.display().to_string();
     let base_dir = base_dir.display().to_string();
     let status_path = status_path.display().to_string();
@@ -550,7 +578,6 @@ fn cached_live_status_value(
     if entry.root_dir == root_dir
         && entry.base_dir == base_dir
         && entry.status_path == status_path
-        && entry.status_file_modified_at_ms == status_file_modified_at_ms
         && generated_at_ms >= entry.checked_at_ms
         && generated_at_ms.saturating_sub(entry.checked_at_ms) <= LIVE_STATUS_CACHE_TTL_MS
     {
@@ -573,7 +600,6 @@ fn cache_live_status_value(
         root_dir: config.root_dir.display().to_string(),
         base_dir: base_dir.display().to_string(),
         status_path: status_path.display().to_string(),
-        status_file_modified_at_ms: file_modified_at_ms(status_path),
         checked_at_ms: generated_at_ms,
         value: value.clone(),
     };

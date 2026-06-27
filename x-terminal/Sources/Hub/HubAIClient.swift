@@ -119,7 +119,7 @@ enum XTPaidModelAccessExplainability {
                 rawReasonCode: raw,
                 policyRefOverride: parsed.policyRef,
                 whyItHappened: "device_name=\(resolvedDeviceName) 的 paid model 策略当前为关闭或缺少可用 paid model policy，因此 model_id=\(resolvedModelId) 被设备策略直接拦截。",
-                nextAction: "到 REL Flow Hub → Pairing & Device Trust 为该设备开启 paid model 访问，或切换到本地/已授权模型后重试。"
+                nextAction: "到 X-Hub → Pairing & Device Trust 为该设备开启 paid model 访问，或切换到本地/已授权模型后重试。"
             )
         case XTPaidModelAccessResolution.State.blockedModelNotInCustomAllowlist.rawValue?, "device_paid_model_not_allowed":
             return makeResolution(
@@ -131,7 +131,7 @@ enum XTPaidModelAccessExplainability {
                 rawReasonCode: raw,
                 policyRefOverride: parsed.policyRef,
                 whyItHappened: "device_name=\(resolvedDeviceName) 当前走自定义 paid model 白名单策略，但 model_id=\(resolvedModelId) 不在 allowed_model_ids 中，因此被 fail-closed 阻断。",
-                nextAction: "到 REL Flow Hub → Pairing & Device Trust 把该模型加入 allowlist，或切换到该设备已授权的 paid/local model 后重试。"
+                nextAction: "到 X-Hub → Pairing & Device Trust 把该模型加入 allowlist，或切换到该设备已授权的 paid/local model 后重试。"
             )
         case XTPaidModelAccessResolution.State.blockedDailyBudgetExceeded.rawValue?, "device_daily_token_budget_exceeded":
             return makeResolution(
@@ -143,7 +143,7 @@ enum XTPaidModelAccessExplainability {
                 rawReasonCode: raw,
                 policyRefOverride: parsed.policyRef,
                 whyItHappened: "device_name=\(resolvedDeviceName) 的每日 paid model token 额度已经耗尽，因此 model_id=\(resolvedModelId) 被当日预算硬门槛阻断。",
-                nextAction: "到 REL Flow Hub → Models & Paid Access 查看并提升 daily_token_limit，或等待下一个日配额窗口后重试。"
+                nextAction: "到 X-Hub → Models & Paid Access 查看并提升 daily_token_limit，或等待下一个日配额窗口后重试。"
             )
         case XTPaidModelAccessResolution.State.blockedSingleRequestBudgetExceeded.rawValue?, "device_single_request_token_exceeded":
             return makeResolution(
@@ -155,7 +155,7 @@ enum XTPaidModelAccessExplainability {
                 rawReasonCode: raw,
                 policyRefOverride: parsed.policyRef,
                 whyItHappened: "当前请求对 device_name=\(resolvedDeviceName) 来说超出了单次 paid model token 上限，因此 model_id=\(resolvedModelId) 在提交前被预算策略拒绝。",
-                nextAction: "缩小本次请求、降低 max tokens，或到 REL Flow Hub → Models & Paid Access 提升 single_request_token_limit 后再试。"
+                nextAction: "缩小本次请求、降低 max tokens，或到 X-Hub → Models & Paid Access 提升 single_request_token_limit 后再试。"
             )
         case XTPaidModelAccessResolution.State.legacyGrantFlowRequired.rawValue?, "legacy_grant_flow_required", "grant_required", "grant_pending", "grant_denied", "permission_denied", "forbidden", "denied":
             return makeResolution(
@@ -167,7 +167,7 @@ enum XTPaidModelAccessExplainability {
                 rawReasonCode: raw,
                 policyRefOverride: parsed.policyRef,
                 whyItHappened: "device_name=\(resolvedDeviceName) 仍在旧的 capability/grant 路径上，尚未由新 trust profile 直接接管；因此 model_id=\(resolvedModelId) 这次仍按 legacy grant 语义处理。",
-                nextAction: "若只是临时放行，可先到 REL Flow Hub → Grants & Permissions 完成 legacy grant；若想消除重复审批，请到 REL Flow Hub → Pairing & Device Trust 将该设备升级到新 trust profile。"
+                nextAction: "若只是临时放行，可先到 X-Hub → Grants & Permissions 完成 legacy grant；若想消除重复审批，请到 X-Hub → Pairing & Device Trust 将该设备升级到新 trust profile。"
             )
         default:
             return nil
@@ -482,7 +482,7 @@ enum HubAIError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .runtimeNotRunning:
-            return "Hub AI runtime is not running. Open REL Flow Hub -> Settings -> AI Runtime -> Start."
+            return "Hub AI runtime is not running. Open X-Hub -> Settings -> AI Runtime -> Start."
         case .grpcRouteUnavailable:
             return "Hub gRPC route is unavailable (missing pairing profile). Run Hub one-click pairing first, or switch to `/hub route auto` / `/hub route file`."
         case .requestWriteFailed(let msg):
@@ -508,16 +508,16 @@ enum HubAIError: Error, LocalizedError {
                 return "Hub gRPC is unavailable. If you want to keep using local models, switch XT to `/hub route auto` or `/hub route file`. Otherwise reopen Hub and confirm Hub gRPC is running."
             }
             if r == "model_path_missing" {
-                return "Hub could not auto-load a model (model_path_missing). Open REL Flow Hub → Models & Paid Access, register a model with a valid modelPath, then try again."
+                return "Hub could not auto-load a model (model_path_missing). Open X-Hub → Models & Paid Access, register a model with a valid modelPath, then try again."
             }
             if r == "no_models_registered" || r == "no_model_routed" {
-                return "Hub has no loadable model for this task. Open REL Flow Hub → Models & Paid Access and register/load at least one model."
+                return "Hub has no loadable model for this task. Open X-Hub → Models & Paid Access and register/load at least one model."
             }
             if r == "model_not_loaded" {
-                return "No model is loaded. Open REL Flow Hub → Models & Paid Access and load a model (or enable auto-load)."
+                return "No model is loaded. Open X-Hub → Models & Paid Access and load a model (or enable auto-load)."
             }
             if r == "model_not_found" {
-                return "The selected model id is not found in Hub state. Open REL Flow Hub → Models & Paid Access, confirm the model is loaded, then run `/models` and `/model <id>` in X-Terminal to reselect."
+                return "The selected model id is not found in Hub state. Open X-Hub → Models & Paid Access, confirm the model is loaded, then run `/models` and `/model <id>` in X-Terminal to reselect."
             }
             if r == "bridge_disabled" {
                 return "Selected model is remote/paid, but Hub Bridge is not enabled. In X-Terminal input box, run `/network 30m` (or `need network 30m`) and approve in Hub if required."
@@ -532,10 +532,10 @@ enum HubAIError: Error, LocalizedError {
                 return "Remote model base URL is invalid. Check Base URL in Hub -> Settings -> Remote Models."
             }
             if r == "provider_token_expired" {
-                return "Remote model access token is expired. Open REL Flow Hub → Settings → Remote Models / Models & Paid Access, refresh the provider token or API key, then retry."
+                return "Remote model access token is expired. Open X-Hub → Settings → Remote Models / Models & Paid Access, refresh the provider token or API key, then retry."
             }
             if quotaOrBillingExhaustedReason(r) {
-                return "The selected paid-model provider is out of quota or balance. In REL Flow Hub → Models & Paid Access / Remote Models, top up or switch to another configured provider for the same model and retry."
+                return "The selected paid-model provider is out of quota or balance. In X-Hub → Models & Paid Access / Remote Models, top up or switch to another configured provider for the same model and retry."
             }
             if r == "node_missing" {
                 return "This X-Terminal install cannot find a usable Node runtime for the Hub client kit. Re-run Hub pairing One-Click / install-client, or install Node.js on this Mac. If you distribute X-Terminal as a packaged app, bundle relflowhub_node to avoid this dependency."
@@ -568,10 +568,10 @@ enum HubAIError: Error, LocalizedError {
             || lowered.contains("error code 504")
             || lowered.contains("504:")
         if mentions504 {
-            return "The configured remote model endpoint returned an HTML 504 Gateway Time-out page instead of the expected JSON response. Check the provider Base URL / reverse proxy in REL Flow Hub → Settings → Remote Models; the upstream endpoint may be down or not OpenAI-compatible."
+            return "The configured remote model endpoint returned an HTML 504 Gateway Time-out page instead of the expected JSON response. Check the provider Base URL / reverse proxy in X-Hub → Settings → Remote Models; the upstream endpoint may be down or not OpenAI-compatible."
         }
 
-        return "The configured remote model endpoint returned HTML instead of the expected JSON response. Check the provider Base URL / compatibility in REL Flow Hub → Settings → Remote Models."
+        return "The configured remote model endpoint returned HTML instead of the expected JSON response. Check the provider Base URL / compatibility in X-Hub → Settings → Remote Models."
     }
 
     private func quotaOrBillingExhaustedReason(_ rawReason: String) -> Bool {

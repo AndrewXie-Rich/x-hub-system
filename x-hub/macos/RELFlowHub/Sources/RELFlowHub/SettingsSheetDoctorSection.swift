@@ -92,14 +92,14 @@ extension SettingsSheetView {
             }
 
             HStack {
-                Text(HubUIStrings.Settings.Doctor.localRuntime)
+                Text(rustLocalMLAuthorityMode ? "Rust 本地模型执行" : HubUIStrings.Settings.Doctor.localRuntime)
                 Spacer()
-                Text(store.aiRuntimeStatusText)
+                Text(rustLocalMLAuthorityMode ? runtimeHeartbeatText : store.aiRuntimeStatusText)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            if !store.aiRuntimeDoctorSummaryText.isEmpty {
-                Text(store.aiRuntimeDoctorSummaryText)
+            if !runtimeDoctorDetailText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(runtimeDoctorDetailText)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -204,6 +204,12 @@ extension SettingsSheetView {
                 }
             }
             HStack(spacing: 10) {
+                if rustLocalMLAuthorityMode {
+                    Button(HubUIStrings.Settings.Advanced.Runtime.refreshRustReadiness) {
+                        refreshRustLocalMLExecutionReadiness(force: true)
+                        refreshRustHubRuntimeSnapshot(force: true)
+                    }
+                }
                 Button(HubUIStrings.Settings.RuntimeMonitor.copyProviderSummary) {
                     copyLocalProviderSummaryToClipboard(snapshot: hubLaunchStatus)
                 }

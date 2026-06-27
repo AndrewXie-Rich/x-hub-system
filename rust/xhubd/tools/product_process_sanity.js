@@ -177,6 +177,16 @@ function isXHubPythonRuntimeProcess(command) {
     && /relflowhub_(?:local|mlx)_runtime\.py/.test(text);
 }
 
+function isLegacyContainerRuntimeProcess(command) {
+  const text = String(command || '');
+  if (!/relflowhub_(?:local|mlx)_runtime\.py/.test(text) || /\/Applications\/X-Hub\.app\//.test(text)) {
+    return false;
+  }
+  return /\/Library\/Containers\/com\.rel\.flowhub\/Data\/RELFlowHub\/ai_runtime\//.test(text)
+    || /\/Library\/Containers\/com\.rel\.flowhub\/Data\/XHub\/ai_runtime\//.test(text)
+    || /\/Library\/Group Containers\/group\.rel\.flowhub\//.test(text);
+}
+
 function isTargetXhubd(command) {
   return /\/target\/(?:debug|release)\/xhubd(?:\s|$)/.test(String(command || ''));
 }
@@ -209,6 +219,9 @@ function summarize(config) {
   const targetXhubdProcesses = processRows.filter((item) => isTargetXhubd(item.command));
   const mountedAppProcesses = processRows.filter((item) => isMountedAppProcess(item.command));
   const externalRelFlowHubProcesses = processRows.filter((item) => isExternalRelFlowHubProcess(item.command));
+  const legacyContainerRuntimeProcesses = processRows.filter((item) => (
+    isLegacyContainerRuntimeProcess(item.command)
+  ));
   const threshold = Number(config.maxProductCpuPercent || 0);
   const highCpuProductProcesses = threshold > 0
     ? productProcesses.filter((item) => Number(item.cpu_percent || 0) > threshold)
@@ -229,11 +242,15 @@ function summarize(config) {
     issues.push('target_xhubd_process_present');
   }
   if (mountedAppProcesses.length > 0) issues.push('stale_mounted_app_process_present');
+  if (legacyContainerRuntimeProcesses.length > 0) issues.push('legacy_container_runtime_process_present');
   if (productCpuOverBudget) issues.push('product_process_cpu_over_budget');
 
   const recommendations = [];
   if (mountedAppProcesses.length > 0) {
     recommendations.push('Close or terminate stale /Volumes X-Hub processes after confirming they are not the current /Applications app.');
+  }
+  if (legacyContainerRuntimeProcesses.length > 0) {
+    recommendations.push('Stop stale container-hosted RELFlowHub local runtime processes; live local ML runtime should be owned by the Rust Hub launchd daemon and /Applications/X-Hub.app.');
   }
   if (productCpuOverBudget) {
     recommendations.push('Defer heavy gates or checkpoints until product CPU returns under budget.');
@@ -263,6 +280,7 @@ function summarize(config) {
     target_xhubd_process_count: targetXhubdProcesses.length,
     mounted_app_process_count: mountedAppProcesses.length,
     external_relflowhub_process_count: externalRelFlowHubProcesses.length,
+    legacy_container_runtime_process_count: legacyContainerRuntimeProcesses.length,
     high_cpu_product_process_count: highCpuProductProcesses.length,
     product_total_cpu_percent: Number(productTotalCpuPercent.toFixed(2)),
     product_max_cpu_percent: Number(productMaxCpuPercent.toFixed(2)),
@@ -273,6 +291,7 @@ function summarize(config) {
     target_xhubd_processes: targetXhubdProcesses,
     mounted_app_processes: mountedAppProcesses,
     external_relflowhub_processes: externalRelFlowHubProcesses,
+    legacy_container_runtime_processes: legacyContainerRuntimeProcesses,
     high_cpu_product_processes: highCpuProductProcesses,
     issues,
     recommendations,

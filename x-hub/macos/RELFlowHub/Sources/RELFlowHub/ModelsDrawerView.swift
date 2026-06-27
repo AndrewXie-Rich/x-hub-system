@@ -2,138 +2,36 @@ import SwiftUI
 import AppKit
 import RELFlowHubCore
 
-private struct ModelsDrawerLocalModelSnapshot {
-    var models: [HubModel]
-    var sections: [ModelLibrarySection]
-    var loadedCount: Int
-
-    static let empty = ModelsDrawerLocalModelSnapshot(
-        models: [],
-        sections: [],
-        loadedCount: 0
-    )
-
-    static func build(from catalogModels: [HubModel]) -> ModelsDrawerLocalModelSnapshot {
-        let models = LocalModelRuntimeActionPlanner.localModels(from: catalogModels)
-        return ModelsDrawerLocalModelSnapshot(
-            models: models,
-            sections: ModelLibrarySectionPlanner.sections(from: models),
-            loadedCount: models.filter { $0.state == .loaded }.count
-        )
-    }
-}
-
-private struct ModelsDrawerProviderKeySnapshot: Equatable {
-    var totalAccounts: Int
-    var readyAccounts: Int
-    var blockedAccounts: Int
-    var keyPools: [ProviderKeyPoolSnapshot]
-    var quotaPools: [ProviderQuotaPoolSnapshot]
-
-    static let empty = ModelsDrawerProviderKeySnapshot(
-        totalAccounts: 0,
-        readyAccounts: 0,
-        blockedAccounts: 0,
-        keyPools: [],
-        quotaPools: []
-    )
-
-    static func build(from snapshot: ProviderKeyStoreSnapshot) -> ModelsDrawerProviderKeySnapshot {
-        let derived = ProviderKeyStorage.derivedSnapshot(from: snapshot)
-        return ModelsDrawerProviderKeySnapshot(
-            totalAccounts: derived.totalAccounts,
-            readyAccounts: derived.readyAccounts,
-            blockedAccounts: derived.blockedAccounts,
-            keyPools: derived.keyPools,
-            quotaPools: derived.quotaPools
-        )
-    }
-}
-
-private enum ModelsDrawerLibraryFilter: String, CaseIterable, Identifiable {
-    case all
-    case remote
-    case local
-    case ready
-    case needsSetup
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .all: return "全部"
-        case .remote: return "远程"
-        case .local: return "本地"
-        case .ready: return "可用"
-        case .needsSetup: return "需配置"
-        }
-    }
-}
-
-struct ModelsDrawerResourcePoolSummary: Identifiable {
-    var id: String
-    var title: String
-    var subtitle: String
-    var statusText: String
-    var statusColor: Color
-    var systemName: String
-    var modelText: String
-    var accountText: String
-    var quotaText: String
-    var models: [String]
-    var usageWindows: [ProviderKeyUsageWindow]
-    var detailText: String
-    var isLocal: Bool
-}
-
-struct ModelsDrawerRouteMatrixRow: Identifiable {
-    var id: String
-    var title: String
-    var modelName: String
-    var provider: String
-    var statusText: String
-    var statusColor: Color
-    var reason: String
-}
-
-struct ModelsDrawerLibraryItem: Identifiable {
-    var id: String
-    var title: String
-    var provider: String
-    var detail: String
-    var statusText: String
-    var statusColor: Color
-    var tags: [String]
-    var isLocal: Bool
-    var isReady: Bool
-    var modelId: String
-    var remoteEntry: RemoteModelEntry?
-}
-
 struct ModelsDrawer: View {
     @EnvironmentObject var store: HubStore
-    @ObservedObject private var modelStore = ModelStore.shared
-    @State private var remoteModels: [RemoteModelEntry] = []
+    @ObservedObject var modelStore = ModelStore.shared
+    @State var remoteModels: [RemoteModelEntry] = []
     @State private var providerKeySnapshot: ModelsDrawerProviderKeySnapshot = .empty
     @State private var localModelSnapshot: ModelsDrawerLocalModelSnapshot = .empty
     @State private var remoteDrawerGroupSnapshot: [RemoteDrawerGroup] = []
     @State private var showDiscoverModels: Bool = false
     @State private var showAddModel: Bool = false
     @State private var showAddRemoteModel: Bool = false
-    @State private var routeTask: HubTaskType = .supervisor
-    @State private var routeAllowAutoLoad: Bool = true
-    @State private var routeCheckFeedback: String = ""
-    @State private var routeCheckModelId: String = ""
+    @State var routeAllowAutoLoad: Bool = true
+    @State var routeCheckFeedback: String = ""
+    @State var routeCheckModelId: String = ""
+    @State var routeCheckTaskId: String = ""
     @State private var libraryFilter: ModelsDrawerLibraryFilter = .all
     @State private var librarySearch: String = ""
     @State private var modelLibraryExpanded: Bool = false
     @State private var resourcePoolSnapshot: [ModelsDrawerResourcePoolSummary] = []
     @State private var libraryItemSnapshot: [ModelsDrawerLibraryItem] = []
     @State private var routeMatrixRowSnapshot: [ModelsDrawerRouteMatrixRow] = []
+    @State private var importSourceRemovalTarget: ModelsDrawerImportSourceRemovalTarget? = nil
+    @State private var importSourceActionText: String = ""
+    @State private var importSourceErrorText: String = ""
+    @State private var remoteModelRemovalTarget: ModelsDrawerRemoteModelRemovalTarget? = nil
+    @State private var remoteModelActionText: String = ""
+    @State private var remoteModelErrorText: String = ""
     @State private var remoteModelsReloadTask: Task<Void, Never>? = nil
     @State private var providerKeyReloadTask: Task<Void, Never>? = nil
 
-    private var localModels: [HubModel] {
+    var localModels: [HubModel] {
         localModelSnapshot.models
     }
 
@@ -141,11 +39,11 @@ struct ModelsDrawer: View {
         remoteDrawerGroupSnapshot
     }
 
-    private var quotaPools: [ProviderQuotaPoolSnapshot] {
+    var quotaPools: [ProviderQuotaPoolSnapshot] {
         providerKeySnapshot.quotaPools
     }
 
-    private var localLoadedCount: Int {
+    var localLoadedCount: Int {
         localModelSnapshot.loadedCount
     }
 
@@ -161,7 +59,7 @@ struct ModelsDrawer: View {
         remoteGroups.reduce(0) { $0 + $1.needsSetupCount }
     }
 
-    private var runtimeAlive: Bool {
+    var runtimeAlive: Bool {
         store.aiRuntimeStatusSnapshot?.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) ?? false
     }
 
@@ -184,11 +82,14 @@ struct ModelsDrawer: View {
     }
 
     var body: some View {
-        let currentDecision = self.currentRouteDecision(for: routeTask)
+        drawerWithLifecycle
+    }
+
+    private var drawerBase: some View {
         let pools = self.resourcePoolSnapshot
         let libraryItems = self.filteredLibraryItems(from: libraryItemSnapshot)
 
-        VStack(alignment: .leading, spacing: 0) {
+        return VStack(alignment: .leading, spacing: 0) {
             self.drawerHeader
 
             Divider()
@@ -196,9 +97,13 @@ struct ModelsDrawer: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    self.portfolioOverviewPanel(currentDecision: currentDecision, pools: pools)
+                    self.portfolioOverviewPanel(pools: pools)
+
+                    self.importSourceCleanupSection
 
                     self.resourcePoolsSection(pools)
+
+                    self.remoteModelSourcesSection
 
                     self.taskRouteMatrixSection
 
@@ -213,6 +118,10 @@ struct ModelsDrawer: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .shadow(color: .black.opacity(0.16), radius: 10, x: 0, y: 2)
         .padding(10)
+    }
+
+    private var drawerWithSheets: some View {
+        drawerBase
         .sheet(isPresented: $showDiscoverModels) {
             DiscoverModelsSheet()
         }
@@ -228,6 +137,56 @@ struct ModelsDrawer: View {
                 ModelStore.shared.refresh()
             }
         }
+    }
+
+    private var drawerWithRemovalAlerts: some View {
+        drawerWithSheets
+        .alert(
+            self.importSourceRemovalTitle(importSourceRemovalTarget),
+            isPresented: Binding(
+                get: { importSourceRemovalTarget != nil },
+                set: { newValue in
+                    if !newValue {
+                        importSourceRemovalTarget = nil
+                    }
+                }
+            ),
+            presenting: importSourceRemovalTarget
+        ) { target in
+            Button(self.importSourceRemovalConfirmTitle(target), role: .destructive) {
+                self.removeImportSource(target)
+            }
+            Button("取消", role: .cancel) {
+                importSourceRemovalTarget = nil
+            }
+        } message: { target in
+            Text(self.importSourceRemovalMessage(target))
+        }
+        .alert(
+            self.remoteModelRemovalTitle(remoteModelRemovalTarget),
+            isPresented: Binding(
+                get: { remoteModelRemovalTarget != nil },
+                set: { newValue in
+                    if !newValue {
+                        remoteModelRemovalTarget = nil
+                    }
+                }
+            ),
+            presenting: remoteModelRemovalTarget
+        ) { target in
+            Button(self.remoteModelRemovalConfirmTitle(target), role: .destructive) {
+                self.removeRemoteModels(target)
+            }
+            Button("取消", role: .cancel) {
+                remoteModelRemovalTarget = nil
+            }
+        } message: { target in
+            Text(self.remoteModelRemovalMessage(target))
+        }
+    }
+
+    private var drawerWithLifecycle: some View {
+        drawerWithRemovalAlerts
         .onAppear {
             refreshLocalModelSnapshot()
             reloadRemoteModels(initial: true)
@@ -474,6 +433,29 @@ struct ModelsDrawer: View {
         return rows
     }
 
+    private var roleRouteSummaries: [ModelsDrawerRoleRouteSummary] {
+        HubTaskType.allCases.map { task in
+            let decision = currentRouteDecision(for: task)
+            let hasRoute = !decision.modelId.isEmpty
+            let statusText = hasRoute
+                ? (decision.willAutoLoad ? "按需加载" : modelStateText(decision.modelState ?? .available))
+                : "未路由"
+            let statusColor = hasRoute
+                ? (decision.willAutoLoad ? Color.indigo : modelStateColor(decision.modelState ?? .available))
+                : Color.orange
+
+            return ModelsDrawerRoleRouteSummary(
+                id: task.rawValue,
+                title: task.label,
+                systemName: routeTaskSystemName(task),
+                modelName: hasRoute ? decision.modelName : "暂无可用模型",
+                statusText: statusText,
+                statusColor: statusColor,
+                detail: hasRoute ? routeRecommendationDetail(decision) : routeReasonText(decision.reason)
+            )
+        }
+    }
+
     private var libraryItems: [ModelsDrawerLibraryItem] {
         let localItems = localModels.map { model in
             ModelsDrawerLibraryItem(
@@ -537,22 +519,13 @@ struct ModelsDrawer: View {
         }
     }
 
-    private func portfolioOverviewPanel(
-        currentDecision decision: HubTaskRouteDecision,
-        pools: [ModelsDrawerResourcePoolSummary]
-    ) -> some View {
-        let tint = decision.modelId.isEmpty ? Color.orange : modelStateColor(decision.modelState ?? .available)
+    private func portfolioOverviewPanel(pools: [ModelsDrawerResourcePoolSummary]) -> some View {
         let quotaSignal = portfolioQuotaSignal(pools)
         let usablePools = pools.filter { pool in
             ["可用", "运行中", "待加载"].contains(pool.statusText)
         }.count
 
         return ModelsDrawerPortfolioOverviewPanel(
-            routeTask: $routeTask,
-            routeAllowAutoLoad: $routeAllowAutoLoad,
-            decision: decision,
-            tint: tint,
-            routeDetail: routeRecommendationDetail(decision),
             quotaSignalText: quotaSignal.text,
             quotaSignalTint: quotaSignal.tint,
             usablePoolCount: usablePools,
@@ -560,23 +533,331 @@ struct ModelsDrawer: View {
             readyAccountCount: providerKeySnapshot.readyAccounts,
             totalAccountCount: providerKeySnapshot.totalAccounts,
             runtimeLoadedInstanceCount: runtimeLoadedInstanceCount,
-            preferenceLabel: routePreferenceLabel(for: routeTask),
-            availableModels: modelStore.snapshot.models,
-            routeCheckFeedback: routeCheckFeedback,
-            routeCheckModelId: routeCheckModelId,
-            trialStatus: routeTrialStatus(for: decision),
-            onTestRoute: {
-                runRouteCheck(decision)
-            },
-            onPinRoute: {
-                store.setRoutingPreferredModel(taskType: routeTask.rawValue, modelId: decision.modelId)
-            },
-            onSetPreferred: { modelId in
-                store.setRoutingPreferredModel(taskType: routeTask.rawValue, modelId: modelId)
-                routeCheckFeedback = ""
-                routeCheckModelId = ""
-            }
+            roleSummaries: roleRouteSummaries
         )
+    }
+
+    @ViewBuilder
+    private var importSourceCleanupSection: some View {
+        let sources = sortedImportSources
+        let issueCount = sources.filter(isImportSourceIssue).count
+        let shouldShow = !sources.isEmpty
+            || !importSourceActionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !importSourceErrorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+        if shouldShow {
+            VStack(alignment: .leading, spacing: 10) {
+                sectionHeader(
+                    title: "来源清理",
+                    subtitle: "过期 URL、缺失目录、同步失败或不再续费的账号池，可以直接从这里清掉。"
+                )
+
+                drawerPanel {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            drawerStatusPill(
+                                issueCount > 0 ? "\(issueCount) 需处理" : "来源正常",
+                                systemName: issueCount > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill",
+                                tint: issueCount > 0 ? .orange : .green
+                            )
+                            drawerStatusPill(
+                                "\(sources.count) 来源",
+                                systemName: "tray.and.arrow.down",
+                                tint: sources.isEmpty ? .secondary : .teal
+                            )
+
+                            Spacer()
+
+                            ModelsDrawerActionChip(
+                                title: "管理全部",
+                                systemName: "gearshape",
+                                tint: .secondary
+                            ) {
+                                store.openProviderKeysSettings()
+                                HubSettingsWindowPresenter.shared.show(store: store)
+                            }
+                        }
+
+                        if !importSourceActionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            ModelsDrawerNoticeLine(
+                                systemName: "checkmark.circle.fill",
+                                text: importSourceActionText,
+                                tint: .green
+                            )
+                        }
+
+                        if !importSourceErrorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            ModelsDrawerNoticeLine(
+                                systemName: "exclamationmark.triangle.fill",
+                                text: importSourceErrorText,
+                                tint: .red
+                            )
+                        }
+
+                        if sources.isEmpty {
+                            emptyStateLine("没有剩余导入源。远程模型和账号池会按当前库存继续显示。")
+                        } else {
+                            VStack(spacing: 0) {
+                                ForEach(Array(sources.prefix(5).enumerated()), id: \.element.id) { index, source in
+                                    if index > 0 { Divider().opacity(0.24) }
+                                    importSourceCleanupRow(source)
+                                        .padding(.vertical, 8)
+                                }
+                            }
+
+                            if sources.count > 5 {
+                                Text("还有 \(sources.count - 5) 个来源，打开设置可查看全部。")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func importSourceCleanupRow(_ source: ProviderKeyImportSourceStatus) -> some View {
+        let color = importSourceStateColor(source)
+        return HStack(alignment: .top, spacing: 10) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+                .padding(.top, 5)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(importSourceTitle(source))
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                    Text(importSourceStateText(source))
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(color)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(color.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+
+                Text(importSourceSummary(source))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+
+                if let error = importSourceErrorDescription(source) {
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(color)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Menu {
+                Button("只移除来源记录") {
+                    requestImportSourceRemoval(source, removeOwnedAccounts: false)
+                }
+
+                Button("移除来源和账号", role: .destructive) {
+                    requestImportSourceRemoval(source, removeOwnedAccounts: true)
+                }
+                .disabled(source.ownedAccountCount == 0)
+            } label: {
+                ModelsDrawerActionChipLabel(
+                    title: "清理",
+                    systemName: "trash",
+                    tint: importSourceStateText(source) == "ready" ? .secondary : color,
+                    disabled: false
+                )
+            }
+            .menuStyle(.borderlessButton)
+        }
+    }
+
+    private var sortedImportSources: [ProviderKeyImportSourceStatus] {
+        providerKeySnapshot.importSources.sorted { lhs, rhs in
+            let lhsRank = importSourceSortRank(lhs)
+            let rhsRank = importSourceSortRank(rhs)
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            if lhs.updatedAtMs != rhs.updatedAtMs { return lhs.updatedAtMs > rhs.updatedAtMs }
+            return importSourceTitle(lhs).localizedCaseInsensitiveCompare(importSourceTitle(rhs)) == .orderedAscending
+        }
+    }
+
+    private func importSourceSortRank(_ source: ProviderKeyImportSourceStatus) -> Int {
+        switch source.state {
+        case "sync_failed":
+            return 0
+        case "missing":
+            return 1
+        case "ready":
+            return source.ownedAccountCount == 0 ? 2 : 4
+        default:
+            return 3
+        }
+    }
+
+    private func isImportSourceIssue(_ source: ProviderKeyImportSourceStatus) -> Bool {
+        source.state != "ready" || source.ownedAccountCount == 0 || source.lastErrorCount > 0
+    }
+
+    private func importSourceTitle(_ source: ProviderKeyImportSourceStatus) -> String {
+        let ref = importSourceDisplayName(source)
+        switch source.kind {
+        case "auth_dir":
+            return "Auth 目录 · \(ref)"
+        case "config_path":
+            return "配置文件 · \(ref)"
+        case "cliproxy_oauth":
+            return "CLIProxy OAuth · \(ref)"
+        default:
+            return "\(source.kind) · \(ref)"
+        }
+    }
+
+    private func importSourceDisplayName(_ source: ProviderKeyImportSourceStatus) -> String {
+        if source.kind == "cliproxy_oauth",
+           let url = URL(string: source.sourceRef),
+           let host = url.host?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !host.isEmpty {
+            if let port = url.port {
+                return "\(host):\(port)"
+            }
+            return host
+        }
+        let url = URL(fileURLWithPath: source.sourceRef, isDirectory: source.kind == "auth_dir")
+        let last = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        return last.isEmpty ? source.sourceRef : last
+    }
+
+    private func importSourceStateText(_ source: ProviderKeyImportSourceStatus) -> String {
+        switch source.state {
+        case "ready":
+            return "ready"
+        case "missing":
+            return "missing"
+        case "sync_failed":
+            return "sync_failed"
+        default:
+            return "pending"
+        }
+    }
+
+    private func importSourceStateColor(_ source: ProviderKeyImportSourceStatus) -> Color {
+        switch source.state {
+        case "ready":
+            return source.ownedAccountCount == 0 ? .secondary : .green
+        case "missing":
+            return .orange
+        case "sync_failed":
+            return .red
+        default:
+            return .secondary
+        }
+    }
+
+    private func importSourceSummary(_ source: ProviderKeyImportSourceStatus) -> String {
+        var parts: [String] = []
+        if source.lastSyncAtMs > 0 {
+            parts.append("上次同步 \(formattedImportSourceTime(source.lastSyncAtMs))")
+        } else {
+            parts.append("还没有成功同步记录")
+        }
+        parts.append("账号 \(source.ownedAccountCount)")
+        parts.append("导入 \(source.lastImportedCount)")
+        if source.lastErrorCount > 0 {
+            parts.append("错误 \(source.lastErrorCount)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func importSourceErrorDescription(_ source: ProviderKeyImportSourceStatus) -> String? {
+        guard let raw = source.lastErrors.first?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
+            if source.state == "ready", source.ownedAccountCount == 0 {
+                return "这个来源当前没有持有账号，可以清理掉旧记录。"
+            }
+            return nil
+        }
+        let normalized = raw.lowercased()
+        if normalized.hasPrefix("source_path_missing") {
+            return "源路径已经不存在。恢复路径后刷新，或直接清理这个来源。"
+        }
+        if normalized.contains("management key") {
+            return "管理 key 不可用。若不再使用这个来源，可以清理。"
+        }
+        if normalized.hasPrefix("unsupported_toml_config") {
+            return "配置结构不受支持。可以改配置后重新导入，或清理旧来源。"
+        }
+        if normalized.contains("save_failed") {
+            return "Hub 本地状态保存失败，请确认目录可写后重试。"
+        }
+        return raw
+    }
+
+    private func formattedImportSourceTime(_ timestampMs: Int64) -> String {
+        guard timestampMs > 0 else { return "未知" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale.autoupdatingCurrent
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(timestampMs) / 1000.0))
+    }
+
+    private func requestImportSourceRemoval(
+        _ source: ProviderKeyImportSourceStatus,
+        removeOwnedAccounts: Bool
+    ) {
+        importSourceRemovalTarget = ModelsDrawerImportSourceRemovalTarget(
+            source: source,
+            removeOwnedAccounts: removeOwnedAccounts
+        )
+    }
+
+    private func removeImportSource(_ target: ModelsDrawerImportSourceRemovalTarget) {
+        importSourceRemovalTarget = nil
+        let result = ProviderKeyStorage.removeImportSource(
+            target.source,
+            removeOwnedAccounts: target.removeOwnedAccounts
+        )
+
+        if result.ok {
+            let accountText = target.removeOwnedAccounts
+                ? "移除账号 \(result.removedAccountCount)，保留共享账号 \(result.detachedAccountCount)"
+                : "保留账号 \(result.detachedAccountCount)"
+            importSourceActionText = "已清理 \(importSourceDisplayName(target.source))：\(accountText)。"
+            importSourceErrorText = ""
+        } else {
+            importSourceActionText = ""
+            importSourceErrorText = "清理失败：\(result.errors.joined(separator: ", "))"
+        }
+
+        reloadProviderKeySnapshot()
+        modelStore.refresh()
+    }
+
+    private func importSourceRemovalTitle(
+        _ target: ModelsDrawerImportSourceRemovalTarget?
+    ) -> String {
+        guard let target else { return "清理来源" }
+        return target.removeOwnedAccounts ? "移除来源和账号" : "移除来源记录"
+    }
+
+    private func importSourceRemovalConfirmTitle(
+        _ target: ModelsDrawerImportSourceRemovalTarget
+    ) -> String {
+        target.removeOwnedAccounts ? "移除来源和账号" : "移除来源记录"
+    }
+
+    private func importSourceRemovalMessage(
+        _ target: ModelsDrawerImportSourceRemovalTarget
+    ) -> String {
+        let name = importSourceDisplayName(target.source)
+        if target.removeOwnedAccounts {
+            return "将移除 \(name) 这个来源，并删除只属于它的 \(target.source.ownedAccountCount) 个账号。被其他来源共同持有的账号会保留。"
+        }
+        return "将移除 \(name) 这个来源记录，账号会保留在 Hub 中继续用于路由。"
     }
 
     private func resourcePoolsSection(_ pools: [ModelsDrawerResourcePoolSummary]) -> some View {
@@ -616,6 +897,250 @@ struct ModelsDrawer: View {
                 showAddRemoteModel = true
             }
         )
+    }
+
+    @ViewBuilder
+    private var remoteModelSourcesSection: some View {
+        let groups = remoteGroups
+        let shouldShow = !groups.isEmpty
+            || !remoteModelActionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !remoteModelErrorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+        if shouldShow {
+            VStack(alignment: .leading, spacing: 10) {
+                sectionHeader(
+                    title: "远程模型来源",
+                    subtitle: "按 key / endpoint 聚合 catalog；过期或不再续费的模型来源可以整组停用或移除。"
+                )
+
+                drawerPanel {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            drawerStatusPill(
+                                "\(groups.count) 组",
+                                systemName: "cloud.fill",
+                                tint: groups.isEmpty ? .secondary : .blue
+                            )
+                            drawerStatusPill(
+                                "\(remoteModels.count) 远程模型",
+                                systemName: "square.stack.3d.up",
+                                tint: remoteModels.isEmpty ? .secondary : .indigo
+                            )
+                            drawerStatusPill(
+                                remoteNeedsSetupCount > 0 ? "\(remoteNeedsSetupCount) 需配置" : "配置完整",
+                                systemName: remoteNeedsSetupCount > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill",
+                                tint: remoteNeedsSetupCount > 0 ? .orange : .green
+                            )
+
+                            Spacer()
+
+                            ModelsDrawerActionChip(
+                                title: "添加远程模型",
+                                systemName: "plus",
+                                tint: .indigo
+                            ) {
+                                showAddRemoteModel = true
+                            }
+                        }
+
+                        if !remoteModelActionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            ModelsDrawerNoticeLine(
+                                systemName: "checkmark.circle.fill",
+                                text: remoteModelActionText,
+                                tint: .green
+                            )
+                        }
+
+                        if !remoteModelErrorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            ModelsDrawerNoticeLine(
+                                systemName: "exclamationmark.triangle.fill",
+                                text: remoteModelErrorText,
+                                tint: .red
+                            )
+                        }
+
+                        if groups.isEmpty {
+                            emptyStateLine("没有远程模型来源。添加远程模型后，这里会显示可管理的 catalog 组。")
+                        } else {
+                            VStack(spacing: 0) {
+                                ForEach(Array(groups.prefix(6).enumerated()), id: \.element.id) { index, group in
+                                    if index > 0 { Divider().opacity(0.24) }
+                                    remoteModelSourceGroupRow(group)
+                                        .padding(.vertical, 8)
+                                }
+                            }
+
+                            if groups.count > 6 {
+                                Text("还有 \(groups.count - 6) 组来源，可在模型库搜索具体模型。")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func remoteModelSourceGroupRow(_ group: RemoteDrawerGroup) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(group.statusColor.opacity(0.12))
+                Image(systemName: "cloud.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(group.statusColor)
+            }
+            .frame(width: 30, height: 30)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(group.title)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                    Text(group.statusText)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(group.statusColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(group.statusColor.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+
+                Text([group.summary, group.detail ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+
+                ModelsDrawerChipList(
+                    chips: Array(group.models.map(\.title).prefix(4)),
+                    tint: group.statusColor
+                )
+            }
+
+            Spacer(minLength: 8)
+
+            HStack(spacing: 6) {
+                ModelsDrawerIconButton(
+                    title: "启用这组",
+                    systemName: "play",
+                    disabled: group.loadableModelIDs.isEmpty
+                ) {
+                    setRemoteModelsEnabled(group.loadableModelIDs, enabled: true)
+                }
+
+                ModelsDrawerIconButton(
+                    title: "停用这组",
+                    systemName: "pause",
+                    disabled: group.enabledModelIDs.isEmpty
+                ) {
+                    setRemoteModelsEnabled(group.enabledModelIDs, enabled: false)
+                }
+
+                Menu {
+                    Button("移除这组模型", role: .destructive) {
+                        requestRemoteModelGroupRemoval(group)
+                    }
+                    .disabled(group.models.isEmpty)
+                } label: {
+                    ModelsDrawerActionChipLabel(
+                        title: "移除",
+                        systemName: "trash",
+                        tint: .red,
+                        disabled: group.models.isEmpty
+                    )
+                }
+                .menuStyle(.borderlessButton)
+            }
+            .fixedSize()
+        }
+    }
+
+    private func requestRemoteModelGroupRemoval(_ group: RemoteDrawerGroup) {
+        remoteModelRemovalTarget = ModelsDrawerRemoteModelRemovalTarget(
+            title: group.title,
+            modelIDs: group.models.map(\.id),
+            keyReference: group.keyReference,
+            isGroup: true
+        )
+    }
+
+    private func requestRemoteModelRemoval(_ entry: RemoteModelEntry) {
+        remoteModelRemovalTarget = ModelsDrawerRemoteModelRemovalTarget(
+            title: entry.nestedDisplayName,
+            modelIDs: [entry.id],
+            keyReference: RemoteModelStorage.keyReference(for: entry),
+            isGroup: false
+        )
+    }
+
+    private func removeRemoteModels(_ target: ModelsDrawerRemoteModelRemovalTarget) {
+        remoteModelRemovalTarget = nil
+        let ids = target.modelIDs
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !ids.isEmpty else {
+            remoteModelActionText = ""
+            remoteModelErrorText = "没有可移除的远程模型。"
+            return
+        }
+
+        let snapshot = RemoteModelStorage.remove(ids: ids)
+        clearRoutingPreferencesForRemovedRemoteModels(ids)
+        remoteModels = Self.sortedRemoteModels(snapshot.models)
+        refreshRemoteDrawerGroups()
+        store.pruneRemoteKeyHealthForCurrentRemoteModels()
+        modelStore.refresh()
+        reloadProviderKeySnapshot()
+
+        remoteModelActionText = target.isGroup
+            ? "已移除 \(target.title) 的 \(ids.count) 个远程模型。"
+            : "已移除远程模型 \(target.title)。"
+        remoteModelErrorText = ""
+    }
+
+    private func clearRoutingPreferencesForRemovedRemoteModels(_ ids: [String]) {
+        let removedIDs = Set(
+            ids
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
+        )
+        guard !removedIDs.isEmpty else { return }
+
+        for (taskType, modelID) in store.routingPreferredModelIdByTask {
+            let normalized = modelID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if removedIDs.contains(normalized) {
+                store.setRoutingPreferredModel(taskType: taskType, modelId: nil)
+            }
+        }
+
+        if removedIDs.contains(routeCheckModelId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) {
+            routeCheckFeedback = ""
+            routeCheckModelId = ""
+            routeCheckTaskId = ""
+        }
+    }
+
+    private func remoteModelRemovalTitle(
+        _ target: ModelsDrawerRemoteModelRemovalTarget?
+    ) -> String {
+        guard let target else { return "移除远程模型" }
+        return target.isGroup ? "移除远程模型来源" : "移除远程模型"
+    }
+
+    private func remoteModelRemovalConfirmTitle(
+        _ target: ModelsDrawerRemoteModelRemovalTarget
+    ) -> String {
+        target.isGroup ? "移除这组模型" : "移除模型"
+    }
+
+    private func remoteModelRemovalMessage(
+        _ target: ModelsDrawerRemoteModelRemovalTarget
+    ) -> String {
+        if target.isGroup {
+            return "将从 Hub 模型目录移除 \(target.title) 这组 \(target.modelCount) 个远程模型。若这组 key 不再被其它模型引用，Hub 会同步清理对应密钥引用。"
+        }
+        return "将从 Hub 模型目录移除 \(target.title)。这不会删除 Provider Key 账号池；需要清账号时请用上方来源清理。"
     }
 
     private var taskRouteMatrixSection: some View {
@@ -787,14 +1312,16 @@ struct ModelsDrawer: View {
             availableModels: modelStore.snapshot.models,
             routeCheckFeedback: routeCheckFeedback,
             routeCheckModelId: routeCheckModelId,
+            routeCheckTaskId: routeCheckTaskId,
             trialStatus: routeTrialStatus(for: decision),
             onSetPreferred: { modelId in
                 store.setRoutingPreferredModel(taskType: task.rawValue, modelId: modelId)
                 routeCheckFeedback = ""
                 routeCheckModelId = ""
+                routeCheckTaskId = ""
             },
             onTest: {
-                runRouteCheck(decision)
+                runRouteCheck(task: task, decision: decision)
             }
         )
     }
@@ -815,8 +1342,11 @@ struct ModelsDrawer: View {
             onQuickCheck: {
                 store.quickCheckLocalModelHealth(for: [model.id])
             },
-            onPin: {
-                store.setRoutingPreferredModel(taskType: routeTask.rawValue, modelId: model.id)
+            onPinForTask: { task in
+                store.setRoutingPreferredModel(taskType: task.rawValue, modelId: model.id)
+                routeCheckFeedback = ""
+                routeCheckModelId = ""
+                routeCheckTaskId = ""
             }
         )
     }
@@ -825,8 +1355,11 @@ struct ModelsDrawer: View {
         ModelsDrawerLibraryRow(
             item: item,
             trialStatus: libraryTrialStatus(for: item),
-            onPin: {
-                store.setRoutingPreferredModel(taskType: routeTask.rawValue, modelId: item.modelId)
+            onPinForTask: { task in
+                store.setRoutingPreferredModel(taskType: task.rawValue, modelId: item.modelId)
+                routeCheckFeedback = ""
+                routeCheckModelId = ""
+                routeCheckTaskId = ""
             },
             onTest: {
                 if let remoteEntry = item.remoteEntry {
@@ -838,6 +1371,11 @@ struct ModelsDrawer: View {
             onSetRemoteEnabled: { enabled in
                 if let remoteEntry = item.remoteEntry {
                     setRemoteModelsEnabled([remoteEntry.id], enabled: enabled)
+                }
+            },
+            onRemoveRemoteModel: {
+                if let remoteEntry = item.remoteEntry {
+                    requestRemoteModelRemoval(remoteEntry)
                 }
             }
         )
@@ -855,547 +1393,8 @@ struct ModelsDrawer: View {
         ModelsDrawerIconOnlyButton(title: title, systemName: systemName, action: action)
     }
 
-    private func portfolioQuotaSignal(_ pools: [ModelsDrawerResourcePoolSummary]) -> (text: String, tint: Color) {
-        let windows = pools.flatMap { $0.usageWindows }
-        if windows.contains(where: \.limited) {
-            return ("受限", .red)
-        }
-        guard let hottest = windows.max(by: { providerKeyUsageWindowPercent($0) < providerKeyUsageWindowPercent($1) }) else {
-            return (quotaPools.isEmpty ? "本机" : "待同步", quotaPools.isEmpty ? .green : .secondary)
-        }
-        let text = "\(providerKeyUsageWindowTitle(hottest)) \(providerKeyUsageWindowPercentText(hottest))"
-        return (text, providerKeyUsageWindowTint(hottest))
-    }
-
-    private func usageWindowDisplay(_ window: ProviderKeyUsageWindow) -> ModelsDrawerUsageWindowDisplay {
-        let percent = providerKeyUsageWindowPercent(window)
-        return ModelsDrawerUsageWindowDisplay(
-            id: window.key,
-            title: providerKeyUsageWindowTitle(window),
-            percentText: providerKeyUsageWindowPercentText(window),
-            resetText: providerKeyUsageWindowResetText(window),
-            progress: min(1.0, max(0.0, percent / 100.0)),
-            tint: providerKeyUsageWindowTint(window)
-        )
-    }
-
     private func emptyStateLine(_ text: String) -> some View {
         ModelsDrawerEmptyStateLine(text: text)
-    }
-
-    private func currentRouteDecision(for taskType: HubTaskType) -> HubTaskRouteDecision {
-        HubTaskRoutingPolicy.decision(
-            taskType: taskType,
-            models: modelStore.snapshot.models,
-            preferredModelId: effectivePreferredModelId(for: taskType),
-            allowAutoLoad: routeAllowAutoLoad
-        )
-    }
-
-    private func effectivePreferredModelId(for taskType: HubTaskType) -> String {
-        (store.routingPreferredModelIdByTask[taskType.rawValue] ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func routePreferenceLabel(for taskType: HubTaskType) -> String {
-        let modelId = effectivePreferredModelId(for: taskType)
-        guard !modelId.isEmpty else {
-            return "\(taskType.label): Auto"
-        }
-        let modelName = modelStore.snapshot.models.first(where: { $0.id == modelId })?.name
-            ?? remoteModels.first(where: { $0.id == modelId })?.nestedDisplayName
-            ?? modelId
-        return "\(taskType.label): \(modelName)"
-    }
-
-    private func routePreferenceShortLabel(for taskType: HubTaskType) -> String {
-        let modelId = effectivePreferredModelId(for: taskType)
-        guard !modelId.isEmpty else { return "Auto" }
-        return modelStore.snapshot.models.first(where: { $0.id == modelId })?.name
-            ?? remoteModels.first(where: { $0.id == modelId })?.nestedDisplayName
-            ?? modelId
-    }
-
-    private func routeTaskSystemName(_ taskType: HubTaskType) -> String {
-        switch taskType {
-        case .supervisor:
-            return "point.topleft.down.curvedto.point.bottomright.up"
-        case .coder:
-            return "chevron.left.forwardslash.chevron.right"
-        case .reviewer:
-            return "checkmark.seal"
-        }
-    }
-
-    private func routeTaskPurposeText(_ taskType: HubTaskType) -> String {
-        switch taskType {
-        case .supervisor:
-            return "规划、调度、拆解"
-        case .coder:
-            return "代码、执行、低延迟"
-        case .reviewer:
-            return "审查、校验、质量优先"
-        }
-    }
-
-    private func routeRecommendationDetail(_ decision: HubTaskRouteDecision) -> String {
-        guard !decision.modelId.isEmpty else {
-            return "没有可路由模型；先添加本地模型或远程模型。"
-        }
-        let provider = modelStore.snapshot.models
-            .first(where: { $0.id == decision.modelId })
-            .map(providerTitle(for:)) ?? "Hub"
-        let auto = decision.willAutoLoad ? " · 需要自动加载" : ""
-        return "\(provider) · \(routeReasonText(decision.reason))\(auto)"
-    }
-
-    private func routeMatrixRow(
-        id: String,
-        title: String,
-        decision: HubTaskRouteDecision
-    ) -> ModelsDrawerRouteMatrixRow {
-        guard !decision.modelId.isEmpty else {
-            return ModelsDrawerRouteMatrixRow(
-                id: id,
-                title: title,
-                modelName: "未路由",
-                provider: "",
-                statusText: "Blocked",
-                statusColor: .orange,
-                reason: routeReasonText(decision.reason)
-            )
-        }
-
-        let model = modelStore.snapshot.models.first(where: { $0.id == decision.modelId })
-        return ModelsDrawerRouteMatrixRow(
-            id: id,
-            title: title,
-            modelName: decision.modelName,
-            provider: model.map(providerTitle(for:)) ?? "Hub",
-            statusText: decision.willAutoLoad ? "Auto" : modelStateText(decision.modelState ?? .available),
-            statusColor: decision.willAutoLoad ? .indigo : modelStateColor(decision.modelState ?? .available),
-            reason: routeReasonText(decision.reason)
-        )
-    }
-
-    private func bestModelRouteRow(
-        id: String,
-        title: String,
-        models: [HubModel],
-        reason: String
-    ) -> ModelsDrawerRouteMatrixRow {
-        guard let model = models.first else {
-            return ModelsDrawerRouteMatrixRow(
-                id: id,
-                title: title,
-                modelName: "未匹配",
-                provider: "",
-                statusText: "None",
-                statusColor: .secondary,
-                reason: "没有匹配能力"
-            )
-        }
-        return ModelsDrawerRouteMatrixRow(
-            id: id,
-            title: title,
-            modelName: model.name,
-            provider: providerTitle(for: model),
-            statusText: modelStateText(model.state),
-            statusColor: modelStateColor(model.state),
-            reason: reason
-        )
-    }
-
-    private func runRouteCheck(_ decision: HubTaskRouteDecision) {
-        let modelId = decision.modelId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !modelId.isEmpty else { return }
-        routeCheckModelId = modelId
-
-        if let remote = remoteEntry(forModelId: modelId) {
-            routeCheckFeedback = "已发起 \(decision.modelName.isEmpty ? modelId : decision.modelName) 远程连通性测试。"
-            store.testRemoteModelConnectivity(remote)
-            return
-        }
-
-        if let model = modelStore.snapshot.models.first(where: { $0.id == modelId }),
-           LocalModelRuntimeActionPlanner.isRemoteModel(model) {
-            routeCheckFeedback = "找不到 \(model.name) 的远程模型配置，不能发起连接测试。"
-            return
-        }
-
-        routeCheckFeedback = "已发起 \(decision.modelName.isEmpty ? modelId : decision.modelName) 本地轻量预检。"
-        store.quickCheckLocalModelHealth(for: [modelId])
-    }
-
-    private func remoteEntry(forModelId modelId: String) -> RemoteModelEntry? {
-        let normalized = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return nil }
-        if let cached = remoteModels.first(where: { remoteModelMatches($0, modelId: normalized) }) {
-            return cached
-        }
-        return RemoteModelStorage.load().models.first(where: { remoteModelMatches($0, modelId: normalized) })
-    }
-
-    private func remoteModelMatches(_ entry: RemoteModelEntry, modelId: String) -> Bool {
-        let normalized = modelId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalized.isEmpty else { return false }
-        return entry.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized
-            || entry.effectiveProviderModelID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized
-            || entry.nestedDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized
-    }
-
-    private func libraryTrialStatus(for item: ModelsDrawerLibraryItem) -> ModelTrialStatus? {
-        if let remoteEntry = item.remoteEntry {
-            return store.remoteModelTrialStatus(for: remoteEntry.id)
-        }
-        return item.isLocal
-            ? store.localModelTrialStatus(for: item.modelId)
-            : store.remoteModelTrialStatus(for: item.modelId)
-    }
-
-    private func routeTrialStatus(for decision: HubTaskRouteDecision) -> ModelTrialStatus? {
-        let modelId = decision.modelId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !modelId.isEmpty else { return nil }
-        if let remote = remoteModels.first(where: { remoteModelMatches($0, modelId: modelId) }) {
-            return store.remoteModelTrialStatus(for: remote.id)
-        }
-        if let model = modelStore.snapshot.models.first(where: { $0.id == modelId }),
-           LocalModelRuntimeActionPlanner.isRemoteModel(model) {
-            return store.remoteModelTrialStatus(for: modelId)
-        }
-        return store.localModelTrialStatus(for: modelId)
-    }
-
-    private var localResourcePoolDetailText: String {
-        if localModels.isEmpty {
-            return "本地模型会用于隐私任务、离线任务和低延迟任务。"
-        }
-        if !runtimeAlive {
-            return "Runtime 未就绪，本地模型暂时只作为目录展示。"
-        }
-        if localLoadedCount > 0 {
-            return "\(localLoadedCount) 个模型已经常驻，可以直接承接本地任务。"
-        }
-        return "本地模型已编目，可按任务需要自动加载。"
-    }
-
-    private func remoteResourcePoolDetailText(
-        providerName: String,
-        keyPools: [ProviderKeyPoolSnapshot],
-        models: [RemoteModelEntry],
-        needsSetup: Int
-    ) -> String {
-        if models.isEmpty && !keyPools.isEmpty {
-            return "\(providerName) 账号已接入，但还没有编入可执行模型。"
-        }
-        if keyPools.isEmpty && !models.isEmpty {
-            return "\(providerName) 模型已编目，但缺少可路由账号或 Key。"
-        }
-        if needsSetup > 0 {
-            return "\(needsSetup) 个模型需要补齐 Key、Endpoint 或健康检查。"
-        }
-        if keyPools.contains(where: { $0.hasQuotaData }) {
-            return "额度和 Key 健康已同步，Hub 可按资源池进行路由。"
-        }
-        return "已编入模型，额度窗口等待 provider 同步。"
-    }
-
-    private func providerPoolDisplayName(_ pool: ProviderKeyPoolSnapshot) -> String {
-        let display = pool.providerDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !display.isEmpty { return display }
-        let provider = pool.provider.trimmingCharacters(in: .whitespacesAndNewlines)
-        if provider.isEmpty { return "Remote" }
-        switch provider.lowercased() {
-        case "openai": return "OpenAI"
-        case "anthropic": return "Anthropic"
-        case "gemini", "google": return "Gemini"
-        default: return provider.uppercased()
-        }
-    }
-
-    private func providerTitle(for model: HubModel) -> String {
-        if LocalModelRuntimeActionPlanner.isRemoteModel(model) {
-            let backend = model.backend.trimmingCharacters(in: .whitespacesAndNewlines)
-            switch backend.lowercased() {
-            case "openai": return "OpenAI"
-            case "anthropic": return "Anthropic"
-            case "gemini", "google": return "Gemini"
-            case "remote", "remote_catalog": return model.remoteEndpointHost ?? "Remote"
-            default: return backend.isEmpty ? "Remote" : backend.uppercased()
-            }
-        }
-        return "Local"
-    }
-
-    private func compactModelDetail(_ model: HubModel) -> String {
-        let context = model.maxContextLength > model.contextLength
-            ? "ctx \(model.contextLength)/\(model.maxContextLength)"
-            : "ctx \(model.contextLength)"
-        let perf = model.tokensPerSec.map { String(format: "%.1f tok/s", $0) } ?? ""
-        let size = model.paramsB > 0 ? String(format: "%.1fB", model.paramsB) : ""
-        return [model.backend, model.quant, size, context, perf]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0.lowercased() != "unknown" }
-            .joined(separator: " · ")
-    }
-
-    private func modelTags(_ model: HubModel) -> [String] {
-        var tags: [String] = []
-        tags.append(contentsOf: HubTaskRoutingPolicy.capabilityTags(for: model, limit: 3))
-        if model.offlineReady { tags.append("本地") }
-        if modelSupportsVision(model) { tags.append("视觉") }
-        if model.maxContextLength >= 64_000 { tags.append("长上下文") }
-        var seen = Set<String>()
-        let uniqueTags = tags.filter { !$0.isEmpty && seen.insert($0).inserted }
-        return Array(uniqueTags.prefix(4))
-    }
-
-    private func modelSupportsVision(_ model: HubModel) -> Bool {
-        let tokens = model.inputModalities + model.outputModalities + model.taskKinds
-        return tokens.contains { token in
-            let normalized = token.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return normalized.contains("vision")
-                || normalized.contains("image")
-                || normalized.contains("ocr")
-        }
-    }
-
-    private func modelStateText(_ state: HubModelState) -> String {
-        switch state {
-        case .loaded: return "Ready"
-        case .available: return "Available"
-        case .sleeping: return "Sleep"
-        }
-    }
-
-    private func modelStateColor(_ state: HubModelState) -> Color {
-        switch state {
-        case .loaded: return .green
-        case .available: return .indigo
-        case .sleeping: return .orange
-        }
-    }
-
-    private func remoteLibraryDetail(_ entry: RemoteModelEntry) -> String {
-        let context = Self.remoteContextSummary(for: entry)
-        let host = RemoteModelPresentationSupport.endpointHost(for: entry) ?? ""
-        return [entry.effectiveProviderModelID, host, context]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " · ")
-    }
-
-    private func remoteModelTags(_ entry: RemoteModelEntry) -> [String] {
-        var tags: [String] = []
-        let modelID = entry.effectiveProviderModelID.lowercased()
-        if modelID.contains("gpt") || modelID.contains("claude") || modelID.contains("gemini") {
-            tags.append("推理")
-        }
-        if modelID.contains("coder") || modelID.contains("code") {
-            tags.append("代码")
-        }
-        if modelID.contains("vision") || modelID.contains("image") {
-            tags.append("视觉")
-        }
-        if max(entry.contextLength, entry.knownContextLength ?? 0) >= 64_000 {
-            tags.append("长上下文")
-        }
-        if tags.isEmpty { tags.append("远程") }
-        return Array(tags.prefix(4))
-    }
-
-    private func remoteModelStateText(_ state: RemoteModelLoadState) -> String {
-        switch state {
-        case .loaded: return "Ready"
-        case .available: return "Available"
-        case .needsSetup: return "Setup"
-        }
-    }
-
-    private func remoteModelStateColor(_ state: RemoteModelLoadState) -> Color {
-        switch state {
-        case .loaded: return .green
-        case .available: return .indigo
-        case .needsSetup: return .orange
-        }
-    }
-
-    private func routeReasonText(_ reason: String) -> String {
-        switch reason {
-        case "preferred_model": return "用户指定"
-        case "task_match_loaded", "role_match_loaded": return "任务匹配且已就绪"
-        case "task_match_autoload", "role_match_autoload": return "任务匹配，可自动加载"
-        case "fallback_loaded": return "回退到已就绪模型"
-        case "fallback_autoload": return "回退到可自动加载模型"
-        case "no_models_registered": return "没有注册模型"
-        case "model_not_loaded": return "没有已加载模型"
-        default: return reason
-        }
-    }
-
-    private func quotaTint(for pool: ModelsDrawerResourcePoolSummary) -> Color {
-        if pool.isLocal { return .green }
-        guard let first = pool.usageWindows.first else {
-            return pool.quotaText == "未知" ? .secondary : pool.statusColor
-        }
-        return providerKeyUsageWindowTint(first)
-    }
-
-    private func providerDisplayUsageWindows(for pools: [ProviderKeyPoolSnapshot]) -> [ProviderKeyUsageWindow] {
-        var grouped: [String: ProviderKeyUsageWindow] = [:]
-        for pool in pools {
-            for member in pool.members {
-                for window in providerKeyDisplayUsageWindows(member.account) {
-                    let groupKey = providerKeyUsageWindowGroupKey(window)
-                    var normalized = window
-                    normalized.key = "drawer:\(pool.poolID):\(groupKey)"
-                    if let existing = grouped[groupKey] {
-                        var selected = providerKeyMoreConstrainedUsageWindow(existing, normalized)
-                        selected.key = "drawer:\(groupKey)"
-                        selected.limited = existing.limited || normalized.limited || selected.limited
-                        selected.resetAtMs = providerKeyEarliestPositiveTimestamp(existing.resetAtMs, normalized.resetAtMs)
-                        selected.updatedAtMs = max(existing.updatedAtMs, normalized.updatedAtMs)
-                        grouped[groupKey] = selected
-                    } else {
-                        grouped[groupKey] = normalized
-                    }
-                }
-            }
-        }
-
-        return grouped.values.sorted {
-            let lhsRank = providerKeyUsageWindowRank($0)
-            let rhsRank = providerKeyUsageWindowRank($1)
-            if lhsRank != rhsRank { return lhsRank < rhsRank }
-            if $0.limitWindowSeconds != $1.limitWindowSeconds {
-                return $0.limitWindowSeconds < $1.limitWindowSeconds
-            }
-            return $0.key < $1.key
-        }
-    }
-
-    private func providerKeyDisplayUsageWindows(_ account: ProviderKeyAccount) -> [ProviderKeyUsageWindow] {
-        let windows = account.quota.usageWindows
-        guard !windows.isEmpty else { return [] }
-
-        let rateLimitWindows = windows.filter {
-            $0.source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "rate_limit"
-        }
-        let preferred = rateLimitWindows.filter {
-            $0.limitWindowSeconds == 5 * 60 * 60 || $0.limitWindowSeconds == 7 * 24 * 60 * 60
-        }
-        let selected: [ProviderKeyUsageWindow]
-        if !preferred.isEmpty {
-            selected = preferred
-        } else if !rateLimitWindows.isEmpty {
-            selected = Array(rateLimitWindows.prefix(2))
-        } else {
-            selected = Array(windows.prefix(2))
-        }
-
-        return selected.sorted {
-            let lhsRank = providerKeyUsageWindowRank($0)
-            let rhsRank = providerKeyUsageWindowRank($1)
-            if lhsRank != rhsRank { return lhsRank < rhsRank }
-            return $0.limitWindowSeconds < $1.limitWindowSeconds
-        }
-    }
-
-    private func providerKeyUsageWindowGroupKey(_ window: ProviderKeyUsageWindow) -> String {
-        let source = window.source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let windowKey = window.windowKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let normalizedSource = source.isEmpty ? "usage" : source
-        let normalizedWindowKey = windowKey.isEmpty ? "window" : windowKey
-        if window.limitWindowSeconds > 0 {
-            return "\(normalizedSource):\(normalizedWindowKey):\(window.limitWindowSeconds)"
-        }
-        let rawKey = window.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return "\(normalizedSource):\(normalizedWindowKey):\(rawKey.isEmpty ? "unknown" : rawKey)"
-    }
-
-    private func providerKeyMoreConstrainedUsageWindow(
-        _ lhs: ProviderKeyUsageWindow,
-        _ rhs: ProviderKeyUsageWindow
-    ) -> ProviderKeyUsageWindow {
-        if lhs.limited != rhs.limited {
-            return rhs.limited ? rhs : lhs
-        }
-        let lhsPercent = providerKeyUsageWindowPercent(lhs)
-        let rhsPercent = providerKeyUsageWindowPercent(rhs)
-        if lhsPercent != rhsPercent {
-            return rhsPercent > lhsPercent ? rhs : lhs
-        }
-        if lhs.resetAtMs != rhs.resetAtMs {
-            return providerKeyEarliestPositiveTimestamp(lhs.resetAtMs, rhs.resetAtMs) == rhs.resetAtMs ? rhs : lhs
-        }
-        return lhs.key <= rhs.key ? lhs : rhs
-    }
-
-    private func providerKeyEarliestPositiveTimestamp(_ lhs: Int64, _ rhs: Int64) -> Int64 {
-        if lhs <= 0 { return max(0, rhs) }
-        if rhs <= 0 { return lhs }
-        return min(lhs, rhs)
-    }
-
-    private func providerKeyUsageWindowRank(_ window: ProviderKeyUsageWindow) -> Int {
-        switch window.limitWindowSeconds {
-        case 5 * 60 * 60:
-            return 0
-        case 7 * 24 * 60 * 60:
-            return 1
-        default:
-            return 10
-        }
-    }
-
-    private func providerKeyUsageWindowTitle(_ window: ProviderKeyUsageWindow) -> String {
-        switch window.limitWindowSeconds {
-        case 5 * 60 * 60:
-            return "5 小时额度"
-        case 7 * 24 * 60 * 60:
-            return "7 天额度"
-        case let seconds where seconds >= 24 * 60 * 60:
-            let days = max(1, Int((Double(seconds) / Double(24 * 60 * 60)).rounded()))
-            return "\(days) 天额度"
-        case let seconds where seconds >= 60 * 60:
-            let hours = max(1, Int((Double(seconds) / Double(60 * 60)).rounded()))
-            return "\(hours) 小时额度"
-        default:
-            let label = window.label.trimmingCharacters(in: .whitespacesAndNewlines)
-            return label.isEmpty ? "额度窗口" : label
-        }
-    }
-
-    private func providerKeyUsageWindowPercent(_ window: ProviderKeyUsageWindow) -> Double {
-        let percent = window.usedPercent > 0
-            ? window.usedPercent
-            : Double(max(0, min(10_000, window.usedBasisPoints))) / 100.0
-        return max(0, min(100, percent))
-    }
-
-    private func providerKeyUsageWindowPercentText(_ window: ProviderKeyUsageWindow) -> String {
-        String(format: "%.1f%%", providerKeyUsageWindowPercent(window))
-    }
-
-    private func providerKeyUsageWindowResetText(_ window: ProviderKeyUsageWindow) -> String {
-        guard window.resetAtMs > 0 else { return "" }
-        return "重置 \(formattedDrawerTime(window.resetAtMs))"
-    }
-
-    private func providerKeyUsageWindowTint(_ window: ProviderKeyUsageWindow) -> Color {
-        if window.limited {
-            return .red
-        }
-        switch providerKeyUsageWindowPercent(window) {
-        case let value where value >= 95:
-            return .red
-        case let value where value >= 80:
-            return .orange
-        case let value where value >= 45:
-            return .yellow
-        default:
-            return .green
-        }
     }
 
     private static func sortedRemoteModels(_ models: [RemoteModelEntry]) -> [RemoteModelEntry] {
@@ -1456,15 +1455,6 @@ struct ModelsDrawer: View {
         ModelsDrawerSectionHeader(title: title, subtitle: subtitle)
     }
 
-    private func formattedDrawerTime(_ timestampMs: Int64) -> String {
-        guard timestampMs > 0 else { return "未知" }
-        let formatter = DateFormatter()
-        formatter.locale = Locale.autoupdatingCurrent
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(timestampMs) / 1000.0))
-    }
-
     private func setRemoteModelsEnabled(_ modelIDs: [String], enabled: Bool) {
         let ids = Set(modelIDs)
         guard !ids.isEmpty else { return }
@@ -1487,164 +1477,4 @@ struct ModelsDrawer: View {
         modelStore.refresh()
     }
 
-    private func remoteDrawerGroups(from models: [RemoteModelEntry]) -> [RemoteDrawerGroup] {
-        RemoteModelPresentationSupport.groups(
-            from: models,
-            healthSnapshot: store.remoteKeyHealthSnapshot
-        ).map { group in
-            let drawerModels = group.models.map(Self.remoteDrawerModel(for:))
-            return RemoteDrawerGroup(
-                id: group.id,
-                keyReference: group.keyReference,
-                title: group.title,
-                summary: remoteGroupSummary(group),
-                detail: group.detail,
-                statusText: remoteGroupStatusText(group),
-                statusColor: remoteGroupStatusColor(group),
-                availableCount: group.availableCount,
-                needsSetupCount: group.needsSetupCount,
-                enabledModelIDs: group.enabledModelIDs,
-                loadableModelIDs: group.loadableModelIDs,
-                models: drawerModels
-            )
-        }
-    }
-
-    private func remoteGroupSummary(_ group: RemoteModelGroupPlan) -> String {
-        var parts = ["\(group.models.count) models"]
-        if group.loadedCount > 0 {
-            parts.append("\(group.loadedCount) loaded")
-        }
-        if group.availableCount > 0 {
-            parts.append("\(group.availableCount) available")
-        }
-        if group.needsSetupCount > 0 {
-            parts.append("\(group.needsSetupCount) needs setup")
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    private func remoteGroupStatusText(_ group: RemoteModelGroupPlan) -> String {
-        if group.loadedCount == group.models.count {
-            return "Loaded"
-        }
-        if group.needsSetupCount == group.models.count {
-            return "Needs Setup"
-        }
-        if group.availableCount == group.models.count {
-            return "Available"
-        }
-        return "Mixed"
-    }
-
-    private func remoteGroupStatusColor(_ group: RemoteModelGroupPlan) -> Color {
-        if group.loadedCount == group.models.count {
-            return .green
-        }
-        if group.needsSetupCount == group.models.count {
-            return .orange
-        }
-        return .secondary
-    }
-
-    private static func remoteDrawerModel(for entry: RemoteModelEntry) -> RemoteDrawerModel {
-        let loadState = RemoteModelPresentationSupport.state(for: entry)
-        let canLoad = loadState == .available
-        let isLoaded = loadState == .loaded
-        let statusText: String
-        let statusColor: Color
-        switch loadState {
-        case .loaded:
-            statusText = "Loaded"
-            statusColor = .green
-        case .available:
-            statusText = "Available"
-            statusColor = .secondary
-        case .needsSetup:
-            statusText = "Needs Setup"
-            statusColor = .orange
-        }
-
-        return RemoteDrawerModel(
-            entry: entry,
-            title: entry.nestedDisplayName,
-            subtitle: remoteModelSubtitle(for: entry),
-            detail: remoteModelDetail(for: entry),
-            statusText: statusText,
-            statusColor: statusColor,
-            isLoaded: isLoaded,
-            canLoad: canLoad
-        )
-    }
-
-    private static func remoteUpstreamTitle(for entry: RemoteModelEntry) -> String {
-        entry.effectiveProviderModelID
-    }
-
-    private static func remoteModelSubtitle(for entry: RemoteModelEntry) -> String {
-        let backend = RemoteModelPresentationSupport.backendLabel(for: entry)
-        let context = remoteContextSummary(for: entry)
-        return "\(entry.id) · \(backend) · \(context)"
-    }
-
-    private static func remoteModelDetail(for entry: RemoteModelEntry) -> String? {
-        var parts: [String] = []
-
-        if let host = RemoteModelPresentationSupport.endpointHost(for: entry), !host.isEmpty {
-            parts.append(host)
-        }
-
-        let keyReference = RemoteModelStorage.keyReference(for: entry)
-        if !keyReference.isEmpty {
-            parts.append("Key \(keyReference)")
-        }
-
-        let note = (entry.note ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !note.isEmpty {
-            parts.append(note)
-        }
-
-        guard !parts.isEmpty else { return nil }
-        return parts.joined(separator: " · ")
-    }
-
-    private static func remoteContextSummary(for entry: RemoteModelEntry) -> String {
-        let configured = max(512, entry.contextLength)
-        if let known = entry.knownContextLength, known > configured {
-            return "ctx \(configured) / max \(known)"
-        }
-        return "ctx \(configured)"
-    }
-}
-
-private struct RemoteDrawerGroup: Identifiable {
-    let id: String
-    let keyReference: String
-    let title: String
-    let summary: String
-    let detail: String?
-    let statusText: String
-    let statusColor: Color
-    let availableCount: Int
-    let needsSetupCount: Int
-    let enabledModelIDs: [String]
-    let loadableModelIDs: [String]
-    let models: [RemoteDrawerModel]
-
-    var loadedCount: Int {
-        models.filter(\.isLoaded).count
-    }
-}
-
-private struct RemoteDrawerModel: Identifiable {
-    let entry: RemoteModelEntry
-    let title: String
-    let subtitle: String
-    let detail: String?
-    let statusText: String
-    let statusColor: Color
-    let isLoaded: Bool
-    let canLoad: Bool
-
-    var id: String { entry.id }
 }

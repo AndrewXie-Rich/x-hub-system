@@ -278,7 +278,7 @@ enum UIFirstRunJourneyPlanner {
                 headline = "现有配对档案已失效，需要清理并重配"
                 whatHappened = "当前阻塞更像是旧 pairing profile、token 或 mTLS client certificate 已经过期或不再匹配，而不是单纯的 Hub 没开。"
                 whyItHappened = "如果继续用旧档案做 reconnect，只会反复得到 unauthenticated、certificate_required 或 pairing_health_failed 这类失败。"
-                userAction = "先执行“清除配对后重连”，再去 REL Flow Hub → Pairing & Device Trust → 设备列表（允许清单），筛“过期”并删除旧设备条目，然后重新批准。"
+                userAction = "先执行“清除配对后重连”，再去 X-Hub → Pairing & Device Trust → 设备列表（允许清单），筛“过期”并删除旧设备条目，然后重新批准。"
                 hardLine = "stale pairing must be repaired before smoke resumes"
             }
 
@@ -315,7 +315,7 @@ enum UIFirstRunJourneyPlanner {
                 headline: "Hub 端口冲突，需要先释放占用或切换端口",
                 whatHappened: "当前阻塞更像是目标 Hub 的 gRPC / pairing 端口被别的进程占用，而不是 XT 参数完全缺失。",
                 whyItHappened: "如果端口仍处于 already in use / eaddrinuse 状态，继续重连只会重复得到同一类失败。",
-                userAction: "先到 REL Flow Hub → LAN (gRPC) 或 REL Flow Hub → Diagnostics & Recovery 切到空闲端口，或释放占用进程；再把新端口同步回 XT 并重跑 reconnect smoke。",
+                userAction: "先到 X-Hub → LAN (gRPC) 或 X-Hub → Diagnostics & Recovery 切到空闲端口，或释放占用进程；再把新端口同步回 XT 并重跑 reconnect smoke。",
                 machineStatusRef: machineStatusRef,
                 hardLine: "port conflict must be repaired before connect resumes",
                 highlights: mergedHighlights([
@@ -355,7 +355,7 @@ enum UIFirstRunJourneyPlanner {
                 machineStatusRef: machineStatusRef,
                 hardLine: "授权没通过前，不继续放行",
                 highlights: mergedHighlights([
-                    "repair_entry=REL Flow Hub → Grants & Permissions",
+                    "repair_entry=X-Hub → Grants & Permissions",
                     "next_step=run_smoke_after_grant"
                 ], runtime: state.runtime)
             )
@@ -396,11 +396,11 @@ enum UIFirstRunJourneyPlanner {
                 headline: "远端付费路由被边界拦住，先看 Hub 排障",
                 whatHappened: "当前阻塞更像是远端导出开关、设备远端策略、预算策略或用户远端偏好把付费远端拦住了，而不是模型没加载。",
                 whyItHappened: "这类问题如果只看成一般授权或权限问题，会把真正的边界原因藏掉，也很容易先去错入口。",
-                userAction: state.runtime.nextRepairAction ?? "先到 XT 设置 → 诊断记录这次拒绝原因和审计编号，再去 REL Flow Hub → 诊断与恢复查看远端导出开关和修复提示。",
+                userAction: state.runtime.nextRepairAction ?? "先到 XT 设置 → 诊断记录这次拒绝原因和审计编号，再去 X-Hub → 诊断与恢复查看远端导出开关和修复提示。",
                 machineStatusRef: machineStatusRef,
                 hardLine: "边界没修好前，远端路由不会恢复",
                 highlights: mergedHighlights([
-                    "repair_entry=REL Flow Hub → Diagnostics & Recovery",
+                    "repair_entry=X-Hub → Diagnostics & Recovery",
                     "diagnostic_entrypoint=remote_export_gate"
                 ], runtime: state.runtime)
             )
@@ -750,7 +750,7 @@ enum UIFirstRunJourneyPlanner {
         let userAction: String
         if localHubBlocked {
             whyItHappened = "XT 当前只看见本机 loopback Hub；与此同时，本机 fallback Hub 也处于 \(rootCause.isEmpty ? "bridge_unavailable" : rootCause) 降级，\(blockedCapabilities) 仍被挡住。继续把首用流程显示成可继续，只会把问题拖到 Supervisor 真正发请求时才暴露。"
-            userAction = "先到系统设置 → 隐私与安全性 → 本地网络允许 X-Terminal；如果已经允许，再检查当前 Wi-Fi / AP 是否开启了 client isolation。若暂时只能走本机路径，再到 REL Flow Hub → Diagnostics & Recovery 修复 \(rootCause.isEmpty ? "本机 bridge" : rootCause)。"
+            userAction = "先到系统设置 → 隐私与安全性 → 本地网络允许 X-Terminal；如果已经允许，再检查当前 Wi-Fi / AP 是否开启了 client isolation。若暂时只能走本机路径，再到 X-Hub → Diagnostics & Recovery 修复 \(rootCause.isEmpty ? "本机 bridge" : rootCause)。"
         } else {
             whyItHappened = "XT 当前只看见本机 loopback Hub。最常见原因是 macOS 本地网络权限没生效，或当前 Wi-Fi / AP 开了 client isolation，所以同网远端 Hub 没法进入 pairing。"
             userAction = "先到系统设置 → 隐私与安全性 → 本地网络允许 X-Terminal；如果已经允许，再检查当前 Wi-Fi / AP 是否开启了 client isolation。"
@@ -789,7 +789,7 @@ enum UIFirstRunJourneyPlanner {
         let rootCause = launchStatus.rootCauseErrorCode.isEmpty
             ? "本机 bridge"
             : launchStatus.rootCauseErrorCode
-        return "XT 只看见本机 loopback Hub；另外本机 fallback Hub 也处于 \(rootCause)，\(launchStatus.blockedCapabilitiesSummary) 仍被阻塞。先修本地网络，再到 REL Flow Hub → Diagnostics & Recovery 修 bridge。"
+        return "XT 只看见本机 loopback Hub；另外本机 fallback Hub 也处于 \(rootCause)，\(launchStatus.blockedCapabilitiesSummary) 仍被阻塞。先修本地网络，再到 X-Hub → Diagnostics & Recovery 修 bridge。"
     }
 
     private static func localHubLaunchStatusIfNeeded(
@@ -1069,7 +1069,7 @@ struct HubSetupWizardView: View {
                     )
                 }
 
-                Text("建议至少先配置 coder / supervisor；如果卡在 Hub 授权、能力范围或配额，就先去 REL Flow Hub → Models & Paid Access / Grants & Permissions，再回统一模型入口确认真实可执行列表。")
+                Text("建议至少先配置 coder / supervisor；如果卡在 Hub 授权、能力范围或配额，就先去 X-Hub → Models & Paid Access / Grants & Permissions，再回统一模型入口确认真实可执行列表。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

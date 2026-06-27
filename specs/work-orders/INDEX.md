@@ -27,6 +27,17 @@ All other work orders are post-submission or unrelated to the RFC critical path.
 
 User actions: see [`USER_ACTIONS.md`](USER_ACTIONS.md).
 
+## Rust security & correctness work orders (independent track)
+
+A separate batch of 13 work orders covers the X-Hub Rust kernel itself — security defects found in the uncommitted working-tree diff during the 2026-06-26 code review. These are NOT on the RFC critical path. See [`rust/WO-R-00-README.md`](rust/WO-R-00-README.md) for the index, severity ranking, and execution order.
+
+Key entries:
+- `WO-R-01..04` — memory user-reveal-grant subsystem (security; ship together in one PR)
+- `WO-R-05` — model artifact-path traversal (security)
+- `WO-R-06` — process-command secret redaction allowlist (security)
+- `WO-R-07..11` — correctness / operator-experience (P1)
+- `WO-R-12..13` — cleanup (P2)
+
 ## Task IDs
 
 Work orders map 1:1 to tasks in TaskList:

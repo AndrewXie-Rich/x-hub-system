@@ -756,6 +756,7 @@ func hubPairedDeviceCapabilityFocusTitle(_ capabilityKey: String?) -> String? {
 enum HubSettingsNavigationTarget: Equatable {
     case pairedDevices(deviceID: String?, capabilityKey: String?)
     case providerKeys(sourceRef: String?)
+    case diagnostics
 }
 
 enum ModelTrialCategory: Equatable {
@@ -905,7 +906,7 @@ final class HubStore: ObservableObject {
 
     private let faTrackerLauncherBookmarkKey = "relflowhub_fatracker_launcher_bookmark"
 
-    @Published var floatingMode: FloatingMode = .orb {
+    @Published var floatingMode: FloatingMode = .hidden {
         didSet {
             UserDefaults.standard.set(floatingMode.rawValue, forKey: "relflowhub_floating_mode")
         }
@@ -1121,6 +1122,7 @@ final class HubStore: ObservableObject {
     private var aiRuntimeStopRequestedAt: Double = 0
     private var aiRuntimeNextStartAttemptAt: Double = 0
     private var aiRuntimeFailCount: Int = 0
+    private var legacyAIRuntimeCleanupLastAt: Double = 0
     // If a teammate upgrades the DMG while an older runtime process is still running,
     // the UI can start sending new commands (e.g. `bench`) that the old script does not
     // recognize, resulting in `unknown_action`. Restart once per app run when we detect
@@ -1168,7 +1170,17 @@ final class HubStore: ObservableObject {
 
         loadNotificationsFromDisk()
 
-        if let s = UserDefaults.standard.string(forKey: "relflowhub_floating_mode"),
+        let floatingModeKey = "relflowhub_floating_mode"
+        let floatingModeDefaultHiddenMigrationKey = "relflowhub_floating_mode_default_hidden_migrated_v1"
+        if UserDefaults.standard.object(forKey: floatingModeDefaultHiddenMigrationKey) == nil {
+            let storedFloatingMode = UserDefaults.standard.string(forKey: floatingModeKey)
+            if storedFloatingMode == nil || storedFloatingMode == FloatingMode.orb.rawValue {
+                UserDefaults.standard.set(FloatingMode.hidden.rawValue, forKey: floatingModeKey)
+            }
+            UserDefaults.standard.set(true, forKey: floatingModeDefaultHiddenMigrationKey)
+        }
+
+        if let s = UserDefaults.standard.string(forKey: floatingModeKey),
            let m = FloatingMode(rawValue: s) {
             floatingMode = m
         }
@@ -2785,6 +2797,78 @@ INSERT OR IGNORE INTO audit_events(
         return aiRuntimeScriptNamesInPreferenceOrder().contains { normalized.contains($0.lowercased()) }
     }
 
+    private func boolEnvironmentValue(_ key: String) -> Bool {
+        switch (ProcessInfo.processInfo.environment[key] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() {
+        case "1", "true", "yes", "y", "on":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func rustLocalMLExecutionAuthorityEnabled() -> Bool {
+        boolEnvironmentValue("XHUB_RUST_LOCAL_ML_EXECUTION_AUTHORITY")
+            || boolEnvironmentValue("XHUB_RUST_ML_EXECUTION_AUTHORITY")
+            || boolEnvironmentValue("XHUB_ENABLE_RUST_ML_EXECUTION")
+    }
+
+    var rustLocalMLExecutionAuthorityActiveForUI: Bool {
+        rustLocalMLExecutionAuthorityEnabled()
+    }
+
+    private func isLegacyContainerAIRuntimeCommandLine(_ commandLine: String) -> Bool {
+        let normalized = commandLine.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard isAIRuntimeCommandLine(normalized) else { return false }
+        return normalized.contains("/library/containers/com.rel.flowhub/data/relflowhub/ai_runtime/python_service/")
+    }
+
+    @discardableResult
+    private func stopLegacyContainerAIRuntimeProcessesIfNeeded(force: Bool = false) -> Int {
+        let now = Date().timeIntervalSince1970
+        if !force && now - legacyAIRuntimeCleanupLastAt < 30.0 {
+            return 0
+        }
+        legacyAIRuntimeCleanupLastAt = now
+
+        let ps = runCapture("/bin/ps", ["-ax", "-o", "pid=,command="], timeoutSec: 1.0)
+        let raw = ps.out.isEmpty ? ps.err : ps.out
+        if raw.isEmpty { return 0 }
+
+        var stopped = 0
+        for row in raw.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = row.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.isEmpty { continue }
+            let parts = line.split(maxSplits: 1, omittingEmptySubsequences: true, whereSeparator: { $0 == " " || $0 == "\t" })
+            if parts.count < 2 { continue }
+            guard let pidNum = Int32(parts[0]), pidNum > 1 else { continue }
+            let cmd = String(parts[1])
+            if !isLegacyContainerAIRuntimeCommandLine(cmd) { continue }
+
+            let pid = pid_t(pidNum)
+            kill(pid, SIGTERM)
+            var stillAlive = false
+            for _ in 0..<8 {
+                usleep(50_000)
+                if kill(pid, 0) == 0 {
+                    stillAlive = true
+                    continue
+                }
+                stillAlive = false
+                break
+            }
+            if stillAlive {
+                kill(pid, SIGKILL)
+            }
+            stopped += 1
+        }
+        if stopped > 0 {
+            HubDiagnostics.log("Stopped stale container AI runtime process count=\(stopped)")
+        }
+        return stopped
+    }
+
     private func bundledAIRuntimeServiceRootURL() -> URL? {
         guard let resourceURL = Bundle.main.resourceURL else {
             return nil
@@ -3518,6 +3602,11 @@ INSERT OR IGNORE INTO audit_events(
         if !aiRuntimeAutoStart {
             return
         }
+        if rustLocalMLExecutionAuthorityEnabled() {
+            stopLegacyContainerAIRuntimeProcessesIfNeeded()
+            refreshAIRuntimeStatus()
+            return
+        }
         let hasPendingRequests = pendingAIRuntimeRequests()
         // If already alive, do nothing *unless* the running runtime is an older version.
         let st = AIRuntimeStatusStorage.load()
@@ -3596,6 +3685,12 @@ INSERT OR IGNORE INTO audit_events(
     func startAIRuntime(allowPythonAutoDetection: Bool = true) {
         aiRuntimeLastError = ""
         aiRuntimeStopRequestedAt = 0
+
+        if rustLocalMLExecutionAuthorityEnabled() {
+            stopLegacyContainerAIRuntimeProcessesIfNeeded(force: true)
+            refreshAIRuntimeStatus()
+            return
+        }
 
         let base = SharedPaths.appGroupDirectory() ?? SharedPaths.ensureHubDirectory()
         if LocalProviderPackRegistry.syncAutoManagedPacks(baseDir: base) {
@@ -4146,6 +4241,10 @@ INSERT OR IGNORE INTO audit_events(
         guard !normalizedProvider.isEmpty else {
             return false
         }
+        if rustLocalMLExecutionAuthorityEnabled() {
+            stopLegacyContainerAIRuntimeProcessesIfNeeded()
+            return true
+        }
 
         let base = SharedPaths.ensureHubDirectory()
         let providerPackUpdated = LocalProviderPackRegistry.syncAutoManagedPacks(baseDir: base)
@@ -4603,6 +4702,15 @@ INSERT OR IGNORE INTO audit_events(
     func stopAIRuntime() {
         aiRuntimeLastError = ""
         aiRuntimeStopRequestedAt = Date().timeIntervalSince1970
+
+        if rustLocalMLExecutionAuthorityEnabled() {
+            stopLegacyContainerAIRuntimeProcessesIfNeeded(force: true)
+            aiRuntimeProcess = nil
+            try? aiRuntimeLogHandle?.close()
+            aiRuntimeLogHandle = nil
+            refreshAIRuntimeStatus()
+            return
+        }
 
         // Ask the runtime to stop via a file marker first. This works even when OS signals
         // are restricted (App Sandbox), and also handles runtimes that survived an app relaunch.
@@ -5405,6 +5513,22 @@ INSERT OR IGNORE INTO audit_events(
             }
     }
 
+    func pruneRemoteKeyHealthForCurrentRemoteModels() {
+        let validKeys = Set(
+            RemoteModelStorage.load().models
+                .map { RemoteModelStorage.keyReference(for: $0) }
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        )
+        let pruned = RemoteKeyHealthSnapshot(
+            records: remoteKeyHealthSnapshot.records.filter { validKeys.contains($0.keyReference) },
+            updatedAt: Date().timeIntervalSince1970
+        )
+        guard pruned.records != remoteKeyHealthSnapshot.records else { return }
+        remoteKeyHealthSnapshot = pruned
+        RemoteKeyHealthStorage.save(pruned)
+        refreshRemoteKeyHealthAutoScanTimer()
+    }
+
     private func expandedRemoteKeyHealthReferences(_ requested: Set<String>) -> Set<String> {
         guard !requested.isEmpty else { return [] }
 
@@ -6140,7 +6264,7 @@ INSERT OR IGNORE INTO audit_events(
     }
 
     private func defaultRuntimePythonServicePath() -> String {
-        // Dev build heuristic: .../REL Flow Hub/build/RELFlowHub.app -> .../REL Flow Hub/python_service/
+        // Dev build heuristic: .../X-Hub/build/X-Hub.app -> .../X-Hub/python_service/
         var dir = Bundle.main.bundleURL.deletingLastPathComponent()
         for _ in 0..<6 {
             let candidate = dir.appendingPathComponent("python_service", isDirectory: true)
@@ -6530,6 +6654,11 @@ INSERT OR IGNORE INTO audit_events(
     func openProviderKeysSettings(sourceRef: String? = nil) {
         let normalizedSourceRef = hubNormalizedProviderKeySourceRef(sourceRef)
         settingsNavigationTarget = .providerKeys(sourceRef: normalizedSourceRef)
+        NotificationCenter.default.post(name: .relflowhubOpenMain, object: nil)
+    }
+
+    func openDiagnosticsSettings() {
+        settingsNavigationTarget = .diagnostics
         NotificationCenter.default.post(name: .relflowhubOpenMain, object: nil)
     }
 

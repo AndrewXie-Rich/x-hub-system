@@ -831,7 +831,7 @@ if [ -d "$APP_DIR/Contents/Resources/hub_grpc_server" ] && [ -d "$APP_DIR/Conten
 fi
 
 # App icon (optional; prefer a repo-local PNG if present).
-AX_ICON_PNG="$XHUB_DIR/macos/assets/AX FlowHub app_icon.png"
+AX_ICON_PNG="$XHUB_DIR/macos/assets/X-Hub app_icon.png"
 if [ -f "$AX_ICON_PNG" ]; then
   echo "[ICON] Generating AppIcon.icns from: $AX_ICON_PNG"
   ICON_RC=0

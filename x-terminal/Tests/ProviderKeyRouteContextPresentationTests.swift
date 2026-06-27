@@ -23,7 +23,7 @@ struct ProviderKeyRouteContextPresentationTests {
         )
         #expect(
             summary.lines.contains(where: {
-                $0 == "优先修复：REL Flow Hub → 设置 → Provider Key 管理 · config149.toml"
+                $0 == "优先修复：X-Hub → 设置 → Provider Key 管理 · config149.toml"
             })
         )
         #expect(summary.lines.contains("当前选中：最近还没有这类模型的 key 调度记录"))
@@ -64,7 +64,7 @@ struct ProviderKeyRouteContextPresentationTests {
         )
         #expect(
             summary.lines.contains(where: {
-                $0 == "优先修复：REL Flow Hub → 设置 → Provider Key 管理 · config149.toml"
+                $0 == "优先修复：X-Hub → 设置 → Provider Key 管理 · config149.toml"
             })
         )
     }

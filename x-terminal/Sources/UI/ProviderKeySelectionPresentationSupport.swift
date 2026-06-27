@@ -144,8 +144,8 @@ enum XTProviderKeySelectionPresentation {
            let metadataCandidate = metadataRepairCandidate(in: decision.candidates) {
             return XTL10n.text(
                 language,
-                zhHans: "先补齐 \(candidateLabel(metadataCandidate)) 的 OAuth 续期元数据：\(metadataRequirementText(metadataCandidate.requiredMetadata, language: language, strong: true))，再回 REL Flow Hub → 设置 → Provider Key 管理重跑导入或刷新。",
-                en: "First add the OAuth refresh metadata for \(candidateLabel(metadataCandidate)): \(metadataRequirementText(metadataCandidate.requiredMetadata, language: language, strong: true)), then return to REL Flow Hub -> Settings -> Provider Key Management and rerun import or refresh."
+                zhHans: "先补齐 \(candidateLabel(metadataCandidate)) 的 OAuth 续期元数据：\(metadataRequirementText(metadataCandidate.requiredMetadata, language: language, strong: true))，再回 X-Hub → 设置 → Provider Key 管理重跑导入或刷新。",
+                en: "First add the OAuth refresh metadata for \(candidateLabel(metadataCandidate)): \(metadataRequirementText(metadataCandidate.requiredMetadata, language: language, strong: true)), then return to X-Hub -> Settings -> Provider Key Management and rerun import or refresh."
             )
         }
         if let pool,

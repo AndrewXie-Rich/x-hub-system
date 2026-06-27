@@ -201,7 +201,7 @@ final class HubUIStringsTests: XCTestCase {
         XCTAssertEqual(HubUIStrings.Settings.Advanced.Constitution.summaryPath("/tmp/ax.json"), "ax_constitution_path: /tmp/ax.json")
         XCTAssertEqual(HubUIStrings.Settings.Advanced.Constitution.summaryVersion("v1"), "version: v1")
         XCTAssertEqual(HubUIStrings.Settings.Advanced.Constitution.summaryEnabledDefaultClauses("c1,c2"), "enabled_default_clauses: c1,c2")
-        XCTAssertEqual(HubUIStrings.Settings.Quit.quitApp, "退出 REL Flow Hub")
+        XCTAssertEqual(HubUIStrings.Settings.Quit.quitApp, "退出 X-Hub")
         XCTAssertEqual(HubUIStrings.Settings.Quit.version("1.2.3", "45"), "版本 1.2.3 (45)")
         XCTAssertEqual(HubUIStrings.Settings.Networking.sectionTitle, "联网通道（Bridge）")
         XCTAssertEqual(HubUIStrings.Settings.Networking.requestSource("X-Terminal"), "请求来源：X-Terminal")
@@ -339,7 +339,7 @@ final class HubUIStringsTests: XCTestCase {
         XCTAssertEqual(HubUIStrings.Settings.FloatingMode.card, "卡片")
         XCTAssertEqual(HubUIStrings.Settings.FloatingMode.particleDensity, "Orb 粒子密度")
         XCTAssertEqual(HubUIStrings.Settings.FloatingMode.particleSize, "Orb 粒子大小")
-        XCTAssertEqual(HubUIStrings.Settings.FloatingMode.displayHint, "关闭主窗口后可以不显示悬浮层，也可以保留 Orb 或卡片作为 Hub 状态入口。")
+        XCTAssertEqual(HubUIStrings.Settings.FloatingMode.displayHint, "默认不显示悬浮层；需要常驻视觉入口时，可在这里打开 Orb 或卡片。右上角闪电始终作为 Hub 状态入口。")
         XCTAssertEqual(HubUIStrings.Settings.FloatingMode.Density.low, "低")
         XCTAssertEqual(HubUIStrings.Settings.FloatingMode.Density.medium, "中")
         XCTAssertEqual(HubUIStrings.Settings.FloatingMode.Density.high, "高")
@@ -630,7 +630,7 @@ final class HubUIStringsTests: XCTestCase {
     }
 
     func testMenuStringsStayAlignedWithInboxAndNotificationActions() {
-        XCTAssertEqual(HubUIStrings.Menu.title, "REL Flow Hub")
+        XCTAssertEqual(HubUIStrings.Menu.title, "X-Hub")
         XCTAssertEqual(HubUIStrings.Menu.calendarMigrated, "日历已迁移到 X-Terminal")
         XCTAssertEqual(HubUIStrings.Menu.noNotifications, "暂无通知")
         XCTAssertEqual(HubUIStrings.Menu.floatingMode, "关闭主窗口后显示")

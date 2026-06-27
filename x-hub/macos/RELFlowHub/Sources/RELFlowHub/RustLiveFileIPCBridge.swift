@@ -107,6 +107,7 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
     private var liveStatusRefreshInFlight = false
     private var httpFallbackCheckedAt: TimeInterval = 0
     private var httpFallbackStatus: LiveStatus?
+    private var httpFallbackRefreshInFlight = false
 
     init(
         appBaseDir: URL,
@@ -458,9 +459,10 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
         if let cached {
             return cached
         }
-        if recentlyCheckedHTTPFallback(now: now) {
+        guard beginHTTPFallbackRefresh(now: now) else {
             return nil
         }
+        defer { finishHTTPFallbackRefresh() }
 
         let status: LiveStatus?
         if let httpLiveStatusOverride {
@@ -1323,6 +1325,26 @@ final class RustLiveFileIPCBridge: @unchecked Sendable {
         let checkedAt = httpFallbackCheckedAt
         stateLock.unlock()
         return (now - checkedAt) <= Self.httpFallbackCacheTTL
+    }
+
+    private func beginHTTPFallbackRefresh(now: TimeInterval) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        if httpFallbackRefreshInFlight {
+            return false
+        }
+        if (now - httpFallbackCheckedAt) <= Self.httpFallbackCacheTTL {
+            return false
+        }
+        httpFallbackRefreshInFlight = true
+        httpFallbackCheckedAt = now
+        return true
+    }
+
+    private func finishHTTPFallbackRefresh() {
+        stateLock.lock()
+        httpFallbackRefreshInFlight = false
+        stateLock.unlock()
     }
 
     private func setHTTPFallbackStatus(_ status: LiveStatus?, checkedAt: TimeInterval) {

@@ -5463,7 +5463,7 @@ Memory 使用方式：
         lines.append("")
         lines.append("建议动作：")
         if exactLocalPathBroken {
-            lines.append("1. 去 REL Flow Hub → Models & Paid Access，重新选择 `\(modelId)` 对应的本地目录或文件，确保 modelPath 仍然有效。")
+            lines.append("1. 去 X-Hub → Models & Paid Access，重新选择 `\(modelId)` 对应的本地目录或文件，确保 modelPath 仍然有效。")
         } else {
             lines.append("1. 在 Supervisor Control Center · AI 模型确认 `\(modelId)` 已进入真实可执行列表。")
         }
@@ -5655,7 +5655,7 @@ Memory 使用方式：
             let localPathFix = assessment?.exactMatch?.isKnownLocalButCurrentlyUnrunnable == true
             var items = [
                 localPathFix
-                    ? "先去 REL Flow Hub → Models & Paid Access，重新选择 `\(requestedModelId)` 对应的本地目录或文件，确保 modelPath 仍然有效。"
+                    ? "先去 X-Hub → Models & Paid Access，重新选择 `\(requestedModelId)` 对应的本地目录或文件，确保 modelPath 仍然有效。"
                     : "先去 Supervisor Control Center · AI 模型确认 `\(requestedModelId)` 已进入真实可执行列表。",
                 "运行 `/models` 刷新当前视图。"
             ]
@@ -5747,7 +5747,7 @@ Memory 使用方式：
             lines[1] = "执行 `/model auto` 恢复自动路由，或切到一个可对话模型。"
         } else if let exact = assessment.exactMatch,
                   exact.isKnownLocalButCurrentlyUnrunnable {
-            lines[0] = "去 REL Flow Hub → Models & Paid Access，重新选择 `\(exact.id)` 对应的本地目录或文件，确保 modelPath 仍然有效。"
+            lines[0] = "去 X-Hub → Models & Paid Access，重新选择 `\(exact.id)` 对应的本地目录或文件，确保 modelPath 仍然有效。"
             lines[1] = "执行 `/models` 刷新当前模型列表。"
         }
         if let first = slashSuggestedCandidates(from: assessment).first {

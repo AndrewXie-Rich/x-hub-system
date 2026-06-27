@@ -111,6 +111,75 @@ struct RustHubRuntimeSnapshot: Equatable, Sendable {
     }
 }
 
+struct RustLocalMLExecutionReadinessSnapshot: Equatable, Sendable {
+    var schemaVersion: String
+    var ok: Bool
+    var enabled: Bool
+    var ready: Bool
+    var authority: String
+    var executionAuthorityInRust: Bool
+    var bridgeHTTP: Bool
+    var engine: String
+    var runtimeBaseDir: String
+    var runtimeBaseDirExists: Bool
+    var scriptPath: String
+    var scriptExists: Bool
+    var pythonAvailable: Bool
+    var pythonExecutable: String
+    var commandProxyReady: Bool
+    var blocker: String
+    var updatedAtMs: Int64
+
+    static let empty = RustLocalMLExecutionReadinessSnapshot(
+        schemaVersion: "",
+        ok: false,
+        enabled: false,
+        ready: false,
+        authority: "",
+        executionAuthorityInRust: false,
+        bridgeHTTP: false,
+        engine: "",
+        runtimeBaseDir: "",
+        runtimeBaseDirExists: false,
+        scriptPath: "",
+        scriptExists: false,
+        pythonAvailable: false,
+        pythonExecutable: "",
+        commandProxyReady: false,
+        blocker: "",
+        updatedAtMs: 0
+    )
+
+    var statusText: String {
+        if ready { return "Ready" }
+        if enabled {
+            let reason = blocker.trimmingCharacters(in: .whitespacesAndNewlines)
+            return reason.isEmpty ? "Blocked" : "Blocked: \(reason)"
+        }
+        if ok { return "Disabled" }
+        return "Unavailable"
+    }
+
+    var authorityText: String {
+        let normalized = authority.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? "unknown" : normalized
+    }
+
+    var engineText: String {
+        let normalized = engine.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? "unknown" : normalized
+    }
+
+    var commandProxyText: String {
+        commandProxyReady ? "Ready" : "Not ready"
+    }
+
+    var pythonText: String {
+        let normalized = pythonExecutable.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? "not resolved" : normalized
+    }
+}
+
 struct RustHubRemoteEntryClassification: Equatable, Sendable {
     var kind: String
     var scope: String
@@ -538,6 +607,12 @@ enum RustHubRuntimeSupport {
         )
     }
 
+    static func loadLocalMLExecutionReadiness() async -> RustLocalMLExecutionReadinessSnapshot {
+        makeLocalMLExecutionReadiness(
+            object: jsonObject(from: await fetchData(path: "/runtime/ml-execution/readiness", authorize: true))
+        )
+    }
+
     static func loadLocalModelRepairPlan(
         taskKind: String? = nil,
         runtimeBaseDir: URL = SharedPaths.ensureHubDirectory(),
@@ -761,6 +836,31 @@ enum RustHubRuntimeSupport {
             recommendedSetup: stringValue(object["recommended_setup"]),
             preferred: normalizedPreferred,
             candidates: candidates,
+            updatedAtMs: nowMs()
+        )
+    }
+
+    static func makeLocalMLExecutionReadiness(
+        object: [String: Any]
+    ) -> RustLocalMLExecutionReadinessSnapshot {
+        guard !object.isEmpty else { return .empty }
+        return RustLocalMLExecutionReadinessSnapshot(
+            schemaVersion: stringValue(object["schema_version"]),
+            ok: boolValue(object["ok"]),
+            enabled: boolValue(object["enabled"]),
+            ready: boolValue(object["ready"]),
+            authority: stringValue(object["authority"]),
+            executionAuthorityInRust: boolValue(object["execution_authority_in_rust"]),
+            bridgeHTTP: boolValue(object["bridge_http"]),
+            engine: stringValue(object["engine"]),
+            runtimeBaseDir: stringValue(object["runtime_base_dir"]),
+            runtimeBaseDirExists: boolValue(object["runtime_base_dir_exists"]),
+            scriptPath: stringValue(object["script_path"]),
+            scriptExists: boolValue(object["script_exists"]),
+            pythonAvailable: boolValue(object["python_available"]),
+            pythonExecutable: stringValue(object["python_executable"]),
+            commandProxyReady: boolValue(object["command_proxy_ready"]),
+            blocker: stringValue(object["blocker"]),
             updatedAtMs: nowMs()
         )
     }

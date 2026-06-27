@@ -6572,6 +6572,21 @@ fn memory_gateway_model_call_execution_gate_json_from_value(
         .or_else(|| value_string(body, "auditRef"))
         .unwrap_or_default();
     let execution_requested = gateway_model_call_execution_requested(body);
+    let admission_enabled = gateway_model_call_execution_admission_enabled_for_body(body);
+
+    if execution_requested
+        && admission_enabled
+        && gateway_model_call_fast_execution_gate_enabled_for_body(body)
+    {
+        return memory_gateway_model_call_fast_execution_gate_json_from_value(
+            body,
+            started_at_ms,
+            request_id,
+            audit_ref,
+            execution_requested,
+            admission_enabled,
+        );
+    }
 
     let mut plan_body = body.clone();
     strip_gateway_model_call_execution_flags(&mut plan_body);
@@ -6591,7 +6606,6 @@ fn memory_gateway_model_call_execution_gate_json_from_value(
         .and_then(Value::as_str)
         .unwrap_or("");
     let route_unspecified = route_intent == "route_unspecified_plan_only";
-    let admission_enabled = gateway_model_call_execution_admission_enabled_for_body(body);
     let provider_route_authority = gateway_model_call_provider_route_authority_ready_for_body(body);
     let model_route_authority = gateway_model_call_model_route_authority_ready_for_body(body);
     let mut blockers = Vec::new();
@@ -6697,6 +6711,124 @@ fn memory_gateway_model_call_execution_gate_json_from_value(
     .to_string())
 }
 
+fn memory_gateway_model_call_fast_execution_gate_json_from_value(
+    body: &Value,
+    started_at_ms: i64,
+    request_id: String,
+    audit_ref: String,
+    execution_requested: bool,
+    admission_enabled: bool,
+) -> Result<String, HttpJsonError> {
+    let prompt_summary = gateway_model_call_prompt_summary(body)?;
+    let provider_id =
+        first_public_token(body, &["provider_id", "providerId", "provider"]).unwrap_or_default();
+    let model_id = first_public_token(
+        body,
+        &[
+            "model_id",
+            "modelId",
+            "preferred_model_id",
+            "preferredModelId",
+        ],
+    )
+    .unwrap_or_default();
+    let route_unspecified = provider_id.is_empty() && model_id.is_empty();
+    let route_intent = if route_unspecified {
+        "route_unspecified_fast_admission"
+    } else {
+        "route_required_before_execute"
+    };
+    let provider_route_authority = gateway_model_call_provider_route_authority_ready_for_body(body);
+    let model_route_authority = gateway_model_call_model_route_authority_ready_for_body(body);
+    let mut blockers = Vec::new();
+    if !execution_requested {
+        blockers.push("explicit_execute_not_requested".to_string());
+    }
+    if route_unspecified {
+        blockers.push("model_route_unspecified".to_string());
+    }
+    if admission_enabled && !provider_route_authority {
+        blockers.push("provider_route_authority_not_in_rust".to_string());
+    }
+    if admission_enabled && !model_route_authority {
+        blockers.push("model_route_authority_not_in_rust".to_string());
+    }
+    let ready_for_execution = blockers.is_empty();
+    let status = if ready_for_execution {
+        "admitted"
+    } else {
+        "blocked"
+    };
+    let finished_at_ms = now_ms_i64();
+
+    Ok(json!({
+        "schema_version": MEMORY_GATEWAY_MODEL_CALL_EXECUTION_GATE_SCHEMA,
+        "ok": true,
+        "status": status,
+        "command": "model-call-execution-gate",
+        "source": "rust_memory_gateway_model_call_execution_gate",
+        "authority": "rust_memory_gateway_execution_admission",
+        "mode": "execution_admission_no_model_call",
+        "production_authority_change": false,
+        "execution_authority_in_rust": false,
+        "execution_admission_authority_in_rust": true,
+        "execution_admission_enabled": admission_enabled,
+        "execution_admission_ready": ready_for_execution,
+        "execution_enabled": false,
+        "ready_for_execution": ready_for_execution,
+        "would_call_model": false,
+        "model_call_executed": false,
+        "execution_requested": execution_requested,
+        "request_id": request_id,
+        "audit_ref": audit_ref,
+        "started_at_ms": started_at_ms,
+        "finished_at_ms": finished_at_ms,
+        "duration_ms": finished_at_ms.saturating_sub(started_at_ms),
+        "blockers": blockers,
+        "plan": {
+            "ok": true,
+            "schema_version": MEMORY_GATEWAY_MODEL_CALL_PLAN_SCHEMA,
+            "source": "rust_memory_gateway_model_call_fast_execution_summary",
+            "mode": "fast_admission_no_prepare",
+            "authority": "rust_memory_gateway_execution_admission",
+            "status": "planned",
+            "context_text_included": false,
+            "context_char_count": 0,
+            "selected_ref_count": 0,
+            "prompt_text_included": false,
+            "prompt_char_count": prompt_summary.get("prompt_char_count").and_then(Value::as_u64).unwrap_or(0),
+            "message_count": prompt_summary.get("message_count").and_then(Value::as_u64).unwrap_or(0),
+            "route_intent": route_intent,
+            "fast_execution_gate": true,
+        },
+        "route_authority": {
+            "provider_route_authority_in_rust": provider_route_authority,
+            "model_route_authority_in_rust": model_route_authority,
+            "route_specified": !route_unspecified,
+        },
+        "guards": {
+            "local_ml_execute_http_not_invoked": true,
+            "provider_route_not_mutated": true,
+            "node_not_authority": true,
+            "context_text_redacted_from_gate": true,
+            "prompt_text_redacted_from_gate": true,
+            "fast_execution_gate": true,
+        },
+        "next_gate": {
+            "required_before_execution_cutover": [
+                "attach_memory_gateway_model_call_executor",
+                "local_ml_or_provider_execution_smoke",
+                "doctor_and_ops_evidence",
+                "rollback_gate"
+            ],
+            "admission_contract_ready": ready_for_execution,
+            "safe_to_use_for_execution_preflight": true,
+            "safe_to_use_for_shadow_planning": true,
+        }
+    })
+    .to_string())
+}
+
 fn memory_gateway_model_call_execute_json_from_value(
     config: &HubConfig,
     body: &Value,
@@ -6712,7 +6844,9 @@ fn memory_gateway_model_call_execute_json_from_value(
         .unwrap_or_default();
     let execution_requested = gateway_model_call_execution_requested(body);
 
+    let gate_started_at_ms = now_ms_i64();
     let gate_raw = memory_gateway_model_call_execution_gate_json_from_value(config, body)?;
+    let gate_finished_at_ms = now_ms_i64();
     let gate = serde_json::from_str::<Value>(&gate_raw).map_err(|err| {
         gateway_model_call_execute_json_error(
             "500 Internal Server Error",
@@ -6946,9 +7080,13 @@ fn memory_gateway_model_call_execute_json_from_value(
         .to_string());
     }
 
+    let local_body_started_at_ms = now_ms_i64();
     let local_body = gateway_model_call_local_ml_body(config, body, request_id.as_str())?;
+    let local_body_finished_at_ms = now_ms_i64();
+    let local_execute_started_at_ms = now_ms_i64();
     let (_status, local_raw) =
         local_ml_bridge::execute_http_json(config, "POST", local_body.to_string().as_str());
+    let local_execute_finished_at_ms = now_ms_i64();
     let local_value = serde_json::from_str::<Value>(local_raw.trim()).map_err(|err| {
         gateway_model_call_execute_json_error(
             "500 Internal Server Error",
@@ -6983,6 +7121,12 @@ fn memory_gateway_model_call_execute_json_from_value(
         "started_at_ms": started_at_ms,
         "finished_at_ms": finished_at_ms,
         "duration_ms": finished_at_ms.saturating_sub(started_at_ms),
+        "timings": {
+            "gate_ms": gate_finished_at_ms.saturating_sub(gate_started_at_ms),
+            "prepare_and_request_build_ms": local_body_finished_at_ms.saturating_sub(local_body_started_at_ms),
+            "local_ml_bridge_ms": local_execute_finished_at_ms.saturating_sub(local_execute_started_at_ms),
+            "total_ms": finished_at_ms.saturating_sub(started_at_ms),
+        },
         "blockers": [],
         "gate": gateway_model_call_gate_summary(&gate),
         "executor": {
@@ -8322,6 +8466,11 @@ pub fn memory_gateway_model_call_execution_admission_enabled() -> bool {
     ) || env_bool("XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_ADMISSION", false)
 }
 
+fn gateway_model_call_fast_execution_gate_enabled_for_body(body: &Value) -> bool {
+    gateway_model_call_fast_execution_gate_test_override(body)
+        .unwrap_or_else(|| env_bool("XHUB_RUST_MEMORY_GATEWAY_FAST_EXECUTION_GATE", true))
+}
+
 pub fn memory_gateway_model_call_provider_route_authority_enabled() -> bool {
     env_bool("XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY", false)
         || env_bool("XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PRODUCTION", false)
@@ -8568,12 +8717,18 @@ fn gateway_model_call_local_ml_summary(value: &Value) -> Value {
         "engine": value.get("engine").cloned().unwrap_or(Value::Null),
         "execution_authority_in_rust": value.get("execution_authority_in_rust").and_then(Value::as_bool).unwrap_or(false),
         "duration_ms": value.get("duration_ms").cloned().unwrap_or(Value::Null),
+        "execution_path": value.get("execution_path").cloned().unwrap_or(Value::Null),
+        "command_proxy_ready_for_execution": value.get("command_proxy_ready_for_execution").and_then(Value::as_bool).unwrap_or(false),
         "error_code": value.get("error_code")
             .or_else(|| value.get("error"))
             .cloned()
             .unwrap_or(Value::Null),
         "result_ok": value.get("result").and_then(|result| result.get("ok")).and_then(Value::as_bool).unwrap_or(false),
         "result_error": value.get("result").and_then(|result| result.get("error")).cloned().unwrap_or(Value::Null),
+        "result_latency_ms": value.get("result")
+            .and_then(|result| result.get("latencyMs").or_else(|| result.get("latency_ms")))
+            .cloned()
+            .unwrap_or(Value::Null),
         "result_text_included": gateway_model_call_result_text_present(value),
     })
 }
@@ -8737,6 +8892,24 @@ fn gateway_model_call_execution_admission_test_override(body: &Value) -> bool {
 #[cfg(not(test))]
 fn gateway_model_call_execution_admission_test_override(_body: &Value) -> bool {
     false
+}
+
+#[cfg(test)]
+fn gateway_model_call_fast_execution_gate_test_override(body: &Value) -> Option<bool> {
+    if body
+        .as_object()
+        .map(|map| map.contains_key("__test_fast_execution_gate_enabled"))
+        .unwrap_or(false)
+    {
+        Some(value_bool(body, "__test_fast_execution_gate_enabled", true))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(test))]
+fn gateway_model_call_fast_execution_gate_test_override(_body: &Value) -> Option<bool> {
+    None
 }
 
 #[cfg(test)]
@@ -12326,6 +12499,11 @@ mod tests {
         assert_eq!(gate["would_call_model"], false);
         assert_eq!(gate["model_call_executed"], false);
         assert_eq!(gate["blockers"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            gate["plan"]["source"],
+            "rust_memory_gateway_model_call_fast_execution_summary"
+        );
+        assert_eq!(gate["plan"]["fast_execution_gate"], true);
         assert_eq!(gate["plan"]["context_text_included"], false);
         assert_eq!(gate["plan"]["prompt_text_included"], false);
         assert_eq!(
@@ -12337,6 +12515,7 @@ mod tests {
             true
         );
         assert_eq!(gate["guards"]["local_ml_execute_http_not_invoked"], true);
+        assert_eq!(gate["guards"]["fast_execution_gate"], true);
         assert!(!raw.contains("Keep execution admission in Rust"));
         assert!(!raw.contains("Use the project memory to draft an admitted response"));
 

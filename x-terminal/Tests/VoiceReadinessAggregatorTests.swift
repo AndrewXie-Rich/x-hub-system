@@ -107,7 +107,7 @@ struct VoiceReadinessAggregatorTests {
 
         #expect(snapshot.check(.modelRouteReadiness)?.state == .diagnosticRequired)
         #expect(snapshot.check(.modelRouteReadiness)?.nextStep.contains("Supervisor Control Center · AI 模型") == true)
-        #expect(snapshot.check(.modelRouteReadiness)?.nextStep.contains("REL Flow Hub → Models & Paid Access") == true)
+        #expect(snapshot.check(.modelRouteReadiness)?.nextStep.contains("X-Hub → Models & Paid Access") == true)
     }
 
     @Test

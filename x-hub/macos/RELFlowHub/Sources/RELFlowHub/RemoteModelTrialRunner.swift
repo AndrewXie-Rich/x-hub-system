@@ -839,7 +839,7 @@ enum RemoteModelTrialRunner {
             req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
         applyProviderKeyHeaders(&req, providerKeyOverride: providerKeyOverride)
-        req.setValue("RELFlowHub/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("X-Hub/1.0", forHTTPHeaderField: "User-Agent")
 
         let body: [String: Any] = [
             "model": modelId,
@@ -908,7 +908,7 @@ enum RemoteModelTrialRunner {
             req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
         applyProviderKeyHeaders(&req, providerKeyOverride: providerKeyOverride)
-        req.setValue("RELFlowHub/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("X-Hub/1.0", forHTTPHeaderField: "User-Agent")
 
         let body: [String: Any] = [
             "model": modelId,
@@ -983,7 +983,7 @@ enum RemoteModelTrialRunner {
         if req.value(forHTTPHeaderField: "anthropic-version") == nil {
             req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         }
-        req.setValue("RELFlowHub/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("X-Hub/1.0", forHTTPHeaderField: "User-Agent")
 
         let body: [String: Any] = [
             "model": providerModelId(for: remote),
@@ -1054,7 +1054,7 @@ enum RemoteModelTrialRunner {
         req.timeoutInterval = max(5.0, min(120.0, timeoutSec))
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         applyProviderKeyHeaders(&req, providerKeyOverride: providerKeyOverride)
-        req.setValue("RELFlowHub/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("X-Hub/1.0", forHTTPHeaderField: "User-Agent")
 
         let body: [String: Any] = [
             "contents": [

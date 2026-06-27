@@ -49,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
-            reason: "REL Flow Hub timers (IPC/background refresh)"
+            reason: "X-Hub timers (IPC/background refresh)"
         )
 
         if NotificationSupport.isAvailable {
@@ -66,9 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         let store = HubStore.shared
         ensurePresentationControllers(store: store, resetFrames: false, reason: "launch")
-        if launchPresentationPolicy == .background {
-            statusBarController = StatusBarController(store: store)
-        } else {
+        statusBarController = StatusBarController(store: store)
+        if launchPresentationPolicy != .background {
             ensureForegroundPresentation(reason: "launch_immediate")
             scheduleForegroundPresentationRetry(after: 0.35, reason: "launch_retry_350ms")
             scheduleForegroundPresentationRetry(after: 1.2, reason: "launch_retry_1200ms")

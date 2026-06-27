@@ -1,6 +1,15 @@
 import SwiftUI
 import RELFlowHubCore
 
+struct ProviderKeyImportSourceRemovalTarget: Identifiable, Equatable {
+    var source: ProviderKeyImportSourceStatus
+    var removeOwnedAccounts: Bool
+
+    var id: String {
+        "\(source.sourceKey)#\(removeOwnedAccounts ? "owned" : "metadata")"
+    }
+}
+
 extension SettingsSheetView {
     @ViewBuilder
     func providerKeyImportSourceRow(_ source: ProviderKeyImportSourceStatus) -> some View {
@@ -41,6 +50,30 @@ extension SettingsSheetView {
             }
 
             Spacer()
+
+            Menu {
+                Button("只移除来源记录") {
+                    requestProviderKeyImportSourceRemoval(
+                        source,
+                        removeOwnedAccounts: false
+                    )
+                }
+
+                Button("移除来源和账号", role: .destructive) {
+                    requestProviderKeyImportSourceRemoval(
+                        source,
+                        removeOwnedAccounts: true
+                    )
+                }
+                .disabled(source.ownedAccountCount == 0)
+            } label: {
+                settingsActionChipLabel(
+                    title: "清理",
+                    systemName: "trash",
+                    tint: source.state == "ready" ? .secondary : providerKeyImportSourceStateColor(source)
+                )
+            }
+            .menuStyle(.borderlessButton)
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
@@ -62,6 +95,62 @@ extension SettingsSheetView {
                 )
         )
         .id(providerKeyImportSourceAnchorID(source))
+    }
+
+    func requestProviderKeyImportSourceRemoval(
+        _ source: ProviderKeyImportSourceStatus,
+        removeOwnedAccounts: Bool
+    ) {
+        providerKeyImportSourceRemovalTarget = ProviderKeyImportSourceRemovalTarget(
+            source: source,
+            removeOwnedAccounts: removeOwnedAccounts
+        )
+    }
+
+    func removeProviderKeyImportSource(_ target: ProviderKeyImportSourceRemovalTarget) {
+        providerKeyImportSourceRemovalTarget = nil
+        let result = ProviderKeyStorage.removeImportSource(
+            target.source,
+            removeOwnedAccounts: target.removeOwnedAccounts
+        )
+
+        if result.ok {
+            let accountText = target.removeOwnedAccounts
+                ? "移除账号 \(result.removedAccountCount)，保留共享账号 \(result.detachedAccountCount)"
+                : "保留账号 \(result.detachedAccountCount)"
+            remoteQuotaActionText = "已清理来源 \(providerKeyImportSourceDisplayName(target.source))：\(accountText)。"
+            remoteQuotaErrorText = ""
+        } else {
+            remoteQuotaErrorText = "清理来源失败：\(result.errors.joined(separator: ", "))"
+            remoteQuotaActionText = ""
+        }
+
+        highlightedProviderKeySourceRef = nil
+        reloadProviderKeySnapshot(rebuildProjection: true)
+        ModelStore.shared.refresh()
+    }
+
+    func providerKeyImportSourceRemovalTitle(
+        _ target: ProviderKeyImportSourceRemovalTarget?
+    ) -> String {
+        guard let target else { return "清理导入源" }
+        return target.removeOwnedAccounts ? "移除来源和账号" : "移除来源记录"
+    }
+
+    func providerKeyImportSourceRemovalMessage(
+        _ target: ProviderKeyImportSourceRemovalTarget
+    ) -> String {
+        let sourceName = providerKeyImportSourceDisplayName(target.source)
+        if target.removeOwnedAccounts {
+            return "将移除 \(sourceName) 这个来源，并删除只属于它的 \(target.source.ownedAccountCount) 个账号。被其他来源共同持有的账号会保留。"
+        }
+        return "将移除 \(sourceName) 这个来源记录，账号会保留在 Hub 里，后续可继续用于路由。"
+    }
+
+    func providerKeyImportSourceRemovalConfirmTitle(
+        _ target: ProviderKeyImportSourceRemovalTarget
+    ) -> String {
+        target.removeOwnedAccounts ? "移除来源和账号" : "移除来源记录"
     }
 
     func providerKeyImportSourceTitle(_ source: ProviderKeyImportSourceStatus) -> String {

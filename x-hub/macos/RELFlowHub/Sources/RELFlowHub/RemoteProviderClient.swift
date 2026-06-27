@@ -320,7 +320,7 @@ enum RemoteProviderClient {
         req.httpMethod = "GET"
         req.timeoutInterval = max(3.0, min(60.0, timeoutSec))
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.setValue("RELFlowHub/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("X-Hub/1.0", forHTTPHeaderField: "User-Agent")
         for (k, v) in headers {
             req.setValue(v, forHTTPHeaderField: k)
         }

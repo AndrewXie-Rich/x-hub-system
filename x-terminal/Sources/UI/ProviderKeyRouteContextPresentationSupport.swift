@@ -360,8 +360,8 @@ enum XTProviderKeyRouteContextPresentation {
         let sourceLabel = normalized(issue.sourceName) ?? issue.sourceRef
         let surface = XTL10n.text(
             language,
-            zhHans: "REL Flow Hub → 设置 → Provider Key 管理",
-            en: "REL Flow Hub -> Settings -> Provider Key Management"
+            zhHans: "X-Hub → 设置 → Provider Key 管理",
+            en: "X-Hub -> Settings -> Provider Key Management"
         )
         guard let sourceLabel = normalized(sourceLabel) else {
             return surface
