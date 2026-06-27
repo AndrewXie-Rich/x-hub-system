@@ -832,7 +832,8 @@ fn cached_runtime_authority_sync_value(
         && entry.requested_live_base_dir == requested_live_base_dir
         && entry.live_base_dir == live_base_dir
         && generated_at_ms >= entry.checked_at_ms
-        && generated_at_ms.saturating_sub(entry.checked_at_ms) <= RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS
+        && generated_at_ms.saturating_sub(entry.checked_at_ms)
+            <= RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS
     {
         return Some(runtime_authority_sync_value_with_generated_at(
             entry.value.clone(),
@@ -4434,8 +4435,12 @@ mod tests {
         let first = runtime_authority_sync_value(&config, &body, false, 500_000);
         fs::remove_file(source.join("models_state.json")).unwrap();
         let second = runtime_authority_sync_value(&config, &body, false, 500_100);
-        let third =
-            runtime_authority_sync_value(&config, &body, false, 500_000 + RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS + 1);
+        let third = runtime_authority_sync_value(
+            &config,
+            &body,
+            false,
+            500_000 + RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS + 1,
+        );
 
         assert_eq!(first["cache_hit"], false);
         assert_eq!(first["would_copy_count"], 1);
