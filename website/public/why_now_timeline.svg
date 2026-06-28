@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 540" role="img" aria-labelledby="title desc">
+  <title id="title">Why now — timeline 2022-2028</title>
+  <desc id="desc">Timeline showing key events: ChatGPT launch 2022, MCP draft 2024, EU AI Act phased enforcement 2024-2026, ISO 42001 in procurement 2026, predicted MCP supply-chain incident 2027, foundation labs absorbing governance 2028. X-Hub window marked 2026-2027.</desc>
+  <defs>
+    <marker id="wn-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f7a4d" />
+    </marker>
+    <style>
+      .bg { fill: #ffffff; }
+      .axis { stroke: #475569; stroke-width: 2; }
+      .tick { stroke: #94a3b8; stroke-width: 1.2; }
+      .year { font: 700 14px Arial, sans-serif; fill: #475569; text-anchor: middle; }
+      .event-card { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.3; rx: 10; ry: 10; }
+      .event-card-reg { fill: #fff5f5; stroke: #d77b7b; stroke-width: 1.5; rx: 10; ry: 10; }
+      .event-card-tech { fill: #f0fdf4; stroke: #5ca77a; stroke-width: 1.5; rx: 10; ry: 10; }
+      .event-card-risk { fill: #fffaf2; stroke: #d4a048; stroke-width: 1.5; rx: 10; ry: 10; }
+      .event-card-warn { fill: #fff1f2; stroke: #c2410c; stroke-width: 1.5; rx: 10; ry: 10; }
+      .window-bracket { fill: #f5fbf7; stroke: #1f7a4d; stroke-width: 2; rx: 12; ry: 12; }
+      .title { font: 700 24px Arial, sans-serif; fill: #0f172a; }
+      .event-title { font: 700 13px Arial, sans-serif; fill: #1f2937; }
+      .event-copy { font: 500 11.5px Arial, sans-serif; fill: #475569; }
+      .window-title { font: 700 14px Arial, sans-serif; fill: #1f7a4d; text-anchor: middle; letter-spacing: 0.1em; }
+      .legend-text { font: 500 12px Arial, sans-serif; fill: #475569; }
+    </style>
+  </defs>
+  <rect class="bg" width="1200" height="540" />
+  <text class="title" x="40" y="44">The window opens 2026. It probably closes around 2028.</text>
+
+  <!-- Axis -->
+  <line class="axis" x1="80" y1="320" x2="1160" y2="320" />
+  <!-- Year ticks: 2022, 2023, 2024, 2025, 2026, 2027, 2028 over 1080px = 154px per year, starting at 80 -->
+  <line class="tick" x1="80" y1="312" x2="80" y2="328" />
+  <text class="year" x="80" y="350">2022</text>
+  <line class="tick" x1="234" y1="312" x2="234" y2="328" />
+  <text class="year" x="234" y="350">2023</text>
+  <line class="tick" x1="388" y1="312" x2="388" y2="328" />
+  <text class="year" x="388" y="350">2024</text>
+  <line class="tick" x1="542" y1="312" x2="542" y2="328" />
+  <text class="year" x="542" y="350">2025</text>
+  <line class="tick" x1="696" y1="312" x2="696" y2="328" />
+  <text class="year" x="696" y="350">2026</text>
+  <line class="tick" x1="850" y1="312" x2="850" y2="328" />
+  <text class="year" x="850" y="350">2027</text>
+  <line class="tick" x1="1004" y1="312" x2="1004" y2="328" />
+  <text class="year" x="1004" y="350">2028</text>
+  <line class="tick" x1="1158" y1="312" x2="1158" y2="328" />
+  <text class="year" x="1158" y="350">2029</text>
+
+  <!-- Events above axis (tech) -->
+  <rect class="event-card-tech" x="60" y="180" width="160" height="100" />
+  <text class="event-title" x="76" y="204">Nov 2022</text>
+  <text class="event-copy" x="76" y="222">ChatGPT launches.</text>
+  <text class="event-copy" x="76" y="240">AI starts mainstream</text>
+  <text class="event-copy" x="76" y="258">consumer adoption.</text>
+  <line x1="140" y1="280" x2="80" y2="312" stroke="#5ca77a" stroke-width="1.5" />
+
+  <rect class="event-card-tech" x="320" y="220" width="160" height="80" />
+  <text class="event-title" x="336" y="244">2024</text>
+  <text class="event-copy" x="336" y="262">MCP draft published.</text>
+  <text class="event-copy" x="336" y="280">Cursor, Cline reach</text>
+  <text class="event-copy" x="336" y="298">scale.</text>
+  <line x1="400" y1="300" x2="388" y2="312" stroke="#5ca77a" stroke-width="1.5" />
+
+  <rect class="event-card-tech" x="460" y="80" width="160" height="100" />
+  <text class="event-title" x="476" y="104">Late 2024</text>
+  <text class="event-copy" x="476" y="122">Devin / Manus /</text>
+  <text class="event-copy" x="476" y="140">Replit Agent —</text>
+  <text class="event-copy" x="476" y="158">AI agents that</text>
+  <text class="event-copy" x="476" y="176">actually act on</text>
+  <text class="event-copy" x="476" y="194">your behalf.</text>
+  <line x1="540" y1="194" x2="520" y2="312" stroke="#5ca77a" stroke-width="1.5" />
+
+  <!-- Regulation events below axis -->
+  <rect class="event-card-reg" x="488" y="380" width="160" height="100" />
+  <text class="event-title" x="504" y="404">Aug 2025</text>
+  <text class="event-copy" x="504" y="422">EU AI Act:</text>
+  <text class="event-copy" x="504" y="440">General-purpose</text>
+  <text class="event-copy" x="504" y="458">AI obligations</text>
+  <text class="event-copy" x="504" y="476">enter force.</text>
+  <line x1="566" y1="380" x2="552" y2="328" stroke="#d77b7b" stroke-width="1.5" />
+
+  <rect class="event-card-reg" x="660" y="380" width="180" height="100" />
+  <text class="event-title" x="676" y="404">Aug 2026</text>
+  <text class="event-copy" x="676" y="422">EU AI Act:</text>
+  <text class="event-copy" x="676" y="440">high-risk systems</text>
+  <text class="event-copy" x="676" y="458">fully applicable.</text>
+  <text class="event-copy" x="676" y="476">ISO 42001 in RFPs.</text>
+  <line x1="740" y1="380" x2="710" y2="328" stroke="#d77b7b" stroke-width="1.5" />
+
+  <!-- Risk events above axis -->
+  <rect class="event-card-warn" x="820" y="80" width="160" height="100" />
+  <text class="event-title" x="836" y="104">~2027 (predicted)</text>
+  <text class="event-copy" x="836" y="122">First major MCP</text>
+  <text class="event-copy" x="836" y="140">supply-chain</text>
+  <text class="event-copy" x="836" y="158">incident hits</text>
+  <text class="event-copy" x="836" y="176">a brand-name</text>
+  <text class="event-copy" x="836" y="194">company.</text>
+  <line x1="900" y1="194" x2="860" y2="312" stroke="#c2410c" stroke-width="1.5" />
+
+  <rect class="event-card-risk" x="980" y="180" width="200" height="100" />
+  <text class="event-title" x="996" y="204">~2028</text>
+  <text class="event-copy" x="996" y="222">Foundation labs absorb</text>
+  <text class="event-copy" x="996" y="240">basic governance into</text>
+  <text class="event-copy" x="996" y="258">their products. Open</text>
+  <text class="event-copy" x="996" y="276">alternative window closes.</text>
+  <line x1="1080" y1="280" x2="1020" y2="312" stroke="#d4a048" stroke-width="1.5" />
+
+  <!-- X-Hub window bracket -->
+  <rect class="window-bracket" x="650" y="500" width="350" height="30" />
+  <text class="window-title" x="825" y="520">X-HUB WINDOW · 2026 — 2028</text>
+
+  <!-- Legend -->
+  <rect class="event-card-tech" x="40" y="500" width="14" height="14" />
+  <text class="legend-text" x="62" y="512">Tech shift</text>
+  <rect class="event-card-reg" x="160" y="500" width="14" height="14" />
+  <text class="legend-text" x="182" y="512">Regulation</text>
+  <rect class="event-card-warn" x="290" y="500" width="14" height="14" />
+  <text class="legend-text" x="312" y="512">Predicted risk</text>
+  <rect class="event-card-risk" x="440" y="500" width="14" height="14" />
+  <text class="legend-text" x="462" y="512">Window close</text>
+</svg>

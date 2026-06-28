@@ -1,7 +1,7 @@
 # Architecture
 
 <p class="lead">
-X-Hub is a Hub-first governed execution architecture. The terminal is not the trust anchor. The Hub keeps routing truth, memory truth, grants, policy, audit, and kill authority together, while X-Terminal turns that control plane into a usable paired product surface.
+30-second version: clients ask, the Hub decides, execution surfaces act inside scope, runtime truth returns to the Hub. The rest of this page is the long version — what each layer actually does, where the boundaries sit, and why this shape lets you run powerful AI without giving away the trust root.
 </p>
 
 <div class="preview-note">
@@ -27,7 +27,7 @@ X-Hub takes the opposite position:
 
 The trust and control plane diagram is meant to show three things:
 
-- X-Terminal follows the deep paired path and is designed as the primary high-trust product surface.
+- X-Terminal is one paired surface — the deepest one shipping today, not the only one. The same control plane direction supports a Web thin client (in flight) and Linux daemon deployments (90-day P0).
 - Generic terminals and other clients can still attach to governed capability surfaces without becoming equivalent trust roots.
 - The shared Hub layer is where system truth, policy, authorization, and user control stay anchored.
 
@@ -53,9 +53,12 @@ The capability map is intentionally control-plane centered:
 | Surface | Role in the architecture |
 | --- | --- |
 | Hub | Control plane for trust, routing, memory truth, authorization, and audit |
-| X-Terminal | Deep paired product surface for governed interaction, supervision, and operator visibility |
+| X-Terminal | Deep paired surface for governed interaction, supervision, and operator visibility (one of several paired surfaces; not the only one) |
+| Web thin client | Browser-based governed surface, in flight. Covers Windows / Linux teams without per-platform native builds |
+| Linux daemon | `docker-compose`-friendly Hub deployment, 90-day P0 |
 | Generic terminal / third-party client | Thin capability consumer that can attach to governed surfaces without inheriting the full trust boundary |
 | External services and runtimes | Optional execution or inference surfaces that remain subordinate to the user-owned control plane |
+| [Hub Receipt v0.1](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md) | Cross-surface, cross-spec signed-receipt envelope. Skill execution receipts (mcp-trust-registry) and per-action confirmation receipts (agent-2fa) share this format, so a single audit chain covers both |
 
 This separation matters because it lets the system expose rich product UX where it is useful, without forcing every
 surface to become the place where final authority resides.

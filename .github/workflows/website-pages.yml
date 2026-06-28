@@ -41,7 +41,7 @@ jobs:
         working-directory: website
         run: npm ci
 
-      - name: Build VitePress site
+      - name: Build React Semi site
         working-directory: website
         run: npm run docs:build
 

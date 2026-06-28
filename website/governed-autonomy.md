@@ -1,13 +1,12 @@
 # Governed Autonomy
 
 <p class="lead">
-X-Hub does not treat autonomy as one vague slider. Execution power, supervision depth, review cadence, and intervention behavior are being separated into explicit controls so higher autonomy does not automatically mean weaker supervision.
+Most agent products have one "autonomy" slider that goes from "ask first" to "do it." X-Hub doesn't. Three independent dials instead — how far execution can go, how deeply Supervisor watches, and how often review fires. So higher autonomy doesn't mean weaker oversight.
 </p>
 
 <div class="preview-note">
-  <strong>Public governance view</strong>
-  The governance model is one of the core differentiators of X-Hub, but this page keeps the explanation conceptual.
-  Exact tier semantics, UI behavior, and deeper runtime protocol details are still evolving and are not fully exposed here.
+  <strong>For the A0..A4 / S0..S4 tier table, see <a href="/x-terminal">X-Terminal</a>.</strong>
+  This page is the "why three dials instead of one" argument. The detailed tier semantics live with X-Terminal because that's the surface where you actually set them.
 </div>
 
 ## The Model

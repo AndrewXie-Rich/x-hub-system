@@ -1,12 +1,12 @@
 # X-Terminal
 
 <p class="lead">
-X-Terminal is the operator workspace for X-Hub-System. It is not the final control center. It organizes project execution, Supervisor review, model routing, memory view, grant state, and user digest into an actionable interface.
+If you're running 2+ AI-driven projects at once, X-Terminal is the workspace that keeps them from blurring together. It's not a chat window with extra tabs. It separates execution, supervision, and review — so an agent can keep moving on three projects while you actually understand what's happening on each.
 </p>
 
 <div class="preview-note">
-  <strong>Core split</strong>
-  Coder does the work. Supervisor watches direction and quality. Hub governs permissions, memory, audit, and shutdown authority. User sets goals and makes key decisions.
+  <strong>One paired surface, not the only one.</strong>
+  X-Terminal is the deepest paired client today. The Web thin client (in flight, 90-day P0) is the alternative for Windows / Linux team members. See <a href="/architecture">Architecture</a> for the full surface map.
 </div>
 
 ## The Four Roles
@@ -65,8 +65,8 @@ Runtime shape:
 
 1. Project Coder Loop keeps advancing the project.
 2. Supervisor Governance Loop reviews on cadence or events.
-3. Hub Run Scheduler maintains run truth, grants, audit, wake, clamp, and kill authority.
-4. High-risk actions still depend on capability, scope, TTL, policy, grants, and runtime readiness.
+3. Hub Run Scheduler maintains run truth, grants, audit, wake, clamp, and kill authority. Every authorized step produces a signed [Hub Receipt](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md) — verifiable outside X-Hub.
+4. High-risk actions still depend on capability, scope, TTL, policy, grants, and runtime readiness. Destructive actions trigger paired-device confirmation via [agent-2fa](https://github.com/AndrewXie-Rich/agent-2fa).
 
 So A4 is not maximum permission. It is the highest governed autonomy tier.
 

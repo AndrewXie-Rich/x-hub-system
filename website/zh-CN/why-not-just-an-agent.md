@@ -1,77 +1,76 @@
-# 为什么不直接用 Agent？
+# 为什么不直接用 Agent?
 
 <p class="lead">
-X-Hub 要解决的，不是“怎么让一个 agent 赶紧动起来”这一件事，而是“怎么让 AI 持续执行，同时让信任、记忆、授权和运行时真相仍然处在可治理状态”。
+X-Hub 不打算和 Cursor、Cline、Claude Code 抢同一场仗。那些产品解决的是"给我一个好用的 AI IDE"。X-Hub 解决的是"在它们旁边,给我一个可治理的控制平面"。
 </p>
 
 <div class="preview-note">
-  <strong>公开对比视图</strong>
-  这一页解释的是产品层取舍，不是完整公开控制目录。目标是先把系统讲清楚，而不是把所有仍在变化的实现细节一次性摊开。
+  <strong>这一页直接点名。</strong>
+  到 2026 年,"那个 agent"已经不是抽象概念。IDE 类是 Cursor / Cline / Claude Code / Aider / Continue / Roo;项目级自治是 Devin / Manus / Replit Agent。正确比较不是 X-Hub vs 抽象 agent,而是"这些产品没做但 X-Hub 做了什么"。
 </div>
 
 ## 简短答案
 
-如果你只想要一个能接任务、调工具、给结果的 agent，市面上已经有很多项目能做到。
+如果你想要的是"编辑器里好用的 AI",**直接用现成的就行**:
 
-X-Hub 关注的是更难的那部分：
+- [Cursor](https://cursor.com)、[Cline](https://github.com/cline/cline)、[Claude Code](https://www.anthropic.com/claude-code)、[Aider](https://aider.chat)、[Continue](https://continue.dev)、[Roo](https://github.com/RooVetGit/Roo-Cline) — IDE 形态的 agent
+- [Devin](https://devin.ai)、[Manus](https://manus.im)、[Replit Agent](https://replit.com/ai) — 项目级自治形态
 
-- 当 terminal 不应该成为信任根时怎么办
-- 当一个插件不应该静默扩大全系统权限时怎么办
-- 当自治提高时，监督不应该自动消失时怎么办
-- 当 memory、grant、audit 和 runtime truth 需要继续挂在同一套系统记录面上时怎么办
-- 当控制平面应该由用户持有，而不是悄悄掉进客户端 bundle 或云厂商默认设置里时怎么办
+这些是好产品。它们不是控制平面。
 
-## 典型 Agent 堆栈通常会把哪些东西压得太扁
+X-Hub 关注的是再往上一层的硬问题:
 
-| 关注点 | 典型 terminal-first / execution-first 默认形态 | X-Hub 的方向 |
+- 当 IDE / agent 客户端不该是信任根时怎么办
+- 当一个 MCP server 或插件不该静默扩大全系统权限时怎么办
+- 当自治提高时,per-action 确认不该被擦掉
+- 当 memory、grant、audit、runtime truth 需要在多个 AI 工具之间挂在同一份系统记录上时
+- 当控制平面应该用户持有、而不是落进 vendor cloud 时
+
+## IDE Agent 没解决的事
+
+| 关注点 | 一个好的 IDE agent(Cursor / Cline / Claude Code 等) | X-Hub 加了什么 |
 | --- | --- | --- |
-| 信任根 | 当前客户端、运行时或插件包往往悄悄变成最终信任区 | 把信任继续锚定在 Hub，让客户端保持可替换 |
-| 能力调用 | 工具和插件装上后通常默认带来更大权限 | skill 和高风险执行路径被视为受控能力链路 |
-| 自治 | 能力越强，监督越容易变模糊，运行时真相也越容易不透明 | 执行范围、复盘深度、干预方式和 clamp 被拆成明确控制项 |
-| 记忆 | 上下文、笔记和执行状态容易分散到不同表面，当前运行时也常常悄悄变成记忆控制中心 | 记忆真相应继续挂在 Hub 侧系统记录面上；用户选择哪个 AI 执行 memory jobs，而 durable 写入仍只经 `Writer + Gate` |
-| 云端控制 | 云厂商默认配置容易变成隐藏控制平面 | 基础姿态是 user-owned Hub，外部服务只是受控附属面 |
+| 信任根 | agent 本身,常常跑在 IDE 进程里 | 一个独立的 Hub 来决定 agent 被允许做什么 |
+| MCP server 信任 | "安装这个 MCP server" — 接受或拒绝,就这样 | [mcp-trust-registry](https://github.com/AndrewXie-Rich/mcp-trust-registry):签名 attestation、capability tokens、运行时强制 |
+| 高风险动作确认 | IDE 进程内的 inline "你确定吗?" 对话框——跟动作本身可以被同一次 compromise 一起绕过 | [agent-2fa](https://github.com/AndrewXie-Rich/agent-2fa):配对设备 Touch ID / Face ID,签名 authorization 在另一台设备上 |
+| 跨工具记忆 | 每个 agent 有自己的记忆;换工具 = 失去上下文 | Hub-backed memory truth + Writer + Gate;任何客户端都从同一个受治理面读 |
+| 审计 | agent UI 里的尽力 transcript | 签名 [Hub Receipt](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md) envelope——X-Hub 之外也能验证,可以嵌入 commit |
+| 多用户 | per-seat 许可;每用户自己的 memory 和工具 | 单一 Hub,多用户角色(admin / operator / observer),一条审计链 |
+
+两类产品不冲突。**在编辑器里用 Cursor 或 Claude Code。需要控制平面时,把它们包在 X-Hub 之下。**
 
 ## X-Hub 真正在优化什么
 
-X-Hub 优化的是另一种运行模型：
+- **用户自有控制平面**:权限、密钥、记忆真相、审计、发布时间、运行姿态留在用户手里——不在 vendor 手里
+- **Governed autonomy**:执行能力更强,不等于监督更弱
+- **Governed skills**:可复用能力单元被路由、审批、拒绝、审计、重试、撤销——通过一份其它实现也能用的[规范](https://github.com/AndrewXie-Rich/mcp-trust-registry)
+- **per-action 授权**:不可逆动作在打到世界之前先打到另一台配对设备——通过一份其它 agent runtime 也能采用的[规范](https://github.com/AndrewXie-Rich/agent-2fa)
+- **Fail-closed runtime truth**:readiness 缺失、配对损坏或授权不明时,系统阻断,不假装成功
 
-- **User-owned control plane**：权限、密钥、记忆真相、审计、发布时间和运行姿态继续由用户掌握
-- **Governed autonomy**：执行能力更强，不等于监督自动更弱
-- **Governed skills**：可复用能力单元可以被路由、审批、拒绝、审计、重试和撤销
-- **Fail-closed runtime truth**：准备状态不足、配对损坏或授权不明确时，系统应该阻断，而不是假装成功
-- **多表面执行**：配对表面、远程通道和本地运行时通过同一控制平面汇聚，而不是长出影子权限路径
+## 什么情况下,独立 agent 就够了
 
-## 什么情况下，简单 Agent 就够了
+下面这些都满足时,你不需要 X-Hub:
 
-如果你的需求是下面这些，轻量 execution-first agent 很可能已经够用：
+- 你只用一个 AI 工具、一个 IDE、一台机器
+- 代码、提示词、记忆可以走 SaaS-only AI 工具,没有合规摩擦
+- 你不跟其它人(家庭 / 团队 / 组织)共用 AI 工具
+- 你不需要对破坏性动作做 per-action 确认
+- 你更看重快速实验,而不是可审计执行
 
-- 主要是一次性任务
-- 环境本身风险较低
-- 不需要持久治理、审计或项目级 memory
-- 可以接受 terminal 或 runtime 自己持有关键控制权
-- 更看重快速实验，而不是长期可控性
+## 什么情况下,X-Hub 开始有意义
 
-## 什么情况下，X-Hub 开始更有意义
+下面这些只要有一条,X-Hub 就开始有用:
 
-当你需要下面这些能力时，X-Hub 的价值会更明显：
-
-- 长期项目推进，而不是一次性 prompt
-- 项目级执行上限和监督分层
-- skill 体系保持受控，而不是 install-equals-trust
-- 远程通道和语音表面不能绕过控制平面
-- 本地优先运行，隐私、密钥和发布时间继续掌握在自己手里
-- downgrade、blocked、readiness truth 必须诚实可见，而不是静默掩盖
+- 你用多个 AI 工具,需要一个地方统一治理
+- 代码、提示词、记忆不能走 SaaS-only(EU AI Act 暴露、ISO 42001 采购要求、SOC2 敏感买家、内部合规)
+- 你跟家人或团队共用 AI 工具,需要角色分层
+- 你需要可验证的审计链——在 agent UI 之外仍然立得住的回执
+- 你需要对破坏性动作做*独立设备*的 per-action 确认
 
 ## 这背后的取舍
 
-X-Hub 不是通往“看，agent 动起来了”这件事的最短路径。
+X-Hub 不是通往"看,agent 动起来了"这件事的最短路径。它多加了一层。
 
-它做的是一个更刻意的取舍：
+这个取舍是刻意的:多一点结构、更清楚的信任边界、更可信的治理故事、更适合高后果长周期执行的基础设施。
 
-- 多一点结构
-- 更清楚的控制范围
-- 更可信的安全与治理故事
-- 更适合高后果、长周期执行的基础设施
-
-所以真正应该比较的，不只是 capability 对 capability。
-而是“受控之下的 capability”和“软边界下的 capability”之间的差别。
+正确比较不是 capability vs capability。而是**受治理边界下的 capability** vs **软边界下的 capability**。

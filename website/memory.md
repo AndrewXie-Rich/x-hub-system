@@ -1,7 +1,7 @@
 # Governed Memory Control Plane
 
 <p class="lead">
-X-Hub Memory is not just chat history, vector search, or a long-term preference store. It is a Hub-governed memory control plane that separates durable truth, runtime context serving, policy enforcement, writeback approval, export gates, and audit evidence. Agents get continuity for long work without bypassing X-Constitution, grants, remote export controls, or shutdown authority.
+Your AI's memory shouldn't live inside the AI. When you switch from Claude to GPT, your project context shouldn't vanish. When the AI claims a task is done, the evidence shouldn't only exist in its own chat history. When a tool retrieves memory, the user should decide what gets read — not the model. X-Hub Memory is the layer that makes all of that work.
 </p>
 
 <div class="preview-note">
@@ -128,7 +128,15 @@ Still being expanded:
 - Rust model-call gateway authority; the current Rust memory gateway is prepare-first
 - full removal of every legacy local/Node memory authority path
 
-This boundary matters. X-Hub should be judged by its architecture and current runtime direction: memory authority is moving into the Rust Hub kernel, while Swift and XT remain product shell, projection, cache, and caller surfaces.
+## Memory Writes as Signed Receipts
+
+Every durable write that passes the Writer + Gate boundary produces a [Hub Receipt v0.1](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md) envelope: who wrote, what evidence, which policy applied, what was promoted, what was denied. Receipts:
+
+- are verifiable outside X-Hub — any auditor with the issuer public key can verify authenticity without contacting the Hub
+- share the same envelope as `mcp-trust-registry` skill receipts and `agent-2fa` per-action receipts, so memory writeback is part of one audit chain, not a separate silo
+- can be embedded in commits, IDE metadata, or compliance exports — supporting EU AI Act / ISO 42001 / SOC2-conscious procurement contexts
+
+Memory truth is no longer "the system logged a write"; it's "the system produced an externally verifiable artifact about what was written, why, and on whose authority."
 
 ## How It Works With X-Terminal
 

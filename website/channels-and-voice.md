@@ -1,8 +1,13 @@
 # Channels And Voice
 
 <p class="lead">
-X-Hub treats remote channels and voice as governed operator surfaces, not shadow control planes. External events should enter the Hub first, then be projected into trusted paired surfaces such as X-Terminal voice, mobile, or runner-style execution surfaces.
+You want AI in Slack. On your phone. In voice. Triggered by webhooks, on a schedule, from your team's tools. But you also want one audit trail — not seven. That's what X-Hub does that n8n and Zapier don't.
 </p>
+
+<div class="preview-note">
+  <strong>We don't beat n8n on channel coverage.</strong>
+  <a href="https://n8n.io">n8n</a>, <a href="https://zapier.com">Zapier AI</a>, and <a href="https://make.com">Make</a> do channel integration more smoothly than X-Hub does. Our contribution isn't "more channels" — it's "every channel under the same Hub-governed audit, grant, and signed-receipt chain."
+</div>
 
 ## The Rule
 
@@ -57,6 +62,8 @@ The active preview direction already includes:
 - mobile-confirmation latch handling
 - source-aware pending-grant targeting
 - post-action re-briefing back through the Hub path
+
+The mobile-confirmation latch is the X-Hub implementation of the [agent-2fa](https://github.com/AndrewXie-Rich/agent-2fa) spec — extracted as a standalone protocol so other agent runtimes can implement the same paired-device-confirmation primitive without taking the rest of X-Hub.
 
 ## Why Source Awareness Matters
 

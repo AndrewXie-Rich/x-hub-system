@@ -1,94 +1,75 @@
 # Status & Roadmap
 
 <p class="lead">
-X-Hub-System already has a runnable product path and is moving from public preview toward a fuller productized release. This page explains what is established, what is still being productized, and what the current public release scope covers.
+X-Hub-System is a public technical preview. This page tracks what's already in main, what's actively being productized, and what's been deliberately pushed out of scope. Per-surface status is governed by the <a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">capability matrix</a>; this page does not claim beyond it.
 </p>
 
 <div class="preview-note">
-  <strong>Public preview</strong>
-  The current release focuses on Hub-first trust, governed memory, model routing, X-Terminal execution surfaces, and the Rust kernel migration path. Deeper execution surfaces, Memory Inspector, signing / notarization, and enterprise-grade SLA commitments will expand as evidence and release scope mature.
+  <strong>Public preview.</strong>
+  Core paths run. Onboarding, packaging, and surface UX are still moving. The matrix is the truth source. No SLA is claimed for v0.x; SLA appears with the commercial license once Linux daemon and multi-user UI ship.
 </div>
 
-## Current Product Shape
-
-X-Hub-System should currently be read as:
-
-- `X-Hub.app`: the user-facing Hub product entry, Swift macOS UI shell, with Rust kernel/runtime being embedded and migrated
-- `X-Terminal.app`: paired terminal, project workspace, and Supervisor surface
-- Node Hub service layer: still the production authority for many current paths
-- Rust Hub / `xhubd`: migration lane for efficiency, stability, and deterministic kernel work; some paths are shadow, candidate, or diagnostics-only
-- official skill packages: productization path for governed skill distribution, manifests, trust roots, and pinning
-
-The current product shape is: users launch `X-Hub.app`; the Hub anchors models, memory, skills, grants, audit, and shutdown authority; `X-Terminal.app` acts as the paired project workspace and Supervisor surface; the Rust kernel/runtime takes over more deterministic and performance-sensitive paths as they mature.
-
-## Established
+## Established (2026-06)
 
 <div class="story-grid">
   <div class="story-card">
-    <span>Product shell</span>
-    <strong>Swift Hub UI + Rust kernel/runtime direction</strong>
-    <p>The public Hub product should not be daemon-only. The intended shape is `X-Hub.app` for users, with Rust runtime embedded inside the app bundle and X-Terminal as the paired operator surface.</p>
+    <span>Specs extracted</span>
+    <strong>Two protocol specs live as standalone repos</strong>
+    <p><a href="https://github.com/AndrewXie-Rich/mcp-trust-registry">mcp-trust-registry</a> (federated attestation + capability tokens above MCP) and <a href="https://github.com/AndrewXie-Rich/agent-2fa">agent-2fa</a> (per-action 2FA for AI agents) shipped as independent v0.1 drafts in 2026-06. Schemas, examples, CI validation, and pre-RFC discussion bodies are in place.</p>
   </div>
   <div class="story-card">
-    <span>Trust</span>
-    <strong>Hub-first trust and fail-closed posture</strong>
-    <p>Pairing, grants, memory truth, model routing, skill trust, audit, and shutdown authority converge on the Hub instead of terminals or remote entry points becoming the default control plane.</p>
+    <span>Receipt primitive</span>
+    <strong>Hub Receipt v0.1 envelope</strong>
+    <p>A shared signed-receipt envelope used by both spinoff specs. Every authorized action produces a verifiable record that can be embedded in git commits, IDE metadata, and chat messages — verifiable outside X-Hub. Spec: <a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md">hub-receipt/v0.1.md</a>.</p>
   </div>
   <div class="story-card">
-    <span>Memory</span>
-    <strong>Governed Memory Control Plane is taking shape</strong>
-    <p>Hub-first memory truth, policy-gated retrieval, role-aware assembly, candidate writeback, readiness, doctor, and audit evidence now define the core direction.</p>
+    <span>Multi-user schema</span>
+    <strong>Hub kernel multi-user foundation landed</strong>
+    <p>2026-06 migration adds <code>rust_hub_users</code> + <code>actor_id</code> columns on seven audited-event tables. Admin / operator / observer roles can be enforced behind a feature flag. Hub admin UI for user management is the next step.</p>
   </div>
   <div class="story-card">
-    <span>Execution</span>
-    <strong>X-Terminal + Supervisor governance model</strong>
-    <p>A-Tier, S-Tier, Heartbeat / Review, safe-point guidance, and ack form a governance spine that is different from a normal coding bot.</p>
+    <span>Trust posture</span>
+    <strong>Hub-first trust + fail-closed defaults</strong>
+    <p>Pairing, grants, memory truth, model routing, skill trust, audit, and shutdown authority converge on the Hub. Missing signal stops the system instead of guessing.</p>
   </div>
   <div class="story-card">
-    <span>Skills</span>
-    <strong>Governed skill package direction</strong>
-    <p>official catalog, manifests, publisher trust, pins, compatibility, vetting, grants, revocation, and audit are forming reusable capability boundaries.</p>
+    <span>Memory plane</span>
+    <strong>Governed memory control plane</strong>
+    <p>Hub-first memory truth, policy-gated retrieval, role-aware assembly, candidate writeback, readiness, doctor, and audit evidence define the working surface.</p>
   </div>
   <div class="story-card">
-    <span>Release</span>
-    <strong>Source and release artifacts stay separate</strong>
-    <p>Git keeps source, scripts, docs, and tests. DMG, ZIP, and `.app` artifacts are uploaded as GitHub Release assets, not committed to the repository.</p>
+    <span>Skills plane</span>
+    <strong>Governed skills catalog</strong>
+    <p>Official catalog, manifests, publisher trust roots, pins, preflight, vetting, grants, and revocation. This subsystem is the reference implementation for the mcp-trust-registry spec.</p>
   </div>
 </div>
 
-## Being Productized
+## Being productized (90-day P0)
 
 | Area | Current focus |
 | --- | --- |
-| A4 execution surface | browser, device, connector, extension, plan graph, and richer skill result contracts |
-| Memory Inspector | visible candidate, approval, lineage, selected / omitted trace surfaces |
-| semantic retrieval | stronger semantic recall and rerank after authority, policy, and evidence are stable |
-| temporal graph | Observations / Longterm handling for changing, stale, or conflicting facts |
-| Hub Run Scheduler | first-class run truth, wake, grants, audit, clamps, and recovery |
-| Release packaging | combined DMG, Hub-only / XT-only assets, SHA256, signing, notarization notes |
-| low-friction mode | fast prototype mode for small work so not every task pays the cost of heavy governance |
+| MCP RFC submission | Submit `mcp-trust-registry` v0.1 to the MCP community discussions; recruit 3–5 pilot publishers |
+| `agent-2fa` reference CLI | Minimal Rust `agent2fa-cli` + paired-device iOS Authorizer to prove the wire protocol end to end |
+| Hub admin multi-user UI | User management surface backed by the new multi-user schema; enforce flag in gate |
+| SIEM audit export | JSONL export of the audit log with `actor_id`; SOC2-conscious format |
+| Linux daemon | `docker-compose up` deployment; abstract launchd-specific calls behind a trait |
+| Web thin client | Browser-based governed client; replaces the frozen rust-xtd direction |
+| OIDC / SSO | Read-only OIDC against existing IdPs as the first SSO entry point |
+| Release packaging | Combined DMG, Hub-only / XT-only artifacts, SHA256, signing, notarization notes |
 
-## Current Release Scope
+## Deliberately out of scope (this cycle)
 
-The public preview is not a claim that every automation surface is complete. It is a working product direction for safer AI execution: the Hub is the control plane, while terminals and remote entry points remain governed execution surfaces. Memory, models, skills, quotas, grants, and audit converge into one boundary.
+- **New ingress channels.** Slack / Telegram / Feishu / voice already shipped; no new ones until Linux + Web land.
+- **Consumer IDE-killer features.** Cursor / Cline / Claude Code / Aider already own developer IDE UX. X-Hub sits next to them, not against them.
+- **rust-xtd sidecar.** Frozen at the current scaffold; the Web thin client subsumes this direction.
+- **SOC 2 / ISO 42001 certification.** Architectural alignment is being pursued; actual certification is a separate 9–12 month effort and is not in this cycle.
 
-The parts that are ready to show publicly:
+## Roadmap priority order
 
-- Swift Hub UI + Rust kernel/runtime product shape
-- X-Terminal pairing, project workspace, and Supervisor governance model
-- Hub-first trust, first pairing on the same network, grants, policy, audit, and kill-switch direction
-- Governed Memory Control Plane core mechanisms and roadmap
-- governed skills, model routing, local-first operation, and paid-provider access under one control plane
-
-Release notes and this roadmap will expand the public scope as more surfaces mature, especially the full A4 execution surface, Memory Inspector, semantic retrieval, temporal graph, signing / notarization, and higher release guarantees.
-
-## Roadmap Priority
-
-1. Keep Hub-first authority, policy, readiness, and audit stable.
-2. Complete Memory Control Plane candidate, approval, semantic retrieval, and Inspector paths.
-3. Deepen Coding Runtime step, verify, retry, blocked, checkpoint, guidance ack, and done contract.
-4. Expand A4 execution surfaces while preserving grants, scope, TTL, clamps, and recovery.
-5. Improve release packaging, signing posture, install experience, and contributor path.
+1. Ship the two spinoff specs into the relevant communities (MCP Discussions, AI runtime maintainer outreach).
+2. Land the Hub admin multi-user UI + SIEM export so the open-core commercial line has a working surface to show.
+3. Linux daemon → Web thin client → OIDC, in that order.
+4. Keep the capability matrix in sync with every status change; never let the matrix lag the page.
 
 Continue with:
-[Get Started](/get-started), [Memory Control Plane](/memory), and [Coding Runtime](/coding-runtime).
+[Get Started](/get-started), [Memory Control Plane](/memory), [Trust Model](/security).

@@ -6,11 +6,22 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "docs:dev": "vitepress dev .",
-    "docs:build": "vitepress build .",
-    "docs:preview": "vitepress preview ."
+    "docs:dev": "vite --host 127.0.0.1",
+    "docs:build": "vite build --outDir .vitepress/dist && node scripts/postbuild.mjs",
+    "docs:preview": "vite preview --host 127.0.0.1 --outDir .vitepress/dist",
+    "dev": "npm run docs:dev",
+    "build": "npm run docs:build",
+    "preview": "npm run docs:preview"
+  },
+  "dependencies": {
+    "@douyinfe/semi-icons": "2.100.0",
+    "@douyinfe/semi-ui": "2.100.0",
+    "marked": "^15.0.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "vitepress": "next"
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.3.5"
   }
 }

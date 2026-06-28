@@ -1,77 +1,76 @@
 # Why Not Just Use An Agent?
 
 <p class="lead">
-X-Hub is not trying to win the same game as a lightweight execution-first agent. It is built for people who need AI systems to keep executing while trust, memory, authorization, and runtime truth still remain governable.
+X-Hub isn't trying to win the same game as Cursor or Cline or Claude Code. Those products solve "give me a great AI IDE." X-Hub solves "give me a governable control plane that sits next to those tools."
 </p>
 
 <div class="preview-note">
-  <strong>Public comparison view</strong>
-  This page explains the product-level tradeoff, not a complete public control catalog. The goal is to make the system legible without turning every still-moving implementation detail into front-page product copy.
+  <strong>This page names names.</strong>
+  By 2026, "the agent" isn't a hypothetical. It's Cursor / Cline / Claude Code / Aider / Continue / Roo for IDE work; Devin / Manus / Replit Agent for project-shaped autonomy. The right comparison isn't X-Hub against an abstract agent — it's "what does X-Hub do that those don't."
 </div>
 
 ## The Short Answer
 
-If all you want is a fast agent that can take a task, call some tools, and produce a result, many projects can already do that.
+If you want an AI that's great in your editor, **use one of the existing agents**:
 
-X-Hub exists for the harder problem:
+- [Cursor](https://cursor.com), [Cline](https://github.com/cline/cline), [Claude Code](https://www.anthropic.com/claude-code), [Aider](https://aider.chat), [Continue](https://continue.dev), [Roo](https://github.com/RooVetGit/Roo-Cline) — IDE-shaped agents
+- [Devin](https://devin.ai), [Manus](https://manus.im), [Replit Agent](https://replit.com/ai) — project-shaped autonomy
 
-- when the terminal should not become the trust root
-- when one plugin should not silently expand full-system privilege
-- when higher autonomy should not automatically erase supervision
-- when memory, grants, audit, and runtime truth need to stay attached to one system of record
-- when the control plane should stay user-owned instead of disappearing into a client bundle or vendor cloud
+These are good products. They're not control planes.
 
-## Where Typical Agent Stacks Collapse Too Much
+X-Hub exists for the harder problem one layer up:
 
-| Concern | Typical terminal-first or execution-first default | X-Hub direction |
+- when the IDE / agent client should not be the trust root
+- when one MCP server or plugin should not silently expand full-system privilege
+- when higher autonomy should not erase per-action confirmation
+- when memory, grants, audit, and runtime truth need to converge on one system of record across multiple AI tools
+- when the control plane should stay user-owned instead of disappearing into a vendor cloud
+
+## What An IDE Agent Doesn't Solve
+
+| Concern | A good IDE agent (Cursor / Cline / Claude Code / etc.) | What X-Hub adds |
 | --- | --- | --- |
-| Trust root | The active client, runtime, or plugin bundle quietly becomes the place where trust lives | Trust stays anchored in the Hub so clients can stay replaceable |
-| Capabilities | Installed tools and plugins often expand privilege by default | Skills and higher-risk execution paths are treated as governed capability paths |
-| Autonomy | More power often means blurrier supervision and less honest runtime truth | Execution range, review depth, intervention, and clamps are separated into explicit controls |
-| Memory | Context, notes, and execution state drift across surfaces, and the active runtime often quietly becomes the memory authority | Memory truth stays attached to the Hub-side system of record; the user chooses which AI executes memory jobs, and durable writes still terminate through `Writer + Gate` |
-| Cloud control | Vendor-hosted defaults can become the hidden control plane | The primary posture is a user-owned Hub with optional external services under governance |
+| Trust root | The agent itself, often running in the IDE's process space | A separate Hub that decides what the agent is allowed to do |
+| MCP server trust | "Install this MCP server" — accept or decline, that's it | [mcp-trust-registry](https://github.com/AndrewXie-Rich/mcp-trust-registry): signed attestations, capability tokens, runtime enforcement |
+| High-risk action confirmation | "Are you sure?" inline dialog inside the IDE process — bypassable by the same compromise that started the action | [agent-2fa](https://github.com/AndrewXie-Rich/agent-2fa): paired-device Touch ID / Face ID, signed authorization on a separate device |
+| Memory across tools | Each agent has its own memory; switching tools = losing context | Hub-backed memory truth with Writer + Gate; any client reads from the same governed plane |
+| Audit | Best-effort transcript inside the agent's UI | Signed [Hub Receipt](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md) envelopes — verifiable outside X-Hub, embeddable in commits |
+| Multi-user | Per-seat licenses; per-user memory and tools | Single Hub, multi-user roles (admin / operator / observer), one audit chain |
+
+The two products don't compete. **Use Cursor or Claude Code in your editor. Wrap them under an X-Hub if you need the control plane.**
 
 ## What X-Hub Is Actually Optimizing For
 
-X-Hub is optimized for a different operating model:
+- **User-owned control plane**: permissions, keys, memory truth, audit, release timing, and runtime posture stay under the user's authority — not the vendor's
+- **Governed autonomy**: higher execution range does not mean weaker supervision
+- **Governed skills**: reusable capability units routed, approved, denied, audited, retried, and revoked — through a spec ([mcp-trust-registry](https://github.com/AndrewXie-Rich/mcp-trust-registry)) other implementations can also use
+- **Per-action authorization**: irreversible actions hit a separate paired device before they hit the world — through a spec ([agent-2fa](https://github.com/AndrewXie-Rich/agent-2fa)) other agent runtimes can adopt
+- **Fail-closed runtime truth**: missing readiness, broken pairing, or ambiguous authorization blocks instead of pretending success
 
-- **User-owned control plane**: permissions, keys, memory truth, audit, release timing, and runtime posture stay under the user's authority
-- **Governed autonomy**: higher execution range does not have to mean weaker supervision
-- **Governed skills**: reusable capability units can be routed, approved, denied, audited, retried, and revoked
-- **Fail-closed runtime truth**: missing readiness, broken pairing, or ambiguous authorization should block instead of pretending success
-- **Multisurface execution**: paired surfaces, remote channels, and local runtimes can converge through one control plane instead of becoming shadow authorities
+## When A Standalone Agent Is Enough
 
-## When A Simpler Agent May Be Enough
+You don't need X-Hub if:
 
-A lighter execution-first agent may already be the right answer if:
-
-- you only need one-off tasks
-- the environment is low-risk
-- you do not need durable governance, audit, or project memory
-- the terminal or runtime owning the trust boundary is acceptable
-- fast experimentation matters more than long-horizon control
+- you only use one AI tool, in one IDE, on one machine
+- your code, prompts, and memory can go through SaaS-only AI tools without compliance friction
+- you don't share AI tooling with other people (family / team / org)
+- you don't need per-action confirmation on destructive actions
+- fast experimentation matters more than auditable execution
 
 ## When X-Hub Starts Making Sense
 
-X-Hub becomes more compelling when you need one or more of these:
+X-Hub becomes useful when one or more of these is true:
 
-- long-running project execution instead of isolated prompts
-- project-level execution ceilings and supervision depth
-- skills that should remain governed instead of install-equals-trust
-- remote channels or voice surfaces that should not bypass the control plane
-- local-first operation where privacy, keys, and release timing stay in your hands
-- honest downgrade, blocked, and readiness truth instead of silent masking
+- you use multiple AI tools and want one place to govern them
+- code, prompts, or memory can't go through SaaS-only tools (EU AI Act exposure, ISO 42001 procurement, SOC2-conscious buyers, internal compliance)
+- you share AI tooling with family or team members and need role separation
+- you need verifiable audit trails — receipts that hold up outside the agent's UI
+- you need per-action confirmation on destructive operations on a *separate* device
 
 ## The Tradeoff
 
-X-Hub is not the shortest possible path to "look, the agent acted."
+X-Hub isn't the shortest path to "look, the agent acted." It adds a layer.
 
-It is a deliberate tradeoff:
+The tradeoff is deliberate: a little more structure, a clearer trust boundary, a more credible governance story, a better foundation for higher-consequence and longer-horizon execution.
 
-- a little more structure
-- a clearer trust boundary
-- a more credible safety and governance story
-- a better foundation for higher-consequence and longer-horizon execution
-
-That is why the right comparison is not just capability versus capability.
-It is capability under control versus capability with soft trust boundaries.
+The right framing isn't capability versus capability. It's **capability under a governed boundary** versus **capability with soft trust boundaries**.

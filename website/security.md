@@ -1,7 +1,7 @@
 # Security Model
 
 <p class="lead">
-X-Hub is designed around structural security advantages, not safety theater. The core claim is not that risk disappears. The core claim is that one compromised terminal, one hostile webpage, one imported skill, or one exposed runtime should not automatically become full-system compromise.
+One compromised terminal. One hostile webpage. One sketchy MCP server. One prompt injection. Any of those, today, can drag your whole AI setup down. X-Hub's job is to make sure they don't. This page walks through what we block, where we block it, and what we honestly can't promise.
 </p>
 
 <div class="preview-note">
@@ -133,7 +133,20 @@ For irreversible or externally visible actions, X-Hub's direction is:
 - grants carry scope, TTL, and policy constraints
 - execution returns evidence and audit references
 
+The extracted protocol spec for this is [`agent-2fa`](https://github.com/AndrewXie-Rich/agent-2fa). Three risk tiers — `notify`, `confirm`, `dual_confirm` — map to per-action confirmation on paired Authorizer Devices (Touch ID, Face ID, voice phrase, passphrase). A prompt-injected `DROP TABLE prod_logs` hits the paired device before it hits the database; an outbound payment hits Face ID before the API call lands. agent-2fa is independent of X-Hub — you can take the spec without taking the implementation.
+
 This pattern is relevant for payments, outbound messages, connector writes, code merges, remote commands, and other high-consequence actions.
+
+## Receipts
+
+Every authorized action — and every deny, downgrade, timeout, and escalation — produces a signed receipt using the [Hub Receipt v0.1](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md) envelope. Receipts:
+
+- bind a `subject` (the action, the skill call, the agent-2fa challenge, etc.) to an `issuer_key_id` and a verifiable signature
+- are content-addressable and can be embedded in git commits, IDE metadata, chat messages, or compliance exports
+- are verifiable outside X-Hub — any verifier with the issuer's public key can check authenticity without contacting the Hub
+- are the same envelope used by `mcp-trust-registry` (skill execution receipts) and `agent-2fa` (per-action confirmation receipts), so a single audit trail covers both surfaces
+
+Signed receipts move audit from "the system logged something" to "the system produced an externally verifiable artifact." That distinction is what makes the audit trail useful in EU AI Act / ISO 42001 / SOC2-conscious procurement contexts.
 
 ## Risk Pattern To Control Chain
 
@@ -142,15 +155,15 @@ This pattern is relevant for payments, outbound messages, connector writes, code
 | Full filesystem, mailbox, database, or memory reads | capability scope, project binding, role-aware memory, least privilege, audit |
 | Sensitive-data sending, uploads, webhooks, external APIs | outbound grants, destination allowlists, signed intent, TTL, audit |
 | Durable memory leakage or memory pollution | five-layer memory, durable write gate, pinned X-Constitution, memory export grants |
-| Bulk delete, overwrite, or system configuration changes | destructive-action preflight, A-Tier, tool policy, manifests, safe-point review |
+| Bulk delete, overwrite, or system configuration changes | destructive-action preflight, A-Tier, tool policy, manifests, safe-point review, [`agent-2fa`](https://github.com/AndrewXie-Rich/agent-2fa) `dual_confirm` |
 | shell/root commands and dependency installation | command allow/deny policy, working-directory scope, runtime readiness, evidence refs |
-| Plugin or skill supply-chain attacks | manifests, publisher trust, package pins, compatibility doctor, vetting, revocation |
+| Plugin or skill supply-chain attacks | manifests, publisher trust, package pins, compatibility doctor, vetting, revocation, [`mcp-trust-registry`](https://github.com/AndrewXie-Rich/mcp-trust-registry) attestation chain |
 | Public exposure, weak auth, mistaken pairing | same-Wi-Fi first trust, device identity, token rotation, allowed source, device freeze |
 | Lateral movement and privilege escalation | scoped grants, connector boundaries, secret policy, audit trail, kill switch |
 | Goal drift, over-execution, cost runaway | execution budgets, quota posture, TTL, heartbeat anomaly, Supervisor review, clamps |
-| Fake completion, fabricated logs, weak evidence | evidence-first memory, pre-done review, audit refs, done-candidate state |
-| Impersonation, unauthorized approvals, transfers, sends | actor binding, grant target, SAS, approval surface, signed manifest |
-| Missing audit and untraceable incidents | Hub-side audit, denial reasons, evidence refs, grant history, doctor/explainability |
+| Fake completion, fabricated logs, weak evidence | evidence-first memory, pre-done review, audit refs, done-candidate state, [Hub Receipt](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md) envelope |
+| Impersonation, unauthorized approvals, transfers, sends | actor binding, grant target, SAS, approval surface, signed manifest, `agent-2fa` paired-device confirmation |
+| Missing audit and untraceable incidents | Hub-side audit, denial reasons, evidence refs, grant history, doctor/explainability, signed Hub Receipts |
 
 These controls do not erase all risk. They move risk away from "one active agent silently decided" and toward "the Hub visibly allowed, denied, downgraded, held for confirmation, or stopped it."
 

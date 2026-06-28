@@ -1,12 +1,12 @@
 # Coding Runtime
 
 <p class="lead">
-X-Hub-System's coding strength is not "which tool makes the fastest first-minute demo." It is built for longer software work: plan, execute, verify, review, resume, and recover while memory, grants, audit, quota, and kill authority remain inside the Hub boundary.
+Cursor and Claude Code are great at minute 1. When AI has been running for 5 hours and you come back to half-done work, missing evidence, merge conflicts, and "I think I finished it?" — that's where they stop and X-Hub starts. This page is about the second half of that arc.
 </p>
 
 <div class="preview-note">
-  <strong>Public positioning</strong>
-  This page translates the internal coding methodology into product language: governed runtime harness, agentic delivery, checklist execution, spec-first boundaries, fast prototype mode, and product discovery mode.
+  <strong>Use the IDE agent for the IDE. Use X-Hub for what happens around it.</strong>
+  X-Hub doesn't compete with Cursor / Cline / Aider on inline editing. It sits behind them and answers: where did the run get to, what evidence backs "done," and how do we resume from the wrong checkpoint.
 </div>
 
 ## One Sentence
@@ -49,12 +49,12 @@ Its advantage shows up after minute 50, hour 5, or day 5, when the system still 
   <div class="story-card">
     <span>Audit boundary</span>
     <strong>Code execution stays under Hub governance</strong>
-    <p>Repo edits, build/test, skill calls, model use, quota pressure, and high-risk actions can enter grant, policy, audit, and kill-switch control paths.</p>
+    <p>Repo edits, build/test, skill calls, model use, quota pressure, and high-risk actions go through grant, policy, audit, and kill-switch control paths. Every authorized action produces a signed <a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md">Hub Receipt</a> — verifiable outside the IDE.</p>
   </div>
   <div class="story-card">
     <span>Evidence closure</span>
     <strong>Done is not a model sentence</strong>
-    <p>Completion should point to build, test, diff, logs, screenshots, doctor output, review notes, and audit refs. Weak evidence means done candidate, not done.</p>
+    <p>Completion points to build, test, diff, logs, screenshots, doctor output, review notes, and signed receipts. Weak evidence means done candidate, not done. The receipt chain is what the auditor reads — not the chat history.</p>
   </div>
 </div>
 
@@ -74,18 +74,15 @@ The public story should stay honest: the advantage is clear, but this is not the
 
 That means X-Hub-System should not be presented as the fastest quick-prototype tool. It should be understood as a **governed execution system for long-running software work**.
 
-## Layered Coding Method
+## What the Coder Loop does in practice
 
-| Layer | Public name | Role inside X-Hub-System |
-| --- | --- | --- |
-| System layer | Governed Runtime Harness | Execution surface, permissions, memory, runtime, doctor, audit, kill switch |
-| Project flow | Governed Agentic Delivery | intake, plan, execution, review, delivery closure |
-| Execution loop | Checklist Execution Loop | step list, verify after each step, bounded retry, blocked capture |
-| High-risk boundary | Spec-First Boundary | runtime, memory, governance, skill ABI, Hub/XT contract, release gates |
-| Exploration layer | Fast Prototype Mode | demo, spike, UI sketch, smallest runnable version |
-| Product discovery | Product Discovery Mode | requirement shaping, architecture decisions, milestones, work orders, done contract |
+X-Hub's coding runtime has internal layers (the harness, the delivery loop, the checklist loop, the spec boundary) — but the user-facing shape is simpler:
 
-The important point is that these are not competing schools. They operate at different layers.
+- **For quick prototypes:** fast mode. Light checklist, light review. Don't pay the cost of full governance for a 10-minute spike.
+- **For normal feature work:** default mode. Agentic delivery, checklist execution, light spec for high-risk edges. This is most of the work.
+- **For long-running or high-risk projects:** full mode. Strong spec boundaries, deeper Supervisor review, A3/A4 execution under tight S2/S3 supervision.
+
+The system picks defaults; you can override per-project.
 
 ## A-Tier / S-Tier Mapping For Coding
 

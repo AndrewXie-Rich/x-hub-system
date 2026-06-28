@@ -1,13 +1,26 @@
 # Get Started
 
 <p class="lead">
-这个页面是给想下载、试用、构建或贡献 X-Hub-System 的开发者准备的最短行动路径。普通用户优先从 GitHub Releases 下载组合 DMG；开发者可以从源码构建 Hub、X-Terminal 和 Rust runtime。
+这个页面是给想下载、试用、构建或贡献 X-Hub-System 的开发者准备的最短行动路径。macOS 是当前唯一出货平台;Linux daemon 和 Web 瘦客户端在收口中。两份独立规范可以单独使用——不必带走 X-Hub 才能用规范。
 </p>
 
 <div class="preview-note">
-  <strong>公开技术预览</strong>
-  X-Hub-System 仍是 public tech preview。Release 包、源码构建命令和可贡献边界会继续变化；以 GitHub Release notes、README 和当前页面为公开入口。
+  <strong>公开技术预览。</strong>
+  macOS DMG 是今天唯一出货路径。Linux daemon(via <code>docker-compose</code>)和 Web 瘦客户端是 90-day P0 方向。每个表面的状态以<a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">能力矩阵</a>为准。
 </div>
+
+## 三条入口
+
+**1. macOS app(今天出货)。** 组合 DMG 含 `X-Hub.app` 和 `X-Terminal.app`,Apple Silicon。见下面 [下载预览版](#下载预览版)。
+
+**2. Linux daemon(收口中,90-day P0)。** `docker-compose up` 部署,把 launchd 相关调用抽到 trait 后面。尚未发布,跟踪 [状态与路线图](/zh-CN/status-roadmap) 看切换时机。
+
+**3. spec-only(不用 X-Hub 也能用)。** 单独拿其中一份独立规范:
+- [`mcp-trust-registry`](https://github.com/AndrewXie-Rich/mcp-trust-registry) — MCP 之上的联邦化信任层
+- [`agent-2fa`](https://github.com/AndrewXie-Rich/agent-2fa) — 给 AI Agent 动作做的 per-action 2FA
+- [`hub-receipt`](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md) — 共用签名回执 envelope
+
+每份都是独立 v0.1 草案。X-Hub 是一个实现;你可以写自己的。
 
 ## 下载预览版
 
@@ -27,7 +40,8 @@ XHub-System-<version>-macos-arm64.dmg
 
 - `X-Hub.app`：Hub 的原生 macOS UI 壳，内嵌 Rust kernel/runtime
 - `X-Terminal.app`：配对终端和 Supervisor 工作台
-- Rust `xtd` sidecar：X-Terminal 的 runtime sidecar
+
+(原本随这个组合包发布的 `rust-xtd` sidecar 冻结在脚手架状态;Web 瘦客户端方向会替代它。)
 
 安装顺序：
 

@@ -1,84 +1,88 @@
 # Use Cases
 
 <p class="lead">
-X-Hub-System is built for AI work that keeps running after the first prompt: across devices, projects, models, channels, skills, memory, and external actions. The point is not to unlock every action blindly. The point is to keep powerful actions inside an auditable, revocable, recoverable Hub boundary.
+If AI is just chatting, you don't need X-Hub. If AI is starting to delete files, send messages, charge cards, or work across multiple projects while you sleep — that's when control matters. Three audiences end up here for three different reasons.
 </p>
 
 <div class="preview-note">
-  <strong>Whitepaper scenarios</strong>
-  This page condenses the whitepaper themes into public product copy: family use, small teams, multi-project supervision, offline/local/remote modes, high-risk actions, model routing, and quota governance.
+  <strong>Three audiences, not six.</strong>
+  This page expands the three audiences from the homepage. Personal builders are a sub-mode of developers, not a separate audience — same Hub, single user, no role split.
 </div>
 
-## The Short Version
+## The short version
 
-If AI is only chatting, a simple client may be enough.  
+If AI is only chatting, a simple client may be enough.
 When AI starts using accounts, memory, skills, files, browsers, remote channels, paid models, or external actions, the important decisions should move back to the Hub.
 
-## Six Practical Scenarios
+## Teams and enterprises
 
 <div class="story-grid">
   <div class="story-card">
-    <span>Personal builders</span>
-    <strong>One Hub for projects, models, quota, and memory</strong>
-    <p>X-Terminal can track multiple code projects. Private work can use local models first, harder tasks can route to paid models, and route truth, quota pressure, project status, test evidence, and long-term memory return to the Hub.</p>
+    <span>Why this audience</span>
+    <strong>Code, prompts, and memory can't go through SaaS-only AI tools.</strong>
+    <p>Industries with EU AI Act exposure, ISO 42001 procurement requirements, or SOC2-conscious buyers cannot ship sensitive context through a vendor cloud they don't control. The commercial license adds multi-user roles (admin / operator / observer), SSO / OIDC, SIEM-friendly audit export, and compliance report generators on top of the MIT kernel.</p>
   </div>
-  <div class="story-card">
-    <span>Multi-project execution</span>
-    <strong>Let AI keep moving without becoming a black box</strong>
-    <p>Project AI writes code, runs tests, and clears blockers. Supervisor reviews on cadence or events. The Hub keeps runtime truth, grants, audit, and kill authority. The user sees key changes and decisions that actually need attention.</p>
+  <div class="story-card story-card--risk">
+    <span>Concrete evidence</span>
+    <strong>A "PDF parser" skill should not quietly open a remote shell.</strong>
+    <p>Before a team uses a skill, the Hub checks its manifest, source, pinned version, compatibility, and declared capability. Even when allowed, the skill acts only inside granted scope and leaves grant and audit records. This is the implementation reference behind the <a href="https://github.com/AndrewXie-Rich/mcp-trust-registry">mcp-trust-registry</a> spec.</p>
   </div>
-  <div class="story-card">
-    <span>Family devices</span>
-    <strong>Useful terminals without handing them core control</strong>
-    <p>Children or family members can use lightweight AI clients without every device holding provider keys, long-term memory, skills, routing policy, or revoke authority. First high-trust pairing stays local on the same Wi-Fi.</p>
-  </div>
-  <div class="story-card">
-    <span>Small teams</span>
-    <strong>AI work for employees with organization-level controls</strong>
-    <p>Team members can use AI for summaries, code review, documentation, and operations while admins retain control over model accounts, skill sources, external actions, audit records, and device revocation.</p>
-  </div>
-  <div class="story-card">
-    <span>Sensitive work</span>
-    <strong>Local models first, without splitting privacy from governance</strong>
-    <p>Legal, finance, research, personal privacy, and internal materials can prefer local runtime. Paid models can still be used when policy allows, while both paths share Hub-governed memory, grants, quota, audit, and fallback truth.</p>
-  </div>
-  <div class="story-card">
-    <span>High-consequence actions</span>
-    <strong>Signed intent before payments, sends, merges, and remote commands</strong>
-    <p>Irreversible or externally visible actions can be forced through Hub-generated manifests, Hub signatures, SAS checks, scoped grants, TTL, audit, and kill switches instead of trusting an active client to build the payload locally.</p>
+  <div class="story-card story-card--risk">
+    <span>Concrete evidence</span>
+    <strong>"Done" needs evidence, budget, and review.</strong>
+    <p>In multi-project Supervisor work, heartbeat checks meaningful progress, quota views expose pressure, and pre-done review checks evidence. The system does not mark work done only because the model says it is done. Signed Hub Receipts mean the audit trail is verifiable outside X-Hub.</p>
   </div>
 </div>
 
-## Four More Concrete Stories
+See [ENTERPRISE.md](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/ENTERPRISE.md) for procurement-facing details and the commercial license inquiry path.
+
+## Families
 
 <div class="story-grid">
-  <div class="story-card story-card--risk">
-    <span>Key leakage boundary</span>
-    <strong>"Look up a public fact" should not read the whole machine</strong>
-    <p>When a builder asks AI to research public information, X-Hub can keep the task scoped to browsing and relevant project files. SSH keys, API keys, browser cache, private chat, and durable memory do not enter context just because it is convenient.</p>
+  <div class="story-card">
+    <span>Why this audience</span>
+    <strong>Shared AI with parent-controlled limits, per-action confirmation, and a Hub the kids' clients cannot bypass.</strong>
+    <p>The pivot here is structural, not feature-based: family use is the smallest multi-user team. Parent = Hub admin. Children = governed clients. No separate product line, no separate license — the same MIT kernel that powers teams powers families.</p>
   </div>
   <div class="story-card story-card--risk">
-    <span>Skill supply chain</span>
-    <strong>A "PDF parser" should not quietly open a remote shell</strong>
-    <p>Before a small team uses a skill, the Hub can check its manifest, source, pinned version, compatibility, and declared capability. Even when allowed, the skill acts only inside the granted scope and leaves grant and audit records.</p>
+    <span>Concrete evidence</span>
+    <strong>A link should not become a high-trust device.</strong>
+    <p>First high-trust pairing stays on the same Wi-Fi with local confirmation. Remote channels can exist, but they build on bound devices, token state, and revocable access. A child clicking a chat link should never produce a new admin device.</p>
   </div>
   <div class="story-card story-card--risk">
-    <span>Remote pairing</span>
-    <strong>A link should not become a high-trust device</strong>
-    <p>For family or remote-work use, X-Hub keeps first high-trust pairing on the same Wi-Fi with local confirmation. Remote channels can exist, but they build on bound devices, token state, and revocable access.</p>
-  </div>
-  <div class="story-card story-card--risk">
-    <span>Cost and fake completion</span>
-    <strong>"Keep going until done" needs budget, evidence, and review</strong>
-    <p>In multi-project Supervisor work, heartbeat checks meaningful progress, quota views expose pressure, and pre-done review checks evidence. The system should not mark work done only because the model says it is done.</p>
+    <span>Concrete evidence</span>
+    <strong>High-risk actions need a paired-device tap.</strong>
+    <p>Payment confirmations, account changes, destructive commands route through paired-device confirmation. This is the primitive the <a href="https://github.com/AndrewXie-Rich/agent-2fa">agent-2fa</a> spec formalizes — Touch ID / Face ID on the parent's phone before the action lands.</p>
   </div>
 </div>
 
-## The Strongest Point Is Not "It Can Automate"
+See [FAMILY.md](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/FAMILY.md) for the family deployment shape.
+
+## Developers (including individual / solo use)
+
+<div class="story-grid">
+  <div class="story-card">
+    <span>Why this audience</span>
+    <strong>Self-host the Hub, see and audit what actually ran.</strong>
+    <p>Route truth, fallback, downgrade, blocked reason, and signed receipts are all surfaced. One Hub manages local models for sensitive work, paid providers when needed, project state across sessions, and long-term memory under Writer + Gate. Solo / personal use is just "one-user team" — no separate audience needed.</p>
+  </div>
+  <div class="story-card story-card--risk">
+    <span>Concrete evidence</span>
+    <strong>"Look up a public fact" should not read the whole machine.</strong>
+    <p>When a developer asks AI to research public information, X-Hub scopes the task to browsing and relevant project files. SSH keys, API keys, browser cache, private chat, and durable memory do not enter context just because it's convenient.</p>
+  </div>
+  <div class="story-card story-card--risk">
+    <span>Concrete evidence</span>
+    <strong>The two specs are independently usable.</strong>
+    <p>You can take just <a href="https://github.com/AndrewXie-Rich/mcp-trust-registry">mcp-trust-registry</a> as a trust layer above MCP, or just <a href="https://github.com/AndrewXie-Rich/agent-2fa">agent-2fa</a> as per-action confirmation, without taking X-Hub. X-Hub is one implementation of these specs, not the only one.</p>
+  </div>
+</div>
+
+## The strongest point isn't "it can automate"
 
 Most agent demos focus on what the agent can do. X-Hub-System asks the harder questions:
 
-- If it is wrong, who can stop it?
+- If it's wrong, who can stop it?
 - If it uses paid models, who can see quota pressure?
 - If it reads long-term memory, who decides how much it gets?
 - If it installs a skill or calls a connector, who checks source and scope?
@@ -87,17 +91,9 @@ Most agent demos focus on what the agent can do. X-Hub-System asks the harder qu
 
 X-Hub puts those questions into product structure instead of forcing the operator to watch every step in a chat window.
 
-## Who It Is For
+## Not just another chat window
 
-- Individual builders who want local and paid models under one governance plane
-- Creators, founders, or technical leads managing multiple long-running projects
-- Organizations that want employees to use AI without scattering keys, tools, and durable memory across every device
-- Users with explicit requirements around offline mode, LAN mode, remote access, device pairing, and revocation
-- Anyone who wants AI to do more work while preserving grants, audit, stop, and recovery paths
-
-## Not Just Another Chat Window
-
-X-Hub-System is closer to an AI execution control plane. Chat, terminal, voice, remote channels, and local runtime can all become entry points, while models, memory, skills, quota, grants, audit, and shutdown authority stay governed by the Hub.
+X-Hub-System is closer to an AI execution control plane. Chat, terminal, voice, remote channels, and local runtime can all become entry points — while models, memory, skills, quota, grants, audit, and shutdown authority stay governed by the Hub.
 
 Continue with:
-[X-Constitution](/constitution), [Governed Memory](/memory), [X-Terminal](/x-terminal), and [Trust Model](/security).
+[X-Constitution](/constitution), [Governed Memory](/memory), [X-Terminal](/x-terminal), [Trust Model](/security).

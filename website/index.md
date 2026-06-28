@@ -3,211 +3,93 @@ layout: home
 
 hero:
   name: X-Hub-System
-  text: A secure AI Hub for real work.
-  tagline: Manage models, memory, skills, quotas, grants, audit, and execution from one user-owned Hub.
+  text: Don't trust AI to hold its own leash.
+  tagline: X-Hub is the self-hosted Hub between you and Claude, GPT, or local models. See what actually ran. Stop high-risk actions before they happen. Switch providers without losing your memory.
   actions:
     - theme: brand
-      text: Get started
-      link: /get-started
-    - theme: alt
-      text: View GitHub
+      text: View on GitHub
       link: https://github.com/AndrewXie-Rich/x-hub-system
     - theme: alt
-      text: Check status
-      link: /status-roadmap
+      text: How it works (30 sec)
+      link: /architecture
 
 features:
-  - title: Security is a core capability
-    details: High-risk actions pass through authorization, signed intent, audit, and revocable controls before execution.
-  - title: Manage AI capability in one place
-    details: Local models, paid providers, account quota, memory, skills, and channels are governed from the Hub.
-  - title: Built for continuous work
-    details: X-Terminal, Supervisor state, project continuity, governed skills, and local runtime paths support longer AI workflows without losing control.
+  - title: For my family
+    details: Kids using AI shouldn't mean handing AI admin rights to your house. See what they ask. Set spending limits. Get a tap on your phone before AI deletes, sends, or pays. Parent runs the Hub; kids' clients can't go around it.
+    link: /family
+    linkText: How it works for families
+  - title: For myself (developer)
+    details: Self-host one Hub. Keep using Cursor, Claude Code, ChatGPT — they sit on top of it. See the actual model that ran, why a fallback happened, and what a rogue MCP server tried to do. Switch providers without rebuilding memory.
+    link: /get-started
+    linkText: Quick start
+  - title: For my team or organization
+    details: Code, prompts, memory can't go through SaaS-only AI tools. One Hub, multi-user roles, audit you can hand to compliance. EU AI Act / ISO 42001 procurement-ready under commercial license.
+    link: /team
+    linkText: How it works for teams
 ---
 
 <section class="site-note">
-  <strong>Public technical preview</strong>
-  X-Hub-System is already runnable and moving toward a Swift Hub UI with a Rust kernel/runtime. The product is still being hardened, but the direction is simple: let AI do more while permissions, memory, quota, and audit remain under control.
-</section>
-
-<section class="home-hero-band">
-  <div class="home-hero-band__copy">
-    <p class="home-kicker">Security-first AI Hub</p>
-    <h2>Clients handle interaction. The Hub handles safety decisions.</h2>
-    <p>
-      X-Hub-System brings models, memory, skills, account quota, and external actions into one governed center. You can use multiple clients and channels, while permissions, routing, audit, and shutdown controls stay in the Hub.
-    </p>
-  </div>
-  <div class="home-flow">
-    <div class="home-flow__row">
-      <span>Ask</span>
-      <strong>X-Terminal, clients, voice, or remote channels submit work</strong>
-    </div>
-    <div class="home-flow__row">
-      <span>Decide</span>
-      <strong>Hub checks models, memory, quota, grants, and safety policy</strong>
-    </div>
-    <div class="home-flow__row">
-      <span>Execute</span>
-      <strong>local models, paid APIs, skills, tools, or connectors act within scope</strong>
-    </div>
-    <div class="home-flow__row">
-      <span>Record</span>
-      <strong>results, evidence, denial reasons, downgrade state, and audit return to the Hub</strong>
-    </div>
-  </div>
-</section>
-
-<section class="home-readpath home-readpath--compact">
-  <div class="home-section-head">
-    <p class="home-kicker">Quick entry</p>
-    <h2>Download, build, or contribute.</h2>
-  </div>
-  <div class="home-readpath__grid">
-    <a href="/get-started">Get started</a>
-    <a href="https://github.com/AndrewXie-Rich/x-hub-system/releases">Download release</a>
-    <a href="https://github.com/AndrewXie-Rich/x-hub-system">GitHub repo</a>
-    <a href="/status-roadmap">Status & roadmap</a>
-  </div>
-</section>
-
-<section class="home-problems">
-  <div class="home-section-head">
-    <p class="home-kicker">What it solves</p>
-    <h2>As ordinary agents add more tools, permissions and risk spread out.</h2>
-    <p>X-Hub-System pulls the important pieces back into one Hub: models, memory, skills, quota, grants, audit, and shutdown controls.</p>
-  </div>
-
-  <div class="home-problem-table">
-    <div class="home-problem-row home-problem-row--head">
-      <div>Common agent-stack failure mode</div>
-      <div>X-Hub-System design response</div>
-    </div>
-    <div class="home-problem-row">
-      <div>New devices and remote access can become trusted too casually.</div>
-      <div>The Hub records and manages device access, network source, token state, and revocation.</div>
-    </div>
-    <div class="home-problem-row">
-      <div>Prompts, tools, memory, secrets, and external actions are often mixed inside the active client.</div>
-      <div>The Hub manages model routing, grants, memory, policy, audit, and shutdown controls. Clients focus on interaction and display.</div>
-    </div>
-    <div class="home-problem-row">
-      <div>Prompt injection or hostile documents can steer the active agent toward exfiltration or destructive work.</div>
-      <div>X-Constitution, policy, grants, signed intent, and audit make safety a system mechanism, not just another prompt instruction.</div>
-    </div>
-    <div class="home-problem-row">
-      <div>Plugin installation silently expands privilege.</div>
-      <div>Skills are governed capability packages with manifests, source checks, pinned versions, preflight, grants, denial, revocation, and audit.</div>
-    </div>
-    <div class="home-problem-row">
-      <div>Local models, paid APIs, OAuth accounts, and quota screens split into separate operational worlds.</div>
-      <div>Configured model, actual model, downgrade path, account state, and quota pressure are shown through the Hub.</div>
-    </div>
-  </div>
+  <strong>Public technical preview.</strong>
+  Core paths run. Onboarding and packaging are still rough. Per-surface honest status:
+  <a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">capability matrix</a>.
 </section>
 
 <section class="home-capabilities">
   <div class="home-section-head">
-    <p class="home-kicker">The governed surface</p>
-    <h2>Bring AI capability into one controllable center.</h2>
-    <p>This is not another chat UI. It is a place to authorize, inspect, audit, and revoke models, memory, skills, channels, quota, and external actions.</p>
+    <p class="home-kicker">What you can do</p>
+    <h2>Eight concrete things X-Hub does — that the agent on its own doesn't.</h2>
+    <p>Each card has a status tag in the corner (<code>validated</code> or <code>preview-working</code>) that maps to the <a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">capability matrix</a>. Anything not in the matrix at that level isn't claimed here.</p>
   </div>
 
   <div class="home-capability-grid">
     <a class="home-capability-card" href="/security">
-      <span>Pairing</span>
-      <strong>Same-Wi-Fi first trust</strong>
-      <p>Initial pairing is kept local, explicit, and revocable instead of turning every remote surface into a trusted doorway.</p>
-    </a>
-    <a class="home-capability-card" href="/architecture">
-      <span>Trust</span>
-      <strong>Hub-owned control plane</strong>
-      <p>Identity, policy, grants, route truth, memory truth, readiness, audit, and kill-switch posture stay centralized.</p>
-    </a>
-    <a class="home-capability-card" href="/constitution">
-      <span>Constitution</span>
-      <strong>Value constraints above tasks</strong>
-      <p>X-Constitution is designed as a pinned, governed constraint layer for prompt-injection, destructive, and privilege-escalation risks.</p>
-    </a>
-    <a class="home-capability-card" href="/local-first">
-      <span>Models</span>
-      <strong>Local + paid routing</strong>
-      <p>Local runtimes and paid providers sit under the same route, quota, readiness, fallback, and downgrade truth plane.</p>
-    </a>
-    <a class="home-capability-card" href="/skills">
-      <span>Skills</span>
-      <strong>Governed skill packages</strong>
-      <p>Official skills, manifests, trust roots, package pins, vetting, compatibility checks, grants, and revocation.</p>
+      <span>validated</span>
+      <strong>Stop a wrong action before it runs.</strong>
+      <p>When the AI tries to write the wrong file, hit the wrong endpoint, or call a tool it shouldn't, the system blocks it before it happens — not after.</p>
     </a>
     <a class="home-capability-card" href="/x-terminal">
-      <span>Autonomy</span>
-      <strong>Supervisor-grade controls</strong>
-      <p>Execution range, review depth, heartbeat cadence, intervention behavior, and runtime clamps are separate controls.</p>
-    </a>
-    <a class="home-capability-card" href="/channels-and-voice">
-      <span>Ingress</span>
-      <strong>Channels and voice</strong>
-      <p>Remote operator surfaces can enter through identity binding, replay guard, challenge, grant targeting, and audit.</p>
+      <span>preview-working</span>
+      <strong>See the model that actually ran.</strong>
+      <p>Configured vs actual model. Why the fallback fired. Which provider got billed. No silent route swaps hiding inside chat history.</p>
     </a>
     <a class="home-capability-card" href="/memory">
-      <span>Memory</span>
-      <strong>Governed memory control plane</strong>
-      <p>Durable facts, working state, role-aware context, writeback candidates, export gates, and audit evidence stay Hub-governed.</p>
+      <span>validated</span>
+      <strong>Switch providers, keep your memory.</strong>
+      <p>Project state, long-term facts, X-Constitution, and decisions live in the Hub — not inside Claude or Cursor. Move providers without rebuilding context.</p>
+    </a>
+    <a class="home-capability-card" href="/local-first">
+      <span>preview-working</span>
+      <strong>Mix local and paid AI under one budget.</strong>
+      <p>Local models for sensitive work, paid Claude / GPT when you need them. One quota view. One fallback policy. One audit trail.</p>
+    </a>
+    <a class="home-capability-card" href="/skills">
+      <span>preview-working</span>
+      <strong>Install a tool without trusting its author.</strong>
+      <p>MCP servers, plugins, skills — all checked for signed source, pinned version, declared capability. A "PDF parser" that quietly asks for shell access gets stopped.</p>
+    </a>
+    <a class="home-capability-card" href="/governed-autonomy">
+      <span>preview-working</span>
+      <strong>Set how much the AI can do on its own — separately from how often you watch.</strong>
+      <p>Three independent dials: execution authority, supervision depth, review cadence. Not one autonomy slider that erases oversight.</p>
+    </a>
+    <a class="home-capability-card" href="/architecture">
+      <span>validated</span>
+      <strong>Use AI from anywhere, but trust it from one place.</strong>
+      <p>Voice, Slack, Telegram, Feishu, mobile confirmation — all enter through identity binding and revocable grants. Never a direct line to your AI.</p>
     </a>
     <a class="home-capability-card" href="/coding-runtime">
-      <span>Coding</span>
-      <strong>Runtime for long-running projects</strong>
-      <p>Plan, execute, verify, review, resume, and recover inside one governed coding chain.</p>
+      <span>preview-working</span>
+      <strong>Leave AI running on a project, come back to evidence.</strong>
+      <p>Plan, execute, verify, review, resume, recover. When AI claims "done," there's signed evidence — not just a model assertion.</p>
     </a>
-  </div>
-</section>
-
-<section class="home-usecases">
-  <div class="home-section-head">
-    <p class="home-kicker">Where it becomes useful</p>
-    <h2>Designed for AI work that keeps running after the first prompt.</h2>
-    <p>The whitepaper scenarios point to the same product shape: AI can work across devices, projects, providers, and channels while the important controls stay in the Hub.</p>
-  </div>
-
-  <div class="home-usecase-grid">
-    <div class="home-usecase-card">
-      <span>Personal builders</span>
-      <strong>One Hub for projects, models, quota, and memory</strong>
-      <p>Use local models for private work, paid models when needed, and keep route truth, quota pressure, and long-running project state visible.</p>
-    </div>
-    <div class="home-usecase-card">
-      <span>Family and device sharing</span>
-      <strong>Useful terminals that do not control everything</strong>
-      <p>Lightweight clients can consume AI capability while the Hub controls pairing, access, memory boundaries, provider accounts, and revocation.</p>
-    </div>
-    <div class="home-usecase-card">
-      <span>Small teams</span>
-      <strong>Auditable AI work without handing trust to every client</strong>
-      <p>Team members can use governed AI capability while admins keep control over models, skills, external actions, and release posture.</p>
-    </div>
-    <div class="home-usecase-card">
-      <span>Supervisor work</span>
-      <strong>One operator, multiple active projects</strong>
-      <p>Heartbeat, review, grants, safe-point guidance, and intervention are separated so multi-project automation stays legible.</p>
-    </div>
-    <div class="home-usecase-card">
-      <span>High-risk execution</span>
-      <strong>Signed intent before irreversible side effects</strong>
-      <p>Payments, outbound actions, merges, and connector writes can be forced through Hub-signed manifests, SAS, grants, audit, and kill switches.</p>
-    </div>
-    <div class="home-usecase-card">
-      <span>Skill ecosystems</span>
-      <strong>Reusable capability without install-equals-trust</strong>
-      <p>Skills can become durable execution units while remaining reviewable, pin-able, compatible, auditable, retryable, and revocable.</p>
-    </div>
   </div>
 </section>
 
 <section class="home-diagrams">
   <div class="home-section-head">
-    <p class="home-kicker">System shape</p>
-    <h2>Two views: who decides, and what the Hub manages.</h2>
-    <p>These diagrams are the fastest way to see what X-Hub-System is trying to make governable.</p>
+    <p class="home-kicker">The boundary in one picture</p>
+    <h2>Terminals can ask. The Hub decides.</h2>
+    <p>Model routing, memory truth, grants, audit, skill trust, execution readiness — all governed from the Hub. Terminals and other clients are replaceable surfaces.</p>
   </div>
 
   <div class="home-diagrams__grid">
@@ -215,15 +97,97 @@ features:
       <img src="/xhub_trust_control_plane.svg" alt="X-Hub trust and control plane diagram" />
       <div class="home-diagram-card__copy">
         <strong>Trust and control plane</strong>
-        Clients can ask. The Hub decides. Execution surfaces act only after governance, and runtime truth returns to the Hub.
+        Clients ask. The Hub decides. Execution surfaces act only after governance. Runtime truth returns to the Hub.
       </div>
     </div>
     <div class="home-diagram-card">
       <img src="/xhub_deployment_runtime_topology.svg" alt="X-Hub governed capability map diagram" />
       <div class="home-diagram-card__copy">
         <strong>Governed capability map</strong>
-        Models, memory, skills, quotas, terminals, channels, Supervisor state, and runtime evidence converge through one Hub management surface.
+        Models, memory, skills, quotas, terminals, channels, Supervisor state, runtime evidence — converging through one management surface.
       </div>
+    </div>
+  </div>
+</section>
+
+<section class="home-usecases">
+  <div class="home-section-head">
+    <p class="home-kicker">Why this matters now</p>
+    <h2>Three things changed in the last 18 months. None of them are getting better on their own.</h2>
+  </div>
+
+  <div class="home-usecase-grid">
+    <div class="home-usecase-card">
+      <span>AI does more than chat now</span>
+      <strong>It deletes files, edits code, sends emails, charges cards.</strong>
+      <p>"Are you sure?" inline in a chat window is the wrong place to confirm a destructive action. By 2026 your AI runs longer, touches more, and can do irreversible damage from one prompt injection or one bad token of context.</p>
+    </div>
+    <div class="home-usecase-card">
+      <span>You probably use 3+ AI tools</span>
+      <strong>Each has its own memory, its own keys, its own audit log — none of which talk to each other.</strong>
+      <p>Cursor knows your code. Claude knows your conversations. ChatGPT knows your work. Switching costs you context. Auditing means reading three different chat histories. You need one place that sees the whole picture.</p>
+    </div>
+    <div class="home-usecase-card">
+      <span>AI is no longer a single-user tool</span>
+      <strong>Families share it. Teams share it. But every AI product is built like only one person uses it.</strong>
+      <p>There's no admin / operator / observer concept. No way for a parent to set limits without taking the device. No way for a CTO to audit without watching every chat. X-Hub adds the multi-user shape that AI tools forgot.</p>
+    </div>
+  </div>
+  <p style="margin-top: 32px; text-align: center;">
+    <a href="/why-now">Read the long version: timeline, regulations, and why the window closes around 2028 &rarr;</a>
+  </p>
+</section>
+
+<section class="home-problems">
+  <div class="home-section-head">
+    <p class="home-kicker">Open source, open core</p>
+    <h2>The Hub is free. Forever. Multi-user and compliance are paid.</h2>
+    <p>The design that makes X-Hub work — Hub-first trust, fail-closed, grants, audit, memory truth, skill trust — stays MIT. The pieces only enterprise buyers need are the commercial lane.</p>
+  </div>
+
+  <div class="home-problem-table">
+    <div class="home-problem-row home-problem-row--head">
+      <div>MIT (free)</div>
+      <div>Commercial</div>
+    </div>
+    <div class="home-problem-row">
+      <div>The Hub itself. Single user. Audit log on disk. Skill trust. Local + paid model routing. X-Terminal client.</div>
+      <div>Multi-user roles (admin / operator / observer). SSO / OIDC. SIEM-friendly audit export.</div>
+    </div>
+    <div class="home-problem-row">
+      <div>Family use: one parent admin, kids as governed clients. No separate license, no separate product.</div>
+      <div>EU AI Act / ISO 42001 / SOC 2 alignment evidence. Support SLA. Compliance report generators.</div>
+    </div>
+    <div class="home-problem-row">
+      <div>Open-source contributions welcome. All extracted specs under CC BY 4.0.</div>
+      <div>Private deployment + integration services. Pilot: <a href="mailto:contact@xhubsystem.com">contact@xhubsystem.com</a>.</div>
+    </div>
+  </div>
+</section>
+
+<section class="home-hero-band">
+  <div class="home-hero-band__copy">
+    <p class="home-kicker">Built in the open</p>
+    <h2>Two pieces of X-Hub are also independent protocol specs you can use without us.</h2>
+    <p>
+      If you want the skill-trust layer without taking X-Hub, you can. If you want the per-action confirmation primitive for your own agent runtime, you can. X-Hub is one implementation of these specs — not the only one.
+    </p>
+  </div>
+  <div class="home-flow">
+    <div class="home-flow__row">
+      <span>mcp-trust-registry</span>
+      <strong>A trust layer above MCP — signed manifests, capability tokens, runtime enforcement. Stops "patch updates" from silently adding <code>shell:exec</code>.
+        <a href="https://github.com/AndrewXie-Rich/mcp-trust-registry">github.com/AndrewXie-Rich/mcp-trust-registry</a></strong>
+    </div>
+    <div class="home-flow__row">
+      <span>agent-2fa</span>
+      <strong>Per-action 2FA for AI agent actions — Touch ID on a paired device before a destructive command lands. The "ask before deleting" your IDE agent doesn't have.
+        <a href="https://github.com/AndrewXie-Rich/agent-2fa">github.com/AndrewXie-Rich/agent-2fa</a></strong>
+    </div>
+    <div class="home-flow__row">
+      <span>hub-receipt</span>
+      <strong>Signed receipts that work outside X-Hub. Every authorized action produces a verifiable record — embeddable in commits, IDE metadata, or chat messages.
+        <a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md">hub-receipt/v0.1.md</a></strong>
     </div>
   </div>
 </section>
@@ -231,19 +195,13 @@ features:
 <section class="home-readpath">
   <div class="home-section-head">
     <p class="home-kicker">Reading path</p>
-    <h2>Evaluate the system from safety boundary to operator surface.</h2>
+    <h2>Five pages to evaluate the system end to end.</h2>
   </div>
   <div class="home-readpath__grid">
-    <a href="/scenarios">Use cases</a>
     <a href="/security">Trust model</a>
-    <a href="/constitution">X-Constitution</a>
-    <a href="/memory">Memory control plane</a>
-    <a href="/x-terminal">X-Terminal</a>
-    <a href="/coding-runtime">Coding runtime</a>
     <a href="/architecture">Architecture</a>
+    <a href="/memory">Memory control plane</a>
     <a href="/skills">Governed skills</a>
-    <a href="/get-started">Get started</a>
-    <a href="/status-roadmap">Status roadmap</a>
-    <a href="/docs">Documentation map</a>
+    <a href="/status-roadmap">Status &amp; roadmap</a>
   </div>
 </section>

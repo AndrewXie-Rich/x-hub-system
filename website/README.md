@@ -1,6 +1,8 @@
 # X-Hub Website
 
-This directory contains the VitePress-based public website for X-Hub-System.
+This directory contains the React + Semi Design public website for X-Hub-System.
+The original Markdown pages remain in place and are rendered through the React
+site as article content.
 
 ## Local Development
 
@@ -38,8 +40,9 @@ This repository now includes a GitHub Pages workflow at:
 
 - `.github/workflows/website-pages.yml`
 
-The workflow builds the VitePress site from `website/` and publishes
-`website/.vitepress/dist` to GitHub Pages.
+The workflow builds the Vite site from `website/` and publishes
+`website/.vitepress/dist` to GitHub Pages. The output path is intentionally
+kept compatible with the previous VitePress workflow.
 
 ### Custom Domain
 

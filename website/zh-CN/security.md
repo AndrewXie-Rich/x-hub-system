@@ -1,7 +1,7 @@
 # 信任模型
 
 <p class="lead">
-X-Hub 强调的是结构性安全优势，而不是安全表演。核心主张不是“风险消失”，而是一个被攻破的终端、一个恶意网页、一个导入 skill 或一个暴露 runtime，不应该自动演变成整个系统失控。
+一台被入侵的终端。一个恶意网页。一个有问题的 MCP server。一次提示词注入。今天任何一个都能把你的整个 AI 拉下水。X-Hub 的工作就是让它们做不到。这一页讲清楚:我们在哪里拦、用什么拦、以及我们诚实地拦不住什么。
 </p>
 
 <div class="preview-note">
@@ -125,15 +125,28 @@ X-Hub 把本地和付费路线放进同一治理平面：
 
 ## 高风险动作
 
-对不可逆或外部可见动作，X-Hub 的方向是：
+对不可逆或外部可见动作,X-Hub 的方向是:
 
 - Hub 创建 `ActionManifest` 或 `TxManifest`
-- 终端渲染或执行签名 intent，而不是本地拼接可信 payload
+- 终端渲染或执行签名 intent,而不是本地拼接可信 payload
 - 确认表面验证 Hub signature 并显示 SAS 类校验
 - grant 带 scope、TTL 和 policy constraints
 - 执行返回 evidence 和 audit references
 
+这套模式对应的规范是 [`agent-2fa`](https://github.com/AndrewXie-Rich/agent-2fa)。三个风险档位——`notify`、`confirm`、`dual_confirm`——对应到配对 Authorizer Device 上的 per-action 确认(Touch ID、Face ID、voice phrase、passphrase)。提示词注入的 `DROP TABLE prod_logs` 在打到数据库之前先打到配对设备;外发支付在 API call 落地前先打到 Face ID。agent-2fa 独立于 X-Hub——你可以只拿规范,不带走实现。
+
 这个模式适用于支付、外发消息、connector 写入、代码合并、远程命令和其他高后果动作。
+
+## 回执
+
+每次授权动作——以及每次拒绝、降级、超时和升级——都产生用 [Hub Receipt v0.1](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md) envelope 签名的回执。回执:
+
+- 把 `subject`(动作、skill 调用、agent-2fa challenge 等)绑定到 `issuer_key_id` 和可验证的签名
+- content-addressable,可以嵌入 git commit、IDE 元数据、聊天消息、合规导出
+- **X-Hub 之外也能验证**——任何拿到 issuer 公钥的验证者都能验真伪,不必联系 Hub
+- 跟 `mcp-trust-registry`(skill 执行回执)和 `agent-2fa`(per-action 确认回执)共用同一个 envelope,所以单一审计链路覆盖两套表面
+
+签名回执把审计从"系统记录了什么"提升到"系统产生了外部可验证 artifact"。这个区别正是审计链路在 EU AI Act / ISO 42001 / SOC2 敏感采购场景里有用的关键。
 
 ## 风险模式到控制链路
 
@@ -142,15 +155,15 @@ X-Hub 把本地和付费路线放进同一治理平面：
 | 全量文件、邮箱、数据库或记忆读取 | capability scope、project binding、role-aware memory、least privilege、audit |
 | 敏感数据外发、上传、Webhook、外部 API | outbound grant、destination allowlist、signed intent、TTL、audit |
 | 长期记忆泄露或记忆污染 | five-layer memory、durable write gate、X-Constitution pinned、memory export grant |
-| 批量删除、覆盖、系统配置修改 | destructive action preflight、A-Tier、tool policy、manifest、safe-point review |
+| 批量删除、覆盖、系统配置修改 | destructive action preflight、A-Tier、tool policy、manifest、safe-point review、[`agent-2fa`](https://github.com/AndrewXie-Rich/agent-2fa) `dual_confirm` |
 | shell/root 命令执行和装依赖 | command allow/deny policy、working-directory scope、runtime readiness、evidence refs |
-| 插件/Skill 供应链攻击 | manifest、publisher trust、package pin、compat doctor、vetting、revoke |
+| 插件/Skill 供应链攻击 | manifest、publisher trust、package pin、compat doctor、vetting、revoke、[`mcp-trust-registry`](https://github.com/AndrewXie-Rich/mcp-trust-registry) attestation chain |
 | 公网暴露、弱认证、错误配对 | same-Wi-Fi first trust、device identity、token rotation、allowed source、device freeze |
 | 横向移动和提权 | scoped grants、connector boundary、secret policy、audit trail、kill-switch |
 | 目标漂移、过度执行、成本爆炸 | execution budget、quota posture、TTL、heartbeat anomaly、Supervisor review、clamp |
-| 假完成、编造日志、弱证据收口 | evidence-first memory、pre-done review、audit refs、done-candidate state |
-| 身份冒充、越权签批、转账或外发 | actor binding、grant target、SAS、approval surface、signed manifest |
-| 审计缺失和事后不可追溯 | Hub-side audit、deny reason、evidence refs、grant history、doctor/explainability |
+| 假完成、编造日志、弱证据收口 | evidence-first memory、pre-done review、audit refs、done-candidate state、[Hub Receipt](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md) envelope |
+| 身份冒充、越权签批、转账或外发 | actor binding、grant target、SAS、approval surface、signed manifest、`agent-2fa` 配对设备确认 |
+| 审计缺失和事后不可追溯 | Hub-side audit、deny reason、evidence refs、grant history、doctor/explainability、签名 Hub Receipts |
 
 这些控制不会把所有风险消灭，但会把风险从“一个活跃 Agent 私下决定”变成“Hub 可解释地放行、拒绝、降级、等待确认或停止”。
 

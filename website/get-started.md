@@ -1,13 +1,26 @@
 # Get Started
 
 <p class="lead">
-This page is the shortest action path for people who want to download, try, build, or contribute to X-Hub-System. Normal users should start with the combined macOS DMG from GitHub Releases. Developers can build the Hub, X-Terminal, and Rust runtime from source.
+This page is the shortest action path for people who want to download, try, build, or contribute to X-Hub-System. macOS is the only currently shipping platform; Linux daemon and Web thin client are in flight. The two extracted specs can be used independently — you don't need to take X-Hub to take the specs.
 </p>
 
 <div class="preview-note">
-  <strong>Public technical preview</strong>
-  X-Hub-System is still a public tech preview. Release packages, source-build commands, and contribution boundaries will continue to evolve. Use GitHub Release notes, README, and this page as the public entry points.
+  <strong>Public technical preview.</strong>
+  Macos DMG is the only shipping path today. Linux daemon (via <code>docker-compose</code>) and Web thin client are the 90-day P0 direction. Per-surface status: <a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">capability matrix</a>.
 </div>
+
+## Three Ways In
+
+**1. macOS app (shipping today).** Combined DMG with `X-Hub.app` and `X-Terminal.app`. Apple Silicon. See [Download The Preview](#download-the-preview) below.
+
+**2. Linux daemon (in flight, 90-day P0).** `docker-compose up` deployment, abstracting launchd-specific calls behind a trait. Not yet released; track [status & roadmap](/status-roadmap) for the cutover.
+
+**3. Spec-only consumer (use without X-Hub).** Take just one of the extracted specs:
+- [`mcp-trust-registry`](https://github.com/AndrewXie-Rich/mcp-trust-registry) — federated trust layer above MCP
+- [`agent-2fa`](https://github.com/AndrewXie-Rich/agent-2fa) — per-action 2FA for AI agent actions
+- [`hub-receipt`](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md) — shared signed-receipt envelope
+
+These are independent v0.1 drafts. X-Hub is one implementation; you can write your own.
 
 ## Download The Preview
 
@@ -27,7 +40,8 @@ The combined package should contain:
 
 - `X-Hub.app`: native macOS Hub UI shell with the Rust kernel/runtime embedded
 - `X-Terminal.app`: paired terminal and Supervisor workspace
-- Rust `xtd` sidecar for the X-Terminal runtime path
+
+(The `rust-xtd` sidecar that previously shipped here is frozen at scaffold; the Web thin client direction subsumes it.)
 
 Install flow:
 

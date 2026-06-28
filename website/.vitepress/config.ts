@@ -5,7 +5,16 @@ const releasesUrl = `${repoUrl}/releases`
 
 const enNav = [
   { text: 'Overview', link: '/' },
-  { text: 'Use Cases', link: '/scenarios' },
+  {
+    text: 'Use Cases',
+    items: [
+      { text: 'For families', link: '/family' },
+      { text: 'For teams', link: '/team' },
+      { text: 'For developers', link: '/get-started' },
+      { text: 'Why this matters now', link: '/why-now' },
+      { text: 'Use cases overview', link: '/scenarios' }
+    ]
+  },
   {
     text: 'Security',
     items: [
@@ -41,7 +50,16 @@ const enNav = [
 
 const zhNav = [
   { text: '总览', link: '/zh-CN/' },
-  { text: '使用场景', link: '/zh-CN/scenarios' },
+  {
+    text: '使用场景',
+    items: [
+      { text: '给家庭用', link: '/zh-CN/family' },
+      { text: '给团队用', link: '/zh-CN/team' },
+      { text: '给开发者用', link: '/zh-CN/get-started' },
+      { text: '为什么是现在', link: '/zh-CN/why-now' },
+      { text: '使用场景总览', link: '/zh-CN/scenarios' }
+    ]
+  },
   {
     text: '安全',
     items: [
@@ -80,9 +98,18 @@ const enSidebar = [
     text: 'Overview',
     items: [
       { text: 'Why X-Hub', link: '/' },
+      { text: 'Why this matters now', link: '/why-now' },
       { text: 'Use Cases', link: '/scenarios' },
       { text: 'Why Not Just An Agent?', link: '/why-not-just-an-agent' },
       { text: 'Platform Architecture', link: '/architecture' }
+    ]
+  },
+  {
+    text: 'For audiences',
+    items: [
+      { text: 'For families', link: '/family' },
+      { text: 'For teams and orgs', link: '/team' },
+      { text: 'For developers (Get Started)', link: '/get-started' }
     ]
   },
   {
@@ -124,9 +151,18 @@ const zhSidebar = [
     text: '总览',
     items: [
       { text: '为什么是 X-Hub', link: '/zh-CN/' },
+      { text: '为什么是现在', link: '/zh-CN/why-now' },
       { text: '使用场景', link: '/zh-CN/scenarios' },
-      { text: '为什么不直接用 Agent？', link: '/zh-CN/why-not-just-an-agent' },
+      { text: '为什么不直接用 Agent?', link: '/zh-CN/why-not-just-an-agent' },
       { text: '平台架构', link: '/zh-CN/architecture' }
+    ]
+  },
+  {
+    text: '按受众',
+    items: [
+      { text: '给家庭用', link: '/zh-CN/family' },
+      { text: '给团队和组织用', link: '/zh-CN/team' },
+      { text: '给开发者用(开始使用)', link: '/zh-CN/get-started' }
     ]
   },
   {
