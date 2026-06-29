@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/badge/deployment-self--hosted-blue.svg" alt="Self-hosted" />
   <img src="https://img.shields.io/badge/security-fail--closed-critical.svg" alt="Fail-closed" />
   <img src="https://img.shields.io/badge/model-open--core-orange.svg" alt="Open core" />
+  <a href="https://xhubsystem.com"><img src="https://img.shields.io/badge/website-xhubsystem.com-111111.svg" alt="Website xhubsystem.com" /></a>
 </p>
 
 > **一个自托管 Hub,夹在你和 Claude、GPT、本地模型之间。**
