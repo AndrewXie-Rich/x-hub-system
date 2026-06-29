@@ -24,6 +24,16 @@ ${alternates}
   </url>`;
 }
 
+async function writeRouteEntry(pathname) {
+  const clean = pathname.replace(/^\/+|\/+$/g, '');
+  if (!clean) {
+    return;
+  }
+  const routeDir = join(dist, clean);
+  await mkdir(routeDir, { recursive: true });
+  await copyFile(join(dist, 'index.html'), join(routeDir, 'index.html'));
+}
+
 await mkdir(dist, { recursive: true });
 await copyFile(join(dist, 'index.html'), join(dist, '404.html'));
 
@@ -31,6 +41,9 @@ const routeEntries = ['', ...docOrder].flatMap((slug) => [
   { path: localizedPath('en', slug), slug },
   { path: localizedPath('zh', slug), slug }
 ]);
+
+await Promise.all(routeEntries.map((entry) => writeRouteEntry(entry.path)));
+
 const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
 ${routeEntries.map((entry) => sitemapEntry(entry.path, entry.slug)).join('\n')}
