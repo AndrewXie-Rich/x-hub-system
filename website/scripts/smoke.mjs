@@ -40,7 +40,17 @@ async function sha256(path) {
   return createHash('sha256').update(data).digest('hex');
 }
 
-async function fetchWithRetry(url, init = {}, attempts = 4) {
+function positiveInt(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const networkAttempts = positiveInt(
+  argValue('--network-attempts') || process.env.XHUB_WEBSITE_SMOKE_ATTEMPTS,
+  6
+);
+
+async function fetchWithRetry(url, init = {}, attempts = networkAttempts) {
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
@@ -137,6 +147,7 @@ const result = {
   checked_routes: routeSet.length,
   checked_assets: requiredAssets.length,
   base_url: baseUrl || null,
+  network_attempts: baseUrl ? networkAttempts : null,
   failures
 };
 
