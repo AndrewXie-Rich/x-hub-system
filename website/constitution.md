@@ -6,7 +6,7 @@ X-Constitution is what stops AI from saying "I need to finish this task" and the
 
 <div class="preview-note">
   <strong>Public explanation</strong>
-  This page explains the product value and understandable risk cases without publishing the full internal rule text. The core principle is simple: a task goal should not override the user's long-term safety boundary.
+  Public examples explain the product value without publishing the full internal rule text. The core principle is simple: a task goal should not override the user's long-term safety boundary.
 </div>
 
 ## The Problem It Solves

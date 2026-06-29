@@ -5,7 +5,7 @@ X-Hub isn't trying to win the same game as Cursor or Cline or Claude Code. Those
 </p>
 
 <div class="preview-note">
-  <strong>This page names names.</strong>
+  <strong>Practical comparison.</strong>
   By 2026, "the agent" isn't a hypothetical. It's Cursor / Cline / Claude Code / Aider / Continue / Roo for IDE work; Devin / Manus / Replit Agent for project-shaped autonomy. The right comparison isn't X-Hub against an abstract agent. It's "what does X-Hub do that those don't."
 </div>
 

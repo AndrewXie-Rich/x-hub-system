@@ -38,7 +38,7 @@ features:
   <div class="home-section-head">
     <p class="home-kicker">Capabilities</p>
     <h2>Eight things X-Hub does that the agent on its own doesn't.</h2>
-    <p>Each card has a status tag (<code>validated</code> or <code>preview-working</code>) mapping to the <a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">capability matrix</a>. Anything not in the matrix at that level isn't claimed here.</p>
+    <p>Each card shows whether the capability is <code>validated</code> or in <code>preview</code>. The <a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">capability matrix</a> remains the source of truth for exact status.</p>
   </div>
 
   <div class="home-capability-grid">
@@ -48,7 +48,7 @@ features:
       <p>When the AI tries to write the wrong file, hit the wrong endpoint, or call a tool it shouldn't, the system blocks it before it happens — not after.</p>
     </a>
     <a class="home-capability-card" href="/x-terminal">
-      <span>preview-working</span>
+      <span>preview</span>
       <strong>See the model that actually ran.</strong>
       <p>Configured vs actual model. Why the fallback fired. Which provider got billed. No silent route swaps hiding inside chat history.</p>
     </a>
@@ -58,17 +58,17 @@ features:
       <p>Project state, long-term facts, X-Constitution, and decisions live in the Hub — not inside Claude or Cursor. Move providers without rebuilding context.</p>
     </a>
     <a class="home-capability-card" href="/local-first">
-      <span>preview-working</span>
+      <span>preview</span>
       <strong>Mix local and paid AI under one budget.</strong>
       <p>Local models for sensitive work, paid Claude / GPT when you need them. One quota view. One fallback policy. One audit trail.</p>
     </a>
     <a class="home-capability-card" href="/skills">
-      <span>preview-working</span>
+      <span>preview</span>
       <strong>Install a tool without trusting its author.</strong>
       <p>MCP servers, plugins, skills — all checked for signed source, pinned version, declared capability. A "PDF parser" that quietly asks for shell access gets stopped.</p>
     </a>
     <a class="home-capability-card" href="/governed-autonomy">
-      <span>preview-working</span>
+      <span>preview</span>
       <strong>Set how much the AI can do on its own — separately from how often you watch.</strong>
       <p>Three independent dials: execution authority, supervision depth, review cadence. Not one autonomy slider that erases oversight.</p>
     </a>
@@ -78,7 +78,7 @@ features:
       <p>Voice, Slack, Telegram, Feishu, mobile confirmation — all enter through identity binding and revocable grants. Never a direct line to your AI.</p>
     </a>
     <a class="home-capability-card" href="/coding-runtime">
-      <span>preview-working</span>
+      <span>preview</span>
       <strong>Leave AI running on a project, come back to evidence.</strong>
       <p>Plan, execute, verify, review, resume, recover. When AI claims "done," there's signed evidence — not just a model assertion.</p>
     </a>

@@ -1,7 +1,7 @@
 # Get Started
 
 <p class="lead">
-This page is the shortest action path for people who want to download, try, build, or contribute to X-Hub-System. macOS is the only currently shipping platform; Linux daemon and Web thin client are in flight. The two extracted specs can be used independently — you don't need to take X-Hub to take the specs.
+The shortest action path for downloading, trying, building, or contributing to X-Hub-System. macOS is the only currently shipping platform; Linux daemon and Web thin client are in flight. The two extracted specs can be used independently — you don't need to take X-Hub to take the specs.
 </p>
 
 <div class="preview-note">
@@ -124,7 +124,7 @@ bash scripts/run_xhub_doctor_from_source.command all --workspace-root /path/to/w
 | `docs/` | protocols, working index, governance designs, public material |
 | `website/` | VitePress source for this site |
 
-## Read Before Contributing
+## Contributing Safely
 
 Recommended starting points:
 
@@ -135,12 +135,12 @@ Recommended starting points:
 - `x-hub/README.md`
 - `x-terminal/README.md`
 
-Contribution boundaries:
+Release and public-claim hygiene:
 
-- Do not commit `build/`, `.app`, `.dmg`, runtime databases, secrets, tokens, or local-path artifacts.
-- Do not present Rust daemon-only output as the full Hub product. The public Hub product should be `X-Hub.app`: Swift UI shell with embedded Rust runtime.
-- Do not describe preview, shadow, candidate, or diagnostics-only paths as production authority.
-- Any change touching trust, memory, skills, grants, audit, or runtime readiness should read the relevant contracts and tests first.
+- Generated artifacts (`build/`, `.app`, `.dmg`, runtime databases) belong in GitHub Releases or local runtime directories, not in source commits.
+- Public product claims should describe the shipping Hub as `X-Hub.app`: a native Swift shell with the Rust runtime embedded.
+- Preview, shadow, candidate, and diagnostics-only paths stay labeled as preview or diagnostics until the capability matrix marks them as production authority.
+- Changes touching trust, memory, skills, grants, audit, or runtime readiness should start from the relevant contracts and tests.
 
 ## Release Assets
 

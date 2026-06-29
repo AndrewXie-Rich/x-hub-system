@@ -6,7 +6,7 @@ If AI is just chatting, you don't need X-Hub. If AI is starting to delete files,
 
 <div class="preview-note">
   <strong>Three audiences, not six.</strong>
-  This page expands the three audiences from the homepage. Personal builders are a sub-mode of developers, not a separate audience — same Hub, single user, no role split.
+  The product shape stays simple: families, teams, and individual builders all use the same Hub. Personal builders are the single-user mode, not a separate product line.
 </div>
 
 ## The short version

@@ -1,7 +1,7 @@
 # Get Started
 
 <p class="lead">
-这个页面是给想下载、试用、构建或贡献 X-Hub-System 的开发者准备的最短行动路径。macOS 是当前唯一出货平台;Linux daemon 和 Web 瘦客户端在收口中。两份独立规范可以单独使用——不必带走 X-Hub 才能用规范。
+下载、试用、构建或贡献 X-Hub-System 的最短行动路径。macOS 是当前唯一出货平台;Linux daemon 和 Web 瘦客户端在收口中。两份独立规范可以单独使用——不必带走 X-Hub 才能用规范。
 </p>
 
 <div class="preview-note">
@@ -124,7 +124,7 @@ bash scripts/run_xhub_doctor_from_source.command all --workspace-root /path/to/w
 | `docs/` | 协议、工作索引、治理设计和公开材料 |
 | `website/` | 当前官网的 VitePress 源码 |
 
-## 贡献前先读
+## 安全贡献
 
 如果你要贡献代码，建议先读：
 
@@ -135,12 +135,12 @@ bash scripts/run_xhub_doctor_from_source.command all --workspace-root /path/to/w
 - `x-hub/README.md`
 - `x-terminal/README.md`
 
-贡献时请保持几条边界：
+发布和公开口径保持这几条原则：
 
-- 不提交 `build/`、`.app`、`.dmg`、runtime database、secret、token 或本地路径产物。
-- 不把 Rust daemon-only 产物当成完整 Hub 产品发布；公开 Hub 产品应是 Swift UI 壳 + 内嵌 Rust runtime 的 `X-Hub.app`。
-- 不把 preview、shadow、candidate、diagnostics-only 路径写成 production authority。
-- 任何会碰 trust、memory、skills、grant、audit、runtime readiness 的改动，都要看对应协议和测试。
+- `build/`、`.app`、`.dmg`、runtime database 等生成物放到 GitHub Releases 或本地运行目录，不进入源码提交。
+- 公开产品形态以 `X-Hub.app` 为准：原生 Swift UI 壳，内嵌 Rust runtime。
+- preview、shadow、candidate、diagnostics-only 路径在能力矩阵标记为 production authority 前，继续按预览或诊断能力描述。
+- 涉及 trust、memory、skills、grant、audit、runtime readiness 的改动，应先对齐对应协议和测试。
 
 ## Release 资产怎么处理
 

@@ -1,7 +1,7 @@
 # Reading Path
 
 <p class="lead">
-Four tracks through the site, depending on what you're trying to figure out. Pick one. Each is 4–6 pages.
+Four reading tracks, depending on the question. Each path is 4–6 pages.
 </p>
 
 ## Product story

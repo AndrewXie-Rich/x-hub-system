@@ -1,7 +1,7 @@
 # 状态与路线图
 
 <p class="lead">
-X-Hub-System 是公开技术预览。这一页记录主线已落、正在产品化、以及刻意推出本周期的范围。每项能力的状态以<a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">能力矩阵</a>为准,本页不超出矩阵口径。
+X-Hub-System 是公开技术预览。这份路线图区分已经进入 main 的能力、正在产品化的方向，以及当前周期刻意不做的范围。每项能力的状态以<a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">能力矩阵</a>为准。
 </p>
 
 <div class="preview-note">

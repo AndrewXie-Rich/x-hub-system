@@ -1,12 +1,12 @@
 # Security Model
 
 <p class="lead">
-One compromised terminal. One hostile webpage. One sketchy MCP server. One prompt injection. Any of these, today, can drag your whole AI setup down. X-Hub's job is to keep that from happening. This page walks through what we block, where we block it, and the limits of that protection.
+One compromised terminal. One hostile webpage. One sketchy MCP server. One prompt injection. Any of these, today, can drag your whole AI setup down. X-Hub's job is to keep that from happening: block the risky path, show where it was blocked, and make the remaining limits explicit.
 </p>
 
 <div class="preview-note">
   <strong>Public security position</strong>
-  This page describes the public trust model and product direction. It intentionally explains the safety chain without publishing every internal implementation edge or still-evolving control detail.
+  The public model explains the safety chain without exposing every internal implementation edge or still-evolving control detail.
 </div>
 
 ## The Short Version

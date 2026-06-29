@@ -1,13 +1,12 @@
 # Architecture
 
 <p class="lead">
-Clients ask. The Hub decides. Execution surfaces act inside scope. Runtime truth returns to the Hub. The rest of this page is the long version: what each layer does, where the boundaries sit, and why this shape lets you run powerful AI without giving away the trust root.
+Clients ask. The Hub decides. Execution surfaces act inside scope. Runtime truth returns to the Hub. Each layer has a clear boundary, so powerful AI can run without giving away the trust root.
 </p>
 
 <div class="preview-note">
   <strong>Public architecture view</strong>
-  This page explains the system shape and trust boundaries at a product level. It is not intended to publish every
-  internal runtime path, implementation edge, or still-changing UI detail.
+  A high-level map of the system shape, authority boundaries, and public control-plane model. Internal runtime paths and still-changing implementation details remain outside the public architecture view.
 </div>
 
 ## The Architectural Thesis

@@ -9,11 +9,6 @@
   <a href="https://n8n.io">n8n</a>、<a href="https://zapier.com">Zapier AI</a>、<a href="https://make.com">Make</a> 在通道集成上比 X-Hub 顺滑得多。我们的价值不是"更多通道"——是"每个通道都走同一条 Hub 治理的审计、授权、签名回执链路"。
 </div>
 
-<div class="preview-note">
-  <strong>公开交互视图</strong>
-  这一页关注的是产品方向和边界原则，不展开尚未稳定的具体交互流程、设备接法和更细的授权状态机细节。
-</div>
-
 ## 基本规则
 
 所有外部世界事件都先进入 Hub。

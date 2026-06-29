@@ -6,7 +6,7 @@
 
 <div class="preview-note">
   <strong>A0..A4 / S0..S4 完整分层表见 <a href="/zh-CN/x-terminal">X-Terminal</a>。</strong>
-  这一页讲"为什么三根旋钮而不是一根"。具体分层语义住在 X-Terminal,因为那才是你实际去调它们的表面。
+  完整档位语义放在 X-Terminal 中，因为那里是实际配置这些控制项的表面。
 </div>
 
 ## 模型

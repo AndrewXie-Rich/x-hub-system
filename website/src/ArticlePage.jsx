@@ -227,16 +227,18 @@ export default function ArticlePage({ locale, slug, SmartLink, navigateTo }) {
             {adjacent.previous ? (
               <SmartLink className="article-pager__link" href={localizedPath(locale, adjacent.previous)}>
                 <IconArrowLeft />
-                <span>{l.previousDoc}</span>
-                <strong>{docTitles[locale][adjacent.previous]}</strong>
+                <span className="article-pager__copy">
+                  <span className="article-pager__label">{l.previousDoc}</span>
+                  <strong className="article-pager__title">{docTitles[locale][adjacent.previous]}</strong>
+                </span>
               </SmartLink>
-            ) : (
-              <span />
-            )}
+            ) : null}
             {adjacent.next ? (
               <SmartLink className="article-pager__link article-pager__link--next" href={localizedPath(locale, adjacent.next)}>
-                <span>{l.nextDoc}</span>
-                <strong>{docTitles[locale][adjacent.next]}</strong>
+                <span className="article-pager__copy">
+                  <span className="article-pager__label">{l.nextDoc}</span>
+                  <strong className="article-pager__title">{docTitles[locale][adjacent.next]}</strong>
+                </span>
                 <IconArrowRight />
               </SmartLink>
             ) : null}

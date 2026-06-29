@@ -1,7 +1,7 @@
 # Status & Roadmap
 
 <p class="lead">
-X-Hub-System is a public technical preview. This page tracks what's already in main, what's actively being productized, and what's been deliberately pushed out of scope. Per-surface status is governed by the <a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">capability matrix</a>; this page does not claim beyond it.
+X-Hub-System is a public technical preview. This roadmap separates what is already in main, what is being productized now, and what is deliberately out of scope for the current cycle. Per-surface status is governed by the <a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">capability matrix</a>.
 </p>
 
 <div class="preview-note">

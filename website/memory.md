@@ -107,9 +107,9 @@ The five-layer structure answers how memory is retained. The control plane answe
 
 ## What Is Working Today
 
-X-Hub is in public technical preview, so the memory page should be read as a product direction with a real runtime foundation, not as a claim that every planned layer is complete.
+X-Hub is in public technical preview. The runtime foundation below is available today; planned layers are called out separately.
 
-Currently implemented or preview-working:
+Available today or running in preview:
 
 - Rust memory object storage with object history and readiness reporting
 - Hub-first project canonical sync from XT into Rust memory objects

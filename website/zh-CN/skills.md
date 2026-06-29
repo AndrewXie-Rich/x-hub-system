@@ -6,7 +6,7 @@
 
 <div class="preview-note">
   <strong>这套子系统是 <a href="https://github.com/AndrewXie-Rich/mcp-trust-registry">mcp-trust-registry</a> 规范的参考实现。</strong>
-  registry、attestations、capability tokens、运行时强制都独立于 X-Hub——你可以只拿规范,不必带走实现。本页讲 X-Hub 做了什么;规范讲可互操作的形状。
+  registry、attestations、capability tokens、运行时强制都独立于 X-Hub——可以只采用规范，不必采用 X-Hub 实现；X-Hub 是这套可互操作形状的一个参考运行时。
 </div>
 
 ## Skill 的边界

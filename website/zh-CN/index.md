@@ -38,7 +38,7 @@ features:
   <div class="home-section-head">
     <p class="home-kicker">能力</p>
     <h2>八件 X-Hub 做得到、单独一个 agent 做不到的事。</h2>
-    <p>每张卡角标上有状态标记(<code>validated</code> 或 <code>preview-working</code>),对应到<a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">能力矩阵</a>。没在矩阵那一级的,这页上不主张。</p>
+    <p>每张卡标明能力是 <code>validated</code> 还是 <code>preview</code>。精确状态以<a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">能力矩阵</a>为准。</p>
   </div>
 
   <div class="home-capability-grid">
@@ -48,7 +48,7 @@ features:
       <p>AI 试着写错文件、调错接口、跑错命令时,系统在动作发生**之前**挡住,不是事后再告诉你。</p>
     </a>
     <a class="home-capability-card" href="/zh-CN/x-terminal">
-      <span>preview-working</span>
+      <span>preview</span>
       <strong>看见实际跑的是哪个模型。</strong>
       <p>配置的是哪个 vs 实际跑了哪个。为什么 fallback。哪个 provider 在扣钱。没有静默路由替换藏在对话历史里。</p>
     </a>
@@ -58,17 +58,17 @@ features:
       <p>项目状态、长期事实、X 宪章、决策——都在 Hub 里,不在 Claude 或 Cursor 里。换 provider 不必重建上下文。</p>
     </a>
     <a class="home-capability-card" href="/zh-CN/local-first">
-      <span>preview-working</span>
+      <span>preview</span>
       <strong>本地模型和付费模型走同一份预算。</strong>
       <p>敏感工作走本地模型,需要时切付费 Claude / GPT。一个额度视图。一套 fallback 策略。一条审计链。</p>
     </a>
     <a class="home-capability-card" href="/zh-CN/skills">
-      <span>preview-working</span>
+      <span>preview</span>
       <strong>装工具不必信工具作者。</strong>
       <p>MCP server、插件、skill——都查签名来源、固定版本、声明的能力范围。一个号称 PDF 解析器、暗地里要 shell 权限的会被拦下。</p>
     </a>
     <a class="home-capability-card" href="/zh-CN/governed-autonomy">
-      <span>preview-working</span>
+      <span>preview</span>
       <strong>AI 自己干多少、你盯多紧,分开设。</strong>
       <p>三档独立旋钮:执行权限、监督深度、复盘频率。不是一根 autonomy slider 把监督一起拉没。</p>
     </a>
@@ -78,7 +78,7 @@ features:
       <p>语音、Slack、Telegram、飞书、手机确认——都走身份绑定 + 可撤销授权进来。永远不会直连你的 AI。</p>
     </a>
     <a class="home-capability-card" href="/zh-CN/coding-runtime">
-      <span>preview-working</span>
+      <span>preview</span>
       <strong>让 AI 跑一晚上代码,回来能看到证据。</strong>
       <p>规划、执行、验证、复盘、续跑、恢复。AI 说"完成"时,有签名证据可查——不是模型一句话就算数。</p>
     </a>

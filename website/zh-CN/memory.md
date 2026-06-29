@@ -107,9 +107,9 @@ X-Hub 的定位不同：Memory 是安全和运行时真相的一部分。
 
 ## 当前真实进度
 
-X-Hub 仍处在公开技术预览阶段。所以这个页面应该被理解为“已有运行底座的产品路线”，不是宣称所有规划层都已经完成。
+X-Hub 仍处在公开技术预览阶段。下面列的是已经可用或预览运行中的底座；仍在规划和打磨的层单独列出。
 
-目前已经实现或 preview-working 的部分：
+已经可用或预览运行中的部分：
 
 - Rust memory object 存储、对象历史和 readiness 报告
 - XT project canonical memory 优先同步到 Rust memory object

@@ -51,14 +51,14 @@ export const docTitles = {
   en: {
     architecture: 'Architecture',
     'channels-and-voice': 'Channels And Voice',
-    'coding-runtime': 'Coding Runtime',
+    'coding-runtime': '编码运行时',
     constitution: 'X-Constitution',
     docs: 'Reading Path',
     family: 'For families',
-    'get-started': 'Get Started',
+    'get-started': '开始使用',
     'governed-autonomy': 'Governed Autonomy',
     'local-first': 'Local First',
-    memory: 'Governed Memory Control Plane',
+    memory: '记忆控制面',
     scenarios: 'Use Cases',
     security: 'Security Model',
     skills: 'Governed Skills',
@@ -260,16 +260,16 @@ export const siteCopy = {
     ],
     capabilitiesTitle: 'Eight concrete things X-Hub does — that the agent on its own doesn\'t.',
     capabilitiesBody:
-      'Each card has a status tag in the corner (validated or preview-working) mapping to the capability matrix. Anything not in the matrix at that level isn\'t claimed here.',
+      'Each card shows whether the capability is validated or in preview. The capability matrix remains the source of truth for the exact status.',
     capabilities: [
       ['validated', 'Stop a wrong action before it runs.', 'When AI tries to write the wrong file, hit the wrong endpoint, or call a tool it shouldn\'t, the system blocks it before it happens — not after.', 'security'],
-      ['preview-working', 'See the model that actually ran.', 'Configured vs actual model. Why the fallback fired. Which provider got billed. No silent route swaps hiding inside chat history.', 'x-terminal'],
+      ['preview', 'See the model that actually ran.', 'Configured vs actual model. Why the fallback fired. Which provider got billed. No silent route swaps hiding inside chat history.', 'x-terminal'],
       ['validated', 'Switch providers, keep your memory.', 'Project state, long-term facts, X-Constitution, and decisions live in the Hub — not inside Claude or Cursor. Move providers without rebuilding context.', 'memory'],
-      ['preview-working', 'Mix local and paid AI under one budget.', 'Local models for sensitive work, paid Claude / GPT when you need them. One quota view. One fallback policy. One audit trail.', 'local-first'],
-      ['preview-working', 'Install a tool without trusting its author.', 'MCP servers, plugins, skills — all checked for signed source, pinned version, declared capability. A "PDF parser" that quietly asks for shell access gets stopped.', 'skills'],
-      ['preview-working', 'Set how much AI can do on its own — separately from how often you watch.', 'Three independent dials: execution authority, supervision depth, review cadence. Not one autonomy slider that erases oversight.', 'constitution'],
+      ['preview', 'Mix local and paid AI under one budget.', 'Local models for sensitive work, paid Claude / GPT when you need them. One quota view. One fallback policy. One audit trail.', 'local-first'],
+      ['preview', 'Install a tool without trusting its author.', 'MCP servers, plugins, skills — all checked for signed source, pinned version, declared capability. A "PDF parser" that quietly asks for shell access gets stopped.', 'skills'],
+      ['preview', 'Set how much AI can do on its own — separately from how often you watch.', 'Three independent dials: execution authority, supervision depth, review cadence. Not one autonomy slider that erases oversight.', 'constitution'],
       ['validated', 'Use AI from anywhere, but trust it from one place.', 'Voice, Slack, Telegram, Feishu, mobile confirmation — all enter through identity binding and revocable grants. Never a direct line to your AI.', 'architecture'],
-      ['preview-working', 'Leave AI running on a project, come back to evidence.', 'Plan, execute, verify, review, resume, recover. When AI claims "done," there\'s signed evidence — not just a model assertion.', 'coding-runtime']
+      ['preview', 'Leave AI running on a project, come back to evidence.', 'Plan, execute, verify, review, resume, recover. When AI claims "done," there\'s signed evidence — not just a model assertion.', 'coding-runtime']
     ],
     useCasesTitle: 'Who lands here — and what they get.',
     audienceCards: [
@@ -353,16 +353,16 @@ export const siteCopy = {
     ],
     capabilitiesTitle: '八件 X-Hub 做得到、单独一个 agent 做不到的事。',
     capabilitiesBody:
-      '每张卡角标上有状态标记(validated 或 preview-working),对应到能力矩阵。没在矩阵那一级的,这页上不主张。',
+      '每张卡标明能力是 validated 还是 preview。精确状态以能力矩阵为准。',
     capabilities: [
       ['validated', '想干的事不该干,系统直接拦下。', 'AI 试着写错文件、调错接口、跑错命令时,系统在动作发生之前挡住,不是事后再告诉你。', 'security'],
-      ['preview-working', '看见实际跑的是哪个模型。', '配置的是哪个 vs 实际跑了哪个。为什么 fallback。哪个 provider 在扣钱。没有静默路由替换。', 'x-terminal'],
+      ['preview', '看见实际跑的是哪个模型。', '配置的是哪个 vs 实际跑了哪个。为什么 fallback。哪个 provider 在扣钱。没有静默路由替换。', 'x-terminal'],
       ['validated', '换模型不丢记忆。', '项目状态、长期事实、X 宪章、决策——都在 Hub 里,不在 Claude 或 Cursor 里。换 provider 不必重建上下文。', 'memory'],
-      ['preview-working', '本地模型和付费模型走同一份预算。', '敏感工作走本地模型,需要时切付费 Claude / GPT。一个额度视图。一套 fallback 策略。一条审计链。', 'local-first'],
-      ['preview-working', '装工具不必信工具作者。', 'MCP server、插件、skill——都查签名来源、固定版本、声明的能力。号称 PDF 解析器、暗地里要 shell 权限的会被拦下。', 'skills'],
-      ['preview-working', 'AI 自己干多少、你盯多紧,分开设。', '三档独立旋钮:执行权限、监督深度、复盘频率。不是一根 autonomy slider 把监督一起拉没。', 'constitution'],
+      ['preview', '本地模型和付费模型走同一份预算。', '敏感工作走本地模型,需要时切付费 Claude / GPT。一个额度视图。一套 fallback 策略。一条审计链。', 'local-first'],
+      ['preview', '装工具不必信工具作者。', 'MCP server、插件、skill——都查签名来源、固定版本、声明的能力。号称 PDF 解析器、暗地里要 shell 权限的会被拦下。', 'skills'],
+      ['preview', 'AI 自己干多少、你盯多紧,分开设。', '三档独立旋钮:执行权限、监督深度、复盘频率。不是一根 autonomy slider 把监督一起拉没。', 'constitution'],
       ['validated', '到处都能用 AI,但只从一处信任它。', '语音、Slack、Telegram、飞书、手机确认——都走身份绑定 + 可撤销授权进来。永远不会直连你的 AI。', 'architecture'],
-      ['preview-working', '让 AI 跑一晚上代码,回来能看到证据。', '规划、执行、验证、复盘、续跑、恢复。AI 说"完成"时,有签名证据可查——不是模型一句话就算数。', 'coding-runtime']
+      ['preview', '让 AI 跑一晚上代码,回来能看到证据。', '规划、执行、验证、复盘、续跑、恢复。AI 说"完成"时,有签名证据可查——不是模型一句话就算数。', 'coding-runtime']
     ],
     useCasesTitle: '谁会来到这——以及他们能拿到什么。',
     audienceCards: [

@@ -6,7 +6,7 @@ You install one MCP server today. Next week the maintainer ships "a small update
 
 <div class="preview-note">
   <strong>This subsystem is the reference implementation for the <a href="https://github.com/AndrewXie-Rich/mcp-trust-registry">mcp-trust-registry</a> spec.</strong>
-  The registry, attestations, capability tokens, and runtime enforcement are independent of X-Hub. You can take the spec without taking the implementation. This page describes what X-Hub does; the spec describes the interoperable shape.
+  The registry, attestations, capability tokens, and runtime enforcement are independent of X-Hub. The spec can be adopted without the X-Hub implementation; X-Hub is one reference runtime for the interoperable shape.
 </div>
 
 ## The Skill Boundary

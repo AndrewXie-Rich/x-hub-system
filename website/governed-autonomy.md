@@ -6,7 +6,7 @@ Most agent products have one "autonomy" slider that goes from "ask first" to "do
 
 <div class="preview-note">
   <strong>For the A0..A4 / S0..S4 tier table, see <a href="/x-terminal">X-Terminal</a>.</strong>
-  This page is the "why three dials instead of one" argument. The detailed tier semantics live with X-Terminal because that's the surface where you actually set them.
+  The full tier table lives with X-Terminal, where these controls are actually configured.
 </div>
 
 ## The Model

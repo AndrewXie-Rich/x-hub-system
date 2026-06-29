@@ -1,7 +1,7 @@
 # Coding Runtime
 
 <p class="lead">
-Cursor and Claude Code are great at minute 1. When AI has been running for 5 hours and you come back to half-done work, missing evidence, merge conflicts, and "I think I finished it?" — that's where they stop and X-Hub starts. This page is about the second half of that arc.
+Cursor and Claude Code are great at minute 1. When AI has been running for 5 hours and you come back to half-done work, missing evidence, merge conflicts, and "I think I finished it?" — that's where they stop and X-Hub starts. The hard part is the second half of that arc.
 </p>
 
 <div class="preview-note">
@@ -62,7 +62,7 @@ This is one of the differences between X-Hub Coding Runtime and a single-session
 
 ## What Is Still Being Productized
 
-The public story should stay honest: the advantage is clear, but this is not the lowest-friction tool for every coding task.
+X-Hub is designed for work where continuity, verification, and governance matter. Low-risk edits and small experiments still need a lighter path.
 
 | Area | Productization focus |
 | --- | --- |
@@ -72,7 +72,7 @@ The public story should stay honest: the advantage is clear, but this is not the
 | Guidance Ack loop | Supervisor guidance needs structured entry into the Coder loop, with ack, defer, and reject all traceable |
 | Hub Run Scheduler | Run truth, wake, grants, audit, clamps, and recovery need to become a stronger first-class source of truth |
 
-That means X-Hub-System should not be presented as the fastest quick-prototype tool. It should be understood as a **governed execution system for long-running software work**.
+The best fit is not "fastest first draft." It is **governed execution for long-running software work**.
 
 ## What the Coder Loop does in practice
 
