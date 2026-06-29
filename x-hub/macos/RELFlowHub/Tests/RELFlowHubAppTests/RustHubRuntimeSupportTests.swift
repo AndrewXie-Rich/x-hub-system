@@ -216,6 +216,64 @@ final class RustHubRuntimeSupportTests: XCTestCase {
         XCTAssertNil(env["XHUB_RUST_SKILLS_EXECUTION_AUTHORITY"])
     }
 
+    func testNodeSidecarRuntimeBaseStaysSwiftBaseWithoutExplicitCutover() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let swiftBase = root.appendingPathComponent("swift-sidecar", isDirectory: true)
+        let rustRuntime = root.appendingPathComponent("real-home/Library/Application Support/AX/rust-hub/local/runtime", isDirectory: true)
+        try FileManager.default.createDirectory(at: swiftBase, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: rustRuntime, withIntermediateDirectories: true)
+
+        let selected = RustHubRuntimeSupport.nodeSidecarRuntimeBaseDir(
+            swiftBaseDir: swiftBase,
+            baseEnvironment: [
+                "XHUB_RUST_MODEL_ROUTE_PRODUCTION_AUTHORITY": "1"
+            ],
+            homeDirectory: root.appendingPathComponent("real-home", isDirectory: true)
+        )
+
+        XCTAssertEqual(selected.standardizedFileURL.path, swiftBase.standardizedFileURL.path)
+    }
+
+    func testNodeSidecarRuntimeBaseUsesRustLiveRuntimeAfterAuthorityCutover() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let swiftBase = root.appendingPathComponent("swift-sidecar", isDirectory: true)
+        let rustHome = root.appendingPathComponent("real-home", isDirectory: true)
+        let rustRuntime = rustHome.appendingPathComponent("Library/Application Support/AX/rust-hub/local/runtime", isDirectory: true)
+        try FileManager.default.createDirectory(at: swiftBase, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: rustRuntime, withIntermediateDirectories: true)
+
+        let selected = RustHubRuntimeSupport.nodeSidecarRuntimeBaseDir(
+            swiftBaseDir: swiftBase,
+            baseEnvironment: [
+                "XHUB_ENABLE_RUST_AUTHORITY_CUTOVER": "1",
+                "XHUB_RUST_MODEL_ROUTE_PRODUCTION_AUTHORITY": "1",
+                "XHUB_RUST_LOCAL_ML_EXECUTION_AUTHORITY": "1"
+            ],
+            homeDirectory: rustHome
+        )
+
+        XCTAssertEqual(selected.standardizedFileURL.path, rustRuntime.standardizedFileURL.path)
+    }
+
+    func testNodeSidecarRuntimeBaseHonorsExplicitOverride() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let swiftBase = root.appendingPathComponent("swift-sidecar", isDirectory: true)
+        let override = root.appendingPathComponent("override-runtime", isDirectory: true)
+
+        let selected = RustHubRuntimeSupport.nodeSidecarRuntimeBaseDir(
+            swiftBaseDir: swiftBase,
+            baseEnvironment: [
+                "XHUB_NODE_SIDECAR_RUNTIME_BASE_DIR": override.path
+            ],
+            homeDirectory: root
+        )
+
+        XCTAssertEqual(selected.standardizedFileURL.path, override.standardizedFileURL.path)
+    }
+
     func testNodeSidecarEnvironmentDropsStaleProductionAuthorityWithoutExplicitCutover() throws {
         let info = RustHubEmbeddedPackageInfo(
             rootPath: "/Users/test/Library/Application Support/AX/rust-hub/current",
@@ -518,6 +576,90 @@ final class RustHubRuntimeSupportTests: XCTestCase {
         XCTAssertEqual(snapshot.dbPath, "/tmp/hub.sqlite3")
     }
 
+    func testProductKernelLaunchStatusReadyBecomesServingWithoutBlockedCapabilities() throws {
+        let snapshot = try XCTUnwrap(
+            RustHubRuntimeSupport.makeProductKernelLaunchStatusSnapshot(
+                object: [
+                    "schema_version": "xhub.product_kernel.v1",
+                    "ok": true,
+                    "ready": true,
+                    "readiness": [
+                        "ready": true,
+                        "checks": [
+                            ["name": "proto", "blocking": true, "ok": true],
+                            ["name": "sqlite_parent", "blocking": true, "ok": true]
+                        ]
+                    ]
+                ],
+                launchId: "unit-product-ready",
+                nowMs: 42
+            )
+        )
+
+        XCTAssertEqual(snapshot.launchId, "unit-product-ready")
+        XCTAssertEqual(snapshot.state.rawValue, "SERVING")
+        XCTAssertNil(snapshot.rootCause)
+        XCTAssertFalse(snapshot.degraded.isDegraded)
+        XCTAssertTrue(snapshot.degraded.blockedCapabilities.isEmpty)
+    }
+
+    func testRelabelProductKernelLaunchStatusUsesCurrentLaunchIdAndTimestamp() throws {
+        let snapshot = try XCTUnwrap(
+            RustHubRuntimeSupport.makeProductKernelLaunchStatusSnapshot(
+                object: [
+                    "schema_version": "xhub.product_kernel.v1",
+                    "ok": true,
+                    "ready": true,
+                    "readiness": [
+                        "ready": true,
+                        "checks": [
+                            ["name": "proto", "blocking": true, "ok": true]
+                        ]
+                    ]
+                ],
+                launchId: "prewarm-launch",
+                nowMs: 100
+            )
+        )
+
+        let relabeled = RustHubRuntimeSupport.relabelProductKernelLaunchStatus(
+            snapshot,
+            launchId: "current-launch",
+            nowMs: 200
+        )
+
+        XCTAssertEqual(relabeled.launchId, "current-launch")
+        XCTAssertEqual(relabeled.updatedAtMs, 200)
+        XCTAssertEqual(relabeled.state, .serving)
+        XCTAssertTrue(relabeled.steps.allSatisfy { $0.tsMs == 200 && $0.elapsedMs == 0 })
+    }
+
+    func testProductKernelLaunchStatusMapsBlockingChecksToRootCauseAndBlockedCapability() throws {
+        let snapshot = try XCTUnwrap(
+            RustHubRuntimeSupport.makeProductKernelLaunchStatusSnapshot(
+                object: [
+                    "schema_version": "xhub.product_kernel.v1",
+                    "ok": true,
+                    "ready": false,
+                    "readiness": [
+                        "ready": false,
+                        "checks": [
+                            ["name": "sqlite_parent", "blocking": true, "ok": false],
+                            ["name": "memory_dir", "blocking": true, "ok": true]
+                        ]
+                    ]
+                ],
+                launchId: "unit-product-db-blocked",
+                nowMs: 43
+            )
+        )
+
+        XCTAssertEqual(snapshot.state.rawValue, "DEGRADED_SERVING")
+        XCTAssertEqual(snapshot.rootCause?.component.rawValue, "db")
+        XCTAssertEqual(snapshot.rootCause?.errorCode, "XHUB_KERNEL_SQLITE_PARENT_NOT_READY")
+        XCTAssertEqual(snapshot.degraded.blockedCapabilities, ["hub.db.write"])
+    }
+
     func testHTTPAccessKeyReadsDirectEnvironmentBeforeFile() throws {
         let keyFile = try makeTemporaryDirectory().appendingPathComponent("access_key")
         defer { try? FileManager.default.removeItem(at: keyFile.deletingLastPathComponent()) }
@@ -545,6 +687,39 @@ final class RustHubRuntimeSupportTests: XCTestCase {
         )
 
         XCTAssertEqual(key, "file-secret")
+    }
+
+    func testHTTPAccessKeyReadsLaunchctlDirectEnvironmentBeforeFile() throws {
+        let keyFile = try makeTemporaryDirectory().appendingPathComponent("access_key")
+        defer { try? FileManager.default.removeItem(at: keyFile.deletingLastPathComponent()) }
+        try "file-secret\n".write(to: keyFile, atomically: true, encoding: .utf8)
+
+        let key = RustHubRuntimeSupport.httpAccessKey(
+            environment: [:],
+            activePackageRoots: [],
+            fallbackPackageRoots: [],
+            launchctlEnvironment: [
+                "XHUB_RUST_HTTP_ACCESS_KEY": "launchctl-direct-secret",
+                "XHUB_RUST_HTTP_ACCESS_KEY_FILE": keyFile.path
+            ]
+        )
+
+        XCTAssertEqual(key, "launchctl-direct-secret")
+    }
+
+    func testHTTPAccessKeyReadsLaunchctlConfiguredFile() throws {
+        let keyFile = try makeTemporaryDirectory().appendingPathComponent("access_key")
+        defer { try? FileManager.default.removeItem(at: keyFile.deletingLastPathComponent()) }
+        try "launchctl-file-secret\n".write(to: keyFile, atomically: true, encoding: .utf8)
+
+        let key = RustHubRuntimeSupport.httpAccessKey(
+            environment: [:],
+            activePackageRoots: [],
+            fallbackPackageRoots: [],
+            launchctlEnvironment: ["XHUB_RUST_HTTP_ACCESS_KEY_FILE": keyFile.path]
+        )
+
+        XCTAssertEqual(key, "launchctl-file-secret")
     }
 
     func testHTTPAccessKeyReadsActivePackageSecretCandidates() throws {
@@ -575,6 +750,33 @@ final class RustHubRuntimeSupportTests: XCTestCase {
         )
 
         XCTAssertEqual(key, "active-root-config-secret")
+    }
+
+    func testHTTPAccessKeyReadsLocalAndDomainFallbackRoots() throws {
+        let installRoot = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: installRoot) }
+        let domainRoot = installRoot.appendingPathComponent("domain", isDirectory: true)
+        let localRoot = installRoot.appendingPathComponent("local", isDirectory: true)
+        let domainKeyFile = domainRoot.appendingPathComponent("secrets/xhubd_domain_access_key")
+        let localKeyFile = localRoot.appendingPathComponent("config/xhubd_local_access_key")
+        try FileManager.default.createDirectory(at: domainKeyFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: localKeyFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "domain-fallback-secret\n".write(to: domainKeyFile, atomically: true, encoding: .utf8)
+        try "local-fallback-secret\n".write(to: localKeyFile, atomically: true, encoding: .utf8)
+
+        let domainFirst = RustHubRuntimeSupport.httpAccessKey(
+            environment: [:],
+            activePackageRoots: [],
+            fallbackPackageRoots: [domainRoot, localRoot]
+        )
+        let localFirst = RustHubRuntimeSupport.httpAccessKey(
+            environment: [:],
+            activePackageRoots: [],
+            fallbackPackageRoots: [localRoot, domainRoot]
+        )
+
+        XCTAssertEqual(domainFirst, "domain-fallback-secret")
+        XCTAssertEqual(localFirst, "local-fallback-secret")
     }
 
     func testRemoteEntryCandidatesPrefersNoDomainPrivateHostFromRustCore() {

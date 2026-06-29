@@ -421,6 +421,109 @@ await run('Hub access key admin HTTP issues, lists, details, revokes, and fail-c
   }
 });
 
+await run('External terminal access keys are AI-only and sanitize broader requested capabilities', async () => {
+  const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub_access_keys_ai_only_runtime_'));
+  try {
+    await withPairingServer({
+      env: {
+        HUB_RUNTIME_BASE_DIR: runtimeBaseDir,
+        HUB_ADMIN_TOKEN: 'admin-access-http',
+        HUB_PAIRING_PUBLIC_HOST: 'hub.tailnet.example',
+      },
+    }, async ({ baseUrl }) => {
+      const adminHeaders = {
+        authorization: 'Bearer admin-access-http',
+      };
+
+      const issued = await requestJson({
+        method: 'POST',
+        url: `${baseUrl}/admin/clients/access-keys`,
+        headers: adminHeaders,
+        body: {
+          name: 'Plain Terminal',
+          user_id: 'plain_terminal',
+          app_id: 'external_terminal',
+          capabilities: [
+            'models',
+            'ai.generate.local',
+            'ai.generate.paid',
+            'events',
+            'memory',
+            'skills',
+            'web.fetch',
+            'hub_access_keys.manage',
+          ],
+          scopes: [
+            'models',
+            'ai.generate.local',
+            'events',
+            'memory',
+            'skills',
+            'web.fetch',
+          ],
+          default_web_fetch_enabled: true,
+        },
+      });
+      assert.equal(issued.status, 200);
+      assert.deepEqual(issued.json?.access_key?.capabilities || [], ['models', 'ai.generate.local']);
+      assert.deepEqual(issued.json?.access_key?.scopes || [], ['models', 'ai.generate.local']);
+      assert.equal(String(issued.json?.access_key?.connector_profile || ''), 'external_terminal_ai_only');
+      assert.equal(String(issued.json?.access_key?.authority_profile || ''), 'ai_client_only');
+      assert.equal(issued.json?.access_key?.xt_pairing_authority, false);
+      assert.equal(issued.json?.access_key?.durable_memory_authority, false);
+      assert.equal(issued.json?.access_key?.skills_execution_authority, false);
+      assert.equal(
+        issued.json?.access_key?.approved_trust_profile?.network_policy?.default_web_fetch_enabled,
+        false
+      );
+      assert.equal(
+        (issued.json?.access_key?.approved_trust_profile?.capabilities || []).includes('web.fetch'),
+        false
+      );
+      assert.equal((issued.json?.access_key?.denied_capabilities || []).includes('memory'), true);
+      assert.equal((issued.json?.access_key?.denied_capabilities || []).includes('skills.execute'), true);
+
+      const accessKeyId = String(issued.json?.access_key?.access_key_id || '');
+      const detail = await requestJson({
+        url: `${baseUrl}/admin/clients/access-keys/${accessKeyId}`,
+        headers: adminHeaders,
+      });
+      assert.equal(detail.status, 200);
+      assert.deepEqual(detail.json?.access_key?.capabilities || [], ['models', 'ai.generate.local']);
+      assert.equal(String(detail.json?.access_key?.connector_profile || ''), 'external_terminal_ai_only');
+
+      const paidIssued = await requestJson({
+        method: 'POST',
+        url: `${baseUrl}/admin/clients/access-keys`,
+        headers: adminHeaders,
+        body: {
+          name: 'Plain Terminal Paid',
+          user_id: 'plain_terminal_paid',
+          app_id: 'external_terminal',
+          paid_model_selection_mode: 'all_paid_models',
+          default_web_fetch_enabled: true,
+        },
+      });
+      assert.equal(paidIssued.status, 200);
+      assert.deepEqual(paidIssued.json?.access_key?.capabilities || [], [
+        'models',
+        'ai.generate.local',
+        'ai.generate.paid',
+      ]);
+      assert.equal(
+        (paidIssued.json?.access_key?.approved_trust_profile?.capabilities || []).includes('web.fetch'),
+        false
+      );
+    });
+  } finally {
+    try {
+      fs.rmSync(runtimeBaseDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  }
+});
+
 await run('Pairing public metadata stays reachable while restricted endpoints honor the source allowlist', async () => {
   await withPairingServer({
     env: {

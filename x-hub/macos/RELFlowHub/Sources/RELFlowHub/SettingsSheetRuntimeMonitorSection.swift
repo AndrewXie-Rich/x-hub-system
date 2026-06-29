@@ -350,6 +350,7 @@ extension SettingsSheetView {
                 }
             }
         }
+        .id(runtimeMonitorSectionAnchorID)
     }
 
     var rustLocalMLRuntimeAuthorityMonitorCard: some View {

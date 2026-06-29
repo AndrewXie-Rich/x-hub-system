@@ -60,7 +60,7 @@ struct ModelsDrawerPortfolioOverviewPanel: View {
 
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 8) {
-                            Text("Portfolio / Quota / Runtime")
+                            Text("资源池 / 额度 / 运行时")
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.secondary)
                             Text("\(usablePoolCount)/\(poolCount) 资源池可用")
@@ -130,7 +130,7 @@ struct ModelsDrawerPortfolioOverviewPanel: View {
             tint: usablePoolCount > 0 ? .green : .secondary
         )
         ModelsDrawerPortfolioSignalCell(
-            title: "Key",
+            title: "账号 Key",
             value: "\(readyAccountCount)/\(max(totalAccountCount, 0))",
             systemName: "key.horizontal",
             tint: readyAccountCount > 0 ? .green : .secondary

@@ -99,6 +99,7 @@ pub fn contract_value(config: &HubConfig) -> Value {
             "skills": skills_contract(skills_execution_authority, &skill_boundary),
             "grants": grants_contract(),
             "audit": audit_contract(),
+            "connector_profiles": connector_profiles_contract(),
         },
         "migration_notes_for_xt": [
             "XT should treat this document as the Hub capability registry before adding memory, skills, model route, or grant behavior.",
@@ -322,6 +323,63 @@ fn audit_contract() -> Value {
     })
 }
 
+fn connector_profiles_contract() -> Value {
+    json!({
+        "external_terminal_ai_only": {
+            "schema_version": "xhub.connector_profile.external_terminal_ai_only.v1",
+            "role": "unpaired_ai_client",
+            "issue_app_id": "external_terminal",
+            "transport": "hub_access_key",
+            "entrypoints": {
+                "openai_compatible_base": "/v1",
+                "models": "/v1/models",
+                "chat_completions": "/v1/chat/completions",
+                "responses": "/v1/responses"
+            },
+            "allowed_capabilities": [
+                "models",
+                "ai.generate.local",
+                "ai.generate.paid"
+            ],
+            "default_capabilities": [
+                "models",
+                "ai.generate.local"
+            ],
+            "denied_capabilities": [
+                "events",
+                "memory",
+                "memory.write",
+                "memory.retrieve.raw",
+                "skills",
+                "skills.execute",
+                "skills.grant",
+                "skills.revoke",
+                "web.fetch",
+                "device.*",
+                "browser.*",
+                "repo.*",
+                "provider.keys.write",
+                "hub_access_keys.manage",
+                "xt.pairing.manage",
+                "admin.*"
+            ],
+            "xt_pairing_authority": false,
+            "durable_memory_authority": false,
+            "skills_execution_authority": false,
+            "provider_key_authority": false,
+            "grant_bypass": false,
+            "terminal_local_authority": false,
+            "secret_fields_included": false,
+            "policy": {
+                "paid_models_require_explicit_profile": true,
+                "web_fetch_default_enabled": false,
+                "memory_truth_in_hub_only": true,
+                "ordinary_terminal_must_not_be_treated_as_paired_xt": true
+            }
+        }
+    })
+}
+
 fn env_bool(key: &str, fallback: bool) -> bool {
     match env::var(key) {
         Ok(value) => matches!(
@@ -402,6 +460,19 @@ mod tests {
             value["capabilities"]["models"]["endpoints"]["repair_jobs"],
             "/model/repair-jobs"
         );
+        let terminal_profile =
+            &value["capabilities"]["connector_profiles"]["external_terminal_ai_only"];
+        assert_eq!(terminal_profile["role"], "unpaired_ai_client");
+        assert_eq!(terminal_profile["durable_memory_authority"], false);
+        assert_eq!(terminal_profile["skills_execution_authority"], false);
+        assert!(terminal_profile["allowed_capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("ai.generate.local")));
+        assert!(terminal_profile["denied_capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("skills.execute")));
     }
 
     #[test]

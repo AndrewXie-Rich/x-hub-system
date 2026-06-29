@@ -61,11 +61,12 @@ function makeRuntimeBaseDir(label) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `hub_auth_${label}_`));
 }
 
-function makeDirectCall() {
+function makeDirectCall(token = '') {
   return {
     metadata: {
-      get() {
-        return [];
+      get(key) {
+        if (String(key || '').toLowerCase() !== 'authorization') return [];
+        return token ? [`Bearer ${token}`] : [];
       },
     },
     getPeer() {
@@ -121,6 +122,42 @@ run('requireClientAuth preserves direct in-process service invocation for unit t
     () => {
       const auth = requireClientAuth(makeDirectCall());
       assert.equal(auth.ok, true);
+    }
+  );
+  fs.rmSync(runtimeBaseDir, { recursive: true, force: true });
+});
+
+run('requireClientAuth lets OpenAI HTTP gateway bridge use token auth without gRPC client cert', () => {
+  const runtimeBaseDir = makeRuntimeBaseDir('http_gateway_bridge');
+  writeClientsSnapshot(runtimeBaseDir, [{
+    access_key_id: 'hak_http_gateway_1',
+    auth_kind: 'hub_access_key',
+    device_id: 'client_http_gateway_1',
+    user_id: 'svc_http_gateway',
+    app_id: 'external_terminal',
+    name: 'HTTP Gateway Key',
+    token: 'tok_http_gateway_1',
+    enabled: true,
+    created_at_ms: 1,
+    capabilities: ['models', 'ai.generate.local'],
+    scopes: ['models', 'ai.generate.local'],
+    allowed_cidrs: ['loopback'],
+  }]);
+  withEnv(
+    {
+      HUB_CLIENT_TOKEN: '',
+      HUB_RUNTIME_BASE_DIR: runtimeBaseDir,
+      HUB_GRPC_TLS_MODE: 'mtls',
+      HUB_GRPC_MTLS_REQUIRE_CERT_PIN: '1',
+      HUB_GRPC_CERT: '',
+      HUB_GRPC_KEY: '',
+      HUB_GRPC_CA: '',
+    },
+    () => {
+      const auth = requireClientAuth(makeDirectCall('tok_http_gateway_1'));
+      assert.equal(auth.ok, true);
+      assert.equal(String(auth.access_key_id || ''), 'hak_http_gateway_1');
+      assert.deepEqual(auth.capabilities || [], ['models', 'ai.generate.local']);
     }
   );
   fs.rmSync(runtimeBaseDir, { recursive: true, force: true });
@@ -197,6 +234,48 @@ run('requireClientAuth updates last_used metadata for ready hub access keys', ()
       assert.ok(Number(persisted.clients?.[0]?.last_used_at_ms || 0) > 0);
       assert.equal(String(persisted.clients?.[0]?.last_used_transport || ''), 'grpc');
       assert.equal(String(persisted.clients?.[0]?.last_used_peer_ip || ''), '127.0.0.1');
+    }
+  );
+  fs.rmSync(runtimeBaseDir, { recursive: true, force: true });
+});
+
+run('legacy external terminal access keys are normalized to AI-only authority at auth time', () => {
+  const runtimeBaseDir = makeRuntimeBaseDir('legacy_external_terminal_ai_only');
+  writeClientsSnapshot(runtimeBaseDir, [{
+    access_key_id: 'hak_legacy_terminal_1',
+    auth_kind: 'hub_access_key',
+    device_id: 'client_legacy_terminal_1',
+    user_id: 'svc_legacy_terminal',
+    app_id: 'external_terminal',
+    name: 'Legacy Terminal Key',
+    token: 'tok_legacy_terminal_1',
+    enabled: true,
+    created_at_ms: 1,
+    capabilities: ['models', 'ai.generate.local', 'events', 'memory', 'skills', 'web.fetch'],
+    scopes: ['models', 'ai.generate.local', 'events', 'memory', 'skills', 'web.fetch'],
+    allowed_cidrs: ['loopback'],
+  }]);
+  withEnv(
+    {
+      HUB_CLIENT_TOKEN: '',
+      HUB_RUNTIME_BASE_DIR: runtimeBaseDir,
+      HUB_GRPC_TLS_MODE: '',
+      HUB_GRPC_CERT: '',
+      HUB_GRPC_KEY: '',
+      HUB_GRPC_CA: '',
+    },
+    () => {
+      const auth = requireClientAuth(makeTransportCall('tok_legacy_terminal_1'));
+      assert.equal(auth.ok, true);
+      assert.equal(String(auth.access_key_id || ''), 'hak_legacy_terminal_1');
+      assert.deepEqual(auth.capabilities || [], ['models', 'ai.generate.local']);
+      assert.deepEqual(auth.scopes || [], ['models', 'ai.generate.local']);
+      assert.equal(String(auth.connector_profile || ''), 'external_terminal_ai_only');
+      assert.equal(String(auth.authority_profile || ''), 'ai_client_only');
+      assert.equal(auth.durable_memory_authority, false);
+      assert.equal(auth.skills_execution_authority, false);
+      assert.equal((auth.denied_capabilities || []).includes('web.fetch'), true);
+      assert.equal((auth.denied_capabilities || []).includes('skills.execute'), true);
     }
   );
   fs.rmSync(runtimeBaseDir, { recursive: true, force: true });

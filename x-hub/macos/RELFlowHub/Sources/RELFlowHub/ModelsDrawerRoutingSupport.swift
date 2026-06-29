@@ -19,7 +19,7 @@ extension ModelsDrawer {
     func routePreferenceLabel(for taskType: HubTaskType) -> String {
         let modelId = effectivePreferredModelId(for: taskType)
         guard !modelId.isEmpty else {
-            return "\(taskType.label): Auto"
+            return "\(taskType.label): 自动"
         }
         let modelName = modelStore.snapshot.models.first(where: { $0.id == modelId })?.name
             ?? remoteModels.first(where: { $0.id == modelId })?.nestedDisplayName
@@ -29,7 +29,7 @@ extension ModelsDrawer {
 
     func routePreferenceShortLabel(for taskType: HubTaskType) -> String {
         let modelId = effectivePreferredModelId(for: taskType)
-        guard !modelId.isEmpty else { return "Auto" }
+        guard !modelId.isEmpty else { return "自动" }
         return modelStore.snapshot.models.first(where: { $0.id == modelId })?.name
             ?? remoteModels.first(where: { $0.id == modelId })?.nestedDisplayName
             ?? modelId
@@ -79,7 +79,7 @@ extension ModelsDrawer {
                 title: title,
                 modelName: "未路由",
                 provider: "",
-                statusText: "Blocked",
+                statusText: "阻断",
                 statusColor: .orange,
                 reason: routeReasonText(decision.reason)
             )
@@ -91,7 +91,7 @@ extension ModelsDrawer {
             title: title,
             modelName: decision.modelName,
             provider: model.map(providerTitle(for:)) ?? "Hub",
-            statusText: decision.willAutoLoad ? "Auto" : modelStateText(decision.modelState ?? .available),
+            statusText: decision.willAutoLoad ? "按需加载" : modelStateText(decision.modelState ?? .available),
             statusColor: decision.willAutoLoad ? .indigo : modelStateColor(decision.modelState ?? .available),
             reason: routeReasonText(decision.reason)
         )
@@ -109,7 +109,7 @@ extension ModelsDrawer {
                 title: title,
                 modelName: "未匹配",
                 provider: "",
-                statusText: "None",
+                statusText: "无匹配",
                 statusColor: .secondary,
                 reason: "没有匹配能力"
             )

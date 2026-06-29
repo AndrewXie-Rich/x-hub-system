@@ -161,6 +161,66 @@ function safeString(value) {
   return String(value ?? '').trim();
 }
 
+function safeStringList(values) {
+  if (values == null) return [];
+  const items = Array.isArray(values) ? values : String(values || '').split(',');
+  const out = [];
+  const seen = new Set();
+  for (const raw of items) {
+    const cleaned = safeString(raw);
+    if (!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    out.push(cleaned);
+  }
+  return out;
+}
+
+function normalizeRuntimeModelTaskKinds(taskKinds, backend) {
+  const out = safeStringList(taskKinds).map((value) => value.toLowerCase()).filter(Boolean);
+  if (out.length > 0) return out;
+  return safeString(backend).toLowerCase() === 'mlx' ? ['text_generate'] : [];
+}
+
+function runtimeModelId(model) {
+  return safeString(model?.id || model?.model_id);
+}
+
+function normalizeRuntimeModelMeta(model, {
+  modelId = '',
+  updatedAtMs = 0,
+} = {}) {
+  const row = model && typeof model === 'object' ? model : null;
+  const canonicalModelId = runtimeModelId(row) || safeString(modelId);
+  if (!row || !canonicalModelId) return null;
+  const backend = safeString(row.backend);
+  const modelPath = safeString(row.modelPath || row.model_path);
+  const taskKinds = normalizeRuntimeModelTaskKinds(row.taskKinds || row.task_kinds, backend);
+  const isRemote = !!backend && backend.toLowerCase() !== 'mlx' && !modelPath;
+  const normalized = {
+    model_id: canonicalModelId,
+    name: safeString(row.name) || canonicalModelId,
+    kind: isRemote ? 'paid_online' : 'local_offline',
+    backend,
+    context_length: Number(row.contextLength || row.context_length || 0),
+    requires_grant: isRemote ? 1 : 0,
+    enabled: row.enabled == null ? 1 : Number(row.enabled ? 1 : 0),
+    model_path: modelPath,
+    task_kinds: taskKinds,
+    runtime_provider_id: safeString(
+      row.runtimeProviderId
+      || row.runtimeProviderID
+      || row.runtime_provider_id
+      || row.provider
+    ),
+    input_modalities: safeStringList(row.inputModalities || row.input_modalities),
+    output_modalities: safeStringList(row.outputModalities || row.output_modalities),
+    offline_ready: !!(row.offlineReady ?? row.offline_ready),
+    model_format: safeString(row.modelFormat || row.model_format),
+  };
+  if (updatedAtMs) normalized.updated_at_ms = updatedAtMs;
+  return normalized;
+}
+
 function normalizeTaskRoutingMap(value) {
   const obj = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const out = {};
@@ -306,19 +366,9 @@ export function runtimeModelMeta(baseDir, modelId) {
     const raw = fs.readFileSync(p.statePath, 'utf8');
     const obj = JSON.parse(raw);
     const ms = Array.isArray(obj?.models) ? obj.models : [];
-    const m = ms.find((x) => x && typeof x === 'object' && String(x.id || '').trim() === String(modelId).trim());
-    if (!m) return null;
-    const backend = String(m.backend || '').trim();
-    const mp = String(m.modelPath || m.model_path || '').trim();
-    const isRemote = backend && backend.toLowerCase() !== 'mlx' && !mp;
-    return {
-      model_id: String(m.id || modelId),
-      name: String(m.name || modelId),
-      backend,
-      context_length: Number(m.contextLength || m.context_length || 0),
-      kind: isRemote ? 'paid_online' : 'local_offline',
-      requires_grant: isRemote ? 1 : 0,
-    };
+    const requested = safeString(modelId);
+    const m = ms.find((x) => x && typeof x === 'object' && runtimeModelId(x) === requested);
+    return normalizeRuntimeModelMeta(m, { modelId });
   } catch {
     return null;
   }
@@ -341,22 +391,7 @@ export function runtimeModelsSnapshot(baseDir) {
     const models = ms
       .map((m) => {
         if (!m || typeof m !== 'object') return null;
-        const model_id = String(m.id || '').trim();
-        if (!model_id) return null;
-        const name = String(m.name || model_id);
-        const backend = String(m.backend || '').trim();
-        const mp = String(m.modelPath || m.model_path || '').trim();
-        const isRemote = backend && backend.toLowerCase() !== 'mlx' && !mp;
-        return {
-          model_id,
-          name,
-          kind: isRemote ? 'paid_online' : 'local_offline',
-          backend,
-          context_length: Number(m.contextLength || m.context_length || 0),
-          requires_grant: isRemote ? 1 : 0,
-          enabled: 1,
-          updated_at_ms,
-        };
+        return normalizeRuntimeModelMeta(m, { updatedAtMs: updated_at_ms });
       })
       .filter(Boolean);
 

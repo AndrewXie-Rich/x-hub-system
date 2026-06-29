@@ -483,6 +483,30 @@ function resolveServiceModelMeta({ db, runtimeBaseDir, modelId } = {}) {
   }
 
   try {
+    const exactRuntimeModel = runtimeModelMeta(runtimeBaseDir, requestedModelId);
+    if (
+      exactRuntimeModel
+      && !isPaidModelMeta(exactRuntimeModel)
+      && supportsLocalTextGenerate({
+        runtimeBaseDir,
+        modelId: safeString(exactRuntimeModel?.model_id) || requestedModelId,
+        modelMeta: exactRuntimeModel,
+      })
+    ) {
+      const canonicalModelId = safeString(exactRuntimeModel?.model_id) || requestedModelId;
+      return {
+        requested_model_id: requestedModelId,
+        resolved_model_id: canonicalModelId,
+        model: exactRuntimeModel,
+        source: 'runtime',
+        reason: 'exact_local_runtime',
+      };
+    }
+  } catch {
+    // ignore and continue to DB lookup
+  }
+
+  try {
     const dbModels = typeof db?.listModels === 'function' ? db.listModels() : [];
     const resolved = resolveModelSelectionRecord(requestedModelId, dbModels);
     if (resolved.ok) {
@@ -4515,7 +4539,12 @@ function supportsLocalTextGenerate({ runtimeBaseDir, modelId, modelMeta = null }
   if (runtimeRecord) {
     return runtimeModelSupportsTask(runtimeBaseDir, modelId, 'text_generate');
   }
+  const taskKinds = safeStringList(modelMeta?.task_kinds || modelMeta?.taskKinds)
+    .map((value) => value.toLowerCase());
+  if (taskKinds.length > 0) return taskKinds.includes('text_generate');
   const backend = String(modelMeta?.backend || '').trim().toLowerCase();
+  const modelPath = safeString(modelMeta?.model_path || modelMeta?.modelPath);
+  if (modelPath && backend && backend !== 'mlx') return false;
   return !backend || backend === 'mlx';
 }
 
@@ -6170,11 +6199,21 @@ function effectiveClientIdentity(raw, auth) {
       single_request_token_limit: nonNegativeInt(paidAccess?.single_request_token_limit, 0),
     };
 
-    // Prefer the runtime-published models_state.json when available (authoritative list of configured models).
     const runtimeBaseDir = resolveRuntimeBaseDir();
+    const localGenerateAllowed = clientAllows(auth, 'ai.generate.local');
+    const paidGenerateAllowed = clientAllows(auth, 'ai.generate.paid');
+    const modelVisibleToClient = (model) => {
+      const modelId = safeString(model?.model_id);
+      if (!modelId) return false;
+      if (isPaidModelMeta(model)) return paidGenerateAllowed;
+      if (!localGenerateAllowed) return false;
+      return supportsLocalTextGenerate({ runtimeBaseDir, modelId, modelMeta: model });
+    };
+
+    // Prefer the runtime-published models_state.json when available (authoritative list of configured models).
     const snap = runtimeModelsSnapshot(runtimeBaseDir);
     if (snap.ok && Array.isArray(snap.models) && snap.models.length) {
-      const models = snap.models.map(makeProtoModelInfo).filter(Boolean);
+      const models = snap.models.filter(modelVisibleToClient).map(makeProtoModelInfo).filter(Boolean);
       callback(null, {
         updated_at_ms: Number(snap.updated_at_ms || nowMs()),
         models,
@@ -6185,7 +6224,7 @@ function effectiveClientIdentity(raw, auth) {
 
     // Fallback: DB seeds (mostly for dev/smoke).
     const rows = db.listModels();
-    const models = rows.map(makeProtoModelInfo).filter(Boolean);
+    const models = rows.filter(modelVisibleToClient).map(makeProtoModelInfo).filter(Boolean);
     callback(null, {
       updated_at_ms: nowMs(),
       models,

@@ -69,6 +69,9 @@ extension SettingsSheetView {
                 settingsScrollTarget = diagnosticsLaunchSectionAnchorID
             }
             store.consumeSettingsNavigationTarget(target)
+        case .settingsPage(let page, let anchorID, let expansion):
+            selectSettingsPage(page, anchorID: anchorID, expansion: expansion)
+            store.consumeSettingsNavigationTarget(target)
         }
     }
 
@@ -100,7 +103,7 @@ extension SettingsSheetView {
     }
 
     var providerKeySectionAnchorID: String {
-        "provider_keys_section"
+        HubSettingsSectionAnchorID.providerKeysSection
     }
 
     func providerKeyVendorAnchorID(_ vendorKey: String) -> String {
@@ -108,19 +111,47 @@ extension SettingsSheetView {
     }
 
     var providerKeyUserLedgerAnchorID: String {
-        "provider_key_user_ledger"
+        HubSettingsSectionAnchorID.providerKeyUserLedger
     }
 
     var providerKeyConsumerLedgerAnchorID: String {
-        "provider_key_consumer_ledger"
+        HubSettingsSectionAnchorID.providerKeyConsumerLedger
     }
 
     var terminalAccessSectionAnchorID: String {
-        "terminal_access_section"
+        HubSettingsSectionAnchorID.terminalAccessSection
     }
 
     var diagnosticsLaunchSectionAnchorID: String {
-        "diagnostics_launch_section"
+        HubSettingsSectionAnchorID.diagnosticsLaunchSection
+    }
+
+    var grpcServerSectionAnchorID: String {
+        HubSettingsSectionAnchorID.grpcServerSection
+    }
+
+    var remoteAccessSectionAnchorID: String {
+        HubSettingsSectionAnchorID.remoteAccessSection
+    }
+
+    var rustHubKernelSectionAnchorID: String {
+        HubSettingsSectionAnchorID.rustHubKernelSection
+    }
+
+    var runtimeMonitorSectionAnchorID: String {
+        HubSettingsSectionAnchorID.runtimeMonitorSection
+    }
+
+    var doctorSectionAnchorID: String {
+        HubSettingsSectionAnchorID.doctorSection
+    }
+
+    var networkPoliciesSectionAnchorID: String {
+        HubSettingsSectionAnchorID.networkPoliciesSection
+    }
+
+    var networkingSectionAnchorID: String {
+        HubSettingsSectionAnchorID.networkingSection
     }
 
     func providerKeyImportSourceAnchorID(
@@ -191,6 +222,43 @@ extension SettingsSheetView {
     func selectSettingsPage(_ page: HubSettingsPage) {
         selectedSettingsPage = page
         settingsScrollTarget = nil
+    }
+
+    func selectSettingsPage(
+        _ page: HubSettingsPage,
+        anchorID: String?,
+        expansion: HubSettingsNavigationExpansion?
+    ) {
+        selectedSettingsPage = page
+        applySettingsNavigationExpansion(expansion)
+        settingsScrollTarget = nil
+        guard let anchorID else { return }
+        DispatchQueue.main.async {
+            settingsScrollTarget = anchorID
+        }
+    }
+
+    func applySettingsNavigationExpansion(_ expansion: HubSettingsNavigationExpansion?) {
+        guard let expansion else { return }
+        switch expansion {
+        case .diagnosticsLaunch:
+            diagnosticsLaunchExpanded = true
+        case .diagnosticsNetwork:
+            diagnosticsNetworkExpanded = true
+        case .diagnosticsAdvanced:
+            diagnosticsAdvancedExpanded = true
+        case .modelCatalogDetails:
+            modelCatalogDetailsExpanded = true
+        case .providerQuotaOperations:
+            providerQuotaOperationsExpanded = true
+            providerImportSourcesExpanded = true
+        case .runtimeRouting:
+            runtimeRoutingExpanded = true
+        case .integrationsAux:
+            integrationsAuxExpanded = true
+        case .terminalAccessIssue:
+            terminalAccessIssueExpanded = true
+        }
     }
 
     func openCLIProxyOAuthInventoryManager() {

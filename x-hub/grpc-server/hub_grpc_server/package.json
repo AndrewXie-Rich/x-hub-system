@@ -12,6 +12,8 @@
     "generate-operator-live-test-evidence": "node scripts/generate_operator_channel_live_test_evidence_report.js",
     "smoke": "node src/smoke_client.js",
     "smoke:role-turn-metadata": "node src/role_turn_metadata_live_smoke.js",
+    "smoke:external-terminal-ai-only": "node src/external_terminal_ai_only_live_smoke.js",
+    "smoke:external-terminal-ai-only-remote": "node src/external_terminal_ai_only_remote_smoke.js",
     "list-models": "node src/list_models_client.js",
     "skills": "node src/skills_client.js",
     "chat": "node src/chat_client.js",

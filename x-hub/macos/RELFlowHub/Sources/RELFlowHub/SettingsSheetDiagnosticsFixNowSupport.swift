@@ -153,6 +153,8 @@ extension SettingsSheetView {
             return .unlockRuntimeLockHolders
         case "XHUB_RT_IMPORT_ERROR":
             return .clearPythonAndRestartRuntime
+        case "XHUB_RT_NOT_READY", "XHUB_RT_STATUS_STALE":
+            return .restartRuntime
         case "XHUB_RT_SCRIPT_MISSING":
             return .repairInstallLocation
         case "XHUB_DB_OPEN_FAILED", "XHUB_DB_INTEGRITY_FAILED":

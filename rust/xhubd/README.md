@@ -714,6 +714,11 @@ that gate: DNS A/AAAA visibility, local tailnet interface presence, public
 access-key file is supplied. Use `--no-network` for planning evidence before the
 tunnel is live; use `--require-live-http --require-auth-ready` after the public
 endpoint is supposed to work.
+For installed-domain validation, pass
+`--require-cross-network-remote-route-smoke` to
+`cross_network_installed_gate.command` or `daemon_ops_gate.command`; this keeps
+hot `/ready` local and fast while forcing ops/cutover gates to prove the public
+URL is externally reachable before XT pairing is exported.
 `cross_network_domain_activation_plan.command` is the safest starting point for
 the real cutover: it embeds the remote-route gate, rejects placeholder or unsafe
 remote entries, prints the exact access-key, launchd, watchdog, pairing, smoke,

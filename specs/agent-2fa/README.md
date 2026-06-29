@@ -32,7 +32,7 @@ $ agent2fa run -- agent-cli "drop the prod logs table"
 
 ## Why this exists
 
-AI agent runtimes today execute high-impact actions — file deletions, force-pushes, database drops, deploys, message sends — without any per-action human authorization layer. The blast radius of one prompt injection, one hallucinated tool call, or one bad context window is unbounded. The missing primitive is per-action 2FA for destructive operations.
+AI agent runtimes today execute high-impact actions, like file deletions, force-pushes, database drops, deploys, and message sends, without any per-action human authorization layer. The blast radius of one prompt injection, one hallucinated tool call, or one bad context window is unbounded. The missing primitive is per-action 2FA for destructive operations.
 
 Banks figured this out two decades ago. Per-transaction confirmation, with proof-of-presence (Touch ID, OTP, push) bound to a *separate* device, defeats both keylogged credentials and a compromised primary. agent-2fa applies the same shape: a local policy classifies actions into three risk tiers; high-risk actions raise a signed Challenge to paired Authorizer Devices; the human authorizes (or denies) on the second device.
 
@@ -52,11 +52,11 @@ Wrap your agent runtime:
 # After:   agent2fa run -- agent-cli "deploy to prod"
 ```
 
-## How it works (90 seconds)
+## How it works
 
-You **pair** the device that runs the agent with one or more **Authorizer Devices** (phone, watch, laptop, hardware key). Pairing is QR-based, mutual, and persists an ed25519 long-term key per device. You then **load a policy** — `personal`, `team`, `strict`, or your own — that maps Actions to Risk Levels. When your agent attempts an Action, the local Action Gate classifies it; `notify` actions execute silently with a log line, `confirm` actions raise a Challenge to one Authorizer Device, `dual_confirm` actions require two distinct Authorizers. The Authorizer Device displays the Action verbatim, requires a Modality (Touch ID by default), and signs an Authorization. The Verifier (typically the agent process) checks the signature, executes (or denies) the Action, and emits a signed Receipt regardless of outcome.
+You **pair** the device that runs the agent with one or more **Authorizer Devices** (phone, watch, laptop, hardware key). Pairing is QR-based, mutual, and persists an ed25519 long-term key per device. You then **load a policy**, like `personal`, `team`, `strict`, or your own, that maps Actions to Risk Levels. When your agent attempts an Action, the local Action Gate classifies it; `notify` actions execute silently with a log line, `confirm` actions raise a Challenge to one Authorizer Device, `dual_confirm` actions require two distinct Authorizers. The Authorizer Device displays the Action verbatim, requires a Modality (Touch ID by default), and signs an Authorization. The Verifier (typically the agent process) checks the signature, executes (or denies) the Action, and emits a signed Receipt regardless of outcome.
 
-Three things you didn't have before:
+The pieces that aren't in plain agent runtimes:
 
 - **Policy decides what's high-risk.** A YAML file you own, with `personal` / `team` / `strict` templates and a regex-or-tool-call DSL.
 - **Authorizers are cryptographically paired devices.** Not TOTP, not username/password. Pair once via QR; revoke when you lose the device.

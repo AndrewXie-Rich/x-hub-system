@@ -41,7 +41,7 @@ struct InboxColumn: View {
         let hasListContent = !liveMeetings.isEmpty || !pendingGrantRequests.isEmpty || !pendingNetworkRequests.isEmpty || !todayFA.isEmpty || !otherActive.isEmpty || !snoozed.isEmpty
         let hubStatus = hubStatusPresentation
         let hubStatusAction: (() -> Void)? = hubStatus.needsActionHint
-            ? { openDiagnosticsWindow() }
+            ? { openHubStatusRepairWindow() }
             : nil
 
         VStack(alignment: .leading, spacing: 16) {
@@ -71,7 +71,7 @@ struct InboxColumn: View {
                             )
                             if hubStatus.needsActionHint {
                                 Button {
-                                    openDiagnosticsWindow()
+                                    openHubStatusRepairWindow()
                                 } label: {
                                     InboxInlineStatusPill(
                                         title: hubStatus.actionTitle,
@@ -384,8 +384,9 @@ struct InboxColumn: View {
         }
     }
 
-    private func openDiagnosticsWindow() {
-        store.openDiagnosticsSettings()
+    @MainActor
+    private func openHubStatusRepairWindow() {
+        store.openHubStatusRepairSettings()
         openSettingsWindow()
     }
 

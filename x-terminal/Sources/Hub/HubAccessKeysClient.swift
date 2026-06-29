@@ -49,6 +49,13 @@ enum HubAccessKeysClient {
         var scopes: [String]
         var allowedCIDRs: [String]
         var policyMode: String
+        var connectorProfile: String? = nil
+        var capabilityProfile: String? = nil
+        var authorityProfile: String? = nil
+        var deniedCapabilities: [String]? = nil
+        var xtPairingAuthority: Bool? = nil
+        var durableMemoryAuthority: Bool? = nil
+        var skillsExecutionAuthority: Bool? = nil
         var trustProfilePresent: Bool
         var connect: AccessKeyConnect?
         var connectEnvTemplate: String
@@ -86,6 +93,13 @@ enum HubAccessKeysClient {
             case scopes
             case allowedCIDRs = "allowed_cidrs"
             case policyMode = "policy_mode"
+            case connectorProfile = "connector_profile"
+            case capabilityProfile = "capability_profile"
+            case authorityProfile = "authority_profile"
+            case deniedCapabilities = "denied_capabilities"
+            case xtPairingAuthority = "xt_pairing_authority"
+            case durableMemoryAuthority = "durable_memory_authority"
+            case skillsExecutionAuthority = "skills_execution_authority"
             case trustProfilePresent = "trust_profile_present"
             case connect
             case connectEnvTemplate = "connect_env_template"

@@ -14,6 +14,9 @@ struct RELFlowHubApp: App {
             fflush(stderr)
             Foundation.exit(Int32(code))
         }
+        if !XHubCLIRunner.isCLIInvocation(arguments: CommandLine.arguments) {
+            RustHubRuntimeSupport.prewarmProductKernelLaunchStatus(reason: "app_init")
+        }
     }
 
     var body: some Scene {
@@ -60,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let embeddedBridge = EmbeddedBridgeRunner()
         embeddedBridge.start()
         embeddedBridgeRunner = embeddedBridge
+        HubLaunchStateMachine.shared.startAndDrain(bridgeStarted: true)
 
         RemoteProviderKeyBootstrapper.bootstrapIfNeeded()
         RemoteModelStorage.syncEnabledRemoteModelsIntoModelState()
@@ -73,7 +77,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             scheduleForegroundPresentationRetry(after: 1.2, reason: "launch_retry_1200ms")
         }
 
-        HubLaunchStateMachine.shared.start(bridgeStarted: true)
         if launchPresentationPolicy == .background {
             HubDiagnostics.log("app.launch background_mode_ready")
         }

@@ -55,6 +55,43 @@ function memorySkillsAuthorityState(readiness) {
   };
 }
 
+const EXPECTED_LONG_RUNNING_HTTP_ROUTES = new Set([
+  '/local-ml/execute',
+  '/local-ml/run-local-task',
+  '/runtime/local-ml/execute',
+]);
+
+function httpSlowBudgetSummary(httpMetrics) {
+  const recentSlowRaw = httpMetrics?.recent_slow_requests;
+  const recentSlowAvailable = recentSlowRaw !== undefined && recentSlowRaw !== null;
+  const cumulativeSlowRequests = Number(httpMetrics?.slow_requests || 0);
+  const recentSlowRequests = recentSlowAvailable ? Number(recentSlowRaw || 0) : null;
+  const rawBudgetSlowRequests = recentSlowAvailable ? Number(recentSlowRequests || 0) : cumulativeSlowRequests;
+  const routeRows = Array.isArray(recentSlowAvailable ? httpMetrics?.recent_routes : httpMetrics?.routes)
+    ? (recentSlowAvailable ? httpMetrics.recent_routes : httpMetrics.routes)
+    : [];
+  const excludedLongRunningSlowRoutes = routeRows
+    .map((row) => ({
+      route: safeString(row?.route),
+      slow_count: Number(row?.slow_count || 0),
+      max_elapsed_ms: Number(row?.max_elapsed_ms || 0),
+      avg_elapsed_ms: Number(row?.avg_elapsed_ms || 0),
+    }))
+    .filter((row) => EXPECTED_LONG_RUNNING_HTTP_ROUTES.has(row.route) && row.slow_count > 0);
+  const excludedLongRunningSlowRequests = excludedLongRunningSlowRoutes
+    .reduce((sum, row) => sum + Number(row.slow_count || 0), 0);
+  const budgetSlowRequests = Math.max(0, rawBudgetSlowRequests - excludedLongRunningSlowRequests);
+  return {
+    recentSlowAvailable,
+    cumulativeSlowRequests,
+    recentSlowRequests,
+    rawBudgetSlowRequests,
+    budgetSlowRequests,
+    excludedLongRunningSlowRequests,
+    excludedLongRunningSlowRoutes,
+  };
+}
+
 function appendMemorySkillsAuthorityIssues(issues, readiness, args = {}) {
   const require = requireMemorySkillsProduction(args);
   const allow = allowMemorySkillsProduction(args) || require;
@@ -64,6 +101,17 @@ function appendMemorySkillsAuthorityIssues(issues, readiness, args = {}) {
   if (require && !state.memory_writer_authority_in_rust) issues.push('memory_writer_authority_not_active');
   if (require && !state.skills_execution_authority_in_rust) issues.push('skills_execution_authority_not_active');
   return { allow, require, ...state };
+}
+
+function enableCrossNetworkRemoteRouteSmoke(args = {}) {
+  return parseBool(args['cross-network-remote-route-smoke'], false)
+    || parseBool(process.env.XHUB_RUST_CROSS_NETWORK_REMOTE_ROUTE_SMOKE, false)
+    || requireCrossNetworkRemoteRouteSmoke(args);
+}
+
+function requireCrossNetworkRemoteRouteSmoke(args = {}) {
+  return parseBool(args['require-cross-network-remote-route-smoke'], false)
+    || parseBool(process.env.XHUB_RUST_REQUIRE_CROSS_NETWORK_REMOTE_ROUTE_SMOKE, false);
 }
 
 function requireMemoryGatewayCutoverReady(args = {}) {
@@ -2090,6 +2138,7 @@ async function crossNetworkReadiness(config, args = {}) {
   const livePublicBaseUrlMatches = !config.publicEndpoint
     || !readiness
     || safeString(readiness?.network?.public_base_url) === config.publicBaseUrl;
+  const remoteRouteSmoke = collectCrossNetworkRemoteRouteSmoke(config, args, readiness);
 
   const checks = [
     { name: 'lan_profile_or_allow_lan_or_public_endpoint', ok: config.allowLan === true || config.publicEndpoint === true, blocking: true },
@@ -2130,6 +2179,11 @@ async function crossNetworkReadiness(config, args = {}) {
       blocking: config.publicEndpoint && readiness !== null,
     },
     {
+      name: 'remote_route_smoke',
+      ok: remoteRouteSmoke.ok === true,
+      blocking: remoteRouteSmoke.required === true,
+    },
+    {
       name: 'memory_writer_authority_disabled',
       ok: readiness ? (memorySkills.allow || !memorySkills.memory_writer_authority_in_rust) : true,
       blocking: true,
@@ -2168,6 +2222,7 @@ async function crossNetworkReadiness(config, args = {}) {
   const issues = checks
     .filter((item) => item.blocking && item.ok !== true)
     .map((item) => item.name);
+  issues.push(...remoteRouteSmoke.blocking_issues);
 
   const report = {
     ok: issues.length === 0,
@@ -2186,12 +2241,17 @@ async function crossNetworkReadiness(config, args = {}) {
     require_live_ready: requireLiveReady,
     require_launchd_loaded: requireLaunchdLoaded,
     require_watchdog_timer: requireWatchdogTimer,
+    require_cross_network_remote_route_smoke: remoteRouteSmoke.required === true,
     access_key_file: accessKey,
     launchd_plist_installable: launchdPlistSafe,
     watchdog_timer_installable: watchdogInstallable,
     status: statusOut,
     launchd_status: launchdOut,
     watchdog_timer_status: watchdogTimer,
+    cross_network_remote_route_smoke: remoteRouteSmoke,
+    cross_network_remote_route_smoke_enabled: remoteRouteSmoke.enabled === true,
+    cross_network_remote_route_smoke_required: remoteRouteSmoke.required === true,
+    cross_network_remote_route_smoke_ok: remoteRouteSmoke.ok === true,
     ui_compatibility: uiGate,
     rust_product_kernel: true,
     swift_product_shell: true,
@@ -2223,6 +2283,174 @@ async function crossNetworkReadiness(config, args = {}) {
 
 function commandLine(parts) {
   return parts.map((part) => shellQuote(part)).join(' ');
+}
+
+function parseJsonToolOutput(stdout) {
+  const text = safeString(stdout);
+  if (!text) return { json: null, error: 'stdout_empty' };
+  try {
+    return { json: JSON.parse(text), error: '' };
+  } catch {}
+  const first = text.indexOf('{');
+  const last = text.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    try {
+      return { json: JSON.parse(text.slice(first, last + 1)), error: '' };
+    } catch (error) {
+      return { json: null, error: safeString(error.message || error) };
+    }
+  }
+  return { json: null, error: 'json_object_not_found' };
+}
+
+function hasSecretLikeText(value) {
+  return /sk-[A-Za-z0-9]|api_key|access_key"\s*:\s*"(?!\[REDACTED\])|Bearer\s+(?!\[REDACTED\])\S+|[a-f0-9]{64}/i.test(String(value || ''));
+}
+
+function hasSecretLikeValue(value) {
+  return hasSecretLikeText(JSON.stringify(value || null));
+}
+
+function compactRemoteRouteSmokeIssues(report) {
+  const issues = [];
+  const seen = new Set();
+  const add = (code) => {
+    const normalized = safeString(code);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    issues.push(normalized);
+  };
+  if (!report || report.ok !== true) add('cross_network_remote_route_smoke_failed');
+  for (const issue of Array.isArray(report?.issues) ? report.issues : []) {
+    if (typeof issue === 'string') {
+      add(`cross_network_remote_route_smoke_${issue}`);
+    } else if ((issue?.severity || 'blocker') === 'blocker') {
+      add(`cross_network_remote_route_smoke_${issue?.code || 'issue'}`);
+    }
+  }
+  return issues;
+}
+
+function collectCrossNetworkRemoteRouteSmoke(config, args = {}, readiness = null) {
+  const required = requireCrossNetworkRemoteRouteSmoke(args);
+  const enabled = enableCrossNetworkRemoteRouteSmoke(args);
+  const timeoutMs = parseIntInRange(args['cross-network-remote-route-smoke-timeout-ms'], 12000, 250, 120000);
+  const launchdEnv = readLaunchdEnvironmentVariables(config.launchdInstallPlistPath);
+  const publicBaseUrl = safeString(firstValue([
+    args['cross-network-remote-route-smoke-public-base-url'],
+    readiness?.network?.public_base_url,
+    readiness?.public_base_url,
+    launchdEnv.XHUB_RUST_HUB_PUBLIC_BASE_URL,
+    config.publicBaseUrl,
+  ]));
+  const accessKeyFile = safeString(firstValue([
+    args['cross-network-remote-route-smoke-access-key-file'],
+    launchdEnv.XHUB_RUST_HTTP_ACCESS_KEY_FILE,
+    config.accessKeyFile,
+  ]));
+  const commandPath = path.join(config.rootDir, 'tools', 'cross_network_remote_route_doctor.command');
+  const base = {
+    ok: true,
+    enabled,
+    required,
+    skipped: !enabled,
+    reason: enabled ? '' : 'cross_network_remote_route_smoke_not_requested',
+    public_base_url: publicBaseUrl,
+    access_key_file_configured: safeString(accessKeyFile) !== '',
+    access_key_file: accessKeyFile,
+    timeout_ms: timeoutMs,
+    command_path: commandPath,
+    exit_status: null,
+    parsed: false,
+    parse_error: '',
+    report: null,
+    report_redacted_due_to_secret_leak: false,
+    stdout_tail: '',
+    stderr_tail: '',
+    secret_leak: false,
+    production_authority_change: false,
+    daemon_restarted: false,
+    daemon_stopped: false,
+    blocking_issues: [],
+  };
+  const fail = (reason, issue, extra = {}) => ({
+    ...base,
+    ...extra,
+    ok: false,
+    enabled: true,
+    skipped: false,
+    reason,
+    blocking_issues: required ? [issue] : [],
+  });
+  if (!enabled) return base;
+  if (!safeString(publicBaseUrl)) {
+    return fail(
+      'cross_network_remote_route_smoke_public_base_url_missing',
+      'cross_network_remote_route_smoke_public_base_url_missing',
+    );
+  }
+  if (!fs.existsSync(commandPath)) {
+    return fail(
+      'cross_network_remote_route_doctor_missing',
+      'cross_network_remote_route_doctor_missing',
+    );
+  }
+  const commandArgs = [
+    commandPath,
+    '--public-base-url',
+    publicBaseUrl,
+    '--timeout-ms',
+    String(timeoutMs),
+    '--require-live-http',
+    '--require-auth-ready',
+  ];
+  if (safeString(accessKeyFile)) {
+    commandArgs.push('--access-key-file', accessKeyFile);
+  }
+  if (parseBool(args['allow-loopback-public-host'], false)) {
+    commandArgs.push('--allow-loopback-public-host');
+  }
+  if (parseBool(args['allow-vpn-raw-host'], false)) {
+    commandArgs.push('--allow-vpn-raw-host');
+  }
+  if (parseBool(args['allow-public-raw-ip'], false)) {
+    commandArgs.push('--allow-public-raw-ip');
+  }
+  const result = spawnSync('bash', commandArgs, {
+    cwd: config.rootDir,
+    encoding: 'utf8',
+    timeout: Math.max(timeoutMs + 5000, 1000),
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  const parsed = parseJsonToolOutput(result.stdout || '');
+  const rawSecretLeak = hasSecretLikeText(result.stdout) || hasSecretLikeText(result.stderr);
+  const parsedSecretLeak = parsed.json ? hasSecretLikeValue(parsed.json) : false;
+  const report = parsed.json && !parsedSecretLeak ? parsed.json : null;
+  const blockingIssues = [];
+  if (rawSecretLeak || parsedSecretLeak) blockingIssues.push('cross_network_remote_route_smoke_secret_leak');
+  if (!parsed.json) blockingIssues.push('cross_network_remote_route_smoke_json_parse_failed');
+  if (result.status !== 0 && !parsed.json) blockingIssues.push('cross_network_remote_route_smoke_exit_nonzero');
+  if (parsed.json?.ok !== true) blockingIssues.push(...compactRemoteRouteSmokeIssues(parsed.json));
+  return {
+    ...base,
+    ok: blockingIssues.length === 0,
+    enabled: true,
+    skipped: false,
+    reason: blockingIssues.length === 0 ? '' : 'cross_network_remote_route_smoke_failed',
+    command: commandLine(['bash', ...commandArgs]),
+    exit_status: Number.isFinite(result.status) ? result.status : null,
+    parsed: parsed.json !== null,
+    parse_error: parsed.error,
+    report,
+    report_redacted_due_to_secret_leak: parsedSecretLeak,
+    stdout_tail: redactEvidenceText(safeString(result.stdout).split(/\r?\n/).slice(-20).join('\n')),
+    stderr_tail: redactEvidenceText(safeString(result.stderr).split(/\r?\n/).slice(-20).join('\n')),
+    secret_leak: rawSecretLeak || parsedSecretLeak,
+    production_authority_change: parsed.json?.production_authority_change === true,
+    daemon_restarted: parsed.json?.daemon_restarted === true,
+    daemon_stopped: parsed.json?.daemon_stopped === true,
+    blocking_issues: required ? [...new Set(blockingIssues)] : [],
+  };
 }
 
 function daemonCommand(config, command, extraArgs = []) {
@@ -2849,6 +3077,7 @@ async function opsReport(config, args = {}) {
     config,
     args,
   );
+  const remoteRouteSmoke = collectCrossNetworkRemoteRouteSmoke(config, args, readiness);
   const memoryReadinessProbe = await collectMemoryReadiness(config);
   const memoryWritebackCandidateOpsRollup = compactMemoryWritebackCandidateDiagnostics(
     memoryReadinessProbe.readiness,
@@ -2956,6 +3185,10 @@ async function opsReport(config, args = {}) {
     memory_gateway_model_call_local_executor_smoke_local_ml_execute_http_invoked: memoryGatewayModelCallLocalExecutorSmoke.local_ml_execute_http_invoked === true,
     memory_gateway_model_call_local_executor_smoke_recent_slow_requests: Number(memoryGatewayModelCallLocalExecutorSmoke.http_recent_slow_requests || 0),
     memory_gateway_model_call_local_executor_smoke_recent_max_elapsed_ms: Number(memoryGatewayModelCallLocalExecutorSmoke.http_recent_max_elapsed_ms || 0),
+    cross_network_remote_route_smoke: remoteRouteSmoke,
+    cross_network_remote_route_smoke_enabled: remoteRouteSmoke.enabled === true,
+    cross_network_remote_route_smoke_required: remoteRouteSmoke.required === true,
+    cross_network_remote_route_smoke_ok: remoteRouteSmoke.ok === true,
     memory_readiness_ready: memoryReadinessProbe.ok === true,
     memory_readiness_error_code: memoryReadinessProbe.error_code || "",
     memory_readiness_error_message: memoryReadinessProbe.error_message || "",
@@ -4618,11 +4851,7 @@ async function watchdog(config, args = {}) {
   const readiness = statusOut.readiness || launchdOut.readiness || null;
   const healthy = statusOut.running === true || launchdOut.running === true;
   const readyState = readiness?.ready === true;
-  const recentSlowRaw = httpMetrics?.recent_slow_requests;
-  const recentSlowAvailable = recentSlowRaw !== undefined && recentSlowRaw !== null;
-  const cumulativeSlowRequests = Number(httpMetrics?.slow_requests || 0);
-  const recentSlowRequests = recentSlowAvailable ? Number(recentSlowRaw || 0) : null;
-  const budgetSlowRequests = recentSlowAvailable ? Number(recentSlowRequests || 0) : cumulativeSlowRequests;
+  const slowBudget = httpSlowBudgetSummary(httpMetrics);
   const launchdExpected = process.platform === 'darwin' && !allowManual;
 
   const issues = [];
@@ -4630,7 +4859,7 @@ async function watchdog(config, args = {}) {
   if (requireReady && !readyState) issues.push('daemon_readiness_unavailable');
   if (launchdExpected && launchdOut.loaded !== true) issues.push('launchd_not_loaded');
   if (httpMetrics?.schema_version !== 'xhub.rust_hub.http_metrics.v1') issues.push('http_metrics_unavailable');
-  if (budgetSlowRequests > maxSlowRequests) issues.push('slow_request_budget_exceeded');
+  if (slowBudget.budgetSlowRequests > maxSlowRequests) issues.push('slow_request_budget_exceeded');
   if (readiness?.capabilities?.http_io_timeouts !== true) issues.push('http_io_timeout_capability_missing');
   if (readiness?.capabilities?.http_backpressure !== true) issues.push('http_backpressure_capability_missing');
   if (uiGate.product_ui_change === true) issues.push('ui_product_change');
@@ -4697,10 +4926,13 @@ async function watchdog(config, args = {}) {
     http_metrics_ready: httpMetrics?.schema_version === 'xhub.rust_hub.http_metrics.v1',
     http_metrics_error: httpMetricsError,
     total_requests: Number(httpMetrics?.total_requests || 0),
-    slow_request_budget_scope: recentSlowAvailable ? 'recent_window' : 'cumulative',
-    slow_requests: budgetSlowRequests,
-    cumulative_slow_requests: cumulativeSlowRequests,
-    recent_slow_requests: recentSlowAvailable ? recentSlowRequests : null,
+    slow_request_budget_scope: slowBudget.recentSlowAvailable ? 'recent_window' : 'cumulative',
+    slow_requests: slowBudget.budgetSlowRequests,
+    raw_slow_requests_for_budget_scope: slowBudget.rawBudgetSlowRequests,
+    cumulative_slow_requests: slowBudget.cumulativeSlowRequests,
+    recent_slow_requests: slowBudget.recentSlowAvailable ? slowBudget.recentSlowRequests : null,
+    excluded_long_running_slow_requests: slowBudget.excludedLongRunningSlowRequests,
+    excluded_long_running_slow_routes: slowBudget.excludedLongRunningSlowRoutes,
     recent_sample_count: Number(httpMetrics?.recent_sample_count || 0),
     recent_sample_capacity: Number(httpMetrics?.recent_sample_capacity || 0),
     max_observed_http_elapsed_ms: Number(httpMetrics?.max_elapsed_ms || 0),
@@ -4787,11 +5019,7 @@ async function opsGate(config, args = {}) {
   const readiness = statusOut.readiness || launchdOut.readiness || null;
   const healthy = statusOut.running === true || launchdOut.running === true;
   const readyState = readiness?.ready === true;
-  const cumulativeSlowRequests = Number(httpMetrics?.slow_requests || 0);
-  const recentSlowRaw = httpMetrics?.recent_slow_requests;
-  const recentSlowAvailable = recentSlowRaw !== undefined && recentSlowRaw !== null;
-  const recentSlowRequests = recentSlowAvailable ? Number(recentSlowRaw || 0) : null;
-  const budgetSlowRequests = recentSlowAvailable ? Number(recentSlowRequests || 0) : cumulativeSlowRequests;
+  const slowBudget = httpSlowBudgetSummary(httpMetrics);
   const maintenanceNeeded = Number(logMaintenance.files_over_limit || 0) > 0
     || Number(reportMaintenance.files_planned_delete || 0) > 0;
   const memoryGatewayCutoverReadiness = collectMemoryGatewayCutoverReadiness(
@@ -4816,6 +5044,7 @@ async function opsGate(config, args = {}) {
     config,
     args,
   );
+  const remoteRouteSmoke = collectCrossNetworkRemoteRouteSmoke(config, args, readiness);
   const memoryReadinessProbe = await collectMemoryReadiness(config);
   const memoryWritebackCandidateOpsRollup = compactMemoryWritebackCandidateDiagnostics(
     memoryReadinessProbe.readiness,
@@ -4830,7 +5059,7 @@ async function opsGate(config, args = {}) {
   if (requireReady && !healthy) issues.push('daemon_health_unavailable');
   if (requireReady && !readyState) issues.push('daemon_readiness_unavailable');
   if (httpMetrics?.schema_version !== 'xhub.rust_hub.http_metrics.v1') issues.push('http_metrics_unavailable');
-  if (budgetSlowRequests > maxSlowRequests) issues.push('slow_request_budget_exceeded');
+  if (slowBudget.budgetSlowRequests > maxSlowRequests) issues.push('slow_request_budget_exceeded');
   if (uiGate.product_ui_change === true) issues.push('ui_product_change');
   if (uiGate.swift_ui_files_touched === true) issues.push('swift_ui_files_touched');
   if (uiGate.rust_browser_product_ui === true) issues.push('rust_browser_product_ui');
@@ -4841,6 +5070,7 @@ async function opsGate(config, args = {}) {
   issues.push(...memoryGatewayModelCallPlanShadow.blocking_issues);
   issues.push(...memoryGatewayModelCallExecuteSmoke.blocking_issues);
   issues.push(...memoryGatewayModelCallLocalExecutorSmoke.blocking_issues);
+  issues.push(...remoteRouteSmoke.blocking_issues);
   if (requireReady && memoryReadinessProbe.ok !== true) issues.push("memory_readiness_unavailable");
   if (memoryWritebackCandidateOpsRollup.production_authority_change === true) {
     issues.push("memory_writeback_candidate_production_authority_change");
@@ -4866,13 +5096,16 @@ async function opsGate(config, args = {}) {
     http_metrics_ready: httpMetrics?.schema_version === 'xhub.rust_hub.http_metrics.v1',
     http_metrics_error: httpMetricsError,
     total_requests: Number(httpMetrics?.total_requests || 0),
-    slow_request_budget_scope: recentSlowAvailable ? 'recent_window' : 'cumulative',
-    slow_requests: budgetSlowRequests,
-    cumulative_slow_requests: cumulativeSlowRequests,
-    recent_slow_requests: recentSlowAvailable ? recentSlowRequests : null,
+    slow_request_budget_scope: slowBudget.recentSlowAvailable ? 'recent_window' : 'cumulative',
+    slow_requests: slowBudget.budgetSlowRequests,
+    raw_slow_requests_for_budget_scope: slowBudget.rawBudgetSlowRequests,
+    cumulative_slow_requests: slowBudget.cumulativeSlowRequests,
+    recent_slow_requests: slowBudget.recentSlowAvailable ? slowBudget.recentSlowRequests : null,
     recent_sample_count: Number(httpMetrics?.recent_sample_count || 0),
     recent_sample_capacity: Number(httpMetrics?.recent_sample_capacity || 0),
-    slow_request_budget_ok: budgetSlowRequests <= maxSlowRequests,
+    excluded_long_running_slow_requests: slowBudget.excludedLongRunningSlowRequests,
+    excluded_long_running_slow_routes: slowBudget.excludedLongRunningSlowRoutes,
+    slow_request_budget_ok: slowBudget.budgetSlowRequests <= maxSlowRequests,
     max_observed_http_elapsed_ms: Number(httpMetrics?.max_elapsed_ms || 0),
     route_count: Number(httpMetrics?.route_count || 0),
     maintenance_dry_run: true,
@@ -4954,6 +5187,10 @@ async function opsGate(config, args = {}) {
     memory_gateway_model_call_local_executor_smoke_local_ml_execute_http_invoked: memoryGatewayModelCallLocalExecutorSmoke.local_ml_execute_http_invoked === true,
     memory_gateway_model_call_local_executor_smoke_recent_slow_requests: Number(memoryGatewayModelCallLocalExecutorSmoke.http_recent_slow_requests || 0),
     memory_gateway_model_call_local_executor_smoke_recent_max_elapsed_ms: Number(memoryGatewayModelCallLocalExecutorSmoke.http_recent_max_elapsed_ms || 0),
+    cross_network_remote_route_smoke: remoteRouteSmoke,
+    cross_network_remote_route_smoke_enabled: remoteRouteSmoke.enabled === true,
+    cross_network_remote_route_smoke_required: remoteRouteSmoke.required === true,
+    cross_network_remote_route_smoke_ok: remoteRouteSmoke.ok === true,
     memory_readiness_ready: memoryReadinessProbe.ok === true,
     memory_readiness_error_code: memoryReadinessProbe.error_code || "",
     memory_readiness_error_message: memoryReadinessProbe.error_message || "",
@@ -5193,10 +5430,60 @@ function printEnv(config) {
   fs.writeSync(1, `${lines.join('\n')}\n`);
 }
 
+function assertHttpSlowBudgetExcludesExpectedLongRunningRoutes() {
+  const summary = httpSlowBudgetSummary({
+    slow_requests: 4,
+    recent_slow_requests: 3,
+    recent_routes: [
+      { route: '/local-ml/execute', slow_count: 2, max_elapsed_ms: 11163 },
+      { route: '/ready', slow_count: 1, max_elapsed_ms: 2500 },
+    ],
+    routes: [
+      { route: '/local-ml/execute', slow_count: 2, max_elapsed_ms: 11163 },
+      { route: '/provider/openai-quota-refresh/plan', slow_count: 2, max_elapsed_ms: 2466 },
+    ],
+  });
+  if (summary.rawBudgetSlowRequests !== 3) throw new Error('expected raw recent slow budget to remain visible');
+  if (summary.excludedLongRunningSlowRequests !== 2) throw new Error('expected local ml slow requests to be excluded');
+  if (summary.budgetSlowRequests !== 1) throw new Error('expected non-local-ml slow request to remain budgeted');
+
+  const cumulativeSummary = httpSlowBudgetSummary({
+    slow_requests: 5,
+    routes: [
+      { route: '/local-ml/run-local-task', slow_count: 2, max_elapsed_ms: 9876 },
+      { route: '/runtime/local-ml/execute', slow_count: 1, max_elapsed_ms: 6789 },
+      { route: '/ready', slow_count: 2, max_elapsed_ms: 2400 },
+    ],
+  });
+  if (cumulativeSummary.recentSlowAvailable !== false) {
+    throw new Error('expected cumulative budget path when recent window is unavailable');
+  }
+  if (cumulativeSummary.rawBudgetSlowRequests !== 5) {
+    throw new Error('expected cumulative slow request count to remain visible');
+  }
+  if (cumulativeSummary.excludedLongRunningSlowRequests !== 3) {
+    throw new Error('expected expected long-running local executor routes to be excluded');
+  }
+  if (cumulativeSummary.budgetSlowRequests !== 2) {
+    throw new Error('expected non-local-executor cumulative slow requests to remain budgeted');
+  }
+}
+
+function httpSlowBudgetSelfTest() {
+  assertHttpSlowBudgetExcludesExpectedLongRunningRoutes();
+  printJson({
+    ok: true,
+    command: 'http-slow-budget-self-test',
+    schema_version: 'xhub.rust_hub.http_slow_budget_self_test.v1',
+    expected_long_running_routes: Array.from(EXPECTED_LONG_RUNNING_HTTP_ROUTES).sort(),
+  });
+}
+
 async function selfTest(config) {
   assertLaunchdExplicitConfigWins();
   assertLaunchdPassthroughIncludesProviderModelProduction();
   assertMemoryGatewayModelCallExecuteSmokeCollector();
+  assertHttpSlowBudgetExcludesExpectedLongRunningRoutes();
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xhubd-daemon-self-test-'));
   const port = 57000 + (process.pid % 1000);
   const selfConfig = {
@@ -5258,6 +5545,7 @@ function printHelp() {
   restart   Stop then start
   env       Print Node Hub HTTP-first environment variables
   self-test Start a temporary daemon, check health, and stop it
+  http-slow-budget-self-test Validate slow-budget exclusion for expected long-running local model routes
 
 Options:
   --profile <p>    local, lan, or domain. lan binds 0.0.0.0; domain models a tunnel/public URL.
@@ -5289,6 +5577,11 @@ Options:
   --require-live-ready For cross-network-readiness, require live /ready=true
   --require-launchd-loaded For cross-network-readiness, require daemon LaunchAgent loaded
   --require-watchdog-timer For cross-network-readiness, require watchdog timer loaded
+  --cross-network-remote-route-smoke For cross-network-readiness/ops-gate, run non-mutating public URL /health + auth /ready smoke as evidence
+  --require-cross-network-remote-route-smoke For cross-network-readiness/ops-gate, fail unless public URL /health and authenticated /ready pass
+  --cross-network-remote-route-smoke-timeout-ms <n> Timeout for public URL smoke, default 12000
+  --cross-network-remote-route-smoke-public-base-url <u> Override public URL used by the smoke
+  --cross-network-remote-route-smoke-access-key-file <p> Override access key file used by the smoke
   --allow-loopback-public-host For cross-network-readiness tests with 127.0.0.1
   --report-path <p> For ops-report, persisted JSON report path
   --max-log-bytes <n> For ops-report, redacted tail bytes per log file
@@ -5413,6 +5706,9 @@ async function main() {
       break;
     case 'self-test':
       await selfTest(config);
+      break;
+    case 'http-slow-budget-self-test':
+      httpSlowBudgetSelfTest();
       break;
     case 'help':
     case '-h':

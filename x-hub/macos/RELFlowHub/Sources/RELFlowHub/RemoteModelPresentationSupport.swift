@@ -123,9 +123,9 @@ enum RemoteModelPresentationSupport {
         case "gemini":
             return "Gemini"
         case "remote_catalog":
-            return "Catalog"
+            return "目录"
         default:
-            return backend.isEmpty ? "Remote" : backend.uppercased()
+            return backend.isEmpty ? "远程" : backend.uppercased()
         }
     }
 
@@ -181,7 +181,7 @@ enum RemoteModelPresentationSupport {
             return backendLabel(for: first)
         }
 
-        return "Remote"
+        return "远程"
     }
 
     private static func groupDetail(for models: [RemoteModelEntry]) -> String? {

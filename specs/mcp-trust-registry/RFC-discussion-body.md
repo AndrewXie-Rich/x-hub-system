@@ -77,7 +77,7 @@ A local proxy mediates between an MCP client and the MCP server it spawned. The 
 
 ---
 
-## What we are explicitly NOT proposing
+## Non-goals (explicit scope boundaries)
 
 We've been deliberate about scope:
 

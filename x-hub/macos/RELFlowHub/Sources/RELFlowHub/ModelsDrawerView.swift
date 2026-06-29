@@ -21,7 +21,10 @@ struct ModelsDrawer: View {
     @State private var modelLibraryExpanded: Bool = false
     @State private var resourcePoolSnapshot: [ModelsDrawerResourcePoolSummary] = []
     @State private var libraryItemSnapshot: [ModelsDrawerLibraryItem] = []
+    @State private var filteredLibraryItemSnapshot: [ModelsDrawerLibraryItem] = []
     @State private var routeMatrixRowSnapshot: [ModelsDrawerRouteMatrixRow] = []
+    @State private var routeControlRowSnapshot: [ModelsDrawerTaskRouteControlSnapshot] = []
+    @State private var roleRouteSummarySnapshot: [ModelsDrawerRoleRouteSummary] = []
     @State private var importSourceRemovalTarget: ModelsDrawerImportSourceRemovalTarget? = nil
     @State private var importSourceActionText: String = ""
     @State private var importSourceErrorText: String = ""
@@ -87,7 +90,7 @@ struct ModelsDrawer: View {
 
     private var drawerBase: some View {
         let pools = self.resourcePoolSnapshot
-        let libraryItems = self.filteredLibraryItems(from: libraryItemSnapshot)
+        let libraryItems = self.filteredLibraryItemSnapshot
 
         return VStack(alignment: .leading, spacing: 0) {
             self.drawerHeader
@@ -99,17 +102,17 @@ struct ModelsDrawer: View {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     self.portfolioOverviewPanel(pools: pools)
 
-                    self.importSourceCleanupSection
-
                     self.resourcePoolsSection(pools)
-
-                    self.remoteModelSourcesSection
 
                     self.taskRouteMatrixSection
 
                     self.localRuntimeAndModelsSection
 
                     self.modelLibrarySection(libraryItems)
+
+                    self.remoteModelSourcesSection
+
+                    self.importSourceCleanupSection
                 }
                 .padding(14)
             }
@@ -208,6 +211,12 @@ struct ModelsDrawer: View {
         .onChange(of: store.routingPreferredModelIdByTask) { _ in
             rebuildDrawerDerivedSnapshots()
         }
+        .onChange(of: libraryFilter) { _ in
+            rebuildFilteredLibrarySnapshot()
+        }
+        .onChange(of: librarySearch) { _ in
+            rebuildFilteredLibrarySnapshot()
+        }
         .onChange(of: store.remoteKeyHealthSnapshot.updatedAt) { _ in
             refreshRemoteDrawerGroups()
         }
@@ -240,7 +249,7 @@ struct ModelsDrawer: View {
                         tint: providerKeySnapshot.readyAccounts > 0 ? .green : .secondary
                     )
                     drawerStatusPill(
-                        runtimeAlive ? "Runtime 在线" : "Runtime 待恢复",
+                        runtimeAlive ? "运行时在线" : "运行时待恢复",
                         systemName: runtimeAlive ? "bolt.fill" : "bolt.slash",
                         tint: runtimeAlive ? .green : .orange
                     )
@@ -295,7 +304,7 @@ struct ModelsDrawer: View {
         let topModels = Array(localModels.map(\.name).prefix(4))
         let subtitle = [
             "\(localModels.count) 个本地模型",
-            runtimeTotalProviderCount > 0 ? "\(runtimeReadyProviderCount)/\(runtimeTotalProviderCount) provider" : "等待 provider",
+            runtimeTotalProviderCount > 0 ? "\(runtimeReadyProviderCount)/\(runtimeTotalProviderCount) 运行时" : "等待运行时",
             runtimeLoadedInstanceCount > 0 ? "\(runtimeLoadedInstanceCount) 常驻实例" : ""
         ]
         .filter { !$0.isEmpty }
@@ -303,7 +312,7 @@ struct ModelsDrawer: View {
 
         return ModelsDrawerResourcePoolSummary(
             id: "local",
-            title: "Local",
+            title: "本地",
             subtitle: subtitle.isEmpty ? "本地模型资源池" : subtitle,
             statusText: statusText,
             statusColor: statusColor,
@@ -456,6 +465,34 @@ struct ModelsDrawer: View {
         }
     }
 
+    private var routeControlRows: [ModelsDrawerTaskRouteControlSnapshot] {
+        let options = modelStore.snapshot.models.map {
+            ModelsDrawerRouteModelOption(id: $0.id, title: $0.name)
+        }
+
+        return HubTaskType.allCases.map { task in
+            let decision = currentRouteDecision(for: task)
+            let preferredModelId = effectivePreferredModelId(for: task)
+            let tint = decision.modelId.isEmpty
+                ? Color.orange
+                : modelStateColor(decision.modelState ?? .available)
+
+            return ModelsDrawerTaskRouteControlSnapshot(
+                id: task.rawValue,
+                task: task,
+                decision: decision,
+                preferredModelId: preferredModelId,
+                tint: tint,
+                systemName: routeTaskSystemName(task),
+                purposeText: routeTaskPurposeText(task),
+                detailText: routeRecommendationDetail(decision),
+                stateText: modelStateText(decision.modelState ?? .available),
+                preferenceLabel: routePreferenceShortLabel(for: task),
+                availableModels: options
+            )
+        }
+    }
+
     private var libraryItems: [ModelsDrawerLibraryItem] {
         let localItems = localModels.map { model in
             ModelsDrawerLibraryItem(
@@ -533,7 +570,7 @@ struct ModelsDrawer: View {
             readyAccountCount: providerKeySnapshot.readyAccounts,
             totalAccountCount: providerKeySnapshot.totalAccounts,
             runtimeLoadedInstanceCount: runtimeLoadedInstanceCount,
-            roleSummaries: roleRouteSummaries
+            roleSummaries: roleRouteSummarySnapshot
         )
     }
 
@@ -667,7 +704,7 @@ struct ModelsDrawer: View {
                 ModelsDrawerActionChipLabel(
                     title: "清理",
                     systemName: "trash",
-                    tint: importSourceStateText(source) == "ready" ? .secondary : color,
+                    tint: source.state == "ready" ? .secondary : color,
                     disabled: false
                 )
             }
@@ -734,13 +771,13 @@ struct ModelsDrawer: View {
     private func importSourceStateText(_ source: ProviderKeyImportSourceStatus) -> String {
         switch source.state {
         case "ready":
-            return "ready"
+            return source.ownedAccountCount == 0 ? "空来源" : "正常"
         case "missing":
-            return "missing"
+            return "路径缺失"
         case "sync_failed":
-            return "sync_failed"
+            return "同步失败"
         default:
-            return "pending"
+            return "待处理"
         }
     }
 
@@ -910,7 +947,7 @@ struct ModelsDrawer: View {
             VStack(alignment: .leading, spacing: 10) {
                 sectionHeader(
                     title: "远程模型来源",
-                    subtitle: "按 key / endpoint 聚合 catalog；过期或不再续费的模型来源可以整组停用或移除。"
+                    subtitle: "按 Key 和 Endpoint 聚合模型目录；过期或不再续费的来源可以整组停用或移除。"
                 )
 
                 drawerPanel {
@@ -960,7 +997,7 @@ struct ModelsDrawer: View {
                         }
 
                         if groups.isEmpty {
-                            emptyStateLine("没有远程模型来源。添加远程模型后，这里会显示可管理的 catalog 组。")
+                            emptyStateLine("没有远程模型来源。添加远程模型后，这里会显示可管理的目录组。")
                         } else {
                             VStack(spacing: 0) {
                                 ForEach(Array(groups.prefix(6).enumerated()), id: \.element.id) { index, group in
@@ -1153,9 +1190,9 @@ struct ModelsDrawer: View {
             drawerPanel {
                 VStack(alignment: .leading, spacing: 12) {
                     VStack(spacing: 0) {
-                        ForEach(Array(HubTaskType.allCases.enumerated()), id: \.element.id) { index, task in
+                        ForEach(Array(routeControlRowSnapshot.enumerated()), id: \.element.id) { index, row in
                             if index > 0 { Divider().opacity(0.28) }
-                            taskRouteControlRow(task)
+                            taskRouteControlRow(row)
                                 .padding(.vertical, 9)
                         }
                     }
@@ -1191,14 +1228,14 @@ struct ModelsDrawer: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionHeader(
                 title: "本地模型",
-                subtitle: "只展示已导入、可按需加载和已载入状态；发现和添加入口保留在 Local 资源池。"
+                subtitle: "只展示已导入、可按需加载和已载入状态；发现和添加入口保留在本地资源池。"
             )
 
             drawerPanel {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 10) {
                         drawerStatusPill(
-                            runtimeAlive ? "Runtime 在线" : "Runtime 待恢复",
+                            runtimeAlive ? "运行时在线" : "运行时待恢复",
                             systemName: runtimeAlive ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
                             tint: runtimeAlive ? .green : .orange
                         )
@@ -1294,34 +1331,30 @@ struct ModelsDrawer: View {
         }
     }
 
-    private func taskRouteControlRow(_ task: HubTaskType) -> some View {
-        let decision = currentRouteDecision(for: task)
-        let preferredModelId = effectivePreferredModelId(for: task)
-        let tint = decision.modelId.isEmpty ? Color.orange : modelStateColor(decision.modelState ?? .available)
-
+    private func taskRouteControlRow(_ row: ModelsDrawerTaskRouteControlSnapshot) -> some View {
         return ModelsDrawerTaskRouteControlRow(
-            task: task,
-            decision: decision,
-            preferredModelId: preferredModelId,
-            tint: tint,
-            systemName: routeTaskSystemName(task),
-            purposeText: routeTaskPurposeText(task),
-            detailText: routeRecommendationDetail(decision),
-            stateText: modelStateText(decision.modelState ?? .available),
-            preferenceLabel: routePreferenceShortLabel(for: task),
-            availableModels: modelStore.snapshot.models,
+            task: row.task,
+            decision: row.decision,
+            preferredModelId: row.preferredModelId,
+            tint: row.tint,
+            systemName: row.systemName,
+            purposeText: row.purposeText,
+            detailText: row.detailText,
+            stateText: row.stateText,
+            preferenceLabel: row.preferenceLabel,
+            availableModels: row.availableModels,
             routeCheckFeedback: routeCheckFeedback,
             routeCheckModelId: routeCheckModelId,
             routeCheckTaskId: routeCheckTaskId,
-            trialStatus: routeTrialStatus(for: decision),
+            trialStatus: routeTrialStatus(for: row.decision),
             onSetPreferred: { modelId in
-                store.setRoutingPreferredModel(taskType: task.rawValue, modelId: modelId)
+                store.setRoutingPreferredModel(taskType: row.task.rawValue, modelId: modelId)
                 routeCheckFeedback = ""
                 routeCheckModelId = ""
                 routeCheckTaskId = ""
             },
             onTest: {
-                runRouteCheck(task: task, decision: decision)
+                runRouteCheck(task: row.task, decision: row.decision)
             }
         )
     }
@@ -1402,25 +1435,48 @@ struct ModelsDrawer: View {
     }
 
     private func refreshLocalModelSnapshot() {
-        localModelSnapshot = ModelsDrawerLocalModelSnapshot.build(from: modelStore.snapshot.models)
+        let startedAt = HubPerformanceTrace.now()
+        let next = ModelsDrawerLocalModelSnapshot.build(from: modelStore.snapshot.models)
+        assignIfChanged(&localModelSnapshot, next)
+        HubPerformanceTrace.logSlow(
+            "models.drawer.local_snapshot",
+            startedAt: startedAt,
+            thresholdMs: 16,
+            details: "models=\(modelStore.snapshot.models.count)"
+        )
         rebuildDrawerDerivedSnapshots()
     }
 
     private func refreshRemoteDrawerGroups() {
-        remoteDrawerGroupSnapshot = remoteDrawerGroups(from: remoteModels)
+        let startedAt = HubPerformanceTrace.now()
+        let next = remoteDrawerGroups(from: remoteModels)
+        assignIfChanged(&remoteDrawerGroupSnapshot, next)
+        HubPerformanceTrace.logSlow(
+            "models.drawer.remote_groups",
+            startedAt: startedAt,
+            thresholdMs: 20,
+            details: "remote_models=\(remoteModels.count) groups=\(remoteDrawerGroupSnapshot.count)"
+        )
         rebuildDrawerDerivedSnapshots()
     }
 
     private func reloadRemoteModels(initial: Bool = false) {
         remoteModelsReloadTask?.cancel()
         remoteModelsReloadTask = Task { @MainActor in
+            let startedAt = HubPerformanceTrace.now()
             let loaded = await Task.detached(priority: .userInitiated) {
                 RemoteModelPresentationSupport.sorted(RemoteModelStorage.load().models)
             }.value
             guard !Task.isCancelled else { return }
-            remoteModels = loaded
+            assignIfChanged(&remoteModels, loaded)
             let groups = remoteDrawerGroups(from: loaded)
-            remoteDrawerGroupSnapshot = groups
+            assignIfChanged(&remoteDrawerGroupSnapshot, groups)
+            HubPerformanceTrace.logSlow(
+                "models.drawer.reload_remote",
+                startedAt: startedAt,
+                thresholdMs: initial ? 80 : 50,
+                details: "initial=\(initial ? 1 : 0) remote_models=\(loaded.count) groups=\(groups.count)"
+            )
             rebuildDrawerDerivedSnapshots()
             remoteModelsReloadTask = nil
         }
@@ -1433,21 +1489,87 @@ struct ModelsDrawer: View {
         }
         providerKeyReloadTask?.cancel()
         providerKeyReloadTask = Task { @MainActor in
+            let startedAt = HubPerformanceTrace.now()
             let loaded = await Task.detached(priority: .userInitiated) {
                 RemoteProviderKeyBootstrapper.bootstrapIfNeeded()
                 return ModelsDrawerProviderKeySnapshot.build(from: ProviderKeyStorage.load())
             }.value
             guard !Task.isCancelled else { return }
-            providerKeySnapshot = loaded
+            assignIfChanged(&providerKeySnapshot, loaded)
+            HubPerformanceTrace.logSlow(
+                "models.drawer.reload_provider_keys",
+                startedAt: startedAt,
+                thresholdMs: 80,
+                details: "key_pools=\(loaded.keyPools.count) quota_pools=\(loaded.quotaPools.count)"
+            )
             rebuildDrawerDerivedSnapshots()
             providerKeyReloadTask = nil
         }
     }
 
     private func rebuildDrawerDerivedSnapshots() {
-        resourcePoolSnapshot = resourcePoolSummaries
-        libraryItemSnapshot = libraryItems
-        routeMatrixRowSnapshot = routeMatrixRows
+        let totalStartedAt = HubPerformanceTrace.now()
+
+        let poolsStartedAt = HubPerformanceTrace.now()
+        let pools = resourcePoolSummaries
+        HubPerformanceTrace.logSlow(
+            "models.drawer.derive_resource_pools",
+            startedAt: poolsStartedAt,
+            thresholdMs: 12,
+            details: "pools=\(pools.count) local=\(localModels.count) remote=\(remoteModels.count)"
+        )
+
+        let libraryStartedAt = HubPerformanceTrace.now()
+        let items = libraryItems
+        HubPerformanceTrace.logSlow(
+            "models.drawer.derive_library_items",
+            startedAt: libraryStartedAt,
+            thresholdMs: 18,
+            details: "items=\(items.count) local=\(localModels.count) remote=\(remoteModels.count)"
+        )
+
+        let routeStartedAt = HubPerformanceTrace.now()
+        let routeControls = routeControlRows
+        let routeRows = routeMatrixRows
+        let roleSummaries = roleRouteSummaries
+        HubPerformanceTrace.logSlow(
+            "models.drawer.derive_route_matrix",
+            startedAt: routeStartedAt,
+            thresholdMs: 12,
+            details: "controls=\(routeControls.count) rows=\(routeRows.count) roles=\(roleSummaries.count) models=\(modelStore.snapshot.models.count)"
+        )
+
+        assignIfChanged(&resourcePoolSnapshot, pools)
+        assignIfChanged(&libraryItemSnapshot, items)
+        assignIfChanged(&routeControlRowSnapshot, routeControls)
+        assignIfChanged(&routeMatrixRowSnapshot, routeRows)
+        assignIfChanged(&roleRouteSummarySnapshot, roleSummaries)
+        rebuildFilteredLibrarySnapshot(baseItems: items)
+
+        HubPerformanceTrace.logSlow(
+            "models.drawer.derive_total",
+            startedAt: totalStartedAt,
+            thresholdMs: 35,
+            details: "pools=\(pools.count) items=\(items.count) routes=\(routeRows.count)"
+        )
+    }
+
+    private func rebuildFilteredLibrarySnapshot(baseItems: [ModelsDrawerLibraryItem]? = nil) {
+        let startedAt = HubPerformanceTrace.now()
+        let items = filteredLibraryItems(from: baseItems ?? libraryItemSnapshot)
+        assignIfChanged(&filteredLibraryItemSnapshot, items)
+        HubPerformanceTrace.logSlow(
+            "models.drawer.filter_library_items",
+            startedAt: startedAt,
+            thresholdMs: 10,
+            details: "items=\(items.count) base=\((baseItems ?? libraryItemSnapshot).count)"
+        )
+    }
+
+    private func assignIfChanged<Value: Equatable>(_ state: inout Value, _ next: Value) {
+        if state != next {
+            state = next
+        }
     }
 
     @ViewBuilder

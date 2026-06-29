@@ -35,7 +35,8 @@ export function tlsServerNameFromEnv(env = process.env) {
 export function tlsBaseDir(runtimeBaseDir, env = process.env) {
   const explicit = safeString(env.HUB_GRPC_TLS_DIR || env.HUB_TLS_DIR || '');
   if (explicit) return explicit;
-  const base = safeString(runtimeBaseDir);
+  const base = safeString(env.HUB_AUTH_BASE_DIR || env.HUB_CLIENTS_BASE_DIR || '')
+    || safeString(runtimeBaseDir);
   if (!base) return '';
   return path.join(base, 'hub_grpc_tls');
 }

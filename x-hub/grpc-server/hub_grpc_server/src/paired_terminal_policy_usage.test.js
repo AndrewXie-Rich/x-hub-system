@@ -1755,6 +1755,130 @@ await runAsync('list models returns paired terminal paid access budget truth', a
   try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
+await runAsync('AI-only model listing and generate prefer exact local runtime model over stale paid DB row', async () => {
+  const runtimeBaseDir = makeTmp('runtime_ai_only_local_runtime_wins');
+  const dbPath = makeTmp('db_ai_only_local_runtime_wins', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  await withEnvAsync(baseEnv(runtimeBaseDir), async () => {
+    const db = new HubDB({ dbPath });
+    try {
+      const modelId = 'qwen3-17b-mlx-bf16';
+      db.db.prepare(
+        `INSERT OR REPLACE INTO models(model_id,name,kind,backend,context_length,requires_grant,enabled,updated_at_ms)
+         VALUES(?,?,?,?,?,?,?,?)`
+      ).run(modelId, 'Stale Qwen Remote', 'paid_online', 'openai', 8192, 1, 1, Date.now());
+      writeModelsState(runtimeBaseDir, [{
+        id: modelId,
+        name: 'Qwen Local Runtime',
+        backend: 'mlx',
+        modelPath: path.join(runtimeBaseDir, 'models', modelId),
+        contextLength: 8192,
+        taskKinds: ['text_generate'],
+        state: 'available',
+      }]);
+
+      const clientEntry = {
+        device_id: 'dev-ai-only-local-runtime-wins',
+        user_id: 'dev-ai-only-local-runtime-wins',
+        name: 'AI Only Local Runtime Wins',
+        token: 'tok-ai-only-local-runtime-wins',
+        enabled: true,
+        capabilities: ['models', 'ai.generate.local'],
+        scopes: ['models', 'ai.generate.local'],
+      };
+
+      const response = await invokeListModels({ db, runtimeBaseDir, clientEntry });
+      const listed = response.models.find((model) => String(model?.model_id || '') === modelId);
+      assert.ok(listed, 'runtime local model should be listed');
+      assert.equal(listed.kind, 'MODEL_KIND_LOCAL_OFFLINE');
+      assert.equal(listed.requires_grant, false);
+      assert.equal(response.models.some((model) => model?.requires_grant === true), false);
+
+      const call = await invokeGenerate({
+        db,
+        runtimeBaseDir,
+        clientEntry,
+        requestOverrides: {
+          model_id: modelId,
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'Say OK.' }],
+        },
+      });
+      const writesJson = JSON.stringify(call.writes || []);
+      assert.doesNotMatch(writesJson, /privacy_remote_disabled/);
+      assert.match(writesJson, /local_runtime|local_/);
+    } finally {
+      db.close();
+    }
+  });
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+await runAsync('AI-only generate treats snake_case runtime model metadata as local over stale paid DB row', async () => {
+  const runtimeBaseDir = makeTmp('runtime_ai_only_snake_runtime_wins');
+  const dbPath = makeTmp('db_ai_only_snake_runtime_wins', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  await withEnvAsync(baseEnv(runtimeBaseDir), async () => {
+    const db = new HubDB({ dbPath });
+    try {
+      const modelId = 'hf-qwen-local-text';
+      db.db.prepare(
+        `INSERT OR REPLACE INTO models(model_id,name,kind,backend,context_length,requires_grant,enabled,updated_at_ms)
+         VALUES(?,?,?,?,?,?,?,?)`
+      ).run(modelId, 'Stale HF Remote', 'paid_online', 'openai', 8192, 1, 1, Date.now());
+      writeModelsState(runtimeBaseDir, [{
+        model_id: modelId,
+        name: 'HF Qwen Local Text',
+        backend: 'transformers',
+        model_path: path.join(runtimeBaseDir, 'models', modelId),
+        context_length: 8192,
+        task_kinds: ['text_generate'],
+        state: 'available',
+      }]);
+
+      const clientEntry = {
+        device_id: 'dev-ai-only-snake-runtime-wins',
+        user_id: 'dev-ai-only-snake-runtime-wins',
+        name: 'AI Only Snake Runtime Wins',
+        token: 'tok-ai-only-snake-runtime-wins',
+        enabled: true,
+        capabilities: ['models', 'ai.generate.local'],
+        scopes: ['models', 'ai.generate.local'],
+      };
+
+      const response = await invokeListModels({ db, runtimeBaseDir, clientEntry });
+      const listed = response.models.find((model) => String(model?.model_id || '') === modelId);
+      assert.ok(listed, 'snake_case runtime local model should be listed');
+      assert.equal(listed.kind, 'MODEL_KIND_LOCAL_OFFLINE');
+      assert.equal(listed.requires_grant, false);
+      assert.equal(response.models.some((model) => model?.requires_grant === true), false);
+
+      const call = await invokeGenerate({
+        db,
+        runtimeBaseDir,
+        clientEntry,
+        requestOverrides: {
+          model_id: modelId,
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'Say OK.' }],
+        },
+      });
+      const writesJson = JSON.stringify(call.writes || []);
+      assert.doesNotMatch(writesJson, /privacy_remote_disabled/);
+      assert.match(writesJson, /local_runtime|local_/);
+    } finally {
+      db.close();
+    }
+  });
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
 await runAsync('generate returns device_daily_token_budget_exceeded when usage summary is near cap', async () => {
   const runtimeBaseDir = makeTmp('runtime_daily');
   const dbPath = makeTmp('db_daily', '.db');

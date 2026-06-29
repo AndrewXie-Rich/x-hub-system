@@ -177,6 +177,35 @@ private func isUnsafeLocalRuntimePythonPath(_ path: String) -> Bool {
         || normalized.contains("/library/developer/commandlinetools/")
 }
 
+private func isMutableFrameworkCurrentPythonPath(_ path: String) -> Bool {
+    let normalized = normalizeLocalRuntimePythonPath(path).lowercased()
+    return normalized.contains("/python.framework/versions/current/bin/python")
+}
+
+private func runtimeStatusSuggestsPythonReprobe(_ status: AIRuntimeStatus?) -> Bool {
+    guard let status else { return false }
+    let rootImportError = status.importError?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased() ?? ""
+    if rootImportError.contains("modulenotfounderror")
+        || rootImportError.contains("no module named")
+        || rootImportError.contains("import") {
+        return true
+    }
+    return status.providers.values.contains { provider in
+        let reason = provider.reasonCode?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let importError = provider.importError?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        return reason.contains("import")
+            || importError.contains("modulenotfounderror")
+            || importError.contains("no module named")
+            || importError.contains("import")
+    }
+}
+
 private func readyProvidersFromProbeOutput(_ output: String) -> [String] {
     let lines = output.split(whereSeparator: \.isNewline).map(String.init)
     guard let readyLine = lines.first(where: { $0.hasPrefix("ready=") }) else { return [] }
@@ -757,6 +786,7 @@ enum HubSettingsNavigationTarget: Equatable {
     case pairedDevices(deviceID: String?, capabilityKey: String?)
     case providerKeys(sourceRef: String?)
     case diagnostics
+    case settingsPage(page: HubSettingsPage, anchorID: String?, expansion: HubSettingsNavigationExpansion?)
 }
 
 enum ModelTrialCategory: Equatable {
@@ -3636,7 +3666,14 @@ INSERT OR IGNORE INTO audit_events(
         let exp = Double(min(6, max(0, aiRuntimeFailCount)))
         let delay = hasPendingRequests ? 0.0 : min(300.0, 15.0 * pow(2.0, exp))
         aiRuntimeNextStartAttemptAt = now + delay
-        startAIRuntime(allowPythonAutoDetection: false)
+        let configuredPython = aiRuntimePython.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shouldReprobePython = configuredPython.isEmpty
+            || isMutableFrameworkCurrentPythonPath(configuredPython)
+            || runtimeStatusSuggestsPythonReprobe(st)
+        appendAIRuntimeLogLine(
+            "Auto-start runtime decision: allow_python_detection=\(shouldReprobePython ? 1 : 0) configured_python=\(configuredPython.isEmpty ? "(auto)" : configuredPython)"
+        )
+        startAIRuntime(allowPythonAutoDetection: shouldReprobePython)
     }
 
     func ensureAIRuntimeRunningIfNeeded() {
@@ -6659,6 +6696,17 @@ INSERT OR IGNORE INTO audit_events(
 
     func openDiagnosticsSettings() {
         settingsNavigationTarget = .diagnostics
+        NotificationCenter.default.post(name: .relflowhubOpenMain, object: nil)
+    }
+
+    @MainActor
+    func openHubStatusRepairSettings(snapshot: HubLaunchStatusSnapshot? = nil) {
+        let needsAXForIntegrations = integrationSlackEnabled || integrationMessagesEnabled
+        settingsNavigationTarget = HubStatusRepairNavigationSupport.target(
+            snapshot: snapshot ?? HubLaunchStatusStorage.load(),
+            appInstallWarning: AppInstallDoctor.shouldWarn(),
+            needsAccessibilityPermission: needsAXForIntegrations && !DockBadgeReader.ensureAccessibilityTrusted(prompt: false)
+        )
         NotificationCenter.default.post(name: .relflowhubOpenMain, object: nil)
     }
 

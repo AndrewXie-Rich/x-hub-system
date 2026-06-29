@@ -1,7 +1,7 @@
 import SwiftUI
 import RELFlowHubCore
 
-struct ModelsDrawerLocalModelSnapshot {
+struct ModelsDrawerLocalModelSnapshot: Equatable {
     var models: [HubModel]
     var sections: [ModelLibrarySection]
     var loadedCount: Int
@@ -96,7 +96,7 @@ enum ModelsDrawerLibraryFilter: String, CaseIterable, Identifiable {
     }
 }
 
-struct ModelsDrawerResourcePoolSummary: Identifiable {
+struct ModelsDrawerResourcePoolSummary: Identifiable, Equatable {
     var id: String
     var title: String
     var subtitle: String
@@ -110,9 +110,24 @@ struct ModelsDrawerResourcePoolSummary: Identifiable {
     var usageWindows: [ProviderKeyUsageWindow]
     var detailText: String
     var isLocal: Bool
+
+    static func == (lhs: ModelsDrawerResourcePoolSummary, rhs: ModelsDrawerResourcePoolSummary) -> Bool {
+        lhs.id == rhs.id
+            && lhs.title == rhs.title
+            && lhs.subtitle == rhs.subtitle
+            && lhs.statusText == rhs.statusText
+            && lhs.systemName == rhs.systemName
+            && lhs.modelText == rhs.modelText
+            && lhs.accountText == rhs.accountText
+            && lhs.quotaText == rhs.quotaText
+            && lhs.models == rhs.models
+            && lhs.usageWindows == rhs.usageWindows
+            && lhs.detailText == rhs.detailText
+            && lhs.isLocal == rhs.isLocal
+    }
 }
 
-struct ModelsDrawerRouteMatrixRow: Identifiable {
+struct ModelsDrawerRouteMatrixRow: Identifiable, Equatable {
     var id: String
     var title: String
     var modelName: String
@@ -120,9 +135,18 @@ struct ModelsDrawerRouteMatrixRow: Identifiable {
     var statusText: String
     var statusColor: Color
     var reason: String
+
+    static func == (lhs: ModelsDrawerRouteMatrixRow, rhs: ModelsDrawerRouteMatrixRow) -> Bool {
+        lhs.id == rhs.id
+            && lhs.title == rhs.title
+            && lhs.modelName == rhs.modelName
+            && lhs.provider == rhs.provider
+            && lhs.statusText == rhs.statusText
+            && lhs.reason == rhs.reason
+    }
 }
 
-struct ModelsDrawerRoleRouteSummary: Identifiable {
+struct ModelsDrawerRoleRouteSummary: Identifiable, Equatable {
     var id: String
     var title: String
     var systemName: String
@@ -130,9 +154,53 @@ struct ModelsDrawerRoleRouteSummary: Identifiable {
     var statusText: String
     var statusColor: Color
     var detail: String
+
+    static func == (lhs: ModelsDrawerRoleRouteSummary, rhs: ModelsDrawerRoleRouteSummary) -> Bool {
+        lhs.id == rhs.id
+            && lhs.title == rhs.title
+            && lhs.systemName == rhs.systemName
+            && lhs.modelName == rhs.modelName
+            && lhs.statusText == rhs.statusText
+            && lhs.detail == rhs.detail
+    }
 }
 
-struct ModelsDrawerLibraryItem: Identifiable {
+struct ModelsDrawerRouteModelOption: Identifiable, Equatable {
+    var id: String
+    var title: String
+}
+
+struct ModelsDrawerTaskRouteControlSnapshot: Identifiable, Equatable {
+    var id: String
+    var task: HubTaskType
+    var decision: HubTaskRouteDecision
+    var preferredModelId: String
+    var tint: Color
+    var systemName: String
+    var purposeText: String
+    var detailText: String
+    var stateText: String
+    var preferenceLabel: String
+    var availableModels: [ModelsDrawerRouteModelOption]
+
+    static func == (
+        lhs: ModelsDrawerTaskRouteControlSnapshot,
+        rhs: ModelsDrawerTaskRouteControlSnapshot
+    ) -> Bool {
+        lhs.id == rhs.id
+            && lhs.task == rhs.task
+            && lhs.decision == rhs.decision
+            && lhs.preferredModelId == rhs.preferredModelId
+            && lhs.systemName == rhs.systemName
+            && lhs.purposeText == rhs.purposeText
+            && lhs.detailText == rhs.detailText
+            && lhs.stateText == rhs.stateText
+            && lhs.preferenceLabel == rhs.preferenceLabel
+            && lhs.availableModels == rhs.availableModels
+    }
+}
+
+struct ModelsDrawerLibraryItem: Identifiable, Equatable {
     var id: String
     var title: String
     var provider: String
@@ -144,9 +212,22 @@ struct ModelsDrawerLibraryItem: Identifiable {
     var isReady: Bool
     var modelId: String
     var remoteEntry: RemoteModelEntry?
+
+    static func == (lhs: ModelsDrawerLibraryItem, rhs: ModelsDrawerLibraryItem) -> Bool {
+        lhs.id == rhs.id
+            && lhs.title == rhs.title
+            && lhs.provider == rhs.provider
+            && lhs.detail == rhs.detail
+            && lhs.statusText == rhs.statusText
+            && lhs.tags == rhs.tags
+            && lhs.isLocal == rhs.isLocal
+            && lhs.isReady == rhs.isReady
+            && lhs.modelId == rhs.modelId
+            && lhs.remoteEntry == rhs.remoteEntry
+    }
 }
 
-struct RemoteDrawerGroup: Identifiable {
+struct RemoteDrawerGroup: Identifiable, Equatable {
     let id: String
     let keyReference: String
     let title: String
@@ -163,9 +244,23 @@ struct RemoteDrawerGroup: Identifiable {
     var loadedCount: Int {
         models.filter(\.isLoaded).count
     }
+
+    static func == (lhs: RemoteDrawerGroup, rhs: RemoteDrawerGroup) -> Bool {
+        lhs.id == rhs.id
+            && lhs.keyReference == rhs.keyReference
+            && lhs.title == rhs.title
+            && lhs.summary == rhs.summary
+            && lhs.detail == rhs.detail
+            && lhs.statusText == rhs.statusText
+            && lhs.availableCount == rhs.availableCount
+            && lhs.needsSetupCount == rhs.needsSetupCount
+            && lhs.enabledModelIDs == rhs.enabledModelIDs
+            && lhs.loadableModelIDs == rhs.loadableModelIDs
+            && lhs.models == rhs.models
+    }
 }
 
-struct RemoteDrawerModel: Identifiable {
+struct RemoteDrawerModel: Identifiable, Equatable {
     let entry: RemoteModelEntry
     let title: String
     let subtitle: String
@@ -176,4 +271,14 @@ struct RemoteDrawerModel: Identifiable {
     let canLoad: Bool
 
     var id: String { entry.id }
+
+    static func == (lhs: RemoteDrawerModel, rhs: RemoteDrawerModel) -> Bool {
+        lhs.entry == rhs.entry
+            && lhs.title == rhs.title
+            && lhs.subtitle == rhs.subtitle
+            && lhs.detail == rhs.detail
+            && lhs.statusText == rhs.statusText
+            && lhs.isLoaded == rhs.isLoaded
+            && lhs.canLoad == rhs.canLoad
+    }
 }

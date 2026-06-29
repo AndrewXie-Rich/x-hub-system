@@ -2734,6 +2734,37 @@ public enum AIRuntimeStatusStorage {
         return SharedPaths.ensureHubDirectory().appendingPathComponent(fileName)
     }
 
+    private static func environmentValue(_ key: String) -> String {
+        guard let raw = getenv(key) else { return "" }
+        return String(cString: raw).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func runtimeBaseDirectoryCandidatesFromEnvironment() -> [URL] {
+        var out: [URL] = []
+
+        for key in ["HUB_RUNTIME_BASE_DIR", "REL_FLOW_HUB_BASE_DIR", "XHUB_RUST_RUNTIME_BASE_DIR"] {
+            let value = environmentValue(key)
+            guard !value.isEmpty else { continue }
+            out.append(URL(fileURLWithPath: (value as NSString).expandingTildeInPath, isDirectory: true))
+        }
+
+        let rustRoot = environmentValue("XHUB_RUST_HUB_ROOT")
+        if !rustRoot.isEmpty {
+            out.append(
+                URL(fileURLWithPath: (rustRoot as NSString).expandingTildeInPath, isDirectory: true)
+                    .appendingPathComponent("runtime", isDirectory: true)
+            )
+        }
+
+        out.append(
+            SharedPaths.realHomeDirectory()
+                .appendingPathComponent("Library/Application Support/AX/rust-hub/local/runtime", isDirectory: true)
+        )
+
+        var seen = Set<String>()
+        return out.map(\.standardizedFileURL).filter { seen.insert($0.path).inserted }
+    }
+
     private static func candidateURLs() -> [URL] {
         var candidates: [URL] = []
         var seen: Set<String> = []
@@ -2749,6 +2780,9 @@ public enum AIRuntimeStatusStorage {
         // directory. Falling through to a fresher snapshot from an unrelated source-run root
         // makes readiness nondeterministic when multiple runtimes are alive on the same machine.
         append(url())
+        for base in runtimeBaseDirectoryCandidatesFromEnvironment() {
+            append(base.appendingPathComponent(fileName))
+        }
         for base in SharedPaths.hubDirectoryCandidates() {
             append(base.appendingPathComponent(fileName))
         }
@@ -2757,6 +2791,8 @@ public enum AIRuntimeStatusStorage {
 
     public static func loadResolved() -> AIRuntimeStatusResolvedSnapshot? {
         let candidates = candidateURLs()
+        var primary: AIRuntimeStatusResolvedSnapshot?
+        var freshestAliveFallback: AIRuntimeStatusResolvedSnapshot?
         var freshestFallback: AIRuntimeStatusResolvedSnapshot?
 
         for (index, candidate) in candidates.enumerated() {
@@ -2765,13 +2801,19 @@ public enum AIRuntimeStatusStorage {
 
             let resolved = AIRuntimeStatusResolvedSnapshot(status: decoded, url: candidate)
             if index == 0 {
-                return resolved
+                primary = resolved
+                if decoded.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) {
+                    return resolved
+                }
+            } else if decoded.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL),
+                      freshestAliveFallback == nil || decoded.updatedAt >= freshestAliveFallback?.status.updatedAt ?? 0 {
+                freshestAliveFallback = resolved
             }
             if freshestFallback == nil || decoded.updatedAt >= freshestFallback?.status.updatedAt ?? 0 {
                 freshestFallback = resolved
             }
         }
-        return freshestFallback
+        return freshestAliveFallback ?? primary ?? freshestFallback
     }
 
     public static func load() -> AIRuntimeStatus? {

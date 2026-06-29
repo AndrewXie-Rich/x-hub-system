@@ -60,10 +60,13 @@ enum HubStatusPresentationSupport {
         let stateKey: String
 
         switch state {
-        case .serving where grpcIsRunning && !degraded:
+        case .serving where !degraded:
             tone = .ready
             title = "正常"
-            detail = grpcStatusText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedGRPCStatus = grpcStatusText.trimmingCharacters(in: .whitespacesAndNewlines)
+            detail = grpcIsRunning && !trimmedGRPCStatus.isEmpty
+                ? trimmedGRPCStatus
+                : "Rust kernel serving"
             stateKey = "serving"
         case .serving, .degradedServing:
             tone = .degraded

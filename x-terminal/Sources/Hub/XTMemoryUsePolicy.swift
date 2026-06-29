@@ -205,11 +205,11 @@ enum XTMemoryServingProfile: String, CaseIterable, Sendable {
             return .m0Heartbeat
         case "m1", "execute", "default":
             return .m1Execute
-        case "m2", "plan_review", "planreview", "review":
+        case "m2", "m2_planreview", "plan_review", "planreview", "review":
             return .m2PlanReview
-        case "m3", "deep_dive", "deepdive":
+        case "m3", "m3_deepdive", "deep_dive", "deepdive":
             return .m3DeepDive
-        case "m4", "full_scan", "fullscan":
+        case "m4", "m4_fullscan", "full_scan", "fullscan":
             return .m4FullScan
         default:
             return nil

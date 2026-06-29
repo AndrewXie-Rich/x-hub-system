@@ -26,30 +26,30 @@ extension ModelsDrawer {
     }
 
     private func remoteGroupSummary(_ group: RemoteModelGroupPlan) -> String {
-        var parts = ["\(group.models.count) models"]
+        var parts = ["\(group.models.count) 模型"]
         if group.loadedCount > 0 {
-            parts.append("\(group.loadedCount) loaded")
+            parts.append("\(group.loadedCount) 已启用")
         }
         if group.availableCount > 0 {
-            parts.append("\(group.availableCount) available")
+            parts.append("\(group.availableCount) 可启用")
         }
         if group.needsSetupCount > 0 {
-            parts.append("\(group.needsSetupCount) needs setup")
+            parts.append("\(group.needsSetupCount) 需配置")
         }
         return parts.joined(separator: " · ")
     }
 
     private func remoteGroupStatusText(_ group: RemoteModelGroupPlan) -> String {
         if group.loadedCount == group.models.count {
-            return "Loaded"
+            return "已启用"
         }
         if group.needsSetupCount == group.models.count {
-            return "Needs Setup"
+            return "需配置"
         }
         if group.availableCount == group.models.count {
-            return "Available"
+            return "可启用"
         }
-        return "Mixed"
+        return "混合"
     }
 
     private func remoteGroupStatusColor(_ group: RemoteModelGroupPlan) -> Color {
@@ -70,13 +70,13 @@ extension ModelsDrawer {
         let statusColor: Color
         switch loadState {
         case .loaded:
-            statusText = "Loaded"
+            statusText = "已启用"
             statusColor = .green
         case .available:
-            statusText = "Available"
+            statusText = "可启用"
             statusColor = .secondary
         case .needsSetup:
-            statusText = "Needs Setup"
+            statusText = "需配置"
             statusColor = .orange
         }
 

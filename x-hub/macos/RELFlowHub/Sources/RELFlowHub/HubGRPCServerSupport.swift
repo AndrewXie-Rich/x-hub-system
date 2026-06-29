@@ -448,8 +448,15 @@ final class HubGRPCServerSupport: ObservableObject {
         }
         // Enforce token + client-cert pin in mTLS mode (defense-in-depth).
         env["HUB_GRPC_MTLS_REQUIRE_CERT_PIN"] = "1"
-        // Pin base dir so Node uses the same filesystem IPC directories as the Hub runtime + Bridge.
-        env["HUB_RUNTIME_BASE_DIR"] = base.path
+        // Keep client/access-key snapshots in the Swift sidecar base while runtime/model IPC follows
+        // the Rust live kernel after authority cutover.
+        env["HUB_AUTH_BASE_DIR"] = base.path
+        env["HUB_CLIENTS_BASE_DIR"] = base.path
+        let nodeRuntimeBase = RustHubRuntimeSupport.nodeSidecarRuntimeBaseDir(
+            swiftBaseDir: base,
+            baseEnvironment: env
+        )
+        env["HUB_RUNTIME_BASE_DIR"] = nodeRuntimeBase.path
         let concurrencyPolicyURL = HubModelConcurrencyPolicyStorage.url(baseDir: base)
         HubModelConcurrencyPolicyStorage.save(
             HubModelConcurrencyPolicyStorage.load(baseDir: base),

@@ -62,15 +62,15 @@ Wrap your MCP server invocations:
 
 Or use the `mcp-trust install` flow to fetch + pin + configure your client automatically.
 
-## How it works (90 seconds)
+## How it works
 
-A **publisher** signs a manifest declaring what their MCP server needs. The manifest goes into a **registry** (a git repo of signed attestations). When you install, the **proxy** verifies the signature, applies your **trust policy**, and asks you to grant the capabilities the manifest requested. From then on, every tool call is mediated: any out-of-scope filesystem read, network fetch, or process spawn is **blocked at the proxy**, not at the MCP server's discretion.
+A **publisher** signs a manifest declaring what their MCP server needs. The manifest goes into a **registry** (a git repo of signed attestations). When you install, the **proxy** verifies the signature, applies your **trust policy**, and asks you to grant the capabilities the manifest requested. From then on, every tool call is mediated: any out-of-scope filesystem read, network fetch, or process spawn is blocked at the proxy, not at the MCP server's discretion.
 
-Three things you didn't have before:
+The pieces that aren't in plain MCP:
 
-- **Pin** — your client commits to a specific (manifest hash, artifact hash). Silent downgrades and upgrades are impossible.
-- **Capability expansion guard** — if a new version asks for capabilities the old one didn't, you must explicitly re-grant. No silent privilege creep.
-- **Two-way revocation** — publishers can recall versions; registries can quarantine bad actors; both are signed and verified locally.
+- **Pin.** Your client commits to a specific (manifest hash, artifact hash). Silent downgrades and upgrades are impossible.
+- **Capability expansion guard.** If a new version asks for capabilities the old one didn't, you re-grant explicitly. No silent privilege creep.
+- **Two-way revocation.** Publishers can recall versions; registries can quarantine bad actors. Both are signed and verified locally.
 
 Full data model and wire format: [`spec/protocol-v0.1.md`](spec/protocol-v0.1.md).
 

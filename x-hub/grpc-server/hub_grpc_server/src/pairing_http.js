@@ -897,7 +897,8 @@ function appendConnectorIngressReceiptSnapshot(runtimeBaseDir, row = {}) {
 }
 
 function clientsConfigPath(runtimeBaseDir) {
-  const base = safeString(runtimeBaseDir);
+  const base = safeString(process.env.HUB_CLIENTS_BASE_DIR || process.env.HUB_AUTH_BASE_DIR)
+    || safeString(runtimeBaseDir);
   if (!base) return '';
   return path.join(base, 'hub_grpc_clients.json');
 }
@@ -906,6 +907,31 @@ function defaultClientCaps() {
   // Keep in sync with HubGRPCClientsStore.defaultCapabilities() (Swift).
   return ['models', 'events', 'memory', 'skills', 'ai.generate.local'];
 }
+
+const EXTERNAL_TERMINAL_CONNECTOR_PROFILE = 'external_terminal_ai_only';
+const EXTERNAL_TERMINAL_AI_CAPABILITIES = Object.freeze(['models', 'ai.generate.local']);
+const EXTERNAL_TERMINAL_ALLOWED_CAPABILITIES = new Set([
+  ...EXTERNAL_TERMINAL_AI_CAPABILITIES,
+  'ai.generate.paid',
+]);
+const EXTERNAL_TERMINAL_DENIED_CAPABILITIES = Object.freeze([
+  'events',
+  'memory',
+  'memory.write',
+  'memory.retrieve.raw',
+  'skills',
+  'skills.execute',
+  'skills.grant',
+  'skills.revoke',
+  'web.fetch',
+  'device.*',
+  'browser.*',
+  'repo.*',
+  'provider.keys.write',
+  'hub_access_keys.manage',
+  'xt.pairing.manage',
+  'admin.*',
+]);
 
 function defaultAllowedCidrs() {
   // Default to the Hub's LAN allowlist if configured.
@@ -941,6 +967,32 @@ function uniqueStrings(values) {
     out.push(cleaned);
   }
   return out;
+}
+
+function isExternalTerminalAppId(appId) {
+  const normalized = safeString(appId).toLowerCase().replace(/[\s-]+/g, '_');
+  return normalized === 'external_terminal'
+    || normalized === 'ordinary_terminal'
+    || normalized === 'cli_terminal'
+    || normalized === 'terminal_ai_client';
+}
+
+function externalTerminalAiCapabilities(requestedCapabilities, {
+  paid_model_selection_mode = 'off',
+} = {}) {
+  const requested = safeStringArray(requestedCapabilities);
+  const filtered = requested
+    .filter((cap) => EXTERNAL_TERMINAL_ALLOWED_CAPABILITIES.has(cap))
+    .filter((cap) => cap !== 'ai.generate.paid' || paid_model_selection_mode !== 'off');
+  const base = filtered.length > 0 ? filtered : [...EXTERNAL_TERMINAL_AI_CAPABILITIES];
+  if (paid_model_selection_mode !== 'off') base.push('ai.generate.paid');
+  return uniqueStrings(base.filter((cap) => EXTERNAL_TERMINAL_ALLOWED_CAPABILITIES.has(cap)));
+}
+
+function externalTerminalAiScopes(requestedScopes, capabilities) {
+  const requested = safeStringArray(requestedScopes);
+  const filtered = requested.filter((scope) => EXTERNAL_TERMINAL_ALLOWED_CAPABILITIES.has(scope));
+  return uniqueStrings(filtered.length > 0 ? filtered : capabilities);
 }
 
 function normalizedPaidModelSelectionMode(value, fallback = 'off') {
@@ -1050,7 +1102,8 @@ function upsertClientInSnapshot(snap, entry) {
 }
 
 function writeClientsSnapshot(runtimeBaseDir, snap) {
-  const base = safeString(runtimeBaseDir);
+  const base = safeString(process.env.HUB_CLIENTS_BASE_DIR || process.env.HUB_AUTH_BASE_DIR)
+    || safeString(runtimeBaseDir);
   if (!base) return false;
   const ok = writeJsonAtomic(base, 'hub_grpc_clients.json', snap);
   if (ok) invalidateClientsCache();
@@ -1361,6 +1414,13 @@ function toHttpClientAccessKey(client, context = {}, options = {}) {
     scopes: safeStringArray(client.scopes),
     allowed_cidrs: safeStringArray(client.allowed_cidrs),
     policy_mode: safeString(client.policy_mode),
+    connector_profile: safeString(client.connector_profile || client.capability_profile),
+    capability_profile: safeString(client.capability_profile || client.connector_profile),
+    authority_profile: safeString(client.authority_profile),
+    denied_capabilities: safeStringArray(client.denied_capabilities || client.deniedCapabilities),
+    xt_pairing_authority: client.xt_pairing_authority === true,
+    durable_memory_authority: client.durable_memory_authority === true,
+    skills_execution_authority: client.skills_execution_authority === true,
     trust_profile_present: !!client.trust_profile_present,
     approved_trust_profile: client.approved_trust_profile && typeof client.approved_trust_profile === 'object'
       ? client.approved_trust_profile
@@ -2620,10 +2680,14 @@ function issueClientAccessKey({
     };
   }
   const requested_policy_mode = raw_policy_mode || 'new_profile';
+  const requestedAppId = safeString(obj.app_id || obj.appId || 'external_terminal') || 'external_terminal';
+  const externalTerminalAiOnly = isExternalTerminalAppId(requestedAppId);
   const raw_paid_model_selection_mode = obj.paid_model_selection_mode == null ? '' : safeString(obj.paid_model_selection_mode).toLowerCase();
   const requested_paid_model_selection_mode = raw_paid_model_selection_mode || 'off';
   const requested_allowed_paid_models = uniqueStrings(safeStringArray(obj.allowed_paid_models));
-  const requested_default_web_fetch_enabled = obj.default_web_fetch_enabled == null ? true : obj.default_web_fetch_enabled === true;
+  const requested_default_web_fetch_enabled = externalTerminalAiOnly
+    ? false
+    : (obj.default_web_fetch_enabled == null ? true : obj.default_web_fetch_enabled === true);
   const requested_daily_token_limit = parseDailyTokenLimit(obj.daily_token_limit, DEFAULT_PAIRING_DAILY_TOKEN_LIMIT);
   if (requested_policy_mode === 'new_profile') {
     if (raw_paid_model_selection_mode && !PAID_MODEL_SELECTION_MODES.has(raw_paid_model_selection_mode)) {
@@ -2683,11 +2747,14 @@ function issueClientAccessKey({
   const requestedAccessKeyId = safeString(obj.access_key_id || obj.accessKeyId) || generateAccessKeyId();
   const requestedDeviceId = safeString(obj.device_id || obj.deviceId) || `client_${requestedAccessKeyId.slice(-12)}`;
   const requestedUserId = safeString(obj.user_id || obj.userId) || requestedDeviceId;
-  const requestedAppId = safeString(obj.app_id || obj.appId || 'external_terminal') || 'external_terminal';
   const capabilities = safeStringArray(obj.capabilities);
   const scopes = safeStringArray(obj.scopes);
   const allowedCidrs = safeStringArray(obj.allowed_cidrs);
-  const baseCapList = capabilities.length ? capabilities : defaultClientCaps();
+  const baseCapList = externalTerminalAiOnly
+    ? externalTerminalAiCapabilities(capabilities, {
+        paid_model_selection_mode: requested_paid_model_selection_mode,
+      })
+    : (capabilities.length ? capabilities : defaultClientCaps());
   const approvedTrustProfile = requested_policy_mode === 'new_profile'
     ? buildApprovedTrustProfile({
         device_id: requestedDeviceId,
@@ -2703,7 +2770,9 @@ function issueClientAccessKey({
   const capList = approvedTrustProfile
     ? uniqueStrings(approvedTrustProfile.capabilities)
     : uniqueStrings(baseCapList.length ? baseCapList : defaultClientCaps());
-  const scopeList = scopes.length ? uniqueStrings(scopes) : uniqueStrings(capList);
+  const scopeList = externalTerminalAiOnly
+    ? externalTerminalAiScopes(scopes, capList)
+    : (scopes.length ? uniqueStrings(scopes) : uniqueStrings(capList));
   const cidrList = allowedCidrs.length ? uniqueStrings(allowedCidrs) : defaultAllowedCidrs();
   const clientToken = generateClientToken();
   const snapshotBeforeIssue = readClientsSnapshot(runtimeBaseDir);
@@ -2750,6 +2819,15 @@ function issueClientAccessKey({
     scopes: scopeList,
     allowed_cidrs: cidrList,
     policy_mode: requested_policy_mode,
+    ...(externalTerminalAiOnly ? {
+      connector_profile: EXTERNAL_TERMINAL_CONNECTOR_PROFILE,
+      capability_profile: EXTERNAL_TERMINAL_CONNECTOR_PROFILE,
+      authority_profile: 'ai_client_only',
+      denied_capabilities: [...EXTERNAL_TERMINAL_DENIED_CAPABILITIES],
+      xt_pairing_authority: false,
+      durable_memory_authority: false,
+      skills_execution_authority: false,
+    } : {}),
     created_by_user_id: createdByUserId,
     created_by_app_id: createdByAppId,
     created_via: createdVia,

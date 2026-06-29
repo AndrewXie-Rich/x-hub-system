@@ -30,8 +30,12 @@ const WATCHER_LOCK_FILENAME: &str = "rust_file_ipc_shadow_watcher.lock";
 const MAX_REQUEST_FILE_BYTES: u64 = 1_048_576;
 const MAX_REQUEST_PROMPT_CHARS: usize = 200_000;
 const MAX_RUNTIME_AUTHORITY_FILE_BYTES: u64 = 16 * 1024 * 1024;
-const LIVE_STATUS_CACHE_TTL_MS: u128 = 250;
-const RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS: u128 = 250;
+// Align with the Swift fallback cache / runtime mirror cadence so UI and doctor
+// polling do not repeatedly force synchronous status-file reads.
+const LIVE_STATUS_CACHE_TTL_MS: u128 = 2_000;
+const LIVE_STATUS_STALE_CACHE_MAX_MS: u128 = 30_000;
+const RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS: u128 = 5_000;
+const RUNTIME_AUTHORITY_SYNC_STALE_CACHE_MAX_MS: u128 = 30_000;
 const RUNTIME_AUTHORITY_FILE_NAMES: &[&str] = &["models_state.json", "hub_provider_keys.json"];
 
 #[derive(Clone, Debug)]
@@ -89,6 +93,8 @@ static BACKGROUND_WATCHER: OnceLock<Mutex<BackgroundWatcherRuntime>> = OnceLock:
 static LIVE_STATUS_CACHE: OnceLock<Mutex<Option<LiveStatusCacheEntry>>> = OnceLock::new();
 static RUNTIME_AUTHORITY_SYNC_CACHE: OnceLock<Mutex<Option<RuntimeAuthoritySyncCacheEntry>>> =
     OnceLock::new();
+static LIVE_STATUS_CACHE_REFRESHING: AtomicBool = AtomicBool::new(false);
+static RUNTIME_AUTHORITY_SYNC_CACHE_REFRESHING: AtomicBool = AtomicBool::new(false);
 
 fn background_watcher_runtime() -> &'static Mutex<BackgroundWatcherRuntime> {
     BACKGROUND_WATCHER.get_or_init(|| Mutex::new(BackgroundWatcherRuntime::default()))
@@ -445,6 +451,11 @@ fn live_status_value(config: &HubConfig, generated_at_ms: u128) -> Value {
             "generated_at_ms": generated_at_ms.min(i64::MAX as u128) as i64,
             "mode": "rust_file_ipc_live_status_read_only",
             "deny_code": "live_base_dir_missing",
+            "cache_hit": false,
+            "cache_stale": false,
+            "cache_age_ms": 0,
+            "cache_ttl_ms": LIVE_STATUS_CACHE_TTL_MS.min(i64::MAX as u128) as i64,
+            "stale_cache_max_ms": live_status_stale_cache_max_ms().min(i64::MAX as u128) as i64,
             "root_dir": config.root_dir.display().to_string(),
             "authority": authority_json(false),
             "checks": [
@@ -460,9 +471,15 @@ fn live_status_value(config: &HubConfig, generated_at_ms: u128) -> Value {
     {
         return value;
     }
+    if let Some(value) =
+        cached_stale_live_status_value(config, &base_dir, &status_path, generated_at_ms)
+    {
+        refresh_live_status_cache_in_background(config.clone(), base_dir, status_path);
+        return value;
+    }
     let value = live_status_value_for_base(config, generated_at_ms, &base_dir, &status_path);
     cache_live_status_value(config, &base_dir, &status_path, generated_at_ms, &value);
-    value
+    live_status_value_with_cache_metadata(value, generated_at_ms, false, false, 0)
 }
 
 fn live_status_value_for_base(
@@ -536,6 +553,11 @@ fn live_status_value_for_base(
         "ready": true,
         "generated_at_ms": generated_at_ms.min(i64::MAX as u128) as i64,
         "mode": "rust_file_ipc_live_status_read_only",
+        "cache_hit": false,
+        "cache_stale": false,
+        "cache_age_ms": 0,
+        "cache_ttl_ms": LIVE_STATUS_CACHE_TTL_MS.min(i64::MAX as u128) as i64,
+        "stale_cache_max_ms": live_status_stale_cache_max_ms().min(i64::MAX as u128) as i64,
         "root_dir": config.root_dir.display().to_string(),
         "base_dir": base_dir_display,
         "events_dir": events_dir.display().to_string(),
@@ -575,15 +597,52 @@ fn cached_live_status_value(
     let status_path = status_path.display().to_string();
     let guard = live_status_cache().lock().ok()?;
     let entry = guard.as_ref()?;
+    let cache_age_ms = generated_at_ms.saturating_sub(entry.checked_at_ms);
     if entry.root_dir == root_dir
         && entry.base_dir == base_dir
         && entry.status_path == status_path
         && generated_at_ms >= entry.checked_at_ms
-        && generated_at_ms.saturating_sub(entry.checked_at_ms) <= LIVE_STATUS_CACHE_TTL_MS
+        && cache_age_ms <= LIVE_STATUS_CACHE_TTL_MS
     {
-        return Some(live_status_value_with_generated_at(
+        return Some(live_status_value_with_cache_metadata(
             entry.value.clone(),
             generated_at_ms,
+            true,
+            false,
+            cache_age_ms,
+        ));
+    }
+    None
+}
+
+fn cached_stale_live_status_value(
+    config: &HubConfig,
+    base_dir: &Path,
+    status_path: &Path,
+    generated_at_ms: u128,
+) -> Option<Value> {
+    let stale_max_ms = live_status_stale_cache_max_ms();
+    if stale_max_ms == 0 {
+        return None;
+    }
+    let root_dir = config.root_dir.display().to_string();
+    let base_dir = base_dir.display().to_string();
+    let status_path = status_path.display().to_string();
+    let guard = live_status_cache().lock().ok()?;
+    let entry = guard.as_ref()?;
+    let cache_age_ms = generated_at_ms.saturating_sub(entry.checked_at_ms);
+    if entry.root_dir == root_dir
+        && entry.base_dir == base_dir
+        && entry.status_path == status_path
+        && generated_at_ms >= entry.checked_at_ms
+        && cache_age_ms <= LIVE_STATUS_CACHE_TTL_MS.saturating_add(stale_max_ms)
+    {
+        return Some(live_status_value_with_cache_metadata(
+            entry.value.clone(),
+            generated_at_ms,
+            true,
+            true,
+            cache_age_ms,
         ));
     }
     None
@@ -608,11 +667,53 @@ fn cache_live_status_value(
     }
 }
 
-fn live_status_value_with_generated_at(mut value: Value, generated_at_ms: u128) -> Value {
+fn refresh_live_status_cache_in_background(
+    config: HubConfig,
+    base_dir: PathBuf,
+    status_path: PathBuf,
+) {
+    if !env_bool("XHUB_RUST_XT_FILE_IPC_STALE_STATUS_REFRESH", true) {
+        return;
+    }
+    if LIVE_STATUS_CACHE_REFRESHING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    thread::spawn(move || {
+        let generated_at_ms = now_ms();
+        let value = live_status_value_for_base(&config, generated_at_ms, &base_dir, &status_path);
+        cache_live_status_value(&config, &base_dir, &status_path, generated_at_ms, &value);
+        LIVE_STATUS_CACHE_REFRESHING.store(false, Ordering::Release);
+    });
+}
+
+fn live_status_value_with_cache_metadata(
+    mut value: Value,
+    generated_at_ms: u128,
+    cache_hit: bool,
+    cache_stale: bool,
+    cache_age_ms: u128,
+) -> Value {
     let generated_at_i64 = generated_at_ms.min(i64::MAX as u128) as i64;
     let generated_at_sec = (generated_at_ms as f64) / 1000.0;
     if let Some(object) = value.as_object_mut() {
         object.insert("generated_at_ms".to_string(), json!(generated_at_i64));
+        object.insert("cache_hit".to_string(), json!(cache_hit));
+        object.insert("cache_stale".to_string(), json!(cache_stale));
+        object.insert(
+            "cache_age_ms".to_string(),
+            json!(cache_age_ms.min(i64::MAX as u128) as i64),
+        );
+        object.insert(
+            "cache_ttl_ms".to_string(),
+            json!(LIVE_STATUS_CACHE_TTL_MS.min(i64::MAX as u128) as i64),
+        );
+        object.insert(
+            "stale_cache_max_ms".to_string(),
+            json!(live_status_stale_cache_max_ms().min(i64::MAX as u128) as i64),
+        );
         if let Some(status) = object.get_mut("status").and_then(Value::as_object_mut) {
             status.insert("updatedAt".to_string(), json!(generated_at_sec));
         }
@@ -625,6 +726,22 @@ fn runtime_authority_sync_value(
     body: &Value,
     requested_apply: bool,
     generated_at_ms: u128,
+) -> Value {
+    runtime_authority_sync_value_with_cache_mode(
+        config,
+        body,
+        requested_apply,
+        generated_at_ms,
+        true,
+    )
+}
+
+fn runtime_authority_sync_value_with_cache_mode(
+    config: &HubConfig,
+    body: &Value,
+    requested_apply: bool,
+    generated_at_ms: u128,
+    allow_cache: bool,
 ) -> Value {
     let source_base_dir = value_string(body, "source_base_dir")
         .or_else(|| value_string(body, "sourceBaseDir"))
@@ -668,14 +785,30 @@ fn runtime_authority_sync_value(
         .unwrap_or_default();
 
     if !requested_apply {
-        if let Some(value) = cached_runtime_authority_sync_value(
-            config,
-            source_base_dir.as_deref(),
-            requested_live_base_dir.as_deref(),
-            live_base_dir.as_deref(),
-            generated_at_ms,
-        ) {
-            return value;
+        if allow_cache {
+            if let Some(value) = cached_runtime_authority_sync_value(
+                config,
+                source_base_dir.as_deref(),
+                requested_live_base_dir.as_deref(),
+                live_base_dir.as_deref(),
+                generated_at_ms,
+            ) {
+                return value;
+            }
+            if let Some(value) = cached_stale_runtime_authority_sync_value(
+                config,
+                source_base_dir.as_deref(),
+                requested_live_base_dir.as_deref(),
+                live_base_dir.as_deref(),
+                generated_at_ms,
+            ) {
+                refresh_runtime_authority_sync_cache_in_background(
+                    config.clone(),
+                    body.clone(),
+                    generated_at_ms,
+                );
+                return value;
+            }
         }
     }
 
@@ -706,7 +839,10 @@ fn runtime_authority_sync_value(
             "dry_run": !requested_apply,
             "requested_apply": requested_apply,
             "cache_hit": false,
+            "cache_stale": false,
+            "cache_age_ms": 0,
             "cache_ttl_ms": RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS.min(i64::MAX as u128) as i64,
+            "stale_cache_max_ms": runtime_authority_sync_stale_cache_max_ms().min(i64::MAX as u128) as i64,
             "deny_code": deny_code,
             "generated_at_ms": generated_at_ms.min(i64::MAX as u128) as i64,
             "mode": "rust_runtime_authority_sync_fail_closed",
@@ -786,7 +922,10 @@ fn runtime_authority_sync_value(
         "dry_run": !requested_apply,
         "requested_apply": requested_apply,
         "cache_hit": false,
+        "cache_stale": false,
+        "cache_age_ms": 0,
         "cache_ttl_ms": RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS.min(i64::MAX as u128) as i64,
+        "stale_cache_max_ms": runtime_authority_sync_stale_cache_max_ms().min(i64::MAX as u128) as i64,
         "deny_code": if ok { "" } else { "runtime_authority_file_sync_failed" },
         "issues": issues,
         "generated_at_ms": generated_at_ms.min(i64::MAX as u128) as i64,
@@ -827,18 +966,56 @@ fn cached_runtime_authority_sync_value(
     let live_base_dir = path_display_or_empty(live_base_dir);
     let guard = runtime_authority_sync_cache().lock().ok()?;
     let entry = guard.as_ref()?;
+    let cache_age_ms = generated_at_ms.saturating_sub(entry.checked_at_ms);
     if entry.root_dir == root_dir
         && entry.source_base_dir == source_base_dir
         && entry.requested_live_base_dir == requested_live_base_dir
         && entry.live_base_dir == live_base_dir
         && generated_at_ms >= entry.checked_at_ms
-        && generated_at_ms.saturating_sub(entry.checked_at_ms)
-            <= RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS
+        && cache_age_ms <= RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS
     {
         return Some(runtime_authority_sync_value_with_generated_at(
             entry.value.clone(),
             generated_at_ms,
             true,
+            false,
+            cache_age_ms,
+        ));
+    }
+    None
+}
+
+fn cached_stale_runtime_authority_sync_value(
+    config: &HubConfig,
+    source_base_dir: Option<&Path>,
+    requested_live_base_dir: Option<&Path>,
+    live_base_dir: Option<&Path>,
+    generated_at_ms: u128,
+) -> Option<Value> {
+    let stale_max_ms = runtime_authority_sync_stale_cache_max_ms();
+    if stale_max_ms == 0 {
+        return None;
+    }
+    let root_dir = config.root_dir.display().to_string();
+    let source_base_dir = path_display_or_empty(source_base_dir);
+    let requested_live_base_dir = path_display_or_empty(requested_live_base_dir);
+    let live_base_dir = path_display_or_empty(live_base_dir);
+    let guard = runtime_authority_sync_cache().lock().ok()?;
+    let entry = guard.as_ref()?;
+    let cache_age_ms = generated_at_ms.saturating_sub(entry.checked_at_ms);
+    if entry.root_dir == root_dir
+        && entry.source_base_dir == source_base_dir
+        && entry.requested_live_base_dir == requested_live_base_dir
+        && entry.live_base_dir == live_base_dir
+        && generated_at_ms >= entry.checked_at_ms
+        && cache_age_ms <= RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS.saturating_add(stale_max_ms)
+    {
+        return Some(runtime_authority_sync_value_with_generated_at(
+            entry.value.clone(),
+            generated_at_ms,
+            true,
+            true,
+            cache_age_ms,
         ));
     }
     None
@@ -865,15 +1042,60 @@ fn cache_runtime_authority_sync_value(
     }
 }
 
+fn refresh_runtime_authority_sync_cache_in_background(
+    config: HubConfig,
+    body: Value,
+    requested_at_ms: u128,
+) {
+    if !env_bool(
+        "XHUB_RUST_XT_FILE_IPC_STALE_RUNTIME_AUTHORITY_REFRESH",
+        true,
+    ) {
+        return;
+    }
+    if RUNTIME_AUTHORITY_SYNC_CACHE_REFRESHING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    thread::spawn(move || {
+        let generated_at_ms = now_ms().max(requested_at_ms);
+        let _ = runtime_authority_sync_value_with_cache_mode(
+            &config,
+            &body,
+            false,
+            generated_at_ms,
+            false,
+        );
+        RUNTIME_AUTHORITY_SYNC_CACHE_REFRESHING.store(false, Ordering::Release);
+    });
+}
+
 fn runtime_authority_sync_value_with_generated_at(
     mut value: Value,
     generated_at_ms: u128,
     cache_hit: bool,
+    cache_stale: bool,
+    cache_age_ms: u128,
 ) -> Value {
     let generated_at_i64 = generated_at_ms.min(i64::MAX as u128) as i64;
     if let Some(object) = value.as_object_mut() {
         object.insert("generated_at_ms".to_string(), json!(generated_at_i64));
         object.insert("cache_hit".to_string(), json!(cache_hit));
+        object.insert("cache_stale".to_string(), json!(cache_stale));
+        object.insert(
+            "cache_age_ms".to_string(),
+            json!(cache_age_ms.min(i64::MAX as u128) as i64),
+        );
+        object.insert(
+            "cache_ttl_ms".to_string(),
+            json!(RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS.min(i64::MAX as u128) as i64),
+        );
+        object.insert(
+            "stale_cache_max_ms".to_string(),
+            json!(runtime_authority_sync_stale_cache_max_ms().min(i64::MAX as u128) as i64),
+        );
     }
     value
 }
@@ -4084,6 +4306,32 @@ fn env_bool(key: &str, fallback: bool) -> bool {
     }
 }
 
+fn env_u128_in_range(key: &str, fallback: u128, min: u128, max: u128) -> u128 {
+    env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse::<u128>().ok())
+        .map(|value| value.clamp(min, max))
+        .unwrap_or(fallback)
+}
+
+fn live_status_stale_cache_max_ms() -> u128 {
+    env_u128_in_range(
+        "XHUB_RUST_XT_FILE_IPC_LIVE_STATUS_STALE_CACHE_MAX_MS",
+        LIVE_STATUS_STALE_CACHE_MAX_MS,
+        0,
+        300_000,
+    )
+}
+
+fn runtime_authority_sync_stale_cache_max_ms() -> u128 {
+    env_u128_in_range(
+        "XHUB_RUST_XT_FILE_IPC_RUNTIME_AUTHORITY_STALE_CACHE_MAX_MS",
+        RUNTIME_AUTHORITY_SYNC_STALE_CACHE_MAX_MS,
+        0,
+        300_000,
+    )
+}
+
 fn overwrite_response_env_enabled() -> bool {
     env_bool("XHUB_RUST_XT_FILE_IPC_OVERWRITE_RESPONSE", false)
 }
@@ -4262,6 +4510,50 @@ fn wants_runtime_adapter_candidate(value: &Value) -> bool {
 mod tests {
     use super::*;
 
+    static CACHE_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = env::var(key).ok();
+            unsafe {
+                env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(previous) = &self.previous {
+                    env::set_var(self.key, previous);
+                } else {
+                    env::remove_var(self.key);
+                }
+            }
+        }
+    }
+
+    fn cache_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        CACHE_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap()
+    }
+
+    fn clear_projection_caches_for_test() {
+        if let Ok(mut guard) = live_status_cache().lock() {
+            *guard = None;
+        }
+        if let Ok(mut guard) = runtime_authority_sync_cache().lock() {
+            *guard = None;
+        }
+    }
+
     #[test]
     fn live_status_projects_file_ipc_paths_without_writing_hub_status() {
         let temp = unique_temp_dir("xhub-xt-file-ipc-live-status");
@@ -4335,6 +4627,8 @@ mod tests {
 
     #[test]
     fn live_status_short_cache_refreshes_generated_timestamps() {
+        let _cache_guard = cache_test_lock();
+        clear_projection_caches_for_test();
         let temp = unique_temp_dir("xhub-xt-file-ipc-live-status-cache");
         fs::create_dir_all(temp.join("ipc_events")).unwrap();
         fs::write(
@@ -4357,7 +4651,9 @@ mod tests {
     }
 
     #[test]
-    fn live_status_short_cache_avoids_immediate_status_file_reread() {
+    fn live_status_cache_returns_stale_snapshot_before_forcing_reread() {
+        let _cache_guard = cache_test_lock();
+        clear_projection_caches_for_test();
         let temp = unique_temp_dir("xhub-xt-file-ipc-live-status-cache-reread");
         fs::create_dir_all(temp.join("ipc_events")).unwrap();
         fs::write(
@@ -4374,12 +4670,22 @@ mod tests {
         )
         .unwrap();
         let second = live_status_value(&config, 300_100);
-        let third = live_status_value(&config, 300_000 + LIVE_STATUS_CACHE_TTL_MS + 1);
+        let stale = live_status_value(&config, 300_000 + LIVE_STATUS_CACHE_TTL_MS + 1);
+        let third = live_status_value(
+            &config,
+            300_000 + LIVE_STATUS_CACHE_TTL_MS + LIVE_STATUS_STALE_CACHE_MAX_MS + 1,
+        );
 
         assert_eq!(first["status"]["marker"], "first");
         assert_eq!(second["generated_at_ms"], 300_100);
         assert_eq!(second["status"]["marker"], "first");
+        assert_eq!(second["cache_hit"], true);
+        assert_eq!(second["cache_stale"], false);
+        assert_eq!(stale["status"]["marker"], "first");
+        assert_eq!(stale["cache_hit"], true);
+        assert_eq!(stale["cache_stale"], true);
         assert_eq!(third["status"]["marker"], "second");
+        assert_eq!(third["cache_hit"], false);
 
         let _ = fs::remove_dir_all(temp);
     }
@@ -4402,7 +4708,8 @@ mod tests {
             "live_base_dir": live.display().to_string(),
         });
 
-        let value = runtime_authority_sync_value(&config, &body, false, 123_456);
+        let value =
+            runtime_authority_sync_value_with_cache_mode(&config, &body, false, 123_456, false);
 
         assert_eq!(value["ok"], true);
         assert_eq!(value["dry_run"], true);
@@ -4416,6 +4723,10 @@ mod tests {
 
     #[test]
     fn runtime_authority_sync_dry_run_short_cache_avoids_immediate_file_rescan() {
+        let _cache_guard = cache_test_lock();
+        clear_projection_caches_for_test();
+        let _refresh_env =
+            EnvVarGuard::set("XHUB_RUST_XT_FILE_IPC_STALE_RUNTIME_AUTHORITY_REFRESH", "0");
         let temp = unique_temp_dir("xhub-xt-runtime-authority-cache");
         let source = temp.join("app");
         let live = temp.join("live");
@@ -4435,19 +4746,32 @@ mod tests {
         let first = runtime_authority_sync_value(&config, &body, false, 500_000);
         fs::remove_file(source.join("models_state.json")).unwrap();
         let second = runtime_authority_sync_value(&config, &body, false, 500_100);
-        let third = runtime_authority_sync_value(
+        let stale = runtime_authority_sync_value(
             &config,
             &body,
             false,
             500_000 + RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS + 1,
         );
+        let third = runtime_authority_sync_value(
+            &config,
+            &body,
+            false,
+            500_000
+                + RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS
+                + RUNTIME_AUTHORITY_SYNC_STALE_CACHE_MAX_MS
+                + 1,
+        );
 
         assert_eq!(first["cache_hit"], false);
         assert_eq!(first["would_copy_count"], 1);
         assert_eq!(second["cache_hit"], true);
+        assert_eq!(second["cache_stale"], false);
         assert_eq!(second["generated_at_ms"], 500_100);
         assert_eq!(second["would_copy_count"], 1);
         assert_eq!(second["files"][0]["source_exists"], true);
+        assert_eq!(stale["cache_hit"], true);
+        assert_eq!(stale["cache_stale"], true);
+        assert_eq!(stale["would_copy_count"], 1);
         assert_eq!(third["cache_hit"], false);
         assert_eq!(third["would_copy_count"], 0);
         assert_eq!(third["skipped_count"], 2);

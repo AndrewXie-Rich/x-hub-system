@@ -291,7 +291,14 @@ function buildPlan(config) {
       {
         name: 'strict_installed_gate',
         mutates: false,
-        command: commandLine(['bash', tool('cross_network_installed_gate.command'), ...readinessCommon]),
+        command: commandLine([
+          'bash',
+          tool('cross_network_installed_gate.command'),
+          ...readinessCommon,
+          '--require-cross-network-remote-route-smoke',
+          '--cross-network-remote-route-smoke-timeout-ms',
+          String(config.timeoutMs),
+        ]),
       },
       {
         name: 'export_xt_pairing_bundle',
@@ -354,6 +361,10 @@ function runSelfTest() {
   if (plan.steps.length !== 9) throw new Error('expected nine activation steps');
   if (!plan.steps.some((step) => step.command.includes('cross_network_remote_route_gate.command'))) {
     throw new Error('remote route semantics gate missing');
+  }
+  if (!plan.steps.some((step) => step.name === 'strict_installed_gate'
+      && step.command.includes('--require-cross-network-remote-route-smoke'))) {
+    throw new Error('strict installed gate must require remote route smoke');
   }
   if (!plan.steps.some((step) => step.command.includes('cross_network_pairing_export.command'))) {
     throw new Error('pairing export missing');

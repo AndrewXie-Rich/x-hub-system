@@ -220,6 +220,7 @@ extension SettingsSheetView {
             }
             .font(.caption)
         }
+        .id(doctorSectionAnchorID)
     }
 
     func disableLegacyCountsOnlyIntegrations() {

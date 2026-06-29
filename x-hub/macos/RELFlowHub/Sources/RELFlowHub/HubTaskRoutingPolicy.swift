@@ -33,7 +33,7 @@ enum HubTaskType: String, CaseIterable, Identifiable {
     }
 }
 
-struct HubTaskRouteDecision {
+struct HubTaskRouteDecision: Equatable {
     var modelId: String
     var modelName: String
     var modelState: HubModelState?

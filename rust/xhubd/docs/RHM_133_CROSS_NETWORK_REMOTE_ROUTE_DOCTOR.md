@@ -15,6 +15,8 @@ sits between the route semantics gate and the strict domain smoke:
 
 - `tools/cross_network_remote_route_doctor.command`
 - `tools/cross_network_remote_route_doctor.js`
+- `tools/xhubd_daemon.command cross-network-readiness --require-cross-network-remote-route-smoke`
+- `tools/daemon_ops_gate.command --require-cross-network-remote-route-smoke`
 
 The doctor emits `xhub.rust_hub.cross_network_remote_route_doctor.v1`.
 
@@ -59,6 +61,22 @@ bash tools/cross_network_remote_route_doctor.command \
 
 Use `cross_network_domain_smoke.command` after this for the stricter final
 domain pass/fail gate.
+
+Installed/cutover gate:
+
+```bash
+bash tools/cross_network_installed_gate.command \
+  --profile domain \
+  --public-base-url https://hub.your-domain.com \
+  --public-endpoint \
+  --access-key-file secrets/xhubd_domain_access_key \
+  --require-cross-network-remote-route-smoke
+```
+
+`--require-cross-network-remote-route-smoke` keeps `/ready` lightweight and local
+but makes ops/cutover gates fail closed unless the public URL proves `/health`,
+unauthenticated `/ready` rejection, and authenticated `/ready=true` through the
+existing remote-route doctor.
 
 ## Verification
 

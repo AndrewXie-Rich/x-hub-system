@@ -11,7 +11,7 @@ struct ModelsDrawerTaskRouteControlRow: View {
     var detailText: String
     var stateText: String
     var preferenceLabel: String
-    var availableModels: [HubModel]
+    var availableModels: [ModelsDrawerRouteModelOption]
     var routeCheckFeedback: String
     var routeCheckModelId: String
     var routeCheckTaskId: String
@@ -39,7 +39,7 @@ struct ModelsDrawerTaskRouteControlRow: View {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text(task.label)
                             .font(.subheadline.weight(.semibold))
-                        Text(preferredModelId.isEmpty ? "Auto" : "Pinned")
+                        Text(preferredModelId.isEmpty ? "自动" : "已指定")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(preferredModelId.isEmpty ? Color.secondary : Color.indigo)
                             .padding(.horizontal, 7)
@@ -70,12 +70,12 @@ struct ModelsDrawerTaskRouteControlRow: View {
                     .clipShape(Capsule())
 
                 Menu {
-                    Button("Auto") {
+                    Button("自动") {
                         onSetPreferred(nil)
                     }
                     Divider()
                     ForEach(availableModels) { model in
-                        Button(model.name) {
+                        Button(model.title) {
                             onSetPreferred(model.id)
                         }
                     }

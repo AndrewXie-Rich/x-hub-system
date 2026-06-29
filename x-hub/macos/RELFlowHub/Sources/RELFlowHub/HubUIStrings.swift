@@ -6960,6 +6960,10 @@ enum HubUIStrings {
                 static let bridgeUnavailable = "Bridge 心跳已过期或当前不可用"
                 static let runtimeNotReady = "Runtime 在超时时间内未进入 ready 状态"
 
+                static func runtimeStatusStale(_ ageSec: Int) -> String {
+                    "Runtime 心跳已过期 \(max(0, ageSec))s；需要重启 AI Runtime。"
+                }
+
                 static func cannotWriteBaseDirectory(_ path: String) -> String {
                     "无法写入 Hub 基础目录：\(path)"
                 }

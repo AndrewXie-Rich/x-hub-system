@@ -46,7 +46,7 @@ func grpcPortConflictLikely(snapshot: HubLaunchStatusSnapshot?) -> Bool {
 
         let res = await repairGRPCDBSafeAndRestart()
 
-        HubLaunchStateMachine.shared.start(bridgeStarted: true)
+        HubLaunchStateMachine.shared.startAndDrain(bridgeStarted: true)
         try? await Task.sleep(nanoseconds: 650_000_000)
         hubLaunchStatus = HubLaunchStatusStorage.load()
         hubLaunchHistory = HubLaunchHistoryStorage.load()

@@ -16,7 +16,9 @@ import {
   resolveLocalTaskModelRecord,
   resolveLocalTaskRoutingBinding,
   runLocalBench,
+  runtimeModelMeta,
   runtimeModelSupportsTask,
+  runtimeModelsSnapshot,
 } from './local_runtime_ipc.js';
 
 function run(name, fn) {
@@ -625,6 +627,48 @@ await run('runtimeModelSupportsTask filters non text local models and preserves 
   assert.equal(runtimeModelSupportsTask(baseDir, 'mlx-qwen', 'text_generate'), true);
   assert.equal(runtimeModelSupportsTask(baseDir, 'hf-embed', 'text_generate'), false);
   assert.equal(runtimeModelSupportsTask(baseDir, 'hf-embed', 'embedding'), true);
+});
+
+await run('runtime model metadata accepts snake_case model_id snapshots as local task-aware records', () => {
+  const baseDir = makeTempRuntimeDir();
+  writeJson(path.join(baseDir, 'models_state.json'), {
+    updated_at: Date.now() / 1000.0,
+    models: [
+      {
+        model_id: 'hf-qwen-local-text',
+        name: 'HF Qwen Local Text',
+        backend: 'transformers',
+        model_path: '/models/hf-qwen-local-text',
+        task_kinds: ['text_generate'],
+        input_modalities: ['text'],
+        output_modalities: ['text'],
+        model_format: 'huggingface',
+        offline_ready: true,
+      },
+    ],
+  });
+
+  const meta = runtimeModelMeta(baseDir, 'hf-qwen-local-text');
+  assert.ok(meta);
+  assert.equal(meta.model_id, 'hf-qwen-local-text');
+  assert.equal(meta.kind, 'local_offline');
+  assert.equal(meta.requires_grant, 0);
+  assert.equal(meta.model_path, '/models/hf-qwen-local-text');
+  assert.deepEqual(meta.task_kinds, ['text_generate']);
+
+  const record = readRuntimeModelRecord(baseDir, 'hf-qwen-local-text');
+  assert.ok(record);
+  assert.equal(record.model_id, 'hf-qwen-local-text');
+  assert.equal(runtimeModelSupportsTask(baseDir, 'hf-qwen-local-text', 'text_generate'), true);
+  assert.equal(localProviderForModel(baseDir, 'hf-qwen-local-text'), 'transformers');
+
+  const snap = runtimeModelsSnapshot(baseDir);
+  assert.equal(snap.ok, true);
+  assert.equal(snap.models.length, 1);
+  assert.equal(snap.models[0].model_id, 'hf-qwen-local-text');
+  assert.equal(snap.models[0].kind, 'local_offline');
+  assert.equal(snap.models[0].requires_grant, 0);
+  assert.deepEqual(snap.models[0].task_kinds, ['text_generate']);
 });
 
 await run('localProviderForModel prefers explicit runtime provider override for local records', () => {

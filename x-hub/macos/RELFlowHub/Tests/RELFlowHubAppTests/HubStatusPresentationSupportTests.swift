@@ -20,6 +20,20 @@ final class HubStatusPresentationSupportTests: XCTestCase {
         XCTAssertEqual(presentation.toolTip, "X-Hub • 正常 • gRPC serving on 5123")
     }
 
+    func testServingWithoutGRPCReportRemainsReady() {
+        let presentation = HubStatusPresentationSupport.make(
+            snapshot: launchSnapshot(state: .serving),
+            grpcIsRunning: false,
+            grpcStatusText: ""
+        )
+
+        XCTAssertEqual(presentation.tone, .ready)
+        XCTAssertEqual(presentation.title, "正常")
+        XCTAssertEqual(presentation.detail, "Rust kernel serving")
+        XCTAssertEqual(presentation.stateKey, "serving")
+        XCTAssertFalse(presentation.needsActionHint)
+    }
+
     func testServingWithBlockedCapabilitiesIsDegraded() {
         let presentation = HubStatusPresentationSupport.make(
             snapshot: launchSnapshot(

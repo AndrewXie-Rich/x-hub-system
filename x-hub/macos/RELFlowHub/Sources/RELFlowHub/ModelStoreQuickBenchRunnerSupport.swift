@@ -55,109 +55,22 @@ extension ModelStore {
             providerStatus: runtimeStatus?.providerStatus(providerID)
         )
         if controlMode == .mlxLegacy {
-            switch LocalModelRuntimeActionPlanner.plan(action: "bench", model: model, runtimeStatus: runtimeStatus) {
-            case .legacyModelCommand(let routedAction):
-                enqueueLegacyModelCommand(
-                    action: routedAction,
-                    model: model,
-                    runtimeStatus: runtimeStatus,
-                    targetPreferenceOverride: nil
-                )
-            case .providerLifecycleCommand:
-                recordImmediateFailure(
-                    action: "bench",
-                    modelId: modelId,
-                    msg: HubUIStrings.Models.Review.QuickBenchRunner.lifecycleNotImplemented
-                )
-            case .immediateFailure(let message):
-                recordImmediateFailure(action: "bench", modelId: modelId, msg: message)
-            }
-            return
-        }
-
-        guard let launchConfig = HubStore.shared.localRuntimeCommandLaunchConfig(
-            preferredProviderID: providerID
-        ) else {
-            recordImmediateFailure(
-                action: "bench",
+            dispatchLegacyQuickBenchRoute(
                 modelId: modelId,
-                msg: LocalRuntimeCommandError.runtimeLaunchConfigUnavailable.localizedDescription
+                model: model,
+                runtimeStatus: runtimeStatus
             )
             return
         }
 
-        let requestID = UUID().uuidString
-        pendingByModelId[modelId] = PendingCommand(
-            reqId: requestID,
-            action: "bench",
-            requestedAt: Date().timeIntervalSince1970
-        )
-        let initialRequestContext = localRuntimeRequestContext(
-            for: model,
-            runtimeStatus: runtimeStatus
-        )
-        let fixture = LocalBenchFixtureCatalog.fixture(id: normalizedFixtureProfile)
-        let fixtureTitle = fixture?.title ?? ""
-        let benchPlan = LocalModelQuickBenchPlanner.prepare(
-            model: model,
-            taskKind: normalizedTaskKind,
-            runtimeStatus: runtimeStatus,
-            requestContext: initialRequestContext
-        )
-
-        if benchPlan.requiresWarmup {
-            dispatchBenchWarmupThenRun(
-                modelId: modelId,
-                providerID: providerID,
-                taskKind: normalizedTaskKind,
-                fixtureProfile: normalizedFixtureProfile,
-                fixtureTitle: fixtureTitle,
-                requestContext: benchPlan.requestContext,
-                launchConfig: launchConfig,
-                requestID: requestID
-            )
-            return
-        }
-
-        dispatchQuickBenchCommand(
+        dispatchRuntimeQuickBench(
             modelId: modelId,
+            model: model,
             providerID: providerID,
             taskKind: normalizedTaskKind,
+            runtimeStatus: runtimeStatus,
             fixtureProfile: normalizedFixtureProfile,
-            fixtureTitle: fixtureTitle,
-            requestContext: benchPlan.requestContext,
-            launchConfig: launchConfig,
-            requestID: requestID
+            fixtureTitle: LocalBenchFixtureCatalog.fixture(id: normalizedFixtureProfile)?.title ?? ""
         )
     }
-
-    func startDefaultBench(for model: HubModel) {
-        let providerID = LocalModelRuntimeActionPlanner.providerID(for: model)
-        let probeLaunchConfig = HubStore.shared.localRuntimePythonProbeLaunchConfig(
-            preferredProviderID: providerID
-        )
-        let pythonPath = probeLaunchConfig?.resolvedPythonPath
-            ?? HubStore.shared.preferredLocalProviderPythonPath(preferredProviderID: providerID)
-        switch LocalModelTrialSupportResolver.resolveDefaultBenchSelection(
-            for: model,
-            runtimeStatus: AIRuntimeStatusStorage.load(),
-            probeLaunchConfig: probeLaunchConfig,
-            pythonPath: pythonPath
-        ) {
-        case .success(let selection):
-            runBench(
-                modelId: model.id,
-                taskKind: selection.taskKind,
-                fixtureProfile: selection.fixtureProfile
-            )
-        case .failure(let error):
-            recordImmediateFailure(
-                action: "bench",
-                modelId: model.id,
-                msg: error.message
-            )
-        }
-    }
-
-
 }

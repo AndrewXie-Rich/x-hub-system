@@ -1147,6 +1147,19 @@ fn now_ms_u64() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let seq = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        env::temp_dir().join(format!("{label}-{}-{now}-{seq}", std::process::id()))
+    }
 
     #[test]
     fn secret_field_path_rejects_secret_keys() {
@@ -1192,7 +1205,7 @@ mod tests {
 
     #[test]
     fn runtime_status_python_candidates_ignore_runtime_source_path() {
-        let dir = env::temp_dir().join(format!("xhub-local-ml-test-{}", now_ms_u64()));
+        let dir = unique_temp_dir("xhub-local-ml-test");
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("ai_runtime_status.json"),
@@ -1223,7 +1236,7 @@ mod tests {
 
     #[test]
     fn command_proxy_ready_requires_fresh_runtime_marker() {
-        let dir = env::temp_dir().join(format!("xhub-local-ml-proxy-{}", now_ms_u64()));
+        let dir = unique_temp_dir("xhub-local-ml-proxy");
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("ai_runtime_status.json"),
@@ -1245,7 +1258,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn command_proxy_ready_rejects_dead_runtime_pid() {
-        let dir = env::temp_dir().join(format!("xhub-local-ml-proxy-dead-{}", now_ms_u64()));
+        let dir = unique_temp_dir("xhub-local-ml-proxy-dead");
         fs::create_dir_all(&dir).unwrap();
         let mut child = Command::new("sleep").arg("1").spawn().unwrap();
         let pid = child.id();
@@ -1270,7 +1283,7 @@ mod tests {
 
     #[test]
     fn command_proxy_ready_rejects_stale_runtime_marker() {
-        let dir = env::temp_dir().join(format!("xhub-local-ml-proxy-stale-{}", now_ms_u64()));
+        let dir = unique_temp_dir("xhub-local-ml-proxy-stale");
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("ai_runtime_status.json"),
@@ -1291,7 +1304,7 @@ mod tests {
 
     #[test]
     fn local_runtime_command_proxy_round_trips_result() {
-        let dir = env::temp_dir().join(format!("xhub-local-ml-proxy-roundtrip-{}", now_ms_u64()));
+        let dir = unique_temp_dir("xhub-local-ml-proxy-roundtrip");
         fs::create_dir_all(&dir).unwrap();
         let responder_dir = dir.clone();
         let handle = thread::spawn(move || {
@@ -1377,7 +1390,7 @@ mod tests {
 
     #[test]
     fn local_runtime_command_proxy_timeout_cleans_command_file() {
-        let dir = env::temp_dir().join(format!("xhub-local-ml-proxy-timeout-{}", now_ms_u64()));
+        let dir = unique_temp_dir("xhub-local-ml-proxy-timeout");
         fs::create_dir_all(&dir).unwrap();
 
         let err = run_local_runtime_command_proxy(

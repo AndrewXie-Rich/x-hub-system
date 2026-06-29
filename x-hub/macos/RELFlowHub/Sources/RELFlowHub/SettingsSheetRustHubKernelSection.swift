@@ -77,6 +77,7 @@ extension SettingsSheetView {
                 }
             }
         }
+        .id(rustHubKernelSectionAnchorID)
     }
 
     var rustHubKernelTint: Color {

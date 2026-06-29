@@ -8,7 +8,7 @@ extension ModelsDrawer {
             return "本地模型会用于隐私任务、离线任务和低延迟任务。"
         }
         if !runtimeAlive {
-            return "Runtime 未就绪，本地模型暂时只作为目录展示。"
+            return "运行时未就绪，本地模型暂时只作为目录展示。"
         }
         if localLoadedCount > 0 {
             return "\(localLoadedCount) 个模型已经常驻，可以直接承接本地任务。"
@@ -34,14 +34,14 @@ extension ModelsDrawer {
         if keyPools.contains(where: { $0.hasQuotaData }) {
             return "额度和 Key 健康已同步，Hub 可按资源池进行路由。"
         }
-        return "已编入模型，额度窗口等待 provider 同步。"
+        return "已编入模型，额度窗口等待厂商同步。"
     }
 
     func providerPoolDisplayName(_ pool: ProviderKeyPoolSnapshot) -> String {
         let display = pool.providerDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !display.isEmpty { return display }
         let provider = pool.provider.trimmingCharacters(in: .whitespacesAndNewlines)
-        if provider.isEmpty { return "Remote" }
+        if provider.isEmpty { return "远程" }
         switch provider.lowercased() {
         case "openai": return "OpenAI"
         case "anthropic": return "Anthropic"
@@ -57,11 +57,11 @@ extension ModelsDrawer {
             case "openai": return "OpenAI"
             case "anthropic": return "Anthropic"
             case "gemini", "google": return "Gemini"
-            case "remote", "remote_catalog": return model.remoteEndpointHost ?? "Remote"
-            default: return backend.isEmpty ? "Remote" : backend.uppercased()
+            case "remote", "remote_catalog": return model.remoteEndpointHost ?? "远程"
+            default: return backend.isEmpty ? "远程" : backend.uppercased()
             }
         }
-        return "Local"
+        return "本地"
     }
 
     func compactModelDetail(_ model: HubModel) -> String {
@@ -99,9 +99,9 @@ extension ModelsDrawer {
 
     func modelStateText(_ state: HubModelState) -> String {
         switch state {
-        case .loaded: return "Ready"
-        case .available: return "Available"
-        case .sleeping: return "Sleep"
+        case .loaded: return "已载入"
+        case .available: return "可用"
+        case .sleeping: return "休眠"
         }
     }
 
@@ -143,9 +143,9 @@ extension ModelsDrawer {
 
     func remoteModelStateText(_ state: RemoteModelLoadState) -> String {
         switch state {
-        case .loaded: return "Ready"
-        case .available: return "Available"
-        case .needsSetup: return "Setup"
+        case .loaded: return "已启用"
+        case .available: return "可启用"
+        case .needsSetup: return "需配置"
         }
     }
 

@@ -322,6 +322,7 @@ export function requireClientAuth(call) {
   const peerCertSha256 = peerCertSha256FromCall(call);
   const tlsMode = tlsModeFromEnv(process.env);
   const runtimeBaseDir = resolveRuntimeBaseDir();
+  const directInProcessCall = isDirectInProcessServiceCall(call);
 
   const deny = (reason, message, extra = {}) => {
     recordDeniedAttemptBestEffort({
@@ -345,7 +346,7 @@ export function requireClientAuth(call) {
 
   // If mTLS is enabled, a peer certificate must be present.
   // Note: grpc-js exposes it via call.getAuthContext().sslPeerCertificate.
-  if (tlsMode === 'mtls' && !peerCertSha256) {
+  if (!directInProcessCall && tlsMode === 'mtls' && !peerCertSha256) {
     return deny('missing_client_cert', 'Missing/invalid client certificate');
   }
 
@@ -404,7 +405,7 @@ export function requireClientAuth(call) {
         }
 
         // Optional mTLS certificate pin (defense-in-depth): bind the token to a specific client cert.
-        if (tlsMode === 'mtls') {
+        if (!directInProcessCall && tlsMode === 'mtls') {
           if (requirePin && !expectedCertSha) {
             return deny('client_cert_pin_missing', 'Client cert pin is not configured for this token', { device_id, client_name });
           }
@@ -427,6 +428,13 @@ export function requireClientAuth(call) {
           auth_kind: safeString(touchedClient.auth_kind || c.auth_kind),
           capabilities: Array.isArray(touchedClient.capabilities) ? touchedClient.capabilities : [],
           scopes: Array.isArray(touchedClient.scopes) ? touchedClient.scopes : [],
+          connector_profile: safeString(touchedClient.connector_profile || c.connector_profile),
+          capability_profile: safeString(touchedClient.capability_profile || c.capability_profile),
+          authority_profile: safeString(touchedClient.authority_profile || c.authority_profile),
+          denied_capabilities: Array.isArray(touchedClient.denied_capabilities) ? touchedClient.denied_capabilities : [],
+          xt_pairing_authority: touchedClient.xt_pairing_authority === true,
+          durable_memory_authority: touchedClient.durable_memory_authority === true,
+          skills_execution_authority: touchedClient.skills_execution_authority === true,
           policy_mode: safeString(touchedClient.policy_mode).toLowerCase(),
           trust_profile_present: !!touchedClient.trust_profile_present,
           trust_mode: safeString(touchedClient.trust_mode).toLowerCase(),
@@ -454,7 +462,7 @@ export function requireClientAuth(call) {
   // Legacy: single static token via env.
   const expected = (process.env.HUB_CLIENT_TOKEN || '').trim();
   if (!expected) {
-    if (isDirectInProcessServiceCall(call)) {
+    if (directInProcessCall) {
       return { ok: true, device_id: '', client_name: '', capabilities: [], peer_ip: peerIp, peer_cert_sha256: peerCertSha256 };
     }
     return deny('no_tokens_configured', 'No client tokens configured (set HUB_CLIENT_TOKEN or hub_grpc_clients.json)');

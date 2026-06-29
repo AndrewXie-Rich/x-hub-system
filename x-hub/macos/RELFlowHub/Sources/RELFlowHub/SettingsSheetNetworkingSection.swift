@@ -51,6 +51,7 @@ extension SettingsSheetView {
                 }
             }
         }
+        .id(networkingSectionAnchorID)
     }
 
     var networkPoliciesSection: some View {
@@ -98,6 +99,7 @@ extension SettingsSheetView {
                 }
             }
         }
+        .id(networkPoliciesSectionAnchorID)
     }
 
     var routingSection: some View {

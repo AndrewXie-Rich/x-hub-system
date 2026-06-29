@@ -10,6 +10,7 @@ extension SettingsSheetView {
             grpcAllowedDevicesBlock()
             grpcRemoteAccessBlock()
         }
+        .id(grpcServerSectionAnchorID)
     }
 
     @ViewBuilder

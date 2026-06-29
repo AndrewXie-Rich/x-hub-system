@@ -100,7 +100,7 @@ final class BridgeSupport: ObservableObject {
         }
         enable(seconds: seconds)
         refresh()
-        HubLaunchStateMachine.shared.start(bridgeStarted: true)
+        HubLaunchStateMachine.shared.startAndDrain(bridgeStarted: true)
     }
 
     func disable() {

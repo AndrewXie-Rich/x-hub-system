@@ -39,6 +39,56 @@ Out of scope for this route plan:
 - Other VPN IP routes: WireGuard / ZeroTier / Headscale.
 - Cloudflare Tunnel arbitrary TCP.
 
+## Ordinary Terminal AI-Only Path
+
+Ordinary terminals are not paired XT clients. They should use a Hub access key
+with `app_id=external_terminal` and the `external_terminal_ai_only` connector
+profile.
+
+Allowed by default:
+
+- `GET /v1/models`
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- capabilities: `models`, `ai.generate.local`
+
+Allowed only when the issued profile explicitly enables paid model selection:
+
+- `ai.generate.paid`
+
+Denied for ordinary terminals:
+
+- XT pairing/device trust mutation
+- durable memory write or raw memory retrieval
+- skills execution, pin/grant/revoke, or package authority
+- device/browser/repo/admin surfaces
+- provider-key mutation
+- `web.fetch` by default
+
+This keeps CLI and third-party OpenAI-compatible clients useful for AI calls
+without giving them XT authority. XT remains the deep paired client for project
+execution, memory projection, skills preflight/execution, and governed device
+actions.
+
+Remote validation from any ordinary terminal should use the AI-only smoke. It
+does not need an admin token and must be run with an already issued
+`external_terminal_ai_only` key:
+
+```bash
+cd hub_grpc_server
+OPENAI_BASE_URL='https://your-hub.example/v1' \
+OPENAI_API_KEY='axhub_client_...' \
+npm run smoke:external-terminal-ai-only-remote -- --include-chat
+```
+
+Expected result:
+
+- `/v1/models` works.
+- Optional `/v1/chat/completions` works.
+- admin, XT key management, skills, memory, and Rust `/ready` are rejected with
+  `401`, `403`, `404`, or `405`.
+- The report redacts the token.
+
 ## Route Matrix
 
 | Route | Current status | XT install | Security | Convenience | Use when |

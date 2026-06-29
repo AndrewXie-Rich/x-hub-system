@@ -11,7 +11,7 @@ func retryLaunchDiagnosisAsync() async {
         defer { diagnosticsActionIsRunning = false }
 
         HubDiagnostics.log("diagnostics.action action=retry_start")
-        HubLaunchStateMachine.shared.start(bridgeStarted: true)
+        HubLaunchStateMachine.shared.startAndDrain(bridgeStarted: true)
         try? await Task.sleep(nanoseconds: 450_000_000)
         hubLaunchStatus = HubLaunchStatusStorage.load()
         hubLaunchHistory = HubLaunchHistoryStorage.load()
@@ -48,7 +48,7 @@ func retryLaunchDiagnosisAsync() async {
         }
 
         // Re-run attribution to update root-cause + blocked capabilities.
-        HubLaunchStateMachine.shared.start(bridgeStarted: true)
+        HubLaunchStateMachine.shared.startAndDrain(bridgeStarted: true)
         try? await Task.sleep(nanoseconds: 650_000_000)
         hubLaunchStatus = HubLaunchStatusStorage.load()
         hubLaunchHistory = HubLaunchHistoryStorage.load()
@@ -98,7 +98,7 @@ func retryLaunchDiagnosisAsync() async {
             }
         }
 
-        HubLaunchStateMachine.shared.start(bridgeStarted: true)
+        HubLaunchStateMachine.shared.startAndDrain(bridgeStarted: true)
         try? await Task.sleep(nanoseconds: 650_000_000)
         hubLaunchStatus = HubLaunchStatusStorage.load()
         hubLaunchHistory = HubLaunchHistoryStorage.load()
@@ -174,7 +174,7 @@ func retryLaunchDiagnosisAsync() async {
     func rerunLaunchDiagnosisSoon(delayNs: UInt64 = 350_000_000) {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: delayNs)
-            HubLaunchStateMachine.shared.start(bridgeStarted: true)
+            HubLaunchStateMachine.shared.startAndDrain(bridgeStarted: true)
             hubLaunchStatus = HubLaunchStatusStorage.load()
         }
     }

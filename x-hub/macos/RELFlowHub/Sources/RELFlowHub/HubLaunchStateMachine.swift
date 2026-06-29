@@ -22,6 +22,7 @@ final class HubLaunchStateMachine {
     private var timer: Timer?
     private var bridgeWasStartedByApp: Bool = false
     private var currentState: HubLaunchState = .bootStart
+    private var rustProductKernelOwnsLaunchStatus: Bool = false
 
     private let grpcTimeoutMs: Int64 = 15_000
     private let bridgeTimeoutMs: Int64 = 8_000
@@ -38,6 +39,7 @@ final class HubLaunchStateMachine {
         stageStartedAtMs = bootStartedAtMs
         steps.removeAll(keepingCapacity: true)
         failures.removeAll(keepingCapacity: true)
+        rustProductKernelOwnsLaunchStatus = false
 
         currentState = .bootStart
         appendStep(state: .bootStart, ok: true)
@@ -68,6 +70,26 @@ final class HubLaunchStateMachine {
                 self?.tick()
             }
         }
+        refreshRustProductKernelForLaunchAttribution()
+        refreshRustRuntimeReadinessForLaunchAttribution()
+    }
+
+    @discardableResult
+    func startAndDrain(bridgeStarted: Bool, maxTicks: Int = 8) -> HubLaunchStatusSnapshot? {
+        start(bridgeStarted: bridgeStarted)
+        if rustProductKernelOwnsLaunchStatus {
+            return HubLaunchStatusStorage.load()
+        }
+        if let snapshot = RustHubRuntimeSupport.cachedProductKernelLaunchStatus(maxAgeSec: 3) {
+            let relabeled = RustHubRuntimeSupport.relabelProductKernelLaunchStatus(
+                snapshot,
+                launchId: launchId
+            )
+            applyRustProductKernelSnapshot(relabeled)
+            return relabeled
+        }
+        drainAvailableStages(maxTicks: maxTicks)
+        return HubLaunchStatusStorage.load()
     }
 
     func stop() {
@@ -88,6 +110,72 @@ final class HubLaunchStateMachine {
         case .done:
             return
         }
+    }
+
+    private func drainAvailableStages(maxTicks: Int) {
+        var remaining = max(0, maxTicks)
+        while remaining > 0 {
+            switch stage {
+            case .idle, .done:
+                return
+            case .waitGRPC, .waitBridge, .waitRuntime:
+                break
+            }
+            let previousStage = stage
+            let previousStepCount = steps.count
+            tick()
+            remaining -= 1
+            if stage == previousStage && steps.count == previousStepCount {
+                return
+            }
+        }
+    }
+
+    private func refreshRustRuntimeReadinessForLaunchAttribution() {
+        Task {
+            let readiness = await RustHubRuntimeSupport.loadLocalMLExecutionReadiness()
+            await MainActor.run {
+                guard readiness.enabled || readiness.executionAuthorityInRust || readiness.ready else { return }
+                self.drainAvailableStages(maxTicks: 8)
+            }
+        }
+    }
+
+    private func refreshRustProductKernelForLaunchAttribution() {
+        let currentLaunchId = launchId
+        if let cached = RustHubRuntimeSupport.cachedProductKernelLaunchStatus(maxAgeSec: 3) {
+            applyRustProductKernelSnapshot(
+                RustHubRuntimeSupport.relabelProductKernelLaunchStatus(
+                    cached,
+                    launchId: currentLaunchId
+                )
+            )
+            return
+        }
+        Task(priority: .userInitiated) {
+            guard let snapshot = await RustHubRuntimeSupport.loadProductKernelLaunchStatusSnapshot(
+                launchId: currentLaunchId
+            ) else {
+                HubDiagnostics.log("hub_launch.product_kernel unavailable launch_id=\(currentLaunchId)")
+                return
+            }
+            await MainActor.run {
+                guard self.launchId == currentLaunchId else { return }
+                self.applyRustProductKernelSnapshot(snapshot)
+            }
+        }
+    }
+
+    private func applyRustProductKernelSnapshot(_ snapshot: HubLaunchStatusSnapshot) {
+        rustProductKernelOwnsLaunchStatus = true
+        currentState = snapshot.state
+        stage = .done
+        HubLaunchStatusStorage.save(snapshot)
+        HubLaunchHistoryStorage.upsert(snapshot)
+        HubDiagnostics.log(
+            "hub_launch.product_kernel applied launch_id=\(snapshot.launchId) state=\(snapshot.state.rawValue) degraded=\(snapshot.degraded.isDegraded ? 1 : 0) blocked=\(snapshot.degraded.blockedCapabilities.count)"
+        )
+        stop()
     }
 
     private func tickWaitGRPC() {
@@ -265,6 +353,7 @@ final class HubLaunchStateMachine {
     }
 
     private func persist() {
+        guard !rustProductKernelOwnsLaunchStatus else { return }
         let snapshot = HubLaunchStatusSnapshot(
             launchId: launchId,
             updatedAtMs: nowMs(),
@@ -368,13 +457,34 @@ final class HubLaunchStateMachine {
         if lower.contains("mlx is unavailable") || lower.contains("import") {
             return ("XHUB_RT_IMPORT_ERROR", err)
         }
-        if let st = AIRuntimeStatusStorage.load(),
-           let importError = st.importError?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !importError.isEmpty {
-            return ("XHUB_RT_IMPORT_ERROR", importError)
+        if let rust = rustLocalMLReadinessForLaunch() {
+            let blocker = rust.blocker.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (
+                "XHUB_RT_NOT_READY",
+                blocker.isEmpty ? "Rust local ML readiness: \(rust.statusText)" : blocker
+            )
+        }
+        let ttl = AIRuntimeStatus.recommendedHeartbeatTTL
+        if let st = AIRuntimeStatusStorage.load() {
+            if st.isAlive(ttl: ttl) {
+                if let importError = st.importError?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !importError.isEmpty {
+                    return ("XHUB_RT_IMPORT_ERROR", importError)
+                }
+                let doctor = st.providerDoctorText(ttl: ttl).trimmingCharacters(in: .whitespacesAndNewlines)
+                return (
+                    "XHUB_RT_NOT_READY",
+                    doctor.isEmpty ? HubUIStrings.Settings.Diagnostics.LaunchFlow.runtimeNotReady : doctor
+                )
+            }
+            let ageSec = Int(max(0.0, Date().timeIntervalSince1970 - st.updatedAt))
+            return (
+                "XHUB_RT_STATUS_STALE",
+                HubUIStrings.Settings.Diagnostics.LaunchFlow.runtimeStatusStale(ageSec)
+            )
         }
         return (
-            "XHUB_RT_IMPORT_ERROR",
+            "XHUB_RT_NOT_READY",
             err.isEmpty ? HubUIStrings.Settings.Diagnostics.LaunchFlow.runtimeNotReady : err
         )
     }
@@ -396,16 +506,23 @@ final class HubLaunchStateMachine {
     }
 
     private func runtimeReady() -> Bool {
+        if rustLocalMLReadinessForLaunch()?.ready == true {
+            return true
+        }
         if let st = AIRuntimeStatusStorage.load() {
             if st.isAlive(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) && st.hasReadyProvider(ttl: AIRuntimeStatus.recommendedHeartbeatTTL) {
                 return true
             }
         }
-        let status = HubStore.shared.aiRuntimeStatusText.lowercased()
-        if status.contains("running") && !status.contains("no providers ready") {
-            return true
-        }
         return false
+    }
+
+    private func rustLocalMLReadinessForLaunch() -> RustLocalMLExecutionReadinessSnapshot? {
+        let snapshot = RustHubRuntimeSupport.cachedLocalMLExecutionReadiness()
+        guard snapshot.enabled || snapshot.executionAuthorityInRust || snapshot.ready else {
+            return nil
+        }
+        return snapshot
     }
 
     private func elapsedSinceStageStartMs() -> Int64 {

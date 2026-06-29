@@ -81,27 +81,27 @@ struct ModelTrialStatusLine: View {
     private var categoryLabel: String {
         switch status.category {
         case .running:
-            return "Checking"
+            return "测试中"
         case .success:
-            return "OK"
+            return "可用"
         case .quota:
-            return "Quota"
+            return "额度"
         case .rateLimit:
-            return "Rate"
+            return "限速"
         case .auth:
-            return "Auth"
+            return "认证"
         case .config:
-            return "Config"
+            return "配置"
         case .network:
-            return "Network"
+            return "网络"
         case .runtime:
-            return "Runtime"
+            return "运行时"
         case .unsupported:
-            return "Unsupported"
+            return "不支持"
         case .timeout:
-            return "Timeout"
+            return "超时"
         case .failed:
-            return "Failed"
+            return "失败"
         }
     }
 }

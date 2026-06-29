@@ -4,6 +4,10 @@ import XCTest
 final class AIRuntimeStatusStorageTests: XCTestCase {
     override func tearDown() {
         unsetenv("XHUB_SOURCE_RUN_HOME")
+        unsetenv("HUB_RUNTIME_BASE_DIR")
+        unsetenv("REL_FLOW_HUB_BASE_DIR")
+        unsetenv("XHUB_RUST_RUNTIME_BASE_DIR")
+        unsetenv("XHUB_RUST_HUB_ROOT")
         super.tearDown()
     }
 
@@ -31,6 +35,32 @@ final class AIRuntimeStatusStorageTests: XCTestCase {
         XCTAssertEqual(resolved.status.pid, 111)
         XCTAssertEqual(resolved.url.path, primaryURL.path)
         XCTAssertEqual(resolved.status.providerStatus("mlx")?.reasonCode, "primary_ready")
+    }
+
+    func testLoadResolvedUsesAliveRuntimeBaseWhenPrimarySnapshotIsStale() throws {
+        let home = try makeTempHome()
+        setenv("XHUB_SOURCE_RUN_HOME", home.path, 1)
+
+        let primaryURL = AIRuntimeStatusStorage.url()
+        let rustRuntimeBase = home.appendingPathComponent("rust-runtime", isDirectory: true)
+        setenv("HUB_RUNTIME_BASE_DIR", rustRuntimeBase.path, 1)
+
+        try writeStatus(
+            makeStatus(pid: 111, updatedAt: Date().timeIntervalSince1970 - 60.0, providerReasonCode: "stale_primary"),
+            to: primaryURL
+        )
+        try writeStatus(
+            makeStatus(pid: 222, updatedAt: Date().timeIntervalSince1970 - 1.0, providerReasonCode: "rust_ready"),
+            to: rustRuntimeBase.appendingPathComponent(AIRuntimeStatusStorage.fileName)
+        )
+
+        let resolved = try XCTUnwrap(AIRuntimeStatusStorage.loadResolved())
+        XCTAssertEqual(resolved.status.pid, 222)
+        XCTAssertEqual(
+            resolved.url.path,
+            rustRuntimeBase.appendingPathComponent(AIRuntimeStatusStorage.fileName).path
+        )
+        XCTAssertEqual(resolved.status.providerStatus("mlx")?.reasonCode, "rust_ready")
     }
 
     func testLoadResolvedFallsBackToFreshestReadableSnapshotWhenPrimaryMissing() throws {

@@ -244,6 +244,12 @@ enum RustHubRuntimeSupport {
     private static let httpAccessKeyCacheTTL: TimeInterval = 5
     private static let httpAccessKeyCacheLock = NSLock()
     nonisolated(unsafe) private static var cachedHTTPAccessKeyEntry: (checkedAt: TimeInterval, value: String?)?
+    private static let localMLExecutionReadinessCacheLock = NSLock()
+    nonisolated(unsafe) private static var cachedLocalMLExecutionReadinessEntry: (checkedAt: TimeInterval, value: RustLocalMLExecutionReadinessSnapshot)?
+    private static let productKernelLaunchStatusCacheLock = NSLock()
+    nonisolated(unsafe) private static var cachedProductKernelLaunchStatusEntry: (checkedAt: TimeInterval, value: HubLaunchStatusSnapshot)?
+    private static let productKernelLaunchStatusInFlightLock = NSLock()
+    nonisolated(unsafe) private static var productKernelLaunchStatusInFlightTask: Task<HubLaunchStatusSnapshot?, Never>?
 
     static let defaultHost = "127.0.0.1"
     static let defaultHTTPPort = 50151
@@ -320,9 +326,67 @@ enum RustHubRuntimeSupport {
         return FileManager.default.homeDirectoryForCurrentUser
     }
 
+    static func rustLiveRuntimeBaseDir(homeDirectory: URL = defaultUserHomeDirectory()) -> URL {
+        homeDirectory
+            .appendingPathComponent("Library/Application Support/AX/rust-hub/local/runtime", isDirectory: true)
+    }
+
+    static func nodeSidecarRuntimeBaseDir(
+        swiftBaseDir: URL,
+        baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL = defaultUserHomeDirectory(),
+        fileManager: FileManager = .default
+    ) -> URL {
+        if let explicit = nonEmptyEnvironmentValue(baseEnvironment, "XHUB_NODE_SIDECAR_RUNTIME_BASE_DIR") {
+            return URL(fileURLWithPath: explicit, isDirectory: true)
+        }
+
+        guard productionPassthroughEnabled(baseEnvironment) else {
+            return swiftBaseDir
+        }
+
+        let rustRuntimeAuthorityEnabled = [
+            "XHUB_RUST_MODEL_ROUTE_PRODUCTION_AUTHORITY",
+            "XHUB_RUST_MODEL_ROUTE_AUTHORITY_PRODUCTION",
+            "XHUB_RUST_ML_EXECUTION_AUTHORITY",
+            "XHUB_RUST_LOCAL_ML_EXECUTION_AUTHORITY"
+        ].contains { key in
+            guard let value = baseEnvironment[key] else { return false }
+            return !isFalseAuthorityValue(value)
+        }
+        guard rustRuntimeAuthorityEnabled else {
+            return swiftBaseDir
+        }
+
+        let candidates = [
+            nonEmptyEnvironmentValue(baseEnvironment, "XHUB_RUST_RUNTIME_BASE_DIR"),
+            nonEmptyEnvironmentValue(baseEnvironment, "XHUB_RUST_LOCAL_RUNTIME_BASE_DIR"),
+            rustLiveRuntimeBaseDir(homeDirectory: homeDirectory).path
+        ].compactMap { $0 }
+
+        for candidate in candidates {
+            let url = URL(fileURLWithPath: candidate, isDirectory: true)
+            if fileManager.fileExists(atPath: url.path) {
+                return url
+            }
+        }
+
+        return swiftBaseDir
+    }
+
     static func activePackageRoot(homeDirectory: URL = defaultUserHomeDirectory()) -> URL {
         homeDirectory
             .appendingPathComponent("Library/Application Support/AX/rust-hub/current", isDirectory: true)
+    }
+
+    static func defaultHTTPAccessKeyRoots(homeDirectory: URL = defaultUserHomeDirectory()) -> [URL] {
+        let root = homeDirectory
+            .appendingPathComponent("Library/Application Support/AX/rust-hub", isDirectory: true)
+        return uniqueURLs([
+            root.appendingPathComponent("local", isDirectory: true),
+            root.appendingPathComponent("domain", isDirectory: true),
+            root.appendingPathComponent("current", isDirectory: true)
+        ])
     }
 
     static func appContainerActivePackageRoot(homeDirectory: URL = defaultUserHomeDirectory()) -> URL {
@@ -573,6 +637,7 @@ enum RustHubRuntimeSupport {
         let selected = preferredPackageInfo(embeddedPackage: embedded, activePackage: active)
         let productKernel = jsonObject(from: await fetchData(path: "/product/kernel", authorize: true))
         if isProductKernelContract(productKernel) {
+            storeCachedProductKernelLaunchStatus(makeProductKernelLaunchStatusSnapshot(object: productKernel))
             var snapshot = makeSnapshot(
                 embeddedPackage: embedded,
                 activePackage: active,
@@ -601,6 +666,88 @@ enum RustHubRuntimeSupport {
         return snapshot
     }
 
+    static func loadProductKernelLaunchStatusSnapshot(
+        launchId: String = "rust-product-kernel",
+        diagnosticName: String = "product_kernel_launch"
+    ) async -> HubLaunchStatusSnapshot? {
+        if let cached = cachedProductKernelLaunchStatus(maxAgeSec: 1.5) {
+            let relabeled = relabelProductKernelLaunchStatus(cached, launchId: launchId)
+            storeCachedProductKernelLaunchStatus(relabeled)
+            return relabeled
+        }
+        let task = productKernelLaunchStatusFetchTask(
+            launchId: launchId,
+            diagnosticName: diagnosticName
+        )
+        guard let snapshot = await task.value else { return nil }
+        let relabeled = relabelProductKernelLaunchStatus(snapshot, launchId: launchId)
+        storeCachedProductKernelLaunchStatus(relabeled)
+        return relabeled
+    }
+
+    private static func fetchProductKernelLaunchStatusSnapshot(
+        launchId: String,
+        diagnosticName: String
+    ) async -> HubLaunchStatusSnapshot? {
+        let object = jsonObject(
+            from: await fetchData(
+                path: "/product/kernel",
+                authorize: true,
+                diagnosticName: diagnosticName,
+                timeoutSec: 12.0
+            )
+        )
+        guard let snapshot = makeProductKernelLaunchStatusSnapshot(object: object, launchId: launchId) else { return nil }
+        storeCachedProductKernelLaunchStatus(snapshot)
+        return snapshot
+    }
+
+    private static func productKernelLaunchStatusFetchTask(
+        launchId: String,
+        diagnosticName: String
+    ) -> Task<HubLaunchStatusSnapshot?, Never> {
+        productKernelLaunchStatusInFlightLock.lock()
+        if let task = productKernelLaunchStatusInFlightTask {
+            productKernelLaunchStatusInFlightLock.unlock()
+            return task
+        }
+        let task = Task.detached(priority: .userInitiated) {
+            let snapshot = await fetchProductKernelLaunchStatusSnapshot(
+                launchId: launchId,
+                diagnosticName: diagnosticName
+            )
+            clearProductKernelLaunchStatusFetchTask()
+            return snapshot
+        }
+        productKernelLaunchStatusInFlightTask = task
+        productKernelLaunchStatusInFlightLock.unlock()
+        return task
+    }
+
+    private static func clearProductKernelLaunchStatusFetchTask() {
+        productKernelLaunchStatusInFlightLock.lock()
+        productKernelLaunchStatusInFlightTask = nil
+        productKernelLaunchStatusInFlightLock.unlock()
+    }
+
+    static func prewarmProductKernelLaunchStatus(reason: String = "app_launch") {
+        let task = productKernelLaunchStatusFetchTask(
+            launchId: "rust-product-kernel-prewarm",
+            diagnosticName: "product_kernel_prewarm"
+        )
+        Task.detached(priority: .userInitiated) {
+            let startedAt = HubPerformanceTrace.now()
+            _ = cachedHTTPAccessKey()
+            let snapshot = await task.value
+            HubPerformanceTrace.logSlow(
+                "rust_http.product_kernel_prewarm.total",
+                startedAt: startedAt,
+                thresholdMs: 250,
+                details: "reason=\(reason) ready=\(snapshot?.state == .serving ? 1 : 0)"
+            )
+        }
+    }
+
     static func loadRemoteEntryCandidates() async -> RustHubRemoteEntryCandidates {
         makeRemoteEntryCandidates(
             object: jsonObject(from: await fetchData(path: "/network/remote-entry-candidates", authorize: true))
@@ -608,9 +755,11 @@ enum RustHubRuntimeSupport {
     }
 
     static func loadLocalMLExecutionReadiness() async -> RustLocalMLExecutionReadinessSnapshot {
-        makeLocalMLExecutionReadiness(
+        let snapshot = makeLocalMLExecutionReadiness(
             object: jsonObject(from: await fetchData(path: "/runtime/ml-execution/readiness", authorize: true))
         )
+        storeCachedLocalMLExecutionReadiness(snapshot)
+        return snapshot
     }
 
     static func loadLocalModelRepairPlan(
@@ -865,26 +1014,66 @@ enum RustHubRuntimeSupport {
         )
     }
 
-    private static func fetchData(path: String, authorize: Bool = true) async -> Data? {
+    private static func fetchData(
+        path: String,
+        authorize: Bool = true,
+        diagnosticName: String? = nil,
+        timeoutSec: TimeInterval = 1.0
+    ) async -> Data? {
         guard let url = URL(string: defaultHTTPBaseURL + path) else { return nil }
-        return await fetchData(url: url, authorize: authorize)
+        return await fetchData(
+            url: url,
+            authorize: authorize,
+            diagnosticName: diagnosticName,
+            timeoutSec: timeoutSec
+        )
     }
 
-    private static func fetchData(url: URL, authorize: Bool = true) async -> Data? {
+    private static func fetchData(
+        url: URL,
+        authorize: Bool = true,
+        diagnosticName: String? = nil,
+        timeoutSec: TimeInterval = 1.0
+    ) async -> Data? {
+        let startedAt = HubPerformanceTrace.now()
         var request = URLRequest(url: url)
-        request.timeoutInterval = 1.0
-        if authorize, let accessKey = cachedHTTPAccessKey() {
-            request.setValue("Bearer \(accessKey)", forHTTPHeaderField: "Authorization")
-            request.setValue(accessKey, forHTTPHeaderField: "X-XHub-Access-Key")
+        request.timeoutInterval = max(0.2, timeoutSec)
+        if authorize {
+            if let accessKey = cachedHTTPAccessKey() {
+                request.setValue("Bearer \(accessKey)", forHTTPHeaderField: "Authorization")
+                request.setValue(accessKey, forHTTPHeaderField: "X-XHub-Access-Key")
+            } else if let diagnosticName {
+                HubDiagnostics.log(
+                    "rust_http.fetch auth_missing name=\(diagnosticName) path=\(url.path)"
+                )
+            }
         }
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse,
                !(200..<300).contains(http.statusCode) {
+                if let diagnosticName {
+                    HubDiagnostics.log(
+                        "rust_http.fetch non_2xx name=\(diagnosticName) path=\(url.path) status=\(http.statusCode)"
+                    )
+                }
                 return nil
+            }
+            if let diagnosticName {
+                HubPerformanceTrace.logSlow(
+                    "rust_http.fetch.\(diagnosticName)",
+                    startedAt: startedAt,
+                    thresholdMs: 250,
+                    details: "path=\(url.path)"
+                )
             }
             return data
         } catch {
+            if let diagnosticName {
+                HubDiagnostics.log(
+                    "rust_http.fetch error name=\(diagnosticName) path=\(url.path) error=\(error.localizedDescription)"
+                )
+            }
             return nil
         }
     }
@@ -988,7 +1177,9 @@ enum RustHubRuntimeSupport {
 
     static func httpAccessKey(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        activePackageRoots: [URL] = activePackageRoots()
+        activePackageRoots: [URL] = activePackageRoots(),
+        fallbackPackageRoots: [URL] = defaultHTTPAccessKeyRoots(),
+        launchctlEnvironment: [String: String]? = nil
     ) -> String? {
         for key in ["XHUB_RUST_HTTP_ACCESS_KEY", "XHUB_RUST_HUB_ACCESS_KEY"] {
             if let value = nonEmptyEnvironmentValue(environment, key) {
@@ -1003,14 +1194,16 @@ enum RustHubRuntimeSupport {
             }
         }
 
-        let candidateFiles = activePackageRoots.flatMap { root in
+        let candidateFiles = uniqueURLs(activePackageRoots + fallbackPackageRoots).flatMap { root in
             [
                 root.appendingPathComponent("secrets/xhubd_http_access_key"),
                 root.appendingPathComponent("secrets/xhubd_domain_access_key"),
                 root.appendingPathComponent("secrets/xhubd_lan_access_key"),
+                root.appendingPathComponent("secrets/xhubd_local_access_key"),
                 root.appendingPathComponent("config/xhubd_http_access_key"),
                 root.appendingPathComponent("config/xhubd_domain_access_key"),
-                root.appendingPathComponent("config/xhubd_lan_access_key")
+                root.appendingPathComponent("config/xhubd_lan_access_key"),
+                root.appendingPathComponent("config/xhubd_local_access_key")
             ]
         }
         for file in candidateFiles {
@@ -1018,7 +1211,91 @@ enum RustHubRuntimeSupport {
                 return value
             }
         }
+        for key in ["XHUB_RUST_HTTP_ACCESS_KEY", "XHUB_RUST_HUB_ACCESS_KEY"] {
+            if let value = resolvedLaunchctlEnvironmentValue(key, launchctlEnvironment: launchctlEnvironment) {
+                return value
+            }
+        }
+        for key in ["XHUB_RUST_HTTP_ACCESS_KEY_FILE", "XHUB_RUST_HUB_ACCESS_KEY_FILE"] {
+            guard let path = resolvedLaunchctlEnvironmentValue(key, launchctlEnvironment: launchctlEnvironment) else { continue }
+            if let value = readAccessKeyFile(URL(fileURLWithPath: path)) {
+                return value
+            }
+        }
         return nil
+    }
+
+    static func cachedLocalMLExecutionReadiness(maxAgeSec: TimeInterval = 15) -> RustLocalMLExecutionReadinessSnapshot {
+        localMLExecutionReadinessCacheLock.lock()
+        let entry = cachedLocalMLExecutionReadinessEntry
+        localMLExecutionReadinessCacheLock.unlock()
+        guard let entry else { return .empty }
+        let age = Date().timeIntervalSince1970 - entry.checkedAt
+        guard age >= 0, age <= max(0.1, maxAgeSec) else { return .empty }
+        return entry.value
+    }
+
+    private static func storeCachedLocalMLExecutionReadiness(_ snapshot: RustLocalMLExecutionReadinessSnapshot) {
+        localMLExecutionReadinessCacheLock.lock()
+        cachedLocalMLExecutionReadinessEntry = (checkedAt: Date().timeIntervalSince1970, value: snapshot)
+        localMLExecutionReadinessCacheLock.unlock()
+    }
+
+    static func cachedProductKernelLaunchStatus(maxAgeSec: TimeInterval = 15) -> HubLaunchStatusSnapshot? {
+        productKernelLaunchStatusCacheLock.lock()
+        let entry = cachedProductKernelLaunchStatusEntry
+        productKernelLaunchStatusCacheLock.unlock()
+        guard let entry else { return nil }
+        let age = Date().timeIntervalSince1970 - entry.checkedAt
+        guard age >= 0, age <= max(0.1, maxAgeSec) else { return nil }
+        return entry.value
+    }
+
+    static func relabelProductKernelLaunchStatus(
+        _ snapshot: HubLaunchStatusSnapshot,
+        launchId: String,
+        nowMs: Int64 = nowMs()
+    ) -> HubLaunchStatusSnapshot {
+        var out = snapshot
+        out.launchId = launchId
+        out.updatedAtMs = nowMs
+        out.steps = snapshot.steps.map { step in
+            var relabeled = step
+            relabeled.tsMs = nowMs
+            relabeled.elapsedMs = 0
+            return relabeled
+        }
+        return out
+    }
+
+    private static func storeCachedProductKernelLaunchStatus(_ snapshot: HubLaunchStatusSnapshot?) {
+        guard let snapshot else { return }
+        productKernelLaunchStatusCacheLock.lock()
+        cachedProductKernelLaunchStatusEntry = (checkedAt: Date().timeIntervalSince1970, value: snapshot)
+        productKernelLaunchStatusCacheLock.unlock()
+    }
+
+    private static func resolvedLaunchctlEnvironmentValue(
+        _ key: String,
+        launchctlEnvironment: [String: String]?
+    ) -> String? {
+        if let launchctlEnvironment {
+            return nonEmptyEnvironmentValue(launchctlEnvironment, key)
+        }
+        return launchctlGetenv(key)
+    }
+
+    private static func launchctlGetenv(_ key: String) -> String? {
+        let normalized = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.hasPrefix("XHUB_RUST_") else { return nil }
+        let result = ProcessCaptureSupport.runCapture(
+            "/bin/launchctl",
+            ["getenv", normalized],
+            timeoutSec: 0.35
+        )
+        guard result.code == 0 else { return nil }
+        let value = result.out.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 
     private static func readAccessKeyFile(_ url: URL) -> String? {
@@ -1041,6 +1318,181 @@ enum RustHubRuntimeSupport {
 
     private static func isProductKernelContract(_ object: [String: Any]) -> Bool {
         stringValue(object["schema_version"]) == "xhub.product_kernel.v1"
+    }
+
+    static func makeProductKernelLaunchStatusSnapshot(
+        object: [String: Any],
+        launchId: String = "rust-product-kernel",
+        nowMs: Int64 = nowMs()
+    ) -> HubLaunchStatusSnapshot? {
+        guard isProductKernelContract(object) else { return nil }
+
+        let ok = boolValue(object["ok"])
+        let ready = boolValue(object["ready"])
+        let checks = productKernelReadinessChecks(object: object)
+        let failedBlockingChecks = checks.filter { $0.blocking && !$0.ok }
+        let failedNonBlockingChecks = checks.filter { !$0.blocking && !$0.ok }
+        let failedChecks = failedBlockingChecks.isEmpty ? failedNonBlockingChecks : failedBlockingChecks
+        let degraded = !ready || !failedChecks.isEmpty
+        let state: HubLaunchState = ready && !degraded ? .serving : (ok ? .degradedServing : .failed)
+        let rootCause = productKernelRootCause(
+            failedChecks: failedChecks,
+            ok: ok,
+            ready: ready
+        )
+        let blockedCapabilities = productKernelBlockedCapabilities(failedChecks: failedChecks)
+        let stepErrorCode = rootCause?.errorCode ?? ""
+        let stepErrorHint = rootCause?.detail ?? ""
+        let productStepOK = ready && rootCause == nil
+        let steps = [
+            HubLaunchStep(
+                state: .bootStart,
+                tsMs: nowMs,
+                elapsedMs: 0,
+                ok: true,
+                errorCode: "",
+                errorHint: "Swift shell requested Rust product kernel status"
+            ),
+            HubLaunchStep(
+                state: .waitRuntimeReady,
+                tsMs: nowMs,
+                elapsedMs: 0,
+                ok: productStepOK,
+                errorCode: stepErrorCode,
+                errorHint: stepErrorHint
+            ),
+            HubLaunchStep(
+                state: state,
+                tsMs: nowMs,
+                elapsedMs: 0,
+                ok: state == .serving,
+                errorCode: stepErrorCode,
+                errorHint: stepErrorHint
+            )
+        ]
+        return HubLaunchStatusSnapshot(
+            launchId: launchId,
+            updatedAtMs: nowMs,
+            state: state,
+            steps: steps,
+            rootCause: rootCause,
+            degraded: HubLaunchDegraded(
+                isDegraded: state != .serving || !blockedCapabilities.isEmpty,
+                blockedCapabilities: blockedCapabilities
+            )
+        )
+    }
+
+    private struct ProductKernelReadinessCheck {
+        var name: String
+        var ok: Bool
+        var blocking: Bool
+    }
+
+    private static func productKernelReadinessChecks(object: [String: Any]) -> [ProductKernelReadinessCheck] {
+        let readiness = object["readiness"] as? [String: Any] ?? [:]
+        let rawChecks = readiness["checks"] as? [[String: Any]] ?? []
+        return rawChecks.map { raw in
+            ProductKernelReadinessCheck(
+                name: stringValue(raw["name"]),
+                ok: boolValue(raw["ok"]),
+                blocking: boolValue(raw["blocking"])
+            )
+        }
+    }
+
+    private static func productKernelRootCause(
+        failedChecks: [ProductKernelReadinessCheck],
+        ok: Bool,
+        ready: Bool
+    ) -> HubLaunchRootCause? {
+        if let first = failedChecks.first {
+            let name = first.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let codeName = name.isEmpty ? "CHECK" : name.uppercased().replacingOccurrences(of: "-", with: "_")
+            return HubLaunchRootCause(
+                component: productKernelComponent(forCheckName: name),
+                errorCode: "XHUB_KERNEL_\(codeName)_NOT_READY",
+                detail: name.isEmpty ? "Rust product kernel readiness check failed." : "Rust product kernel readiness check failed: \(name)."
+            )
+        }
+        if !ok {
+            return HubLaunchRootCause(
+                component: .runtime,
+                errorCode: "XHUB_KERNEL_UNAVAILABLE",
+                detail: "Rust product kernel returned ok=false."
+            )
+        }
+        if !ready {
+            return HubLaunchRootCause(
+                component: .runtime,
+                errorCode: "XHUB_KERNEL_NOT_READY",
+                detail: "Rust product kernel returned ready=false."
+            )
+        }
+        return nil
+    }
+
+    private static func productKernelComponent(forCheckName name: String) -> HubLaunchComponent {
+        let normalized = name.lowercased()
+        if normalized.contains("sqlite") || normalized.contains("db") || normalized.contains("storage") {
+            return .db
+        }
+        if normalized.contains("grpc") {
+            return .grpc
+        }
+        if normalized.contains("bridge") || normalized.contains("ipc") {
+            return .bridge
+        }
+        if normalized.contains("runtime")
+            || normalized.contains("memory")
+            || normalized.contains("skills")
+            || normalized.contains("scheduler")
+            || normalized.contains("model")
+            || normalized.contains("provider") {
+            return .runtime
+        }
+        return .env
+    }
+
+    private static func productKernelBlockedCapabilities(failedChecks: [ProductKernelReadinessCheck]) -> [String] {
+        var blocked: [String] = []
+        for check in failedChecks {
+            let name = check.name.lowercased()
+            if name.contains("sqlite") || name.contains("db") || name.contains("storage") {
+                blocked.append("hub.db.write")
+            }
+            if name.contains("grpc") {
+                blocked.append("grpc.api")
+            }
+            if name.contains("bridge") {
+                blocked.append("ai.generate.paid")
+                blocked.append("web.fetch")
+            }
+            if name.contains("runtime") || name.contains("model") || name.contains("provider") {
+                blocked.append("ai.generate.local")
+            }
+            if name.contains("memory") {
+                blocked.append("memory.retrieve")
+            }
+            if name.contains("skills") {
+                blocked.append("skills.execute")
+            }
+            if name.contains("network") || name.contains("access_key") {
+                blocked.append("remote.connect")
+            }
+            if name.contains("scheduler") {
+                blocked.append("scheduler.run")
+            }
+            if name.contains("proto") || name.contains("contract") {
+                blocked.append("hub.protocol")
+            }
+        }
+        var seen = Set<String>()
+        return blocked.filter { item in
+            if seen.contains(item) { return false }
+            seen.insert(item)
+            return true
+        }
     }
 
     private static func applyFallbackProductKernelDefaults(

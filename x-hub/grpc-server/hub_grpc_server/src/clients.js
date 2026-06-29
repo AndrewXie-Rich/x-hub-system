@@ -4,6 +4,31 @@ import path from 'node:path';
 
 const CLIENTS_SCHEMA_VERSION = 'hub_grpc_clients.v2';
 const DEFAULT_USAGE_WRITE_INTERVAL_MS = 30_000;
+const EXTERNAL_TERMINAL_CONNECTOR_PROFILE = 'external_terminal_ai_only';
+const EXTERNAL_TERMINAL_BASE_CAPABILITIES = Object.freeze(['models', 'ai.generate.local']);
+const EXTERNAL_TERMINAL_ALLOWED_CAPABILITIES = Object.freeze(new Set([
+  'models',
+  'ai.generate.local',
+  'ai.generate.paid',
+]));
+const EXTERNAL_TERMINAL_DENIED_CAPABILITIES = Object.freeze([
+  'events',
+  'memory',
+  'memory.write',
+  'memory.retrieve.raw',
+  'skills',
+  'skills.execute',
+  'skills.grant',
+  'skills.revoke',
+  'web.fetch',
+  'device.*',
+  'browser.*',
+  'repo.*',
+  'provider.keys.write',
+  'hub_access_keys.manage',
+  'xt.pairing.manage',
+  'admin.*',
+]);
 
 function safeString(value) {
   return String(value ?? '').trim();
@@ -43,6 +68,42 @@ function safeStringArray(value) {
   const cleaned = safeString(value);
   if (!cleaned) return [];
   return uniqueStrings(cleaned.split(','));
+}
+
+function isExternalTerminalAppId(appId) {
+  const normalized = safeString(appId).toLowerCase().replace(/[\s-]+/g, '_');
+  return normalized === 'external_terminal'
+    || normalized === 'ordinary_terminal'
+    || normalized === 'cli_terminal'
+    || normalized === 'terminal_ai_client';
+}
+
+function normalizedPaidModelSelectionMode(value) {
+  const mode = safeString(value).toLowerCase();
+  return mode && mode !== 'off' ? mode : 'off';
+}
+
+function paidModelSelectionModeFromClient(src) {
+  const trust = asObject(src?.approved_trust_profile || src?.approvedTrustProfile || src?.trust_profile || src?.trustProfile);
+  const policy = asObject(src?.paid_model_policy || src?.paidModelPolicy || trust.paid_model_policy || trust.paidModelPolicy);
+  return normalizedPaidModelSelectionMode(
+    src?.paid_model_selection_mode
+      || src?.paidModelSelectionMode
+      || policy.mode
+      || policy.policy_mode
+      || policy.policyMode
+  );
+}
+
+function externalTerminalCapabilities(requestedCapabilities, src = {}) {
+  const requested = safeStringArray(requestedCapabilities);
+  const paidMode = paidModelSelectionModeFromClient(src);
+  const filtered = requested
+    .filter((capability) => EXTERNAL_TERMINAL_ALLOWED_CAPABILITIES.has(capability))
+    .filter((capability) => capability !== 'ai.generate.paid' || paidMode !== 'off');
+  const base = filtered.length ? filtered : [...EXTERNAL_TERMINAL_BASE_CAPABILITIES];
+  if (paidMode !== 'off') base.push('ai.generate.paid');
+  return uniqueStrings(base.filter((capability) => EXTERNAL_TERMINAL_ALLOWED_CAPABILITIES.has(capability)));
 }
 
 function asObject(value) {
@@ -338,13 +399,15 @@ export function invalidateClientsCache() {
 }
 
 export function clientsConfigPath(runtimeBaseDir) {
-  const base = safeString(runtimeBaseDir);
+  const base = safeString(process.env.HUB_CLIENTS_BASE_DIR || process.env.HUB_AUTH_BASE_DIR)
+    || safeString(runtimeBaseDir);
   if (!base) return '';
   return path.join(base, 'hub_grpc_clients.json');
 }
 
 export function writeClientsSnapshot(runtimeBaseDir, snapshot) {
-  const base = safeString(runtimeBaseDir);
+  const base = safeString(process.env.HUB_CLIENTS_BASE_DIR || process.env.HUB_AUTH_BASE_DIR)
+    || safeString(runtimeBaseDir);
   if (!base) return false;
   const rows = Array.isArray(snapshot?.clients)
     ? snapshot.clients.map((item) => (item && typeof item === 'object' ? { ...item } : null)).filter(Boolean)
@@ -459,18 +522,26 @@ function normalizeClientEntry(raw, fallbackDeviceId = '', nowMs = Date.now()) {
   if (!device_id || !token) return null;
 
   const name = safeString(src.name || src.label || src.access_key_label || src.device_name || src.deviceName);
-  const capabilities = uniqueStrings(src.capabilities || src.caps || src.allowed_capabilities || src.allowedCapabilities || []);
   const auth_kind = normalizeClientAuthKind(
     src.auth_kind || src.authKind,
     hintedAccessKeyId && hintedAccessKeyId !== device_id ? 'hub_access_key' : 'paired_client'
   );
+  const app_id = safeString(src.app_id || src.appId || src.application_id || src.applicationId);
+  const externalTerminalAiOnly = auth_kind === 'hub_access_key' && isExternalTerminalAppId(app_id);
+  const rawCapabilities = uniqueStrings(src.capabilities || src.caps || src.allowed_capabilities || src.allowedCapabilities || []);
+  const capabilities = externalTerminalAiOnly
+    ? externalTerminalCapabilities(rawCapabilities, src)
+    : rawCapabilities;
   const access_key_id = hintedAccessKeyId || device_id;
-  const scopes = safeStringArray(
+  const rawScopes = safeStringArray(
     src.scopes
       || src.allowed_scopes
       || src.allowedScopes
       || capabilities
   );
+  const scopes = externalTerminalAiOnly
+    ? uniqueStrings(rawScopes.filter((scope) => EXTERNAL_TERMINAL_ALLOWED_CAPABILITIES.has(scope) && (scope !== 'ai.generate.paid' || capabilities.includes('ai.generate.paid'))))
+    : rawScopes;
   const updated_at_ms = safeInt(
     src.updated_at_ms
       || src.updatedAtMs
@@ -496,7 +567,7 @@ function normalizeClientEntry(raw, fallbackDeviceId = '', nowMs = Date.now()) {
     access_key_id,
     auth_kind,
     user_id: safeString(src.user_id || src.userId) || device_id,
-    app_id: safeString(src.app_id || src.appId || src.application_id || src.applicationId),
+    app_id,
     name,
     label: name,
     note: safeString(src.note || src.description || src.comment),
@@ -521,6 +592,21 @@ function normalizeClientEntry(raw, fallbackDeviceId = '', nowMs = Date.now()) {
     allowed_cidrs: safeStringArray(src.allowed_cidrs || src.allowedCidrs || src.allowed_ip_cidrs || src.allowedIpCidrs),
     scopes,
     capabilities,
+    connector_profile: externalTerminalAiOnly
+      ? EXTERNAL_TERMINAL_CONNECTOR_PROFILE
+      : safeString(src.connector_profile || src.connectorProfile || src.capability_profile || src.capabilityProfile),
+    capability_profile: externalTerminalAiOnly
+      ? EXTERNAL_TERMINAL_CONNECTOR_PROFILE
+      : safeString(src.capability_profile || src.capabilityProfile || src.connector_profile || src.connectorProfile),
+    authority_profile: externalTerminalAiOnly
+      ? 'ai_client_only'
+      : safeString(src.authority_profile || src.authorityProfile),
+    denied_capabilities: externalTerminalAiOnly
+      ? [...EXTERNAL_TERMINAL_DENIED_CAPABILITIES]
+      : safeStringArray(src.denied_capabilities || src.deniedCapabilities),
+    xt_pairing_authority: externalTerminalAiOnly ? false : safeBool(src.xt_pairing_authority ?? src.xtPairingAuthority, false),
+    durable_memory_authority: externalTerminalAiOnly ? false : safeBool(src.durable_memory_authority ?? src.durableMemoryAuthority, false),
+    skills_execution_authority: externalTerminalAiOnly ? false : safeBool(src.skills_execution_authority ?? src.skillsExecutionAuthority, false),
     cert_sha256: safeString(src.cert_sha256 || src.certSha256 || src.cert_fingerprint_sha256 || src.certFingerprintSha256),
     status: status.status,
     status_reason: status.reason_code,

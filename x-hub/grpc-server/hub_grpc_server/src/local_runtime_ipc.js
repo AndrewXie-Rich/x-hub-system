@@ -204,7 +204,11 @@ function normalizeProviderId(value) {
 
 function modelRuntimeProviderId(model) {
   const row = model && typeof model === 'object' ? model : {};
-  return normalizeProviderId(row.runtimeProviderID || row.runtimeProviderId || row.runtime_provider_id);
+  return normalizeProviderId(row.runtimeProviderID || row.runtimeProviderId || row.runtime_provider_id || row.provider);
+}
+
+function runtimeModelId(model) {
+  return safeString(model?.id || model?.model_id);
 }
 
 function normalizeObject(value) {
@@ -1476,7 +1480,7 @@ export function readRuntimeModelRecord(baseDir, modelId) {
   if (!needle) return null;
   for (const model of models) {
     if (!model || typeof model !== 'object') continue;
-    if (String(model.id || '').trim() !== needle) continue;
+    if (runtimeModelId(model) !== needle) continue;
     return {
       model_id: needle,
       name: String(model.name || needle).trim(),
@@ -1500,7 +1504,7 @@ export function listRuntimeModelRecords(baseDir) {
   const out = [];
   for (const model of models) {
     if (!model || typeof model !== 'object') continue;
-    const modelId = String(model.id || '').trim();
+    const modelId = runtimeModelId(model);
     if (!modelId) continue;
     const defaultLoadConfig = normalizeLoadConfig(
       model.defaultLoadConfig

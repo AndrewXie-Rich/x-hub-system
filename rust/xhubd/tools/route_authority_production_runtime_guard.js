@@ -111,6 +111,10 @@ const MEMORY_SKILLS_PRODUCTION_KEYS = [
   'XHUB_RUST_SKILLS_RUNNER_PRODUCTION_AUTHORITY',
 ];
 
+const MEMORY_GATEWAY_PRODUCTION_KEY_PREFIXES = [
+  'XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_',
+];
+
 const UNRELATED_PRODUCTION_KEYS = [
   'XHUB_RUST_XT_FILE_IPC_PRODUCTION_CUTOVER',
   ...MEMORY_SKILLS_PRODUCTION_KEYS,
@@ -314,6 +318,7 @@ function inferredUnrelatedProductionKeys(keys, config) {
     if (SCHEDULER_AUTHORITY_KEYS.includes(key)) return false;
     if (config.allowXtFileIpcProduction && key === 'XHUB_RUST_XT_FILE_IPC_PRODUCTION_CUTOVER') return false;
     if (config.allowMemorySkillsProduction && MEMORY_SKILLS_PRODUCTION_KEYS.includes(key)) return false;
+    if (config.allowMemorySkillsProduction && MEMORY_GATEWAY_PRODUCTION_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))) return false;
     if (UNRELATED_PRODUCTION_KEYS.includes(key)) return true;
     if (/XT_FILE_IPC/.test(key)) return /(PRODUCTION|CUTOVER)/.test(key);
     return /(MEMORY|SKILL).*(AUTHOR|PRODUCTION|EXEC|WRITE|CUTOVER)/.test(key);

@@ -12,6 +12,7 @@ extension SettingsSheetView {
             .font(.caption2.monospaced())
             .foregroundStyle(.secondary)
             .textSelection(.enabled)
+            .id(remoteAccessSectionAnchorID)
 
         Text(HubUIStrings.Settings.GRPC.enabledDeviceFileHint)
             .font(.caption2)

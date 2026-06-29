@@ -11,10 +11,10 @@ struct HubIPCClientConnectorIngressSnapshotTests {
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
 
         HubAIClient.setTransportMode(.fileIPC)
-        HubPaths.setBaseDirOverride(base)
+        HubPaths.setPinnedBaseDirOverride(base)
         defer {
             HubAIClient.setTransportMode(originalMode)
-            HubPaths.setBaseDirOverride(nil)
+            HubPaths.clearPinnedBaseDirOverride()
             try? FileManager.default.removeItem(at: base)
         }
 
