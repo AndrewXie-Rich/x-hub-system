@@ -42,7 +42,7 @@ jobs:
 
       - name: Upload traceability matrix
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: xhub-traceability-matrix
           path: ./specs/xhub-memory-quality-v1/traceability_matrix_v1.json
