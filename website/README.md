@@ -1,8 +1,8 @@
 # X-Hub Website
 
 This directory contains the React + Semi Design public website for X-Hub-System.
-The original Markdown pages remain in place and are rendered through the React
-site as article content.
+The Markdown pages remain in place and are rendered through the React site as
+article content.
 
 ## Local Development
 
@@ -10,7 +10,7 @@ Install dependencies:
 
 ```bash
 cd website
-npm install
+npm ci
 ```
 
 Run the dev server:
@@ -34,53 +34,91 @@ cd website
 npm run docs:preview
 ```
 
+Run the local artifact smoke:
+
+```bash
+cd website
+npm run docs:smoke
+```
+
+The smoke verifies:
+
+- every public English and Chinese route has a static `index.html`
+- `/memory` and `/zh-CN/memory` remain valid switch targets
+- `404.html`, `sitemap.xml`, and `robots.txt` exist
+- the public architecture SVGs in `website/public/` match the build artifact
+
+To also check a deployed URL:
+
+```bash
+cd website
+XHUB_WEBSITE_BASE_URL=https://xhubsystem.com npm run docs:smoke
+```
+
 ## Publishing
 
-This repository now includes a GitHub Pages workflow at:
+The production website is Cloudflare Pages:
 
-- `.github/workflows/website-pages.yml`
+- project: `x-hub-system`
+- domain: `https://xhubsystem.com`
+- build output: `website/.vitepress/dist`
 
-The workflow builds the Vite site from `website/` and publishes
-`website/.vitepress/dist` to GitHub Pages. The output path is intentionally
-kept compatible with the previous VitePress workflow.
+Recommended Cloudflare Pages Git settings, when the project root is the repo
+root:
 
-### Custom Domain
+```bash
+cd website && npm ci && npm run docs:build && npm run docs:smoke
+```
 
-This site now includes `website/public/CNAME`, so the built Pages artifact will
-carry the primary custom domain:
+Build output directory:
+
+```text
+website/.vitepress/dist
+```
+
+If the Cloudflare Pages root directory is set to `website/` instead, use:
+
+```bash
+npm ci && npm run docs:build && npm run docs:smoke
+```
+
+and set the output directory to:
+
+```text
+.vitepress/dist
+```
+
+Manual deploy, used when the Cloudflare Git build is unavailable:
+
+```bash
+cd website
+npm run docs:build
+npm run docs:smoke
+npx wrangler pages deploy .vitepress/dist --project-name x-hub-system --branch main
+```
+
+After deploy, verify the domain and key assets:
+
+```bash
+cd website
+XHUB_WEBSITE_BASE_URL=https://xhubsystem.com npm run docs:smoke
+```
+
+## GitHub Actions
+
+`.github/workflows/website-pages.yml` is intentionally build-only. It installs
+dependencies, builds the site, and runs `npm run docs:smoke`; it does not deploy
+to GitHub Pages. Cloudflare Pages is the production publisher.
+
+## Custom Domain
+
+The production custom domain is:
 
 - `xhubsystem.com`
 
-After the first successful Pages deployment, finish the binding in the
-repository settings:
-
-1. Open `Settings -> Pages`
-2. Set the custom domain to `xhubsystem.com`
-3. Enable HTTPS after DNS finishes propagating
-
-For DNS, GitHub's current apex-domain guidance is:
-
-- add `A` records for `xhubsystem.com` pointing to:
-  - `185.199.108.153`
-  - `185.199.109.153`
-  - `185.199.110.153`
-  - `185.199.111.153`
-- optionally add `AAAA` records for IPv6:
-  - `2606:50c0:8000::153`
-  - `2606:50c0:8001::153`
-  - `2606:50c0:8002::153`
-  - `2606:50c0:8003::153`
-- set `www.xhubsystem.com` as a `CNAME` to:
-  - `andrewxie-rich.github.io`
-
-GitHub recommends configuring both the apex domain and the `www` variant.
-If you keep `xhubsystem.com` as the primary domain in Pages settings, GitHub
-should redirect `www.xhubsystem.com` to the apex once DNS is correct.
-
-References:
-
-- `https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site`
-- `https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/verifying-your-custom-domain-for-github-pages`
+DNS and SSL are managed in Cloudflare. Keep `website/public/CNAME` for
+compatibility with static hosting previews, but do not treat GitHub Pages as the
+production publisher.
 
 ## Content Source
 

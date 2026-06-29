@@ -9,9 +9,11 @@
     "docs:dev": "vite --host 127.0.0.1",
     "docs:build": "vite build --outDir .vitepress/dist && node scripts/postbuild.mjs",
     "docs:preview": "vite preview --host 127.0.0.1 --outDir .vitepress/dist",
+    "docs:smoke": "node scripts/smoke.mjs",
     "dev": "npm run docs:dev",
     "build": "npm run docs:build",
-    "preview": "npm run docs:preview"
+    "preview": "npm run docs:preview",
+    "smoke": "npm run docs:smoke"
   },
   "dependencies": {
     "@douyinfe/semi-icons": "2.100.0",

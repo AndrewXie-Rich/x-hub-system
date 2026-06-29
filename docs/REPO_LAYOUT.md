@@ -185,7 +185,7 @@ Owns repo-level validation and packaging helpers. Terminal-local validation stay
 
 ### `website/`
 
-Owns the VitePress public website source and GitHub Pages documentation surface.
+Owns the React + Semi Design public website source and Cloudflare Pages static artifact.
 
 ## Historical Path Policy
 
