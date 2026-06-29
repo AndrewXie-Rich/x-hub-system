@@ -101,10 +101,10 @@ features:
       </div>
     </div>
     <div class="home-diagram-card">
-      <img src="/xhub_deployment_runtime_topology.svg" alt="X-Hub 受治理能力地图" />
+      <img src="/xhub_before_after.svg" alt="没有 X-Hub vs 有 X-Hub:记忆、密钥、审计、策略住在哪里" />
       <div class="home-diagram-card__copy">
-        <strong>受治理能力地图</strong>
-        模型、记忆、技能、额度、终端、通道、Supervisor 状态、运行证据——汇入同一个管理面。
+        <strong>同样的工具。不同的边界。</strong>
+        今天每个 AI 工具各自持有记忆、密钥、审计日志。引入 X-Hub 后,这四个面归到一个你掌控的边界里——工具变成可替换的表面。
       </div>
     </div>
   </div>

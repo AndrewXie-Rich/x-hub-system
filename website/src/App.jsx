@@ -475,8 +475,8 @@ function Diagrams({ copy }) {
         </figure>
         <figure>
           <img
-            src="/xhub_deployment_runtime_topology.svg"
-            alt="X-Hub governed capability map"
+            src="/xhub_before_after.svg"
+            alt="Without X-Hub vs With X-Hub: where memory, keys, audit and policy live"
             loading="lazy"
             decoding="async"
           />

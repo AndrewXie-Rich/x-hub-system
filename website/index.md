@@ -101,10 +101,10 @@ features:
       </div>
     </div>
     <div class="home-diagram-card">
-      <img src="/xhub_deployment_runtime_topology.svg" alt="X-Hub governed capability map diagram" />
+      <img src="/xhub_before_after.svg" alt="Without X-Hub vs With X-Hub: where memory, keys, audit and policy live" />
       <div class="home-diagram-card__copy">
-        <strong>Governed capability map</strong>
-        Models, memory, skills, quotas, terminals, channels, Supervisor state, runtime evidence — converging through one management surface.
+        <strong>Same tools. Different boundary.</strong>
+        Today each AI tool keeps its own memory, keys, and audit log. With X-Hub those four surfaces move to one boundary you control — and the tools become replaceable.
       </div>
     </div>
   </div>

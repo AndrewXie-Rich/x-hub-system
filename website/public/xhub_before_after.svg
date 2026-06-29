@@ -1,0 +1,174 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 860" role="img" aria-labelledby="title desc">
+  <title id="title">Same tools. Different boundary.</title>
+  <desc id="desc">Side-by-side comparison. Left panel: today each AI tool keeps its own memory, API keys, and audit log. Right panel: with X-Hub, those four surfaces (memory, API keys, audit log, policy) live in one Hub the user controls, and the AI tools become replaceable surfaces.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#64748b" />
+    </marker>
+    <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#1f7a4d" />
+    </marker>
+    <style>
+      .bg { fill: #ffffff; }
+      .panel-left { fill: #fffaf2; stroke: #d4a048; stroke-width: 1.6; rx: 24; ry: 24; }
+      .panel-right { fill: #f5fbf7; stroke: #6aa37d; stroke-width: 1.8; rx: 24; ry: 24; }
+      .you-card { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.4; rx: 14; ry: 14; }
+      .tool-card { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.3; rx: 16; ry: 16; }
+      .tool-card-light { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.2; rx: 14; ry: 14; }
+      .hub-card { fill: #ffffff; stroke: #1f7a4d; stroke-width: 2.2; rx: 20; ry: 20; }
+      .chip-mem { fill: #eef6ff; stroke: #93b3d6; stroke-width: 1.1; rx: 8; ry: 8; }
+      .chip-key { fill: #fff5e8; stroke: #d9a766; stroke-width: 1.1; rx: 8; ry: 8; }
+      .chip-aud { fill: #fff0f0; stroke: #d68f8f; stroke-width: 1.1; rx: 8; ry: 8; }
+      .chip-pol { fill: #ecf6ef; stroke: #5f9b7a; stroke-width: 1.1; rx: 8; ry: 8; }
+      .hub-chip-mem { fill: #dbeafe; stroke: #5b87b6; stroke-width: 1.3; rx: 10; ry: 10; }
+      .hub-chip-key { fill: #fde7c4; stroke: #b8843b; stroke-width: 1.3; rx: 10; ry: 10; }
+      .hub-chip-aud { fill: #fcd9d9; stroke: #b86060; stroke-width: 1.3; rx: 10; ry: 10; }
+      .hub-chip-pol { fill: #cce8d4; stroke: #4a8466; stroke-width: 1.3; rx: 10; ry: 10; }
+      .title-text { font: 700 26px Arial, sans-serif; fill: #0f172a; }
+      .subtitle-text { font: 500 14px Arial, sans-serif; fill: #475569; }
+      .panel-title { font: 700 13px Arial, sans-serif; letter-spacing: 0.14em; fill: #475569; }
+      .panel-subtitle { font: 500 13px Arial, sans-serif; fill: #64748b; }
+      .you-text { font: 700 15px Arial, sans-serif; fill: #1f2937; text-anchor: middle; }
+      .tool-name { font: 700 17px Arial, sans-serif; fill: #1f2937; text-anchor: middle; }
+      .tool-sub { font: 500 11.5px Arial, sans-serif; fill: #64748b; text-anchor: middle; }
+      .hub-title { font: 800 28px Arial, sans-serif; fill: #14532d; text-anchor: middle; }
+      .hub-sub { font: 500 13px Arial, sans-serif; fill: #335c48; text-anchor: middle; }
+      .chip-text-mem { font: 600 12px Arial, sans-serif; fill: #1e3a78; text-anchor: middle; }
+      .chip-text-key { font: 600 12px Arial, sans-serif; fill: #7a3e0b; text-anchor: middle; }
+      .chip-text-aud { font: 600 12px Arial, sans-serif; fill: #8a2424; text-anchor: middle; }
+      .chip-text-pol { font: 600 12px Arial, sans-serif; fill: #1f5238; text-anchor: middle; }
+      .hub-chip-text-mem { font: 700 14px Arial, sans-serif; fill: #163d76; text-anchor: middle; }
+      .hub-chip-text-key { font: 700 14px Arial, sans-serif; fill: #7a3e0b; text-anchor: middle; }
+      .hub-chip-text-aud { font: 700 14px Arial, sans-serif; fill: #8a2424; text-anchor: middle; }
+      .hub-chip-text-pol { font: 700 14px Arial, sans-serif; fill: #1f5238; text-anchor: middle; }
+      .note-bad { font: 500 13.5px Arial, sans-serif; fill: #8a3a3a; }
+      .note-good { font: 500 13.5px Arial, sans-serif; fill: #1f5238; }
+      .flow { fill: none; stroke: #94a3b8; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow); opacity: 0.85; }
+      .flow-green { fill: none; stroke: #1f7a4d; stroke-width: 2.1; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow-green); opacity: 0.9; }
+      .divider-arrow { fill: none; stroke: #cbd5e1; stroke-width: 4; stroke-linecap: round; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1440" height="860" />
+
+  <text class="title-text" x="54" y="50">Same tools. Different boundary.</text>
+  <text class="subtitle-text" x="54" y="76">Memory, API keys, audit, and policy move out of each tool — into one Hub you control.</text>
+
+  <!-- ============ LEFT PANEL: TODAY ============ -->
+  <rect class="panel-left" x="40" y="108" width="620" height="712" />
+  <text class="panel-title" x="66" y="140">TODAY</text>
+  <text class="panel-subtitle" x="66" y="160">Every AI tool keeps its own state. You maintain three of everything.</text>
+
+  <!-- You card -->
+  <rect class="you-card" x="270" y="186" width="160" height="46" />
+  <text class="you-text" x="350" y="215">You</text>
+
+  <!-- Three diverging connectors from You to tools -->
+  <path class="flow" d="M 350 232 C 350 254, 156 256, 156 288" />
+  <path class="flow" d="M 350 232 C 350 256, 350 256, 350 288" />
+  <path class="flow" d="M 350 232 C 350 254, 544 256, 544 288" />
+
+  <!-- Tool card 1: Cursor -->
+  <rect class="tool-card" x="66" y="290" width="180" height="232" />
+  <text class="tool-name" x="156" y="322">Cursor</text>
+  <rect class="chip-mem" x="86" y="346" width="140" height="34" />
+  <text class="chip-text-mem" x="156" y="368">Memory store</text>
+  <rect class="chip-key" x="86" y="394" width="140" height="34" />
+  <text class="chip-text-key" x="156" y="416">API keys</text>
+  <rect class="chip-aud" x="86" y="442" width="140" height="34" />
+  <text class="chip-text-aud" x="156" y="464">Audit log</text>
+  <text class="tool-sub" x="156" y="500">no shared policy</text>
+
+  <!-- Tool card 2: Claude -->
+  <rect class="tool-card" x="260" y="290" width="180" height="232" />
+  <text class="tool-name" x="350" y="322">Claude</text>
+  <rect class="chip-mem" x="280" y="346" width="140" height="34" />
+  <text class="chip-text-mem" x="350" y="368">Memory store</text>
+  <rect class="chip-key" x="280" y="394" width="140" height="34" />
+  <text class="chip-text-key" x="350" y="416">API keys</text>
+  <rect class="chip-aud" x="280" y="442" width="140" height="34" />
+  <text class="chip-text-aud" x="350" y="464">Audit log</text>
+  <text class="tool-sub" x="350" y="500">no shared policy</text>
+
+  <!-- Tool card 3: ChatGPT -->
+  <rect class="tool-card" x="454" y="290" width="180" height="232" />
+  <text class="tool-name" x="544" y="322">ChatGPT</text>
+  <rect class="chip-mem" x="474" y="346" width="140" height="34" />
+  <text class="chip-text-mem" x="544" y="368">Memory store</text>
+  <rect class="chip-key" x="474" y="394" width="140" height="34" />
+  <text class="chip-text-key" x="544" y="416">API keys</text>
+  <rect class="chip-aud" x="474" y="442" width="140" height="34" />
+  <text class="chip-text-aud" x="544" y="464">Audit log</text>
+  <text class="tool-sub" x="544" y="500">no shared policy</text>
+
+  <!-- Pain notes -->
+  <text class="note-bad" x="66" y="580">✕  Switch tools → re-explain context</text>
+  <text class="note-bad" x="66" y="612">✕  Audit a decision → read 3 separate histories</text>
+  <text class="note-bad" x="66" y="644">✕  Set one policy → not possible across vendors</text>
+  <text class="note-bad" x="66" y="676">✕  Revoke a key → log into 3 dashboards</text>
+  <text class="note-bad" x="66" y="708">✕  Memory leaves with the vendor you stop using</text>
+
+  <!-- ============ DIVIDER ============ -->
+  <line class="divider-arrow" x1="694" y1="460" x2="746" y2="460" />
+  <path class="divider-arrow" d="M 736 450 L 750 460 L 736 470" fill="none" />
+  <text class="panel-title" x="720" y="438" text-anchor="middle">ADD A HUB</text>
+
+  <!-- ============ RIGHT PANEL: WITH X-HUB ============ -->
+  <rect class="panel-right" x="780" y="108" width="620" height="712" />
+  <text class="panel-title" x="806" y="140">WITH X-HUB</text>
+  <text class="panel-subtitle" x="806" y="160">One Hub holds memory, keys, audit, and policy. Tools become replaceable.</text>
+
+  <!-- You card (right) -->
+  <rect class="you-card" x="1010" y="186" width="160" height="46" />
+  <text class="you-text" x="1090" y="215">You</text>
+
+  <!-- Single arrow from You down to Hub -->
+  <path class="flow-green" d="M 1090 232 L 1090 264" />
+
+  <!-- Hub box -->
+  <rect class="hub-card" x="830" y="268" width="520" height="216" />
+  <text class="hub-title" x="1090" y="306">X-Hub</text>
+  <text class="hub-sub" x="1090" y="328">one boundary you own</text>
+
+  <!-- Hub chips: 2x2 grid -->
+  <rect class="hub-chip-mem" x="862" y="348" width="220" height="44" />
+  <text class="hub-chip-text-mem" x="972" y="376">Memory truth</text>
+
+  <rect class="hub-chip-key" x="1098" y="348" width="220" height="44" />
+  <text class="hub-chip-text-key" x="1208" y="376">API key vault</text>
+
+  <rect class="hub-chip-aud" x="862" y="408" width="220" height="44" />
+  <text class="hub-chip-text-aud" x="972" y="436">Audit log</text>
+
+  <rect class="hub-chip-pol" x="1098" y="408" width="220" height="44" />
+  <text class="hub-chip-text-pol" x="1208" y="436">Policy / grants</text>
+
+  <!-- Arrows Hub -> tools -->
+  <path class="flow-green" d="M 940 484 C 940 510, 880 514, 880 540" />
+  <path class="flow-green" d="M 1090 484 L 1090 540" />
+  <path class="flow-green" d="M 1240 484 C 1240 510, 1300 514, 1300 540" />
+
+  <!-- Tool cards (now lighter, no internal silos) -->
+  <rect class="tool-card-light" x="804" y="540" width="152" height="92" />
+  <text class="tool-name" x="880" y="572">Cursor</text>
+  <text class="tool-sub" x="880" y="596">replaceable surface</text>
+  <text class="tool-sub" x="880" y="614">governed by Hub</text>
+
+  <rect class="tool-card-light" x="1014" y="540" width="152" height="92" />
+  <text class="tool-name" x="1090" y="572">Claude</text>
+  <text class="tool-sub" x="1090" y="596">replaceable surface</text>
+  <text class="tool-sub" x="1090" y="614">governed by Hub</text>
+
+  <rect class="tool-card-light" x="1224" y="540" width="152" height="92" />
+  <text class="tool-name" x="1300" y="572">ChatGPT</text>
+  <text class="tool-sub" x="1300" y="596">replaceable surface</text>
+  <text class="tool-sub" x="1300" y="614">governed by Hub</text>
+
+  <!-- Benefit notes -->
+  <text class="note-good" x="806" y="676">✓  Switch tools → context follows you</text>
+  <text class="note-good" x="806" y="708">✓  Audit a decision → one log, one place</text>
+  <text class="note-good" x="806" y="740">✓  Set one policy → applies to every tool at once</text>
+  <text class="note-good" x="806" y="772">✓  Revoke a key → one action stops every tool</text>
+  <text class="note-good" x="806" y="804">✓  Memory stays with you when a vendor goes away</text>
+
+</svg>

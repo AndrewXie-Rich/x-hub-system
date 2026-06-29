@@ -304,7 +304,7 @@ export const siteCopy = {
     diagramsBody:
       'Model routing, memory truth, grants, audit, skill trust, execution readiness — all governed from the Hub. Terminals and other clients are replaceable surfaces.',
     diagramOne: 'Trust and control plane',
-    diagramTwo: 'Governed capability map',
+    diagramTwo: 'Same tools. Different boundary.',
     controlSurfaceLabel: 'What you can do',
     useCasesLabel: 'Who lands here',
     diagramsLabel: 'The boundary in one picture',
@@ -397,7 +397,7 @@ export const siteCopy = {
     diagramsBody:
       '模型路由、记忆真相、授权、审计、技能信任、执行 readiness——全部由 Hub 治理。终端和其它客户端是可替换的表面。',
     diagramOne: '信任与控制平面',
-    diagramTwo: '受治理能力地图',
+    diagramTwo: '同样的工具。不同的边界。',
     controlSurfaceLabel: '你能做的事',
     useCasesLabel: '谁会来到这',
     diagramsLabel: '用一张图说边界',
