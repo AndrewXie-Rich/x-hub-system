@@ -37,7 +37,7 @@ X-Hub's position is different: memory is part of the safety and runtime truth la
 
 The result is model-agnostic memory that can serve local models, paid models, Supervisor review, Project AI execution, skills, and remote channels without making any one client the new authority.
 
-## Four Control Planes
+## Control planes
 
 Many memory systems combine storage, retrieval, and prompt injection into one path. X-Hub separates them:
 
@@ -60,7 +60,7 @@ The five-layer structure answers how memory is retained. The control plane answe
 | Canonical | Stores a small set of high-confidence facts that can be injected by default | Improves efficiency and reduces context pollution |
 | Working Set | Holds active context needed for the current task | Keeps Project AI focused on execution |
 
-## Eight Core Advantages
+## Core advantages
 
 <div class="story-grid">
   <div class="story-card">

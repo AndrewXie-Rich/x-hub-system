@@ -83,14 +83,9 @@ The point is not "AI can never do dangerous work." The point is that dangerous w
 | Memory governance | Protects durable facts, constraints, and project truth from terminal-side pollution |
 | Kill-switch / revoke | Gives the operator a final stop and recovery path |
 
-## What It Is Not
+## The honest framing
 
-- It is not an absolute safety guarantee.
-- It is not a one-line prompt replacing permissions.
-- It does not mean AI will never make mistakes.
-- It does not require human approval for every step.
-
-Its value is that when AI tries to cross a boundary to complete a task, the system has a stronger layer than the current task to pull it back.
+X-Constitution is not an absolute safety guarantee, and it doesn't replace permissions with a clever prompt. It doesn't mean AI never makes mistakes, and it doesn't require human approval for every step. It does mean that when AI tries to cross a boundary to complete a task, the system has a stronger layer than the current task to pull it back.
 
 Continue with:
 [Trust Model](/security), [Governed Memory](/memory), and [Governed Skills](/skills).

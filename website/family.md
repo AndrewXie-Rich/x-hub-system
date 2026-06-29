@@ -1,14 +1,14 @@
 # For families
 
 <p class="lead">
-Your kid uses ChatGPT to do homework. Your teenager uses Claude for projects. AI is already in your home. The question isn't whether it should be — it's what happens the first time it tries to do something nobody told you about.
+Your kid uses ChatGPT to do homework, your teenager uses Claude for projects, and you don't really know what they ask or what those AIs are allowed to do. AI is already in your home. The question now is what happens the first time it tries something nobody told you about.
 </p>
 
 <div class="preview-note">
   <strong>Family mode is the same MIT-licensed Hub teams use.</strong> No separate product. No subscription. Parent runs the Hub (admin); kids' clients run as governed users.
 </div>
 
-## Three things you've probably already imagined
+## What you've probably already imagined
 
 <div class="story-grid">
   <div class="story-card story-card--risk">
@@ -71,18 +71,11 @@ You don't need to be a developer. The setup is:
 
 After that, every AI request from the kid's device routes through the Hub. You don't have to install anything special on the AI tool itself. The Hub sits between them.
 
-## What X-Hub does NOT do
+## The scope
 
-This is a parental control layer, not surveillance. Honesty about what's outside scope:
+This is a parental control layer for AI *actions*, not a surveillance tool. By default the Hub records what AI tried to do, not what your kid said in chat. If the action touches shared resources — accounts, money, files outside the kid's user space, outbound messages — the Hub steps in. Inside the kid's own device, the Hub leaves them alone. You can change that if you want, but it's not the default.
 
-| Scope | Not in scope |
-|---|---|
-| Approve destructive actions before they happen | Read every chat in real time (you can if you want — but it's not on by default) |
-| Set spending limits across providers | Pre-filter what kids can ask the AI |
-| Verify what the AI actually did, after the fact | Track location, install spyware, override what the kid is doing on the device generally |
-| Govern AI-initiated actions on shared resources | Govern the kid's *own* files on their *own* device unless the AI touches them |
-
-The principle: kids get freedom inside their device. The Hub only steps in when AI tries to act on the family's shared world — accounts, money, files outside the kid's user space, outgoing messages.
+The principle is that kids get freedom inside their device while shared family resources stay behind a tap on your phone.
 
 ## Why per-action confirmation matters more for kids
 

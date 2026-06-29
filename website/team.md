@@ -1,14 +1,14 @@
 # For teams and organizations
 
 <p class="lead">
-You started letting your team use AI six months ago. Now Engineering's on Cursor, Marketing's on ChatGPT, Ops is on Claude, and three people quietly installed MCP servers nobody reviewed. Compliance wants a single source of truth. You don't have one. X-Hub is the answer that doesn't require ripping out the tools your team likes.
+You started letting your team use AI six months ago. Now Engineering's on Cursor, Marketing's on ChatGPT, Ops is on Claude, and three people quietly installed MCP servers nobody reviewed. Compliance wants a single source of truth, and you don't have one. X-Hub is the answer that doesn't require ripping out the tools your team likes.
 </p>
 
 <div class="preview-note">
-  <strong>Same Hub. Single deployment. Free for evaluation.</strong> The MIT-licensed Hub is the entire system. The commercial license adds multi-user roles, SSO/OIDC, SIEM audit export, and compliance report generators — pay-as-you-grow, not seat-pricing.
+  <strong>Same Hub. Single deployment. Free for evaluation.</strong> The MIT-licensed Hub is the entire system. The commercial license adds multi-user roles, SSO/OIDC, SIEM audit export, and compliance report generators, priced per organization rather than per seat.
 </div>
 
-## Five problems showing up in real organizations in 2026
+## Problems showing up in real organizations in 2026
 
 <div class="story-grid">
   <div class="story-card story-card--risk">
@@ -38,7 +38,7 @@ You started letting your team use AI six months ago. Now Engineering's on Cursor
   </div>
 </div>
 
-## How X-Hub answers all five
+## How X-Hub answers them
 
 <img class="diagram-frame" src="/team_deployment.svg" alt="Team deployment: clients (Cursor, Claude Code, ChatGPT, Slack, MCP servers) route through one self-hosted X-Hub with admin/operator/observer roles, then to local + paid models, with SIEM audit, Hub Receipts, and compliance reports as outputs." />
 
@@ -133,16 +133,6 @@ If by day 90 the answer is "this didn't change anything," you've spent zero on c
 - Private deployment + integration services
 
 We don't publish a per-seat price because per-seat AI pricing is the disease this product is treating. Talk to us: <contact@xhubsystem.com>.
-
-## What X-Hub is NOT
-
-| In scope | Not in scope |
-|---|---|
-| Govern actions AI takes through tools, models, channels | Pre-filter what people can ask AI to do |
-| Enforce per-action confirmation on destructive operations | Run your AI for you — bring your own Claude/GPT/local |
-| Audit the AI's effects (file changes, sends, payments) | Track what the AI generated, only what it acted on |
-| Multi-user roles, SSO, SIEM | DLP for AI outputs (use a separate DLP tool, route through Hub) |
-| Signed receipts for every authorized action | Stop AI from being wrong inside a single chat window |
 
 ## Where to start
 

@@ -1,7 +1,7 @@
 # Security Model
 
 <p class="lead">
-One compromised terminal. One hostile webpage. One sketchy MCP server. One prompt injection. Any of those, today, can drag your whole AI setup down. X-Hub's job is to make sure they don't. This page walks through what we block, where we block it, and what we honestly can't promise.
+One compromised terminal. One hostile webpage. One sketchy MCP server. One prompt injection. Any of these, today, can drag your whole AI setup down. X-Hub's job is to keep that from happening. This page walks through what we block, where we block it, and the limits of that protection.
 </p>
 
 <div class="preview-note">

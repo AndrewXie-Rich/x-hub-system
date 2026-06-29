@@ -9,7 +9,7 @@
   X-Terminal 是今天最深的配对客户端。Web 瘦客户端(收口中,90-day P0)是给 Windows / Linux 团队成员的备选。完整表面图见 <a href="/zh-CN/architecture">平台架构</a>。
 </div>
 
-## 四个角色
+## 角色分工
 
 | 角色 | 负责什么 | 不负责什么 |
 | --- | --- | --- |
@@ -18,7 +18,7 @@
 | Supervisor | 看全局、做 review、发现偏航、提出纠偏、汇报关键变化 | 不直接替代 Coder 写每一步 |
 | Hub | 管 grant、policy、memory truth、quota、audit、runtime truth、kill-switch | 不把信任交给单个终端 |
 
-## 三根拨盘
+## 独立的拨盘
 
 X-Terminal 的治理模型不把所有东西揉成一个“自动化程度”滑杆，而是拆成三根拨盘。
 

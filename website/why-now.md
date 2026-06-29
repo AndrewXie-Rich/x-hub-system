@@ -5,8 +5,8 @@ The short answer: AI started actually doing things in 2024. Regulation caught up
 </p>
 
 <div class="preview-note">
-  <strong>This page is the long version of the homepage's "Why this matters now" section.</strong>
-  Skip if you already know why per-action confirmation, tool-fragmentation, and AI multi-user shape are problems by mid-2026.
+  <strong>Long version of the homepage "Why now" section.</strong>
+  Skip if you already know why per-action confirmation, tool fragmentation, and the missing multi-user shape are problems by mid-2026.
 </div>
 
 ## The timeline
@@ -15,7 +15,7 @@ The short answer: AI started actually doing things in 2024. Regulation caught up
 
 Three forces converged. Each one alone produces friction; combined, they produce a structural gap that doesn't fix itself.
 
-## Force 1 — AI now acts, not just answers
+## AI now acts, not just answers
 
 Nov 2022: ChatGPT launched. AI was a great conversationalist, but you had to copy-paste its output yourself. The blast radius of "AI saying the wrong thing" was the next message you'd send.
 
@@ -38,7 +38,7 @@ None of these are exotic. They're the new failure mode. "Are you sure?" inside t
 
 Per-transaction confirmation, on a separate paired device, with cryptographic proof-of-presence — banks solved this for fund transfers in the early 2000s. AI hasn't.
 
-## Force 2 — AI is no longer one tool
+## AI is no longer one tool
 
 Count your AI tools. Most teams in 2026 have at least:
 - An IDE coding agent (Cursor, Cline, Claude Code, Aider, Continue)
@@ -66,7 +66,7 @@ The control plane is missing. Or rather, the control plane *exists* — but it l
 
 X-Hub is the bet that the control plane should be **outside the vendor**, owned by the user or the org, with the vendors becoming replaceable surfaces. Every cross-vendor question becomes a single query against the Hub.
 
-## Force 3 — Regulation arrived
+## Regulation arrived
 
 The EU AI Act was passed in 2024 and entered force in stages. By mid-2026 the high-risk-system obligations apply. ISO 42001 is starting to appear in enterprise procurement RFPs as a stated requirement. China's GenAI filing requirements have been live since 2024. The US has Executive Order frameworks plus state-level laws (Colorado, California). India has the DPDP Act.
 
@@ -93,20 +93,13 @@ That means **2026–2028 is the window where this proposition is most legible to
 
 This isn't a doom prediction. It's a sober read of how product categories settle. Sigstore took years to displace ad-hoc supply-chain trust. Per-transaction 2FA in banking took ~5 years from "novel" to "expected." AI governance is probably similar. The interesting work happens before the standard congeals.
 
-## What X-Hub does NOT solve
+## The scope, honestly
 
-A "why now" page needs to be honest about scope to be useful:
+X-Hub is a control plane product. It controls *what happens around AI*, not *what AI thinks*. So it handles destructive actions the AI takes when you didn't authorize them, the audit-gap and per-vendor-lockin mess across multiple AI tools, the trust gap on MCP servers and plugins, and the multi-user concept that AI products keep forgetting.
 
-| Problem X-Hub addresses | Problem X-Hub does NOT address |
-|---|---|
-| AI took a destructive action you didn't authorize | AI gave you wrong factual information |
-| AI tool sprawl, audit gaps, per-vendor lock-in | The model itself being biased, harmful, or hallucinating |
-| MCP server / plugin supply-chain risk | The cost of running the underlying models |
-| Compliance evidence for AI activity | Compliance certification itself (SOC 2, ISO, etc. — those are audits) |
-| Family parental control around AI actions | Filtering what kids can ask AI (that's content moderation; different tool) |
-| Multi-user governance for shared AI use | Whether AI should be allowed in your school / workplace / industry |
+What it doesn't address: factual accuracy of model outputs, model bias or hallucination, the cost of running the underlying models, formal compliance certification (those are audits, not infrastructure), content moderation for what kids can ask AI, or whether AI should be allowed in your particular setting in the first place.
 
-X-Hub is a control-plane product. It controls *what happens around AI*, not *what AI thinks*. If your problem is "I want to know my AI is honest," that's a different category. If your problem is "I want to know what my AI did and stop the wrong stuff before it lands," that's X-Hub.
+If your problem is "I want to know my AI is honest," that's a different category. If your problem is "I want to know what my AI did, and stop the wrong stuff before it lands," that's X-Hub.
 
 ## Two spinoff specs, because the control plane shouldn't be owned by us either
 

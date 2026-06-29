@@ -9,7 +9,7 @@ If you're running 2+ AI-driven projects at once, X-Terminal is the workspace tha
   X-Terminal is the deepest paired client today. The Web thin client (in flight, 90-day P0) is the alternative for Windows / Linux team members. See <a href="/architecture">Architecture</a> for the full surface map.
 </div>
 
-## The Four Roles
+## Roles
 
 | Role | Responsible For | Not Responsible For |
 | --- | --- | --- |
@@ -18,7 +18,7 @@ If you're running 2+ AI-driven projects at once, X-Terminal is the workspace tha
 | Supervisor | Global view, review, drift detection, correction, user reporting | Rewriting every coder step |
 | Hub | Grants, policy, memory truth, quota, audit, runtime truth, kill switch | Handing trust to one terminal |
 
-## Three Independent Dials
+## Independent dials
 
 X-Terminal does not compress everything into one "automation level" slider. It separates execution, supervision, and review cadence.
 

@@ -4,7 +4,7 @@ layout: home
 hero:
   name: X-Hub-System
   text: AI 的牵引绳,得在你手里。
-  tagline: X-Hub 是你自己跑的那个 Hub,夹在你和 Claude、GPT、本地模型之间。它做了什么,你看得见。它要做高风险动作之前,先停下。换模型时记忆和审计跟着你走。
+  tagline: 一个自托管 Hub,夹在你和 Claude、GPT、本地模型之间,让你看到它实际跑了什么,在出错的动作落地之前把它接住。换 provider 时,记忆和审计跟着你走。
   actions:
     - theme: brand
       text: GitHub 仓库
@@ -36,7 +36,7 @@ features:
 
 <section class="home-capabilities">
   <div class="home-section-head">
-    <p class="home-kicker">你能做的事</p>
+    <p class="home-kicker">能力</p>
     <h2>八件 X-Hub 做得到、单独一个 agent 做不到的事。</h2>
     <p>每张卡角标上有状态标记(<code>validated</code> 或 <code>preview-working</code>),对应到<a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">能力矩阵</a>。没在矩阵那一级的,这页上不主张。</p>
   </div>
@@ -87,9 +87,9 @@ features:
 
 <section class="home-diagrams">
   <div class="home-section-head">
-    <p class="home-kicker">用一张图说边界</p>
-    <h2>终端可以请求。Hub 做决定。</h2>
-    <p>模型路由、记忆真相、授权、审计、技能信任、执行 readiness——全部由 Hub 治理。终端和其它客户端是可替换的表面。</p>
+    <p class="home-kicker">边界</p>
+    <h2>终端可以问。Hub 来定。</h2>
+    <p>模型路由、记忆真相、授权、审计、技能信任、执行 readiness 都在 Hub 这一边。终端和其它客户端是可替换的表面。</p>
   </div>
 
   <div class="home-diagrams__grid">
@@ -113,24 +113,24 @@ features:
 <section class="home-usecases">
   <div class="home-section-head">
     <p class="home-kicker">为什么是现在</p>
-    <h2>过去 18 个月里变了三件事。没有一件会自己变回去。</h2>
+    <h2>过去 18 个月,问题的形状变了。</h2>
   </div>
 
   <div class="home-usecase-grid">
     <div class="home-usecase-card">
       <span>AI 已经不只是聊天</span>
       <strong>它删文件、改代码、发邮件、扣信用卡。</strong>
-      <p>聊天窗口里那句"你确定吗?"是错误的确认位置。到 2026 年,AI 跑得更久、碰得更多,一次提示词注入或一次上下文走偏就能造成不可逆损失。</p>
+      <p>聊天窗口里那句"你确定吗"是在 AI 还只能说话的时代设计的。到 2026 年,AI 跑得更久、碰得更多,一次提示词注入或一次上下文走偏就能造成不可逆损失。</p>
     </div>
     <div class="home-usecase-card">
       <span>你大概率用着 3 个以上 AI 工具</span>
-      <strong>每个有自己的记忆、自己的密钥、自己的审计——彼此不通。</strong>
-      <p>Cursor 知道你的代码。Claude 知道你的对话。ChatGPT 知道你的工作。换工具要重建上下文。审计要翻三份不同的聊天历史。你需要一个能看全局的地方。</p>
+      <strong>每个有自己的记忆、密钥、审计,彼此不通。</strong>
+      <p>Cursor 知道你的代码,Claude 知道你的对话,ChatGPT 知道你的工作。换工具要重建上下文,审计要翻三份历史。有一个地方能看全局,会省很多事。</p>
     </div>
     <div class="home-usecase-card">
       <span>AI 已经不是单用户工具</span>
-      <strong>家庭共用、团队共用——但每个 AI 产品的设计都假设只有一个人用。</strong>
-      <p>没有 admin / operator / observer 概念。家长想设限就得收设备。CTO 想审计就得盯每个对话。X-Hub 补上 AI 工具忘了做的多用户形态。</p>
+      <strong>家庭共用、团队共用,但每个 AI 产品的设计还是假设只有一个人用。</strong>
+      <p>没有 admin / operator / observer 概念。家长想设限就得收设备。CTO 想审计就得盯每个对话。X-Hub 补上 AI 工具一直没做的那块多用户形态。</p>
     </div>
   </div>
   <p style="margin-top: 32px; text-align: center;">

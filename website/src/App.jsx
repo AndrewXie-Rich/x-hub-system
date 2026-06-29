@@ -20,7 +20,6 @@ import {
   IconBookOpenStroked,
   IconCode,
   IconComponent,
-  IconExternalOpen,
   IconGithubLogo,
   IconGlobe,
   IconKey,
@@ -50,6 +49,9 @@ const { Title, Paragraph, Text } = Typography;
 const ArticlePage = lazy(() => import('./ArticlePage.jsx'));
 
 const iconBySlug = {
+  family: IconSafeStroked,
+  team: IconServer,
+  'why-now': IconTickCircle,
   security: IconShield,
   architecture: IconRoute,
   constitution: IconSafeStroked,
@@ -82,6 +84,13 @@ function navigateTo(href) {
   window.dispatchEvent(new Event('xhub:navigation'));
   window.scrollTo({ top: 0, behavior: 'smooth' });
   return true;
+}
+
+function scrollToSection(id) {
+  const target = document.getElementById(id);
+  if (target) {
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 
 function prefetchRoute(href) {
@@ -252,21 +261,22 @@ function Hero({ copy, locale }) {
         </Paragraph>
         <Space wrap>
           <Button
-            icon={<IconArrowRight />}
+            icon={<IconGithubLogo />}
             iconPosition="right"
             size="large"
             theme="solid"
             type="primary"
-            onClick={() => navigateTo(localizedPath(locale, 'get-started'))}
+            onClick={() => window.open(repoUrl, '_blank', 'noreferrer')}
           >
             {copy.primaryCta}
           </Button>
           <Button
-            icon={<IconExternalOpen />}
+            icon={<IconArrowRight />}
+            iconPosition="right"
             size="large"
             theme="solid"
             type="tertiary"
-            onClick={() => window.open(releasesUrl, '_blank', 'noreferrer')}
+            onClick={() => scrollToSection('how-it-works')}
           >
             {copy.secondaryCta}
           </Button>
@@ -300,7 +310,7 @@ function FlowSection({ copy }) {
   }));
 
   return (
-    <section className="section flow-section" id="authority-chain">
+    <section className="section flow-section" id="how-it-works">
       <div className="section-head">
         <Text className="eyebrow">{copy.preview}</Text>
         <Title heading={2}>{copy.flowTitle}</Title>
@@ -408,14 +418,32 @@ function Capabilities({ copy, locale }) {
   );
 }
 
-function UseCases({ copy }) {
+function UseCases({ copy, locale }) {
   return (
     <section className="section section--contrast">
       <div className="section-head section-head--wide">
         <Text className="eyebrow">{copy.useCasesLabel}</Text>
         <Title heading={2}>{copy.useCasesTitle}</Title>
       </div>
-      <div className="usecase-grid">
+      <div className="audience-grid">
+        {copy.audienceCards.map(([title, body, proof, slug]) => {
+          const Icon = iconBySlug[slug] || IconBookOpenStroked;
+          return (
+            <div className="audience-card" key={slug} onClick={() => navigateTo(localizedPath(locale, slug))}>
+              <div className="audience-card__head">
+                <span>
+                  <Icon />
+                </span>
+                <IconArrowRight />
+              </div>
+              <strong>{title}</strong>
+              <p>{body}</p>
+              <small>{proof}</small>
+            </div>
+          );
+        })}
+      </div>
+      <div className="usecase-grid usecase-grid--compact">
         {copy.useCases.map(([label, body]) => (
           <div className="usecase-row" key={label}>
             <span>{label}</span>
@@ -495,7 +523,7 @@ function HomePage({ locale }) {
       <FlowSection copy={copy} />
       <RuntimeSnapshot copy={copy} />
       <Capabilities copy={copy} locale={locale} />
-      <UseCases copy={copy} />
+      <UseCases copy={copy} locale={locale} />
       <Diagrams copy={copy} />
       <DocsTabs locale={locale} />
     </>

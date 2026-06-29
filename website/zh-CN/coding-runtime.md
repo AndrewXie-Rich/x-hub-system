@@ -114,7 +114,7 @@ X-Hub 的 coding runtime 内部有分层(harness、delivery loop、checklist loo
 
 这就是 X-Hub-System 在 coding 上的核心差异：不是“模型更会写代码”这一句，而是“写代码这件事被放进了可持续、可复盘、可恢复的运行结构里”。
 
-## 什么时候不该用重模式
+## 什么时候轻量就够了
 
 不是所有任务都值得上完整治理流程。
 

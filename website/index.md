@@ -4,7 +4,7 @@ layout: home
 hero:
   name: X-Hub-System
   text: Don't trust AI to hold its own leash.
-  tagline: X-Hub is the self-hosted Hub between you and Claude, GPT, or local models. See what actually ran. Stop high-risk actions before they happen. Switch providers without losing your memory.
+  tagline: A self-hosted Hub that sits between you and Claude, GPT, or local models, so you can see what actually ran and catch the bad calls before they land. Memory and audit follow you when you switch providers.
   actions:
     - theme: brand
       text: View on GitHub
@@ -36,9 +36,9 @@ features:
 
 <section class="home-capabilities">
   <div class="home-section-head">
-    <p class="home-kicker">What you can do</p>
-    <h2>Eight concrete things X-Hub does — that the agent on its own doesn't.</h2>
-    <p>Each card has a status tag in the corner (<code>validated</code> or <code>preview-working</code>) that maps to the <a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">capability matrix</a>. Anything not in the matrix at that level isn't claimed here.</p>
+    <p class="home-kicker">Capabilities</p>
+    <h2>Eight things X-Hub does that the agent on its own doesn't.</h2>
+    <p>Each card has a status tag (<code>validated</code> or <code>preview-working</code>) mapping to the <a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">capability matrix</a>. Anything not in the matrix at that level isn't claimed here.</p>
   </div>
 
   <div class="home-capability-grid">
@@ -87,9 +87,9 @@ features:
 
 <section class="home-diagrams">
   <div class="home-section-head">
-    <p class="home-kicker">The boundary in one picture</p>
-    <h2>Terminals can ask. The Hub decides.</h2>
-    <p>Model routing, memory truth, grants, audit, skill trust, execution readiness — all governed from the Hub. Terminals and other clients are replaceable surfaces.</p>
+    <p class="home-kicker">The boundary</p>
+    <h2>Terminals ask. The Hub decides.</h2>
+    <p>Model routing, memory truth, grants, audit, skill trust, and execution readiness all live in the Hub. Terminals and other clients are replaceable surfaces.</p>
   </div>
 
   <div class="home-diagrams__grid">
@@ -112,25 +112,25 @@ features:
 
 <section class="home-usecases">
   <div class="home-section-head">
-    <p class="home-kicker">Why this matters now</p>
-    <h2>Three things changed in the last 18 months. None of them are getting better on their own.</h2>
+    <p class="home-kicker">Why now</p>
+    <h2>The last 18 months changed the shape of the problem.</h2>
   </div>
 
   <div class="home-usecase-grid">
     <div class="home-usecase-card">
-      <span>AI does more than chat now</span>
+      <span>AI does more than chat</span>
       <strong>It deletes files, edits code, sends emails, charges cards.</strong>
-      <p>"Are you sure?" inline in a chat window is the wrong place to confirm a destructive action. By 2026 your AI runs longer, touches more, and can do irreversible damage from one prompt injection or one bad token of context.</p>
+      <p>The "Are you sure?" prompt inside a chat window was built before AI could act. By 2026 your AI runs longer, touches more, and can do irreversible damage from one prompt injection or one bad token of context.</p>
     </div>
     <div class="home-usecase-card">
       <span>You probably use 3+ AI tools</span>
-      <strong>Each has its own memory, its own keys, its own audit log — none of which talk to each other.</strong>
-      <p>Cursor knows your code. Claude knows your conversations. ChatGPT knows your work. Switching costs you context. Auditing means reading three different chat histories. You need one place that sees the whole picture.</p>
+      <strong>Each has its own memory, its own keys, its own audit log, and they don't talk to each other.</strong>
+      <p>Cursor knows your code, Claude knows your conversations, ChatGPT knows your work. Switching costs you context. Auditing means reading three histories. One place that sees the whole picture would help.</p>
     </div>
     <div class="home-usecase-card">
-      <span>AI is no longer a single-user tool</span>
-      <strong>Families share it. Teams share it. But every AI product is built like only one person uses it.</strong>
-      <p>There's no admin / operator / observer concept. No way for a parent to set limits without taking the device. No way for a CTO to audit without watching every chat. X-Hub adds the multi-user shape that AI tools forgot.</p>
+      <span>AI is no longer single-user</span>
+      <strong>Families share it, teams share it, and every AI product is still built like one person uses it.</strong>
+      <p>No admin / operator / observer concept. No way for a parent to set limits without taking the device. No way for a CTO to audit without watching every chat. X-Hub adds the multi-user shape AI tools haven't.</p>
     </div>
   </div>
   <p style="margin-top: 32px; text-align: center;">

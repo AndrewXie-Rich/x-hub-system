@@ -1,12 +1,12 @@
 # Governed Skills
 
 <p class="lead">
-You install one MCP server today. Next week the maintainer ships "a small update" that quietly adds <code>shell:exec</code> to its required capabilities. Your IDE auto-upgrades. By the time you notice, your <code>GITHUB_TOKEN</code> is on an attacker server. X-Hub's skill subsystem — and the <a href="https://github.com/AndrewXie-Rich/mcp-trust-registry">mcp-trust-registry</a> spec extracted from it — is built to make that story impossible.
+You install one MCP server today. Next week the maintainer ships "a small update" that quietly adds <code>shell:exec</code> to its required capabilities. Your IDE auto-upgrades. By the time you notice, your <code>GITHUB_TOKEN</code> is on an attacker server. X-Hub's skill subsystem, along with the <a href="https://github.com/AndrewXie-Rich/mcp-trust-registry">mcp-trust-registry</a> spec extracted from it, is built to make that story impossible.
 </p>
 
 <div class="preview-note">
   <strong>This subsystem is the reference implementation for the <a href="https://github.com/AndrewXie-Rich/mcp-trust-registry">mcp-trust-registry</a> spec.</strong>
-  The registry, attestations, capability tokens, and runtime enforcement are independent of X-Hub — you can take the spec without taking the implementation. This page describes what X-Hub does; the spec describes the interoperable shape.
+  The registry, attestations, capability tokens, and runtime enforcement are independent of X-Hub. You can take the spec without taking the implementation. This page describes what X-Hub does; the spec describes the interoperable shape.
 </div>
 
 ## The Skill Boundary
@@ -73,4 +73,4 @@ That is why governed skills matter:
 That does not make the skill runtime the memory authority: the user still chooses which AI executes memory jobs in X-Hub, `Memory-Core` remains the governed rule layer, and durable memory writes still terminate through `Writer + Gate`.
 
 The result is not just more capability.
-It is a more governable execution substrate — and the substrate's wire format is an open spec, not X-Hub-specific glue.
+It is a more governable execution substrate, and the substrate's wire format is an open spec rather than X-Hub-specific glue.

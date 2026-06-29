@@ -475,6 +475,71 @@ select {
   background: rgba(255, 250, 241, 0.16);
 }
 
+.audience-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.audience-card {
+  display: grid;
+  min-height: 310px;
+  align-content: start;
+  gap: 16px;
+  border: 1px solid rgba(255, 250, 241, 0.16);
+  border-radius: 8px;
+  padding: 22px;
+  background: rgba(255, 250, 241, 0.08);
+  cursor: pointer;
+}
+
+.audience-card:hover {
+  border-color: rgba(230, 180, 95, 0.55);
+  background: rgba(255, 250, 241, 0.12);
+}
+
+.audience-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.audience-card__head span {
+  display: inline-grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border-radius: 8px;
+  color: #173b34;
+  background: #e6b45f;
+  font-size: 22px;
+}
+
+.audience-card__head > svg {
+  color: rgba(255, 250, 241, 0.62);
+}
+
+.audience-card strong {
+  color: #fffaf1;
+  font-size: 25px;
+  line-height: 1.08;
+}
+
+.audience-card p,
+.audience-card small {
+  margin: 0;
+  color: rgba(255, 250, 241, 0.76);
+  line-height: 1.58;
+}
+
+.audience-card small {
+  color: rgba(255, 250, 241, 0.64);
+}
+
+.usecase-grid--compact {
+  margin-top: 16px;
+}
+
 .usecase-row {
   min-height: 132px;
   padding: 22px;
@@ -1030,6 +1095,7 @@ select {
   }
 
   .usecase-grid,
+  .audience-grid,
   .diagram-grid,
   .runtime-grid,
   .runtime-highlights,
@@ -1072,6 +1138,10 @@ select {
 
   .capability-grid {
     grid-template-columns: 1fr;
+  }
+
+  .audience-card {
+    min-height: 0;
   }
 
   .article-shell {

@@ -9,13 +9,13 @@ This page is the shortest action path for people who want to download, try, buil
   Macos DMG is the only shipping path today. Linux daemon (via <code>docker-compose</code>) and Web thin client are the 90-day P0 direction. Per-surface status: <a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">capability matrix</a>.
 </div>
 
-## Three Ways In
+## How to run it
 
-**1. macOS app (shipping today).** Combined DMG with `X-Hub.app` and `X-Terminal.app`. Apple Silicon. See [Download The Preview](#download-the-preview) below.
+**macOS, today.** Apple Silicon. Combined DMG with `X-Hub.app` + `X-Terminal.app`. See [Download The Preview](#download-the-preview) below.
 
-**2. Linux daemon (in flight, 90-day P0).** `docker-compose up` deployment, abstracting launchd-specific calls behind a trait. Not yet released; track [status & roadmap](/status-roadmap) for the cutover.
+**Linux daemon, in flight.** `docker-compose up` deployment, abstracting launchd-specific calls behind a trait. Not released yet; track [Status & Roadmap](/status-roadmap) for the cutover.
 
-**3. Spec-only consumer (use without X-Hub).** Take just one of the extracted specs:
+**Spec-only consumer (no X-Hub needed).** If you only want one of the extracted specs:
 - [`mcp-trust-registry`](https://github.com/AndrewXie-Rich/mcp-trust-registry) — federated trust layer above MCP
 - [`agent-2fa`](https://github.com/AndrewXie-Rich/agent-2fa) — per-action 2FA for AI agent actions
 - [`hub-receipt`](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md) — shared signed-receipt envelope

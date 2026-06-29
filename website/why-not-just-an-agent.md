@@ -6,15 +6,15 @@ X-Hub isn't trying to win the same game as Cursor or Cline or Claude Code. Those
 
 <div class="preview-note">
   <strong>This page names names.</strong>
-  By 2026, "the agent" isn't a hypothetical. It's Cursor / Cline / Claude Code / Aider / Continue / Roo for IDE work; Devin / Manus / Replit Agent for project-shaped autonomy. The right comparison isn't X-Hub against an abstract agent — it's "what does X-Hub do that those don't."
+  By 2026, "the agent" isn't a hypothetical. It's Cursor / Cline / Claude Code / Aider / Continue / Roo for IDE work; Devin / Manus / Replit Agent for project-shaped autonomy. The right comparison isn't X-Hub against an abstract agent. It's "what does X-Hub do that those don't."
 </div>
 
-## The Short Answer
+## The short answer
 
 If you want an AI that's great in your editor, **use one of the existing agents**:
 
-- [Cursor](https://cursor.com), [Cline](https://github.com/cline/cline), [Claude Code](https://www.anthropic.com/claude-code), [Aider](https://aider.chat), [Continue](https://continue.dev), [Roo](https://github.com/RooVetGit/Roo-Cline) — IDE-shaped agents
-- [Devin](https://devin.ai), [Manus](https://manus.im), [Replit Agent](https://replit.com/ai) — project-shaped autonomy
+- [Cursor](https://cursor.com), [Cline](https://github.com/cline/cline), [Claude Code](https://www.anthropic.com/claude-code), [Aider](https://aider.chat), [Continue](https://continue.dev), [Roo](https://github.com/RooVetGit/Roo-Cline) for IDE-shaped agents
+- [Devin](https://devin.ai), [Manus](https://manus.im), [Replit Agent](https://replit.com/ai) for project-shaped autonomy
 
 These are good products. They're not control planes.
 
@@ -26,7 +26,7 @@ X-Hub exists for the harder problem one layer up:
 - when memory, grants, audit, and runtime truth need to converge on one system of record across multiple AI tools
 - when the control plane should stay user-owned instead of disappearing into a vendor cloud
 
-## What An IDE Agent Doesn't Solve
+## What an IDE agent doesn't solve
 
 | Concern | A good IDE agent (Cursor / Cline / Claude Code / etc.) | What X-Hub adds |
 | --- | --- | --- |
@@ -39,15 +39,15 @@ X-Hub exists for the harder problem one layer up:
 
 The two products don't compete. **Use Cursor or Claude Code in your editor. Wrap them under an X-Hub if you need the control plane.**
 
-## What X-Hub Is Actually Optimizing For
+## What X-Hub is actually optimizing for
 
-- **User-owned control plane**: permissions, keys, memory truth, audit, release timing, and runtime posture stay under the user's authority — not the vendor's
-- **Governed autonomy**: higher execution range does not mean weaker supervision
-- **Governed skills**: reusable capability units routed, approved, denied, audited, retried, and revoked — through a spec ([mcp-trust-registry](https://github.com/AndrewXie-Rich/mcp-trust-registry)) other implementations can also use
-- **Per-action authorization**: irreversible actions hit a separate paired device before they hit the world — through a spec ([agent-2fa](https://github.com/AndrewXie-Rich/agent-2fa)) other agent runtimes can adopt
-- **Fail-closed runtime truth**: missing readiness, broken pairing, or ambiguous authorization blocks instead of pretending success
+- **User-owned control plane.** Permissions, keys, memory truth, audit, release timing, and runtime posture stay under your authority, not the vendor's.
+- **Governed autonomy.** Higher execution range does not mean weaker supervision.
+- **Governed skills.** Reusable capability units routed, approved, denied, audited, retried, and revoked through a spec ([mcp-trust-registry](https://github.com/AndrewXie-Rich/mcp-trust-registry)) other implementations can also use.
+- **Per-action authorization.** Irreversible actions hit a separate paired device before they hit the world, through a spec ([agent-2fa](https://github.com/AndrewXie-Rich/agent-2fa)) other agent runtimes can adopt.
+- **Fail-closed runtime truth.** Missing readiness, broken pairing, or ambiguous authorization blocks instead of pretending success.
 
-## When A Standalone Agent Is Enough
+## When a standalone agent is enough
 
 You don't need X-Hub if:
 
@@ -57,7 +57,7 @@ You don't need X-Hub if:
 - you don't need per-action confirmation on destructive actions
 - fast experimentation matters more than auditable execution
 
-## When X-Hub Starts Making Sense
+## When X-Hub starts making sense
 
 X-Hub becomes useful when one or more of these is true:
 
@@ -67,7 +67,7 @@ X-Hub becomes useful when one or more of these is true:
 - you need verifiable audit trails — receipts that hold up outside the agent's UI
 - you need per-action confirmation on destructive operations on a *separate* device
 
-## The Tradeoff
+## The tradeoff
 
 X-Hub isn't the shortest path to "look, the agent acted." It adds a layer.
 

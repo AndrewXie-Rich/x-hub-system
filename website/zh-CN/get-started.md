@@ -9,13 +9,13 @@
   macOS DMG 是今天唯一出货路径。Linux daemon(via <code>docker-compose</code>)和 Web 瘦客户端是 90-day P0 方向。每个表面的状态以<a href="https://github.com/AndrewXie-Rich/x-hub-system/blob/main/docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md">能力矩阵</a>为准。
 </div>
 
-## 三条入口
+## 怎么跑起来
 
-**1. macOS app(今天出货)。** 组合 DMG 含 `X-Hub.app` 和 `X-Terminal.app`,Apple Silicon。见下面 [下载预览版](#下载预览版)。
+**macOS,今天。** Apple Silicon。组合 DMG 含 `X-Hub.app` + `X-Terminal.app`。见下面 [下载预览版](#下载预览版)。
 
-**2. Linux daemon(收口中,90-day P0)。** `docker-compose up` 部署,把 launchd 相关调用抽到 trait 后面。尚未发布,跟踪 [状态与路线图](/zh-CN/status-roadmap) 看切换时机。
+**Linux daemon,在路上。** `docker-compose up` 部署,把 launchd 相关调用抽到 trait 后面。尚未发布,跟踪 [状态与路线图](/zh-CN/status-roadmap) 看切换时机。
 
-**3. spec-only(不用 X-Hub 也能用)。** 单独拿其中一份独立规范:
+**spec-only(不用 X-Hub 也能用)。** 单独拿其中一份独立规范:
 - [`mcp-trust-registry`](https://github.com/AndrewXie-Rich/mcp-trust-registry) — MCP 之上的联邦化信任层
 - [`agent-2fa`](https://github.com/AndrewXie-Rich/agent-2fa) — 给 AI Agent 动作做的 per-action 2FA
 - [`hub-receipt`](https://github.com/AndrewXie-Rich/x-hub-system/blob/main/specs/hub-receipt/v0.1.md) — 共用签名回执 envelope

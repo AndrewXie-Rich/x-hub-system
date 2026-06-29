@@ -1,7 +1,7 @@
 # Architecture
 
 <p class="lead">
-30-second version: clients ask, the Hub decides, execution surfaces act inside scope, runtime truth returns to the Hub. The rest of this page is the long version — what each layer actually does, where the boundaries sit, and why this shape lets you run powerful AI without giving away the trust root.
+Clients ask. The Hub decides. Execution surfaces act inside scope. Runtime truth returns to the Hub. The rest of this page is the long version: what each layer does, where the boundaries sit, and why this shape lets you run powerful AI without giving away the trust root.
 </p>
 
 <div class="preview-note">

@@ -1,14 +1,14 @@
 # 给团队和组织用
 
 <p class="lead">
-你半年前开始让团队用 AI。现在工程团队在 Cursor 上,市场团队在 ChatGPT 上,运营团队在 Claude 上,还有三个人悄悄装了没人审过的 MCP server。合规部门想要单一可查口径——你没有。X-Hub 是不必砍掉团队喜欢的工具就能给出答案的那个东西。
+你半年前开始让团队用 AI。现在工程团队在 Cursor 上,市场团队在 ChatGPT 上,运营团队在 Claude 上,还有三个人悄悄装了没人审过的 MCP server。合规部门想要单一可查口径,你没有。X-Hub 是不必砍掉团队喜欢的工具就能给出答案的那个东西。
 </p>
 
 <div class="preview-note">
-  <strong>同一个 Hub。单点部署。评估期免费。</strong>MIT-licensed Hub 是整个系统。商业许可加多用户角色、SSO/OIDC、SIEM 审计导出、合规报告生成——按需付费,不按座席计费。
+  <strong>同一个 Hub。单点部署。评估期免费。</strong>MIT-licensed Hub 是整个系统。商业许可加多用户角色、SSO/OIDC、SIEM 审计导出、合规报告生成,按组织计费,不按座席。
 </div>
 
-## 2026 年真实组织里冒头的五个问题
+## 2026 年真实组织里冒头的问题
 
 <div class="story-grid">
   <div class="story-card story-card--risk">
@@ -38,7 +38,7 @@
   </div>
 </div>
 
-## X-Hub 怎么一次性回答这五个问题
+## X-Hub 怎么回答这些
 
 <img class="diagram-frame" src="/team_deployment.svg" alt="团队部署:客户端(Cursor、Claude Code、ChatGPT、Slack、MCP servers)路由经过一个自托管 X-Hub,Hub 强制 admin/operator/observer 角色,然后到本地 + 付费模型,产出 SIEM 审计、Hub Receipts、合规报告。" />
 
@@ -133,16 +133,6 @@ CTO 可能是 admin。工程团队是 operator。合规 / 审计是 observer。S
 - 私有部署 + 集成服务
 
 我们不公布按座席的价格,因为按座席的 AI 定价正是这个产品在治疗的病。聊一聊:<contact@xhubsystem.com>。
-
-## X-Hub **不**是什么
-
-| 在范围内 | 不在范围内 |
-|---|---|
-| 治理 AI 通过工具、模型、通道做的动作 | 预先过滤人能让 AI 做什么 |
-| 在破坏性操作上强制 per-action 确认 | 替你跑 AI——自己带 Claude/GPT/本地模型 |
-| 审计 AI 的副作用(文件改动、发送、付款) | 跟踪 AI 生成了什么,只跟踪它做了什么 |
-| 多用户角色、SSO、SIEM | AI 输出的 DLP(用单独的 DLP 工具,经 Hub 路由) |
-| 每个授权动作的签名回执 | 阻止 AI 在单次对话里说错 |
 
 ## 从哪里开始
 

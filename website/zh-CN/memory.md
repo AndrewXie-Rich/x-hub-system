@@ -37,7 +37,7 @@ X-Hub 的定位不同：Memory 是安全和运行时真相的一部分。
 
 所以 X-Hub 的目标是模型通用的记忆控制面：同一套 Memory 可以服务本地模型、付费模型、Supervisor review、Project AI execution、skill 和远程通道，同时不让任何单一客户端变成新的权威源。
 
-## 四层控制面
+## 控制面
 
 市面上很多 memory 是“存储 + 检索 + prompt 注入”一锅。X-Hub 把它拆成四层：
 
@@ -60,7 +60,7 @@ X-Hub 的定位不同：Memory 是安全和运行时真相的一部分。
 | Canonical | 保存少量高置信、可默认注入的关键事实 | 提高效率，减少上下文污染 |
 | Working Set | 当前任务真正需要的活动上下文 | 让 Project AI 聚焦眼前执行 |
 
-## 八个核心优势
+## 核心优势
 
 <div class="story-grid">
   <div class="story-card">

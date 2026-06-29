@@ -114,7 +114,7 @@ A mature Project Coder Loop needs at least:
 
 That is the coding difference: not just "the model writes code," but "coding runs inside a sustainable, reviewable, recoverable operating structure."
 
-## When Not To Use The Heavy Mode
+## Where lighter mode is the right call
 
 Not every task deserves the full governance path.
 

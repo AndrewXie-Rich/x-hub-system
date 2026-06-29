@@ -159,11 +159,11 @@ export const labels = {
     otherLocale: '中文',
     brand: 'X-Hub-System',
     nav: [
-      ['scenarios', 'Use cases'],
+      ['why-now', 'Why now'],
+      ['family', 'Families'],
+      ['team', 'Teams'],
       ['security', 'Trust'],
       ['memory', 'Memory'],
-      ['architecture', 'Architecture'],
-      ['x-terminal', 'X-Terminal'],
       ['get-started', 'Start']
     ],
     home: 'Overview',
@@ -189,11 +189,11 @@ export const labels = {
     otherLocale: 'English',
     brand: 'X-Hub-System',
     nav: [
-      ['scenarios', '场景'],
+      ['why-now', '为什么现在'],
+      ['family', '家庭'],
+      ['team', '团队'],
       ['security', '信任'],
       ['memory', '记忆'],
-      ['architecture', '架构'],
-      ['x-terminal', 'X-Terminal'],
       ['get-started', '开始']
     ],
     home: '总览',
@@ -272,6 +272,26 @@ export const siteCopy = {
       ['preview-working', 'Leave AI running on a project, come back to evidence.', 'Plan, execute, verify, review, resume, recover. When AI claims "done," there\'s signed evidence — not just a model assertion.', 'coding-runtime']
     ],
     useCasesTitle: 'Who lands here — and what they get.',
+    audienceCards: [
+      [
+        'For my family',
+        'Kids using AI should not mean handing AI admin rights to your house.',
+        'See what they ask, set limits, and require a parent tap before AI deletes, sends, or pays.',
+        'family'
+      ],
+      [
+        'For myself',
+        'Self-host one Hub while keeping Cursor, Claude Code, ChatGPT, and local models.',
+        'Actual model, fallback, rogue MCP activity, memory, and audit become visible in one place.',
+        'get-started'
+      ],
+      [
+        'For my team or org',
+        'Run AI across code, prompts, memory, and tools without making SaaS the only control plane.',
+        'Multi-user roles, governed skills, signed receipts, SIEM-ready audit, and compliance paths.',
+        'team'
+      ]
+    ],
     useCases: [
       ['For my family', 'Kids using AI shouldn\'t mean handing AI admin rights to your house. See what they ask, set limits, get a tap on your phone before AI deletes, sends, or pays. Parent runs the Hub.'],
       ['Family — concrete', 'A link should never become an admin device. First high-trust pairing is on the same Wi-Fi, with the parent confirming locally. Remote works after that — but always built on a bound device.'],
@@ -335,7 +355,7 @@ export const siteCopy = {
     capabilitiesBody:
       '每张卡角标上有状态标记(validated 或 preview-working),对应到能力矩阵。没在矩阵那一级的,这页上不主张。',
     capabilities: [
-      ['validated', '想干的事不该干,系统直接拦下。', 'AI 试着写错文件、调错接口、跑错命令时,系统在动作发生**之前**挡住,不是事后再告诉你。', 'security'],
+      ['validated', '想干的事不该干,系统直接拦下。', 'AI 试着写错文件、调错接口、跑错命令时,系统在动作发生之前挡住,不是事后再告诉你。', 'security'],
       ['preview-working', '看见实际跑的是哪个模型。', '配置的是哪个 vs 实际跑了哪个。为什么 fallback。哪个 provider 在扣钱。没有静默路由替换。', 'x-terminal'],
       ['validated', '换模型不丢记忆。', '项目状态、长期事实、X 宪章、决策——都在 Hub 里,不在 Claude 或 Cursor 里。换 provider 不必重建上下文。', 'memory'],
       ['preview-working', '本地模型和付费模型走同一份预算。', '敏感工作走本地模型,需要时切付费 Claude / GPT。一个额度视图。一套 fallback 策略。一条审计链。', 'local-first'],
@@ -345,6 +365,26 @@ export const siteCopy = {
       ['preview-working', '让 AI 跑一晚上代码,回来能看到证据。', '规划、执行、验证、复盘、续跑、恢复。AI 说"完成"时,有签名证据可查——不是模型一句话就算数。', 'coding-runtime']
     ],
     useCasesTitle: '谁会来到这——以及他们能拿到什么。',
+    audienceCards: [
+      [
+        '给我家用',
+        '孩子用 AI 不应该等同于把家里的 admin 权限交给 AI。',
+        '看见他们问了什么、设置边界,在 AI 要删除、发送或付款前先让家长点一下确认。',
+        'family'
+      ],
+      [
+        '给我自己用',
+        '自托管一个 Hub,继续使用 Cursor、Claude Code、ChatGPT 和本地模型。',
+        '实际跑了哪个模型、为什么 fallback、有问题的 MCP server 干了什么、记忆和审计都集中可见。',
+        'get-started'
+      ],
+      [
+        '给团队 / 组织用',
+        '让代码、提示词、记忆和工具经过同一个自托管控制面,而不是只能信 SaaS。',
+        '多用户角色、受治理技能、签名回执、SIEM-ready 审计和合规路径放进同一套系统。',
+        'team'
+      ]
+    ],
     useCases: [
       ['给我家用', '孩子用 AI 不该等同于把家里的 admin 权限交给 AI。看见他们问了什么、设额度、在 AI 要删 / 发 / 付钱之前先在你手机上点一下确认。家长跑 Hub。'],
       ['家庭——具体场景', '一个链接绝不该变成 admin 设备。首次高信任配对在同 Wi-Fi 上做,家长本地确认。后续远程可用——但永远建立在已绑定设备之上。'],
