@@ -53,9 +53,9 @@ open build/X-Hub.app   # Hub 起来后配对 X-Terminal
 
 **Linux daemon,在路上。** `docker-compose up` 部署,90-day P0。跟踪[能力矩阵](docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md)看切换时机。
 
-**spec-only,不用 X-Hub。** 如果你只想要 MCP 之上的信任层,或者 per-action 确认 primitive,单独拿规范就行:
+**spec-only,不用 X-Hub。** 如果你只想要 agent 工具服务器的信任层,或者 per-action 确认 primitive,单独拿规范就行:
 
-- [mcp-trust-registry](specs/mcp-trust-registry/)
+- [skill-trust-registry](specs/skill-trust-registry/)
 - [agent-2fa](specs/agent-2fa/)
 - [hub-receipt](specs/hub-receipt/)
 
@@ -73,8 +73,8 @@ X-Hub 是这些规范的一个实现;你可以写自己的。
 
 两份协议规范(加一个共用 envelope)作为独立仓库交社区评审。X-Hub-System 是它们的参考实现:
 
-- [**mcp-trust-registry**](specs/mcp-trust-registry/) —— MCP 之上的信任层。阻止"补丁更新"里偷偷给一个你昨天还信任的 MCP server 加上 `shell:exec`。schemas、examples、CI 校验在仓库里。
-- [**agent-2fa**](specs/agent-2fa/) —— AI Agent 动作的 per-action 2FA。破坏性命令落地前,先在配对设备上 Touch ID。spec + 4 个 JSON Schema + 例子链。
+- [**skill-trust-registry**](specs/skill-trust-registry/) —— AI agent 工具服务器(MCP、A2A、OpenAI tools、自定义 RPC)的信任层。阻止"补丁更新"里偷偷给一个你昨天还信任的 tool server 加上 `shell:exec`。schemas、examples、CI 校验、参考 Rust proxy 都在仓库里。
+- [**agent-2fa**](specs/agent-2fa/) —— AI Agent 动作的 per-action 2FA。破坏性命令落地前,先在配对设备上 Touch ID。本仓库保留本地 spec mirror; canonical standalone repo 里有参考 Rust proxy。
 - [**hub-receipt**](specs/hub-receipt/) —— 两份规范共用的签名回执 envelope。回执在 X-Hub 之外也能验证;可嵌入 commit、IDE 元数据、聊天。
 
 ## 许可证和商业

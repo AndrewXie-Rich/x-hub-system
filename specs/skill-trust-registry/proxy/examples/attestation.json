@@ -1,0 +1,10 @@
+{
+  "schema": "skill-trust/attestation/v0.1",
+  "manifest_hash": "sha256:b0893ea7d7bfa235de107e058b7cdc4285500794b9f07bf2aa5ce99a716db2e9",
+  "artifact_hash": "sha256:9f3cab2e7d1f5c4e8a2b6d9f3c4e1a7b2d5f8c9e3a6b1d4f7c2e5a8b9d0c1f3a",
+  "publisher_key_id": "ed25519:7bloclsefcrmuiojr6hjvwioeorjraomklwdqw5r4rbfrlnbwgha",
+  "issued_at": "2026-06-29T08:21:53.315936Z",
+  "expires_at": "2027-12-21T08:21:53.315936Z",
+  "sigstore_bundle": null,
+  "signature": "ed25519:wbxa87lWEuo2YQ6iUJqpHGH4S0gPkKk96XKK4vnPJRcsEmKRp9za004SgmQBpaclxKlOuomKphjeCOJjqDOrDg=="
+}

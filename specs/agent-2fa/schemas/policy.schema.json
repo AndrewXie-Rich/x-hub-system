@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mcp-trust.org/spec/agent-2fa/v0.1/policy.schema.json",
+  "$id": "https://agent-2fa.org/spec/v0.1/policy.schema.json",
   "title": "agent-2fa — Policy",
   "description": "Schema for the action-classification Policy DSL, per agent-2fa protocol v0.1 §5 and §11. A Policy maps Actions to Risk Levels via ordered match rules, with an optional bypass section for signed, time-bounded windows.",
   "type": "object",

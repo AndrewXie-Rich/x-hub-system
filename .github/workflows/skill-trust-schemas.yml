@@ -1,0 +1,30 @@
+name: skill-trust-registry — schemas
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'specs/skill-trust-registry/**'
+      - 'scripts/check_skill_trust_schemas.sh'
+      - '.github/workflows/skill-trust-schemas.yml'
+  pull_request:
+    paths:
+      - 'specs/skill-trust-registry/**'
+      - 'scripts/check_skill_trust_schemas.sh'
+      - '.github/workflows/skill-trust-schemas.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Validate skill-trust-registry schemas and examples
+        run: ./scripts/check_skill_trust_schemas.sh
+      - name: Verify skill-trust-registry example chain consistency
+        run: node specs/skill-trust-registry/scripts/verify_examples.js --example

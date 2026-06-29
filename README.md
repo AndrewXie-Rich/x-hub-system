@@ -53,9 +53,9 @@ open build/X-Hub.app   # pair X-Terminal once Hub is up
 
 **Linux daemon, in flight.** `docker-compose up` deployment, 90-day P0. Track [Status & Roadmap](docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md) for the cutover.
 
-**Spec-only, no X-Hub needed.** If you only want the trust layer above MCP or the per-action confirmation primitive, take just the spec:
+**Spec-only, no X-Hub needed.** If you only want the trust layer for agent tool servers or the per-action confirmation primitive, take just the spec:
 
-- [mcp-trust-registry](specs/mcp-trust-registry/)
+- [skill-trust-registry](specs/skill-trust-registry/)
 - [agent-2fa](specs/agent-2fa/)
 - [hub-receipt](specs/hub-receipt/)
 
@@ -73,8 +73,8 @@ Deep dives: [`docs/REPO_LAYOUT.md`](docs/REPO_LAYOUT.md), [`docs/xhub-hub-archit
 
 Two protocol specs (plus a shared envelope) live as standalone repos for community review. X-Hub-System is their reference implementation:
 
-- [**mcp-trust-registry**](specs/mcp-trust-registry/) — A trust layer above MCP. Stops a "patch update" from silently adding `shell:exec` to an MCP server you trusted yesterday. Schemas, examples, CI validation in repo.
-- [**agent-2fa**](specs/agent-2fa/) — Per-action 2FA for AI agent actions. Touch ID confirmation on a paired device before a destructive command lands. Spec + 4 JSON Schemas + example chain.
+- [**skill-trust-registry**](specs/skill-trust-registry/) — A trust layer for AI agent tool servers (MCP, A2A, OpenAI tools, custom RPC). Stops a "patch update" from silently adding `shell:exec` to a tool server you trusted yesterday. Schemas, examples, CI validation, and a reference Rust proxy in repo.
+- [**agent-2fa**](specs/agent-2fa/) — Per-action 2FA for AI agent actions. Touch ID confirmation on a paired device before a destructive command lands. Local spec mirror here; canonical standalone repo includes the reference Rust proxy.
 - [**hub-receipt**](specs/hub-receipt/) — Shared signed-receipt envelope used by both. Receipts verifiable outside X-Hub; embeddable in commits, IDE metadata, chat.
 
 ## License and commercial

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mcp-trust.org/spec/agent-2fa/v0.1/challenge.schema.json",
+  "$id": "https://agent-2fa.org/spec/v0.1/challenge.schema.json",
   "title": "agent-2fa — Challenge",
   "description": "Schema for a Challenge envelope sent from an Agent to one or more Authorizer Devices, per agent-2fa protocol v0.1 §6.",
   "type": "object",

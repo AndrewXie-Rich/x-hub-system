@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hub-receipt.org/spec/v0.1/receipt-envelope.schema.json",
   "title": "Hub Receipt — Unified Envelope",
-  "description": "Schema for the signed envelope defined by Hub Receipt v0.1. Consumer specifications (mcp-trust-registry session receipts, agent-2fa authorization receipts, and others) extend the envelope by populating subject.domain and claims; this schema constrains only the envelope itself.",
+  "description": "Schema for the signed envelope defined by Hub Receipt v0.1. Consumer specifications (skill-trust-registry session receipts, agent-2fa authorization receipts, and others) extend the envelope by populating subject.domain and claims; this schema constrains only the envelope itself.",
   "type": "object",
   "required": [
     "schema",
@@ -40,7 +40,7 @@
         "domain": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9-]{0,63}$",
-          "description": "Consumer-spec namespace. Each consumer spec registers one domain (e.g. 'mcp-trust', 'agent-2fa')."
+          "description": "Consumer-spec namespace. Each consumer spec registers one domain (e.g. 'skill-trust', 'agent-2fa')."
         },
         "name": {
           "type": "string",

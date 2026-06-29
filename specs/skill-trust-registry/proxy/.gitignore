@@ -1,0 +1,3 @@
+target/
+examples/*.secret.key
+examples/receipt.demo.json
