@@ -1,10 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::thread;
 
 use serde_json::{json, Value};
 use xhub_core::{json_escape, now_ms, path_exists, HubConfig, DAEMON_NAME, SCHEMA_HEALTH_V1};
+use xhub_db::read_shadow_compare_report_summary;
 use xhub_memory::{MemoryIndexSnapshot, RetrievalPlan};
 use xhub_scheduler::{SchedulerSnapshot, SchedulerStore};
 use xhub_skills::{
@@ -28,6 +29,95 @@ use crate::{
     xt_compat,
 };
 
+const PROVIDER_ROUTE_COMPONENT: &str = "provider_route";
+const MODEL_INVENTORY_COMPONENT: &str = "model_inventory";
+const DEFAULT_ROUTE_COMPARE_REPORTS: usize = 10;
+const DEFAULT_ROUTE_COMPARE_MISMATCHES: usize = 0;
+pub(crate) const LEGACY_OBSERVABILITY_MODE: &str = "shadow_http";
+pub(crate) const PRODUCTION_APPLIED_OBSERVABILITY_MODE: &str = "production_applied";
+pub(crate) const HTTP_TRANSPORT_MODE: &str = "http";
+
+#[derive(Debug, Clone)]
+pub(crate) struct CompareEvidenceReadiness {
+    component: String,
+    read_ok: bool,
+    ready: bool,
+    total: i64,
+    matched: i64,
+    mismatched: i64,
+    latest_compared_at_ms: i64,
+    min_compare_reports: i64,
+    max_mismatches: i64,
+    blocker_codes: Vec<String>,
+    read_error: String,
+}
+
+impl CompareEvidenceReadiness {
+    pub(crate) fn to_value(&self) -> Value {
+        json!({
+            "schema_version": "xhub.rust_hub.compare_evidence_readiness.v1",
+            "component": self.component,
+            "read_only": true,
+            "migrations_applied": false,
+            "read_ok": self.read_ok,
+            "ready": self.ready,
+            "decision": if self.ready {
+                "ready"
+            } else if self.read_ok {
+                "not_ready"
+            } else {
+                "unavailable"
+            },
+            "blocker_codes": self.blocker_codes,
+            "read_error": self.read_error,
+            "thresholds": {
+                "min_compare_reports": self.min_compare_reports,
+                "max_mismatches": self.max_mismatches,
+            },
+            "evidence": {
+                "actual_reports": self.total,
+                "required_reports": self.min_compare_reports,
+                "matched_reports": self.matched,
+                "mismatched_reports": self.mismatched,
+                "max_mismatches": self.max_mismatches,
+                "latest_compared_at_ms": self.latest_compared_at_ms,
+            },
+            "checks": [
+                {
+                    "name": format!("{}_compare_evidence_read", self.component),
+                    "ok": self.read_ok,
+                    "blocking": true,
+                },
+                {
+                    "name": format!("{}_min_compare_reports", self.component),
+                    "ok": self.total >= self.min_compare_reports,
+                    "actual": self.total,
+                    "threshold": self.min_compare_reports,
+                    "blocking": true,
+                },
+                {
+                    "name": format!("{}_max_mismatches", self.component),
+                    "ok": self.mismatched <= self.max_mismatches,
+                    "actual": self.mismatched,
+                    "threshold": self.max_mismatches,
+                    "blocking": true,
+                }
+            ],
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProductionAuthorityReadiness {
+    pub(crate) provider_route_in_rust: bool,
+    pub(crate) model_route_in_rust: bool,
+    pub(crate) scheduler_in_rust: bool,
+    pub(crate) memory_writer_in_rust: bool,
+    pub(crate) skills_execution_in_rust: bool,
+    pub(crate) xt_file_ipc_in_rust: bool,
+    pub(crate) local_ml_execution_in_rust: bool,
+}
+
 pub(crate) fn value_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
     let mut current = value;
     for key in path {
@@ -36,13 +126,198 @@ pub(crate) fn value_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Valu
     Some(current)
 }
 
+pub(crate) fn route_authority_observability_mode(
+    provider_route_in_rust: bool,
+    model_route_in_rust: bool,
+) -> &'static str {
+    if provider_route_in_rust && model_route_in_rust {
+        PRODUCTION_APPLIED_OBSERVABILITY_MODE
+    } else {
+        LEGACY_OBSERVABILITY_MODE
+    }
+}
+
+pub(crate) fn current_observability_mode() -> &'static str {
+    route_authority_observability_mode(
+        provider_route_production_authority_enabled(),
+        model_route_production_authority_enabled(),
+    )
+}
+
+pub(crate) fn xt_classic_status_writer_observability_authority(
+    rust_status_writer_applied: bool,
+) -> &'static str {
+    if rust_status_writer_applied {
+        xt_compat::XT_CLASSIC_STATUS_AUTHORITY_PRODUCTION_APPLIED
+    } else {
+        xt_compat::XT_CLASSIC_STATUS_AUTHORITY_LEGACY
+    }
+}
+
+pub(crate) fn compare_evidence_readiness(
+    db_path: &Path,
+    component: &str,
+    min_compare_reports: i64,
+    max_mismatches: i64,
+) -> CompareEvidenceReadiness {
+    let component = component.trim();
+    let min_compare_reports = min_compare_reports.max(0);
+    let max_mismatches = max_mismatches.max(0);
+    match read_shadow_compare_report_summary(db_path, component, 1) {
+        Ok(summary) => {
+            let mut blocker_codes = Vec::new();
+            if summary.total < min_compare_reports {
+                blocker_codes.push(format!("{}_compare_evidence_insufficient", component));
+            }
+            if summary.mismatched > max_mismatches {
+                blocker_codes.push(format!("{}_compare_mismatch_threshold_exceeded", component));
+            }
+            CompareEvidenceReadiness {
+                component: component.to_string(),
+                read_ok: true,
+                ready: blocker_codes.is_empty(),
+                total: summary.total,
+                matched: summary.matched,
+                mismatched: summary.mismatched,
+                latest_compared_at_ms: summary.latest_compared_at_ms,
+                min_compare_reports,
+                max_mismatches,
+                blocker_codes,
+                read_error: String::new(),
+            }
+        }
+        Err(err) => CompareEvidenceReadiness {
+            component: component.to_string(),
+            read_ok: false,
+            ready: false,
+            total: 0,
+            matched: 0,
+            mismatched: 0,
+            latest_compared_at_ms: 0,
+            min_compare_reports,
+            max_mismatches,
+            blocker_codes: vec![format!("{}_compare_evidence_unavailable", component)],
+            read_error: err.to_string(),
+        },
+    }
+}
+
+pub(crate) fn layered_readiness_value(
+    core_ready: bool,
+    provider_evidence: &CompareEvidenceReadiness,
+    model_evidence: &CompareEvidenceReadiness,
+    authority: ProductionAuthorityReadiness,
+) -> Value {
+    let mut serving_blocker_codes = Vec::new();
+    if !core_ready {
+        serving_blocker_codes.push("core_not_ready".to_string());
+    }
+    serving_blocker_codes.extend(provider_evidence.blocker_codes.iter().cloned());
+    serving_blocker_codes.extend(model_evidence.blocker_codes.iter().cloned());
+    let serving_ready = core_ready && provider_evidence.ready && model_evidence.ready;
+
+    let route_authority_coherent =
+        authority.provider_route_in_rust == authority.model_route_in_rust;
+    let route_authority_applied = authority.provider_route_in_rust && authority.model_route_in_rust;
+    let mut cutover_blocker_codes = Vec::new();
+    if !serving_ready {
+        cutover_blocker_codes.push("serving_not_ready".to_string());
+    }
+    if !authority.scheduler_in_rust {
+        cutover_blocker_codes.push("scheduler_production_authority_not_enabled".to_string());
+    }
+    if !route_authority_coherent {
+        cutover_blocker_codes.push("provider_model_production_authority_partial".to_string());
+    }
+    let cutover_ready = serving_ready && authority.scheduler_in_rust && route_authority_coherent;
+    let cutover_state = if !cutover_ready {
+        if !route_authority_coherent {
+            "partial_authority_blocked"
+        } else {
+            "blocked"
+        }
+    } else if route_authority_applied {
+        "applied"
+    } else {
+        "ready_for_apply"
+    };
+
+    json!({
+        "schema_version": "xhub.rust_hub.layered_readiness.v1",
+        "legacy_ready_alias": "core_ready",
+        "core": {
+            "ready": core_ready,
+            "semantics": "daemon dependencies and base Rust kernel surfaces are usable",
+            "blocker_codes": if core_ready {
+                Vec::<String>::new()
+            } else {
+                vec!["core_dependency_not_ready".to_string()]
+            },
+            "checks_source": "top_level_checks",
+        },
+        "serving": {
+            "ready": serving_ready,
+            "semantics": "core is ready and provider/model shadow-compare evidence meets serving thresholds",
+            "blocker_codes": serving_blocker_codes,
+            "provider_route_evidence": provider_evidence.to_value(),
+            "model_inventory_evidence": model_evidence.to_value(),
+        },
+        "cutover": {
+            "ready": cutover_ready,
+            "state": cutover_state,
+            "semantics": "serving evidence is green, scheduler production authority is enabled, and provider/model authority is not partially applied",
+            "blocker_codes": cutover_blocker_codes,
+            "production_authority_change": false,
+            "requires_explicit_apply": cutover_ready && !route_authority_applied,
+            "route_authority_applied": route_authority_applied,
+            "route_authority_coherent": route_authority_coherent,
+            "authority": {
+                "provider_route_in_rust": authority.provider_route_in_rust,
+                "model_route_in_rust": authority.model_route_in_rust,
+                "scheduler_in_rust": authority.scheduler_in_rust,
+                "memory_writer_in_rust": authority.memory_writer_in_rust,
+                "skills_execution_in_rust": authority.skills_execution_in_rust,
+                "xt_file_ipc_in_rust": authority.xt_file_ipc_in_rust,
+                "local_ml_execution_in_rust": authority.local_ml_execution_in_rust,
+            },
+            "checks": [
+                {
+                    "name": "serving_ready",
+                    "ok": serving_ready,
+                    "blocking": true,
+                },
+                {
+                    "name": "scheduler_production_authority",
+                    "ok": authority.scheduler_in_rust,
+                    "blocking": true,
+                },
+                {
+                    "name": "provider_model_production_authority_coherent",
+                    "ok": route_authority_coherent,
+                    "blocking": true,
+                    "detail": "both disabled is ready_for_apply; both enabled is applied; a partial pair fails closed",
+                },
+                {
+                    "name": "provider_model_production_authority_applied",
+                    "ok": route_authority_applied,
+                    "blocking": false,
+                }
+            ],
+        },
+    })
+}
+
 pub(crate) fn health_json(config: &HubConfig) -> String {
     let proto_ok = path_exists(&config.proto_path);
+    let mode = current_observability_mode();
     format!(
-        "{{\"schema_version\":\"{}\",\"ok\":true,\"daemon\":\"{}\",\"version\":\"{}\",\"mode\":\"shadow_http\",\"grpc_compat\":\"not_started\",\"http_addr\":\"{}\",\"proto_ok\":{},\"db_path\":\"{}\"}}\n",
+        "{{\"schema_version\":\"{}\",\"ok\":true,\"daemon\":\"{}\",\"version\":\"{}\",\"mode\":\"{}\",\"legacy_mode\":\"{}\",\"transport_mode\":\"{}\",\"grpc_compat\":\"not_started\",\"http_addr\":\"{}\",\"proto_ok\":{},\"db_path\":\"{}\"}}\n",
         SCHEMA_HEALTH_V1,
         DAEMON_NAME,
         env!("CARGO_PKG_VERSION"),
+        mode,
+        LEGACY_OBSERVABILITY_MODE,
+        HTTP_TRANSPORT_MODE,
         json_escape(&config.http_addr()),
         proto_ok,
         json_escape(&config.db_path.display().to_string())
@@ -85,11 +360,46 @@ pub(crate) fn product_kernel_json_from_readiness(
         value_path_bool(&readiness, &["memory", "canonical_writer_in_rust"]);
     let skills_execution_authority =
         value_path_bool(&readiness, &["skills", "execution_authority_in_rust"]);
+    let legacy_ready = value_path_bool(&readiness, &["ready"]);
+    let core_ready = if readiness.get("core_ready").is_some() {
+        value_path_bool(&readiness, &["core_ready"])
+    } else {
+        legacy_ready
+    };
+    let serving_ready = value_path_bool(&readiness, &["serving_ready"]);
+    let cutover_ready = value_path_bool(&readiness, &["cutover_ready"]);
+    let mode = {
+        let reported = value_path_string(&readiness, &["mode"]);
+        if reported.is_empty() {
+            LEGACY_OBSERVABILITY_MODE.to_string()
+        } else {
+            reported
+        }
+    };
+    let legacy_mode = {
+        let reported = value_path_string(&readiness, &["legacy_mode"]);
+        if reported.is_empty() {
+            LEGACY_OBSERVABILITY_MODE.to_string()
+        } else {
+            reported
+        }
+    };
+    let transport_mode = {
+        let reported = value_path_string(&readiness, &["transport_mode"]);
+        if reported.is_empty() {
+            HTTP_TRANSPORT_MODE.to_string()
+        } else {
+            reported
+        }
+    };
 
     let body = json!({
         "schema_version": "xhub.product_kernel.v1",
         "ok": value_path_bool(&readiness, &["ok"]),
-        "ready": value_path_bool(&readiness, &["ready"]),
+        "ready": legacy_ready,
+        "core_ready": core_ready,
+        "serving_ready": serving_ready,
+        "cutover_ready": cutover_ready,
         "generated_at_ms": generated_at_ms,
         "product": {
             "name": "X-Hub",
@@ -99,7 +409,9 @@ pub(crate) fn product_kernel_json_from_readiness(
             "name": "rust",
             "daemon": DAEMON_NAME,
             "version": value_path_string(&readiness, &["version"]),
-            "mode": value_path_string(&readiness, &["mode"]),
+            "mode": mode,
+            "legacy_mode": legacy_mode,
+            "transport_mode": transport_mode,
             "http_addr": value_path_string(&readiness, &["http_addr"]),
             "http_base_url": format!("http://{}", config.http_addr()),
             "runtime_root": config.root_dir.display().to_string(),
@@ -144,7 +456,12 @@ pub(crate) fn product_kernel_json_from_readiness(
         },
         "readiness": {
             "schema_version": value_path_string(&readiness, &["schema_version"]),
-            "ready": value_path_bool(&readiness, &["ready"]),
+            "ready": legacy_ready,
+            "legacy_ready_alias": "core_ready",
+            "core_ready": core_ready,
+            "serving_ready": serving_ready,
+            "cutover_ready": cutover_ready,
+            "layers": readiness.get("readiness_layers").cloned().unwrap_or_else(|| json!({})),
             "checks": readiness.get("checks").cloned().unwrap_or_else(|| json!([])),
         },
     });
@@ -398,7 +715,8 @@ pub(crate) fn readiness_json(
     let scheduler_authority = scheduler_production_authority_enabled();
     let xt_file_ipc_production_authority =
         xt_file_ipc_production_authority_enabled(xt_file_ipc_production_surface_ready);
-    let ready = proto_ok
+    let mode = route_authority_observability_mode(provider_route_authority, model_route_authority);
+    let core_ready = proto_ok
         && canonical_proto_ok
         && db_parent_ok
         && scheduler_ok
@@ -406,6 +724,58 @@ pub(crate) fn readiness_json(
         && memory_dir_exists
         && skills_catalog_ok
         && (!local_ml_readiness.enabled || local_ml_readiness.ready);
+    let provider_min_compare_reports = env_usize_in_range(
+        "XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MIN_COMPARE_REPORTS",
+        DEFAULT_ROUTE_COMPARE_REPORTS,
+        0,
+        1_000_000,
+    ) as i64;
+    let provider_max_mismatches = env_usize_in_range(
+        "XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MAX_MISMATCHES",
+        DEFAULT_ROUTE_COMPARE_MISMATCHES,
+        0,
+        1_000_000,
+    ) as i64;
+    let model_min_compare_reports = env_usize_in_range(
+        "XHUB_RUST_MODEL_ROUTE_AUTHORITY_MIN_COMPARE_REPORTS",
+        DEFAULT_ROUTE_COMPARE_REPORTS,
+        0,
+        1_000_000,
+    ) as i64;
+    let model_max_mismatches = env_usize_in_range(
+        "XHUB_RUST_MODEL_ROUTE_AUTHORITY_MAX_MISMATCHES",
+        DEFAULT_ROUTE_COMPARE_MISMATCHES,
+        0,
+        1_000_000,
+    ) as i64;
+    let provider_evidence = compare_evidence_readiness(
+        &config.db_path,
+        PROVIDER_ROUTE_COMPONENT,
+        provider_min_compare_reports,
+        provider_max_mismatches,
+    );
+    let model_evidence = compare_evidence_readiness(
+        &config.db_path,
+        MODEL_INVENTORY_COMPONENT,
+        model_min_compare_reports,
+        model_max_mismatches,
+    );
+    let readiness_layers = layered_readiness_value(
+        core_ready,
+        &provider_evidence,
+        &model_evidence,
+        ProductionAuthorityReadiness {
+            provider_route_in_rust: provider_route_authority,
+            model_route_in_rust: model_route_authority,
+            scheduler_in_rust: scheduler_authority,
+            memory_writer_in_rust: memory_writer_authority,
+            skills_execution_in_rust: skills_execution_authority,
+            xt_file_ipc_in_rust: xt_file_ipc_production_authority,
+            local_ml_execution_in_rust: local_ml_readiness.enabled && local_ml_readiness.ready,
+        },
+    );
+    let serving_ready = value_path_bool(&readiness_layers, &["serving", "ready"]);
+    let cutover_ready = value_path_bool(&readiness_layers, &["cutover", "ready"]);
     let scheduler_error = match scheduler_status {
         Ok(_) => String::new(),
         Err(err) => err.to_string(),
@@ -414,11 +784,18 @@ pub(crate) fn readiness_json(
     let body = json!({
         "schema_version": "xhub.rust_hub.readiness.v1",
         "ok": true,
-        "ready": ready,
+        "ready": core_ready,
+        "legacy_ready_alias": "core_ready",
+        "core_ready": core_ready,
+        "serving_ready": serving_ready,
+        "cutover_ready": cutover_ready,
+        "readiness_layers": readiness_layers,
         "generated_at_ms": generated_at_ms,
         "daemon": DAEMON_NAME,
         "version": env!("CARGO_PKG_VERSION"),
-        "mode": "shadow_http",
+        "mode": mode,
+        "legacy_mode": LEGACY_OBSERVABILITY_MODE,
+        "transport_mode": HTTP_TRANSPORT_MODE,
         "http_addr": config.http_addr(),
         "performance": {
             "readiness_cache_ttl_ms": readiness_cache_ttl_ms,
@@ -603,7 +980,8 @@ pub(crate) fn readiness_json(
             "xt_classic_hub_grpc_probe_http": true,
             "xt_classic_hub_compat_authority": "preflight_only",
             "xt_classic_hub_status_writer_http": true,
-            "xt_classic_hub_status_writer_authority": "explicit_cutover_only",
+            "xt_classic_hub_status_writer_authority": xt_classic_status_writer_observability_authority(xt_file_ipc_production_surface_ready),
+            "xt_classic_hub_status_writer_legacy_authority": xt_compat::XT_CLASSIC_STATUS_AUTHORITY_LEGACY,
             "xt_file_ipc_runtime_authority_sync_http": true,
             "xt_file_ipc_shadow_responder_http": true,
             "xt_file_ipc_shadow_drain_http": true,

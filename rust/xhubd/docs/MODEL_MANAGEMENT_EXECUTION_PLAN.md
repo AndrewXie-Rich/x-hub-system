@@ -2,7 +2,7 @@
 
 Status: active-proposed
 Updated: 2026-05-18
-Target root: `/Users/andrew.xie/Documents/AX/rust/rust hub`
+Target root: `/Users/andrew.xie/Documents/AX/x-hub-system/rust/xhubd`
 Source plan: `/Users/andrew.xie/Documents/AX/x-hub-system/docs/memory-new/xhub-remote-paid-and-local-model-management-execution-plan-v1.md`
 
 ## 0. Purpose

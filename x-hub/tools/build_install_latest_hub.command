@@ -9,6 +9,8 @@ CANONICAL_RUST_SOURCE_ROOT="$SOURCE_ROOT/rust/xhubd"
 RUST_SOURCE_ROOT="${XHUB_RUST_HUB_SOURCE_ROOT:-$CANONICAL_RUST_SOURCE_ROOT}"
 BUILD_APP_COMMAND="$SCRIPT_DIR/build_hub_app.command"
 INSTALL_APP_COMMAND="$SCRIPT_DIR/install_hub_app.command"
+MEMORY_GATEWAY_EXECUTION_RELEASE_GATE="$SCRIPT_DIR/rust_memory_gateway_execution_release_gate.js"
+BUILD_SNAPSHOT_DIR="${XHUB_BUILD_SNAPSHOT_DIR:-$SOURCE_ROOT/build/.xhub-build-src}"
 APP_DEST="/Applications/X-Hub.app"
 ACTIVE_PACKAGES_ROOT="${XHUB_RUST_ACTIVE_PACKAGES_ROOT:-$HOME/Library/Application Support/AX/rust-hub/packages}"
 ACTIVE_CURRENT_LINK="${XHUB_RUST_ACTIVE_CURRENT_LINK:-$HOME/Library/Application Support/AX/rust-hub/current}"
@@ -23,10 +25,10 @@ ENABLE_MEMORY_CONTEXT_GATEWAY="${XHUB_ENABLE_RUST_MEMORY_CONTEXT_GATEWAY:-$ENABL
 ENABLE_MEMORY_CONTEXT_GATEWAY_REQUIRE="${XHUB_ENABLE_RUST_MEMORY_CONTEXT_GATEWAY_REQUIRE:-0}"
 ENABLE_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW="${XHUB_ENABLE_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW:-$ENABLE_MEMORY_CONTEXT_GATEWAY}"
 ENABLE_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW_REQUIRE="${XHUB_ENABLE_RUST_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW_REQUIRE:-0}"
-ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTION_ADMISSION="${XHUB_ENABLE_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTION_ADMISSION:-$ENABLE_MEMORY_GATEWAY_MODEL_CALL_PLAN_SHADOW}"
+ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTION_ADMISSION="${XHUB_ENABLE_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTION_ADMISSION:-0}"
 ENABLE_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR="${XHUB_ENABLE_RUST_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR:-0}"
 ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_APPLY="${XHUB_ENABLE_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_APPLY:-0}"
-ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_ONLY="${XHUB_ENABLE_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_ONLY:-$ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_APPLY}"
+ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_ONLY="${XHUB_ENABLE_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_ONLY:-0}"
 MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_PROJECT_ID="${XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_PROJECT_ID:-xt-memory-gateway-live-canary}"
 MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_REQUEST_PREFIX="${XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_REQUEST_PREFIX:-memory_gateway_live_canary_}"
 MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_AUDIT_PREFIX="${XHUB_RUST_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_AUDIT_PREFIX:-memory_gateway_live_canary:}"
@@ -38,12 +40,14 @@ ENABLE_RUST_ML_EXECUTION="${XHUB_ENABLE_RUST_ML_EXECUTION:-0}"
 APPLY_ROUTE_PREP="${XHUB_APPLY_RUST_ROUTE_PREP:-1}"
 OPEN_AFTER_INSTALL="${XHUB_OPEN_AFTER_INSTALL:-1}"
 XT_LIVE_BASE_DIR="${XHUB_RUST_XT_LIVE_BASE_DIR:-$HOME/RELFlowHub}"
+CUTOVER_PREP_WARMUP_CYCLES="${XHUB_RUST_CUTOVER_PREP_WARMUP_CYCLES:-1}"
 CUTOVER_PREP_SUSTAINED_CYCLES="${XHUB_RUST_CUTOVER_PREP_SUSTAINED_CYCLES:-3}"
 CUTOVER_PREP_SUSTAINED_INTERVAL_MS="${XHUB_RUST_CUTOVER_PREP_SUSTAINED_INTERVAL_MS:-250}"
 CUTOVER_PREP_SUSTAINED_TIMEOUT_MS="${XHUB_RUST_CUTOVER_PREP_SUSTAINED_TIMEOUT_MS:-45000}"
 CUTOVER_MAX_SLOW_REQUESTS="${XHUB_RUST_CUTOVER_MAX_SLOW_REQUESTS:-0}"
 CUTOVER_MAX_CYCLE_MS="${XHUB_RUST_CUTOVER_MAX_CYCLE_MS:-120000}"
 CUTOVER_XT_HEARTBEAT_SOAK_MS="${XHUB_RUST_XT_HEARTBEAT_SOAK_MS:-12000}"
+LIVE_ROUTE_COMPARE_REPORTS=10
 RUST_DAEMON_INSTALL_PROFILE="${XHUB_RUST_INSTALL_DAEMON_PROFILE:-}"
 RUST_DAEMON_INSTALL_LABEL="${XHUB_RUST_INSTALL_DAEMON_LABEL:-}"
 RUST_DAEMON_INSTALL_RUNTIME_ROOT="${XHUB_RUST_INSTALL_DAEMON_RUNTIME_ROOT:-}"
@@ -295,6 +299,21 @@ validate_rust_package_dir() {
   exit 1
 }
 
+validate_memory_gateway_execution_release() {
+  local package_dir="$1"
+  if [ ! -f "$MEMORY_GATEWAY_EXECUTION_RELEASE_GATE" ]; then
+    echo "[ERROR] Memory Gateway execution release gate is missing:" >&2
+    echo "  $MEMORY_GATEWAY_EXECUTION_RELEASE_GATE" >&2
+    return 1
+  fi
+  node "$MEMORY_GATEWAY_EXECUTION_RELEASE_GATE" \
+    --manifest "$package_dir/provenance/capabilities.json" \
+    --execution-admission "$ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTION_ADMISSION" \
+    --local-executor "$ENABLE_MEMORY_GATEWAY_MODEL_CALL_LOCAL_EXECUTOR" \
+    --execute-apply "$ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_APPLY" \
+    --canary-only "$ENABLE_MEMORY_GATEWAY_MODEL_CALL_EXECUTE_CANARY_ONLY"
+}
+
 deploy_active_root_copy() {
   local label="$1"
   local embedded_root="$2"
@@ -416,22 +435,45 @@ activate_embedded_rust_root() {
         --apply \
         --target-root "$ACTIVE_ROOT"
 
+    run_step "Restart Rust Hub launchd daemon with applied authority-prep env" \
+      install_rust_launchd_daemon
+
     if is_enabled "$ENABLE_PROVIDER_MODEL_PRODUCTION"; then
+      run_step "Refresh provider/model compare evidence in the live daemon DB" \
+        refresh_live_route_compare_evidence
+
+      run_step "Require live serving and cutover readiness before production apply" \
+        verify_live_layered_readiness
+
       run_step "Relaunch X-Hub.app for provider/model prep guard" relaunch_xhub_app
+
+      local prep_guard_common_args=(
+        --interval-ms "$CUTOVER_PREP_SUSTAINED_INTERVAL_MS"
+        --timeout-ms "$CUTOVER_PREP_SUSTAINED_TIMEOUT_MS"
+        --rust-hub-root "$ACTIVE_ROOT"
+        --max-slow-requests "$CUTOVER_MAX_SLOW_REQUESTS"
+        --max-cycle-ms "$CUTOVER_MAX_CYCLE_MS"
+        --model-remote-runs 1
+        --model-local-runs 1
+        --scheduler-gate-mode applied
+      )
+      prep_guard_common_args+=("${memory_skills_guard_args[@]}")
+
+      if [ "$CUTOVER_PREP_WARMUP_CYCLES" != "0" ]; then
+        if ! run_step "Warm provider/model route guards after cold launch" \
+          env XHUB_SYSTEM_ROOT="$SOURCE_ROOT" \
+          bash "$ACTIVE_ROOT/tools/route_authority_prep_sustained_guard.command" \
+            --cycles "$CUTOVER_PREP_WARMUP_CYCLES" \
+            "${prep_guard_common_args[@]}"; then
+          echo "[warn] Cold-launch warm-up guard was not green; the strict sustained guard remains authoritative." >&2
+        fi
+      fi
 
       run_step "Run provider/model route sustained cutover guard" \
         env XHUB_SYSTEM_ROOT="$SOURCE_ROOT" \
         bash "$ACTIVE_ROOT/tools/route_authority_prep_sustained_guard.command" \
           --cycles "$CUTOVER_PREP_SUSTAINED_CYCLES" \
-          --interval-ms "$CUTOVER_PREP_SUSTAINED_INTERVAL_MS" \
-          --timeout-ms "$CUTOVER_PREP_SUSTAINED_TIMEOUT_MS" \
-          --rust-hub-root "$ACTIVE_ROOT" \
-          --max-slow-requests "$CUTOVER_MAX_SLOW_REQUESTS" \
-	          --max-cycle-ms "$CUTOVER_MAX_CYCLE_MS" \
-	          --model-remote-runs 1 \
-	          --model-local-runs 1 \
-	          --scheduler-gate-mode applied \
-	          ${memory_skills_guard_args[@]+"${memory_skills_guard_args[@]}"}
+          "${prep_guard_common_args[@]}"
 
       local prep_sustained_report=""
       prep_sustained_report="$(latest_prep_sustained_report "$ACTIVE_ROOT")"
@@ -459,6 +501,9 @@ activate_embedded_rust_root() {
 
       run_step "Restart Rust Hub launchd daemon with live env" \
         install_rust_launchd_daemon
+    elif is_enabled "$ENABLE_PROVIDER_MODEL_PRODUCTION"; then
+      run_step "Restart Rust Hub launchd daemon with provider/model production env" \
+        install_rust_launchd_daemon
     fi
 
     run_step "Relaunch X-Hub.app with Rust authority env" relaunch_xhub_app
@@ -470,6 +515,9 @@ activate_embedded_rust_root() {
 	          --http-base-url "http://127.0.0.1:50151" \
 	          --allow-xt-file-ipc-production \
 	          ${memory_skills_guard_args[@]+"${memory_skills_guard_args[@]}"}
+
+      run_step "Verify final live serving and cutover readiness" \
+        verify_live_layered_readiness
     fi
 
     if is_enabled "$ENABLE_XT_LIVE_CUTOVER"; then
@@ -586,6 +634,90 @@ install_rust_launchd_daemon() {
     fi
     return 1
   fi
+}
+
+refresh_live_route_compare_evidence() {
+  local profile=""
+  profile="$(detect_rust_daemon_profile)"
+  local runtime_root="${RUST_DAEMON_INSTALL_RUNTIME_ROOT:-$(default_daemon_runtime_root "$profile")}"
+  local db_path="$runtime_root/data/hub.sqlite3"
+  local runtime_base_dir="$runtime_root/runtime"
+  local node_source_dir="$BUILD_SNAPSHOT_DIR/x-hub/grpc-server/hub_grpc_server"
+
+  if [ ! -d "$runtime_base_dir" ]; then
+    echo "[ERROR] Live Rust daemon runtime directory is missing: $runtime_base_dir" >&2
+    return 1
+  fi
+  if [ ! -f "$node_source_dir/src/services.js" ] || [ ! -d "$node_source_dir/node_modules" ]; then
+    echo "[ERROR] Frozen Node Hub evidence source is incomplete: $node_source_dir" >&2
+    echo "[ERROR] Rebuild X-Hub.app so the frozen source snapshot contains npm dependencies." >&2
+    return 1
+  fi
+
+  echo "[evidence] daemon_profile=$profile" >&2
+  echo "[evidence] live_db=$db_path" >&2
+  echo "[evidence] live_runtime=$runtime_base_dir" >&2
+  echo "[evidence] frozen_source_root=$BUILD_SNAPSHOT_DIR" >&2
+
+  env \
+    XHUB_SYSTEM_ROOT="$BUILD_SNAPSHOT_DIR" \
+    HUB_DB_PATH="$db_path" \
+    bash "$ACTIVE_ROOT/tools/provider_route_shadow_compare_runner.command" \
+      --runs "$LIVE_ROUTE_COMPARE_REPORTS" \
+      --min-compare-reports "$LIVE_ROUTE_COMPARE_REPORTS" \
+      --max-mismatches 0 \
+      --db-path "$db_path" \
+      --continue-after-ready \
+      --expect-ready \
+      --expect-zero-mismatch
+
+  env XHUB_SYSTEM_ROOT="$BUILD_SNAPSHOT_DIR" \
+    bash "$ACTIVE_ROOT/tools/model_inventory_shadow_compare_runner.command" \
+      --runs "$LIVE_ROUTE_COMPARE_REPORTS" \
+      --runtime-base-dir "$runtime_base_dir" \
+      --use-existing-runtime \
+      --db-path "$db_path" \
+      --min-compare-reports "$LIVE_ROUTE_COMPARE_REPORTS" \
+      --max-mismatches 0 \
+      --continue-after-ready \
+      --expect-ready \
+      --expect-zero-mismatch
+}
+
+verify_live_layered_readiness() {
+  local profile=""
+  profile="$(detect_rust_daemon_profile)"
+  local label="${RUST_DAEMON_INSTALL_LABEL:-com.ax.xhubd.$profile}"
+  local runtime_root="${RUST_DAEMON_INSTALL_RUNTIME_ROOT:-$(default_daemon_runtime_root "$profile")}"
+  local install_plist_path=""
+  install_plist_path="$(default_daemon_install_plist_path "$profile" "$label")"
+  local access_key_file=""
+  access_key_file="$(default_daemon_access_key_file "$profile" "$install_plist_path" "$runtime_root")"
+  local ready_args=(
+    ready
+    --profile "$profile"
+    --launchd-label "$label"
+    --launchd-runtime-root "$runtime_root"
+    --install-plist-path "$install_plist_path"
+    --require-serving-ready
+    --require-cutover-ready
+  )
+  if [ -n "$access_key_file" ] && [ -f "$access_key_file" ]; then
+    ready_args+=(--access-key-file "$access_key_file")
+  fi
+
+  local attempt=1
+  while [ "$attempt" -le 8 ]; do
+    if bash "$ACTIVE_ROOT/tools/xhubd_daemon.command" "${ready_args[@]}"; then
+      return 0
+    fi
+    if [ "$attempt" -lt 8 ]; then
+      echo "[readiness] Live layered readiness is not fresh yet; retry $attempt/8." >&2
+      sleep 1
+    fi
+    attempt=$((attempt + 1))
+  done
+  return 1
 }
 
 latest_prep_sustained_report() {
@@ -878,6 +1010,8 @@ run_step "Package latest Rust Hub" bash "$RUST_SOURCE_ROOT/tools/package_rust_hu
 RUST_PACKAGE_DIR="$(latest_rust_package_dir)"
 validate_rust_package_dir "$RUST_PACKAGE_DIR"
 echo "[rust] Latest package: $RUST_PACKAGE_DIR"
+run_step "Validate Memory Gateway execution release capabilities" \
+  validate_memory_gateway_execution_release "$RUST_PACKAGE_DIR"
 
 run_step "Build X-Hub.app with embedded Rust Hub" \
   env \

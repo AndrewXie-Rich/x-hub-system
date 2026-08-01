@@ -14,7 +14,7 @@ cargo build --release -p xhubd
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 DIST_DIR="$ROOT_DIR/dist/rust-hub-$STAMP"
-mkdir -p "$DIST_DIR/bin" "$DIST_DIR/config" "$DIST_DIR/assets/proto" "$DIST_DIR/migrations" "$DIST_DIR/tools" "$DIST_DIR/docs" "$DIST_DIR/skills"
+mkdir -p "$DIST_DIR/bin" "$DIST_DIR/config" "$DIST_DIR/assets/proto" "$DIST_DIR/migrations" "$DIST_DIR/tools" "$DIST_DIR/docs" "$DIST_DIR/skills" "$DIST_DIR/provenance"
 
 cp "$ROOT_DIR/target/release/xhubd" "$DIST_DIR/bin/xhubd"
 cp "$ROOT_DIR/README.md" "$DIST_DIR/README.md"
@@ -22,6 +22,7 @@ cp "$ROOT_DIR/config/default.toml" "$DIST_DIR/config/default.toml"
 cp "$ROOT_DIR"/config/daemon_profile*.json "$DIST_DIR/config/"
 cp "$ROOT_DIR/assets/proto/hub_protocol_v1.proto" "$DIST_DIR/assets/proto/hub_protocol_v1.proto"
 cp "$ROOT_DIR"/migrations/*.sql "$DIST_DIR/migrations/"
+cp "$ROOT_DIR/provenance/capabilities.json" "$DIST_DIR/provenance/capabilities.json"
 cp "$ROOT_DIR"/docs/*.md "$DIST_DIR/docs/"
 cp -R "$ROOT_DIR"/skills/. "$DIST_DIR/skills/"
 cp "$ROOT_DIR/tools/run_packaged_rust_hub.command" "$DIST_DIR/tools/run_rust_hub.command"
@@ -354,5 +355,11 @@ chmod +x "$DIST_DIR/tools/run_rust_hub.command" \
   "$DIST_DIR/tools/provider_route_cutover_readiness_runner.command" \
   "$DIST_DIR/tools/provider_route_authority_plan_runner.js" \
   "$DIST_DIR/tools/provider_route_authority_plan_runner.command"
+
+PROVENANCE_TMP="$DIST_DIR/provenance.json.tmp"
+"$DIST_DIR/bin/xhubd" provenance --package-manifest > "$PROVENANCE_TMP"
+mv "$PROVENANCE_TMP" "$DIST_DIR/provenance.json"
+XHUB_PROVENANCE_MANIFEST="$DIST_DIR/provenance.json" \
+  "$DIST_DIR/bin/xhubd" provenance >/dev/null
 
 echo "Packaged Rust Hub at: $DIST_DIR"

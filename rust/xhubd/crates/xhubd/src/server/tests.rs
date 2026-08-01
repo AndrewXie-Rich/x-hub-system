@@ -124,6 +124,62 @@ fn strict_readiness_cache_does_not_use_stale_body() {
     let body = readiness_json_cached(&state);
     assert_ne!(body, "{\"cached\":true}\n");
     assert!(body.contains("\"schema_version\":\"xhub.rust_hub.readiness.v1\""));
+    let value: Value = serde_json::from_str(&body).expect("layered readiness json should parse");
+    assert_eq!(value["ready"], value["core_ready"]);
+    assert_eq!(value["legacy_ready_alias"], "core_ready");
+    assert_eq!(
+        value["serving_ready"],
+        value["readiness_layers"]["serving"]["ready"]
+    );
+    assert_eq!(
+        value["cutover_ready"],
+        value["readiness_layers"]["cutover"]["ready"]
+    );
+    assert_eq!(value["legacy_mode"], LEGACY_OBSERVABILITY_MODE);
+    assert_eq!(value["transport_mode"], HTTP_TRANSPORT_MODE);
+}
+
+#[test]
+fn route_authority_observability_mode_requires_coherent_applied_pair() {
+    assert_eq!(
+        route_authority_observability_mode(false, false),
+        LEGACY_OBSERVABILITY_MODE
+    );
+    assert_eq!(
+        route_authority_observability_mode(true, false),
+        LEGACY_OBSERVABILITY_MODE
+    );
+    assert_eq!(
+        route_authority_observability_mode(false, true),
+        LEGACY_OBSERVABILITY_MODE
+    );
+    assert_eq!(
+        route_authority_observability_mode(true, true),
+        PRODUCTION_APPLIED_OBSERVABILITY_MODE
+    );
+}
+
+#[test]
+fn xt_status_writer_observability_authority_keeps_legacy_alias_and_applied_truth() {
+    assert_eq!(
+        xt_classic_status_writer_observability_authority(false),
+        crate::xt_compat::XT_CLASSIC_STATUS_AUTHORITY_LEGACY
+    );
+    assert_eq!(
+        xt_classic_status_writer_observability_authority(true),
+        crate::xt_compat::XT_CLASSIC_STATUS_AUTHORITY_PRODUCTION_APPLIED
+    );
+}
+
+#[test]
+fn health_contract_reports_current_mode_with_legacy_transport_aliases() {
+    let config = test_config(None, false);
+    let value: Value =
+        serde_json::from_str(&health_json(&config)).expect("health json should parse");
+
+    assert_eq!(value["mode"], current_observability_mode());
+    assert_eq!(value["legacy_mode"], LEGACY_OBSERVABILITY_MODE);
+    assert_eq!(value["transport_mode"], HTTP_TRANSPORT_MODE);
 }
 
 #[test]
@@ -133,8 +189,17 @@ fn product_kernel_contract_declares_rust_kernel_and_swift_shell() {
         "schema_version": "xhub.rust_hub.readiness.v1",
         "ok": true,
         "ready": true,
+        "core_ready": true,
+        "serving_ready": true,
+        "cutover_ready": false,
+        "readiness_layers": {
+            "schema_version": "xhub.rust_hub.layered_readiness.v1",
+            "cutover": {"ready": false, "state": "ready_for_apply"}
+        },
         "version": "0.1.0",
-        "mode": "shadow_http",
+        "mode": "production_applied",
+        "legacy_mode": "shadow_http",
+        "transport_mode": "http",
         "http_addr": "127.0.0.1:50151",
         "network": {
             "public_base_url": "https://hub.example.com",
@@ -170,12 +235,26 @@ fn product_kernel_contract_declares_rust_kernel_and_swift_shell() {
     let value: Value = serde_json::from_str(&body).expect("product kernel json should parse");
 
     assert_eq!(value["schema_version"], "xhub.product_kernel.v1");
+    assert_eq!(value["ready"], true);
+    assert_eq!(value["core_ready"], true);
+    assert_eq!(value["serving_ready"], true);
+    assert_eq!(value["cutover_ready"], false);
+    assert_eq!(
+        value["readiness"]["layers"]["schema_version"],
+        "xhub.rust_hub.layered_readiness.v1"
+    );
     assert_eq!(value["product"]["name"], "X-Hub");
     assert_eq!(
         value["product"]["boundary"],
         "rust_product_kernel_swift_shell"
     );
     assert_eq!(value["kernel"]["name"], "rust");
+    assert_eq!(
+        value["kernel"]["mode"],
+        PRODUCTION_APPLIED_OBSERVABILITY_MODE
+    );
+    assert_eq!(value["kernel"]["legacy_mode"], LEGACY_OBSERVABILITY_MODE);
+    assert_eq!(value["kernel"]["transport_mode"], HTTP_TRANSPORT_MODE);
     assert_eq!(value["shell"]["name"], "swift");
     assert_eq!(value["authority"]["memory_writer_in_rust"], true);
     assert_eq!(value["authority"]["skills_execution_in_rust"], true);
@@ -186,6 +265,139 @@ fn product_kernel_contract_declares_rust_kernel_and_swift_shell() {
     assert_eq!(value["authority"]["rust_browser_product_ui"], false);
     assert_eq!(value["network"]["cross_network_ready"], true);
     assert_eq!(value["network"]["domain_public_endpoint_ready"], true);
+}
+
+#[test]
+fn product_kernel_keeps_mode_aliases_for_legacy_readiness_payloads() {
+    let config = test_config(None, false);
+    let readiness = json!({
+        "schema_version": "xhub.rust_hub.readiness.v1",
+        "ok": true,
+        "ready": true,
+        "mode": "shadow_http"
+    })
+    .to_string();
+
+    let body = product_kernel_json_from_readiness(&config, readiness.as_str());
+    let value: Value = serde_json::from_str(&body).expect("product kernel json should parse");
+
+    assert_eq!(value["kernel"]["mode"], LEGACY_OBSERVABILITY_MODE);
+    assert_eq!(value["kernel"]["legacy_mode"], LEGACY_OBSERVABILITY_MODE);
+    assert_eq!(value["kernel"]["transport_mode"], HTTP_TRANSPORT_MODE);
+}
+
+#[test]
+fn compare_evidence_readiness_is_read_only_and_exposes_zero_of_ten() {
+    let db_path = std::env::temp_dir().join(format!(
+        "xhub_layered_readiness_missing_{}_{}.sqlite3",
+        std::process::id(),
+        now_ms()
+    ));
+    assert!(!db_path.exists());
+
+    let evidence = compare_evidence_readiness(&db_path, "provider_route", 10, 0);
+    let value = evidence.to_value();
+
+    assert!(
+        !db_path.exists(),
+        "aggregate readiness must not create the DB"
+    );
+    assert_eq!(value["read_only"], true);
+    assert_eq!(value["migrations_applied"], false);
+    assert_eq!(value["ready"], false);
+    assert_eq!(value["evidence"]["actual_reports"], 0);
+    assert_eq!(value["evidence"]["required_reports"], 10);
+    assert_eq!(
+        value["blocker_codes"][0],
+        "provider_route_compare_evidence_insufficient"
+    );
+}
+
+#[test]
+fn layered_readiness_distinguishes_serving_candidate_partial_and_applied_cutover() {
+    let db_path = std::env::temp_dir().join(format!(
+        "xhub_layered_readiness_states_{}_{}.sqlite3",
+        std::process::id(),
+        now_ms()
+    ));
+    let provider_blocked = compare_evidence_readiness(&db_path, "provider_route", 10, 0);
+    let model_blocked = compare_evidence_readiness(&db_path, "model_inventory", 10, 0);
+    let provider = compare_evidence_readiness(&db_path, "provider_route", 0, 0);
+    let model = compare_evidence_readiness(&db_path, "model_inventory", 0, 0);
+    let base_authority = ProductionAuthorityReadiness {
+        provider_route_in_rust: false,
+        model_route_in_rust: false,
+        scheduler_in_rust: true,
+        memory_writer_in_rust: true,
+        skills_execution_in_rust: true,
+        xt_file_ipc_in_rust: false,
+        local_ml_execution_in_rust: true,
+    };
+
+    let evidence_blocked =
+        layered_readiness_value(true, &provider_blocked, &model_blocked, base_authority);
+    assert_eq!(evidence_blocked["core"]["ready"], true);
+    assert_eq!(evidence_blocked["serving"]["ready"], false);
+    assert_eq!(evidence_blocked["cutover"]["ready"], false);
+    assert!(evidence_blocked["serving"]["blocker_codes"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("provider_route_compare_evidence_insufficient")));
+    assert!(evidence_blocked["serving"]["blocker_codes"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("model_inventory_compare_evidence_insufficient")));
+
+    let candidate = layered_readiness_value(true, &provider, &model, base_authority);
+    assert_eq!(candidate["core"]["ready"], true);
+    assert_eq!(candidate["serving"]["ready"], true);
+    assert_eq!(candidate["cutover"]["ready"], true);
+    assert_eq!(candidate["cutover"]["state"], "ready_for_apply");
+    assert_eq!(candidate["cutover"]["requires_explicit_apply"], true);
+    assert_eq!(candidate["cutover"]["production_authority_change"], false);
+    assert_eq!(
+        route_authority_observability_mode(
+            base_authority.provider_route_in_rust,
+            base_authority.model_route_in_rust
+        ),
+        LEGACY_OBSERVABILITY_MODE
+    );
+
+    let partial = layered_readiness_value(
+        true,
+        &provider,
+        &model,
+        ProductionAuthorityReadiness {
+            provider_route_in_rust: true,
+            ..base_authority
+        },
+    );
+    assert_eq!(partial["serving"]["ready"], true);
+    assert_eq!(partial["cutover"]["ready"], false);
+    assert_eq!(partial["cutover"]["state"], "partial_authority_blocked");
+    assert!(partial["cutover"]["blocker_codes"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("provider_model_production_authority_partial")));
+
+    let applied = layered_readiness_value(
+        true,
+        &provider,
+        &model,
+        ProductionAuthorityReadiness {
+            provider_route_in_rust: true,
+            model_route_in_rust: true,
+            ..base_authority
+        },
+    );
+    assert_eq!(applied["cutover"]["ready"], true);
+    assert_eq!(applied["cutover"]["state"], "applied");
+    assert_eq!(applied["cutover"]["route_authority_applied"], true);
+    assert_eq!(applied["cutover"]["requires_explicit_apply"], false);
+    assert_eq!(
+        route_authority_observability_mode(true, true),
+        PRODUCTION_APPLIED_OBSERVABILITY_MODE
+    );
 }
 
 #[test]

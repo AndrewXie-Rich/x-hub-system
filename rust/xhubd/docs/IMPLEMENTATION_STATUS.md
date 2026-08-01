@@ -1,6 +1,11 @@
 # Rust Hub Implementation Status
 
-Updated: 2026-05-14
+Updated: 2026-08-01 (canonical-root note; historical work claims retained)
+
+> Canonical-root update: current Rust work belongs in `rust/xhubd/` and current
+> XT work belongs in `x-terminal/`, both under `x-hub-system`. Dated work claims
+> below retain the paths and runtime facts observed at the time; they must not
+> be interpreted as current source-root authority.
 
 ## Active Slice
 
@@ -1526,8 +1531,8 @@ cargo run --bin xhubd -- provider route --model-id gpt-4o
 cargo run --bin xhubd -- provider route --request-json '{"model_id":"claude-3.5-sonnet","provider":"claude","now_ms":1000}'
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_provider_route_shadow_compare.test.js
 node x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_provider_route_shadow_compare_service_hook.test.js
-bash "rust/rust hub/tools/provider_route_shadow_compare_smoke.command" --model-id gpt-4o
-bash "rust/rust hub/tools/provider_route_shadow_compare_runner.command" --runs 10 --expect-ready --expect-zero-mismatch
+bash "rust/xhubd/tools/provider_route_shadow_compare_smoke.command" --model-id gpt-4o
+bash "rust/xhubd/tools/provider_route_shadow_compare_runner.command" --runs 10 --expect-ready --expect-zero-mismatch
 cargo run -p xhubd -- doctor
 cargo run -p xhubd -- serve-grpc
 bash tools/run_rust_hub.command migrate
@@ -1565,8 +1570,8 @@ node ../../x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_lea
 node ../../x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_bridge.test.js
 node ../../x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_shadow_compare.test.js
 node ../../x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_shadow_compare_service_hook.test.js
-node --input-type=module -e "import { createSchedulerStatusBridge } from './x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_bridge.js'; const bridge = createSchedulerStatusBridge({ env: { XHUB_RUST_SCHEDULER_STATUS_READ: '1', XHUB_RUST_HUB_ROOT: '/Users/andrew.xie/Documents/AX/rust/rust hub' } }); console.log(JSON.stringify(bridge.maybeReadStatus({ includeQueueItems: false, fallback: { queue_depth: 0, in_flight_total: 0 } })));"
-node --input-type=module -e "import { createSchedulerLeaseShadowBridge } from './x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_lease_shadow_bridge.js'; const id='live_node_shadow_'+process.pid+'_'+Date.now(); const bridge=createSchedulerLeaseShadowBridge({ env: { XHUB_RUST_SCHEDULER_LEASE_SHADOW:'1', XHUB_RUST_HUB_ROOT:'/Users/andrew.xie/Documents/AX/rust/rust hub', XHUB_RUST_SCHEDULER_LEASE_SHADOW_TIMEOUT_MS:'10000' } }); bridge.mirrorImmediateAcquire({ requestId:id, scopeKey:'project:live-node-shadow', project_id:'live-node-shadow', device_id:'device-live' }); bridge.mirrorRelease({ requestId:id }); await bridge.flush(); console.log(JSON.stringify({ok:true,state_size:bridge._state.size,request_id:id}));"
+node --input-type=module -e "import { createSchedulerStatusBridge } from './x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_bridge.js'; const bridge = createSchedulerStatusBridge({ env: { XHUB_RUST_SCHEDULER_STATUS_READ: '1', XHUB_RUST_HUB_ROOT: '/Users/andrew.xie/Documents/AX/x-hub-system/rust/xhubd' } }); console.log(JSON.stringify(bridge.maybeReadStatus({ includeQueueItems: false, fallback: { queue_depth: 0, in_flight_total: 0 } })));"
+node --input-type=module -e "import { createSchedulerLeaseShadowBridge } from './x-hub-system/x-hub/grpc-server/hub_grpc_server/src/rust_scheduler_lease_shadow_bridge.js'; const id='live_node_shadow_'+process.pid+'_'+Date.now(); const bridge=createSchedulerLeaseShadowBridge({ env: { XHUB_RUST_SCHEDULER_LEASE_SHADOW:'1', XHUB_RUST_HUB_ROOT:'/Users/andrew.xie/Documents/AX/x-hub-system/rust/xhubd', XHUB_RUST_SCHEDULER_LEASE_SHADOW_TIMEOUT_MS:'10000' } }); bridge.mirrorImmediateAcquire({ requestId:id, scopeKey:'project:live-node-shadow', project_id:'live-node-shadow', device_id:'device-live' }); bridge.mirrorRelease({ requestId:id }); await bridge.flush(); console.log(JSON.stringify({ok:true,state_size:bridge._state.size,request_id:id}));"
 bash tools/xhubd_daemon.command env
 bash tools/xhubd_daemon.command self-test
 bash tools/daemon_ops_report.command --require-ready --max-log-bytes 4096

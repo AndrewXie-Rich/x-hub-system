@@ -5,10 +5,13 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const SCRIPT_DIR = path.dirname(SCRIPT_PATH);
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const DEFAULT_HTTP_BASE_URL = 'http://127.0.0.1:50151';
 const FALLBACK_LIVE_BASE_DIR = path.join(process.env.HOME || '', 'Library', 'Group Containers', 'group.rel.flowhub');
+export const LEGACY_RUST_HUB_STATUS_AUTHORITY = 'explicit_cutover_only';
+export const APPLIED_RUST_HUB_STATUS_AUTHORITY = 'rust_xt_file_ipc_production_applied';
 const STATUS_READER_SCRIPT = `
 const fs = require('node:fs');
 const [statusPath, ipcPath, baseDir, nowRaw] = process.argv.slice(1);
@@ -65,6 +68,29 @@ function parseIntInRange(value, fallback, min, max) {
 
 function safeString(value) {
   return String(value ?? '').trim();
+}
+
+export function validateRustHubStatusAuthority(value) {
+  const authority = safeString(value);
+  if (authority === APPLIED_RUST_HUB_STATUS_AUTHORITY) {
+    return {
+      ok: true,
+      authority,
+      compatibility: 'current',
+    };
+  }
+  if (authority === LEGACY_RUST_HUB_STATUS_AUTHORITY) {
+    return {
+      ok: true,
+      authority,
+      compatibility: 'legacy_explicit_cutover_only',
+    };
+  }
+  return {
+    ok: false,
+    authority,
+    compatibility: 'unsupported',
+  };
 }
 
 function readLaunchdEnvironmentVariables(plistPath) {
@@ -347,7 +373,8 @@ function checkCycle(config, index, startedAtMs) {
       addIssue(issues, 'status_base_dir_mismatch', { base_dir: status.base_dir_from_status, expected: path.resolve(config.liveBaseDir) });
     }
     if (status.ai_ready !== true) addIssue(issues, 'status_ai_ready_not_true', { ai_ready: status.ai_ready });
-    if (status.rust_hub_authority !== 'explicit_cutover_only') {
+    const statusAuthority = validateRustHubStatusAuthority(status.rust_hub_authority);
+    if (!statusAuthority.ok) {
       addIssue(issues, 'status_rust_hub_authority_mismatch', { authority: status.rust_hub_authority });
     }
     return {
@@ -356,6 +383,7 @@ function checkCycle(config, index, startedAtMs) {
       ok: issues.length === 0,
       issues,
       status,
+      status_rust_hub_authority_compatibility: statusAuthority.compatibility,
       memory_writer_authority_in_rust: memoryAuthority,
       skills_execution_authority_in_rust: skillsAuthority,
       ready_surface: ready.body?.capabilities?.xt_file_ipc_production_surface_ready === true,
@@ -421,7 +449,9 @@ async function main() {
   if (!report.ok) process.exitCode = 1;
 }
 
-main().catch((error) => {
-  console.error(String(error.stack || error.message || error));
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) {
+  main().catch((error) => {
+    console.error(String(error.stack || error.message || error));
+    process.exit(1);
+  });
+}

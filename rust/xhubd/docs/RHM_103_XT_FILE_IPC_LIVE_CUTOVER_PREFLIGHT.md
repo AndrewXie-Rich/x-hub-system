@@ -21,7 +21,7 @@ daemon, or calling `write-status`.
 
 ```bash
 bash tools/xt_file_ipc_live_cutover_preflight.command \
-  --rust-hub-root "/Users/andrew.xie/Documents/AX/rust/rust hub/dist/<package>" \
+  --rust-hub-root "/Users/andrew.xie/Documents/AX/x-hub-system/rust/xhubd/dist/<package>" \
   --live-base-dir "$HOME/Library/Group Containers/group.rel.flowhub"
 ```
 
