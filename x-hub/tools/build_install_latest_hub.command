@@ -459,9 +459,12 @@ activate_embedded_rust_root() {
       )
       prep_guard_common_args+=("${memory_skills_guard_args[@]}")
 
+      # The prep guards dynamically import Node Hub services. Release worktrees
+      # intentionally do not carry node_modules, so keep both warm-up and strict
+      # validation pinned to the frozen build snapshot created with npm ci.
       if [ "$CUTOVER_PREP_WARMUP_CYCLES" != "0" ]; then
         if ! run_step "Warm provider/model route guards after cold launch" \
-          env XHUB_SYSTEM_ROOT="$SOURCE_ROOT" \
+          env XHUB_SYSTEM_ROOT="$BUILD_SNAPSHOT_DIR" \
           bash "$ACTIVE_ROOT/tools/route_authority_prep_sustained_guard.command" \
             --cycles "$CUTOVER_PREP_WARMUP_CYCLES" \
             "${prep_guard_common_args[@]}"; then
@@ -470,7 +473,7 @@ activate_embedded_rust_root() {
       fi
 
       run_step "Run provider/model route sustained cutover guard" \
-        env XHUB_SYSTEM_ROOT="$SOURCE_ROOT" \
+        env XHUB_SYSTEM_ROOT="$BUILD_SNAPSHOT_DIR" \
         bash "$ACTIVE_ROOT/tools/route_authority_prep_sustained_guard.command" \
           --cycles "$CUTOVER_PREP_SUSTAINED_CYCLES" \
           "${prep_guard_common_args[@]}"
@@ -651,6 +654,11 @@ refresh_live_route_compare_evidence() {
   if [ ! -f "$node_source_dir/src/services.js" ] || [ ! -d "$node_source_dir/node_modules" ]; then
     echo "[ERROR] Frozen Node Hub evidence source is incomplete: $node_source_dir" >&2
     echo "[ERROR] Rebuild X-Hub.app so the frozen source snapshot contains npm dependencies." >&2
+    return 1
+  fi
+  if ! (cd "$node_source_dir" && node -e "require.resolve('js-yaml')" >/dev/null 2>&1); then
+    echo "[ERROR] Frozen Node Hub evidence source cannot resolve js-yaml: $node_source_dir" >&2
+    echo "[ERROR] Rebuild X-Hub.app so the frozen source snapshot matches package-lock.json." >&2
     return 1
   fi
 
