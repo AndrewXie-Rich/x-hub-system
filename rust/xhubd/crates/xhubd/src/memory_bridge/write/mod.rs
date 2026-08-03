@@ -10,6 +10,7 @@ use super::shared::{
 
 pub(crate) mod candidate;
 pub(crate) mod canonical;
+pub(crate) mod diagnostics;
 pub(crate) mod object;
 
 pub(crate) fn write_json(config: &HubConfig, flags: FlagArgs) -> Result<String, String> {

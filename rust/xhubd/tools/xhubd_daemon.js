@@ -759,6 +759,7 @@ function compactMemoryWritebackCandidateDiagnostics(memoryReadiness) {
     out.ok = false;
     out.ready = false;
     out.error_code = "memory_writeback_candidate_diagnostics_unavailable";
+    out.blocking_issues.push("memory_writeback_candidate_diagnostics_unavailable");
   } else if (!schemaOk) {
     out.ok = false;
     out.blocking_issues.push("memory_writeback_candidate_diagnostics_schema_mismatch");
@@ -769,6 +770,58 @@ function compactMemoryWritebackCandidateDiagnostics(memoryReadiness) {
   }
   out.blocking_issues = Array.from(new Set(out.blocking_issues));
   return out;
+}
+
+function assertMemoryWritebackCandidateDiagnosticsRollup() {
+  const missing = compactMemoryWritebackCandidateDiagnostics({
+    object_store: {
+      writeback_candidates: {
+        ready: true,
+        candidate_object_count: 3,
+      },
+    },
+  });
+  if (
+    missing.ok !== false
+    || missing.error_code !== "memory_writeback_candidate_diagnostics_unavailable"
+    || !missing.blocking_issues.includes("memory_writeback_candidate_diagnostics_unavailable")
+  ) {
+    throw new Error("memory_writeback_candidate_missing_diagnostics_must_fail_closed");
+  }
+  const ready = compactMemoryWritebackCandidateDiagnostics({
+    object_store: {
+      writeback_candidates: {
+        ready: true,
+        authority: "rust_policy_gated_candidate_queue",
+        candidate_maintenance_http: false,
+        diagnostics: {
+          schema_version: "xhub.memory.writeback_candidate_diagnostics.v1",
+          ready: true,
+          candidate_count: 3,
+          conflict_candidate_count: 1,
+          queue_pressure: "high",
+          noise_score: 5,
+          production_authority_change: false,
+        },
+        maintenance: {
+          maintenance_ready: false,
+          candidate_maintenance_http: false,
+          production_authority_change: false,
+        },
+      },
+    },
+  });
+  if (
+    ready.ok !== true
+    || ready.ready !== true
+    || ready.candidate_count !== 3
+    || ready.conflict_candidate_count !== 1
+    || ready.queue_pressure !== "high"
+    || ready.production_authority_change !== false
+    || ready.blocking_issues.length !== 0
+  ) {
+    throw new Error("memory_writeback_candidate_diagnostics_rollup_projection_failed");
+  }
 }
 
 async function waitForHealth(config, child = null) {
@@ -5682,8 +5735,8 @@ async function opsGate(config, args = {}) {
   if (memoryWritebackCandidateOpsRollup.production_authority_change === true) {
     issues.push("memory_writeback_candidate_production_authority_change");
   }
-  if (memoryWritebackCandidateOpsRollup.blocking_issues.includes("memory_writeback_candidate_diagnostics_schema_mismatch")) {
-    issues.push("memory_writeback_candidate_diagnostics_schema_mismatch");
+  for (const issue of memoryWritebackCandidateOpsRollup.blocking_issues) {
+    if (issue.startsWith("memory_writeback_candidate_diagnostics_")) issues.push(issue);
   }
   const memorySkills = appendMemorySkillsAuthorityIssues(issues, readiness, args);
 
@@ -6103,6 +6156,7 @@ async function selfTest(config) {
   assertLaunchdExplicitConfigWins();
   assertLaunchdPassthroughIncludesProviderModelProduction();
   assertEmbeddedReportPathUsesWritableRuntimeRoot();
+  assertMemoryWritebackCandidateDiagnosticsRollup();
   assertLaunchdRuntimeProvenanceDeployment(config);
   await assertLaunchctlBootstrapRetry();
   assertMemoryGatewayModelCallExecuteSmokeCollector();

@@ -11,6 +11,7 @@ use super::shared::{
     memory_dir_from_env, memory_writer_authority_enabled, FlagArgs, MEMORY_OBJECT_SCHEMA,
     MEMORY_WRITEBACK_CANDIDATE_SCHEMA, SCHEMA_VERSION,
 };
+use super::write::diagnostics::writeback_candidate_diagnostics_readiness_json;
 
 pub(crate) fn readiness_json(config: &HubConfig, flags: FlagArgs) -> Result<String, String> {
     let memory_dir = flags
@@ -33,13 +34,20 @@ pub fn readiness_json_from_snapshot_with_config(
         .map_err(|err| format!("memory object store summary failed: {err}"))?;
     let index_summary = read_memory_object_index_summary(&config.db_path)
         .map_err(|err| format!("memory object index summary failed: {err}"))?;
-    readiness_json_from_snapshot_inner(snapshot, Some(summary), Some(index_summary))
+    let candidate_diagnostics = writeback_candidate_diagnostics_readiness_json(config);
+    readiness_json_from_snapshot_inner(
+        snapshot,
+        Some(summary),
+        Some(index_summary),
+        Some(candidate_diagnostics),
+    )
 }
 
 fn readiness_json_from_snapshot_inner(
     snapshot: &MemoryIndexSnapshot,
     object_summary: Option<xhub_db::MemoryObjectStoreSummary>,
     index_summary: Option<MemoryObjectIndexSummary>,
+    candidate_diagnostics: Option<Value>,
 ) -> Result<String, String> {
     let mut status = readiness_from_snapshot(snapshot);
     status.writer_authority_in_rust = memory_writer_authority_enabled();
@@ -81,8 +89,27 @@ fn readiness_json_from_snapshot_inner(
                 "candidate_create_http": true,
                 "candidate_list_http": true,
                 "candidate_approve_reject_http": true,
+                "candidate_diagnostics_http": true,
+                "candidate_maintenance_http": false,
                 "secret_candidate_fail_closed": true,
                 "authority": "rust_policy_gated_candidate_queue",
+                "maintenance": {
+                    "maintenance_ready": false,
+                    "candidate_maintenance_http": false,
+                    "candidate_maintenance_cli": false,
+                    "reason_code": "memory_writeback_candidate_maintenance_not_implemented",
+                    "production_authority_change": false,
+                },
+                "diagnostics": candidate_diagnostics.unwrap_or_else(|| json!({
+                    "schema_version": super::shared::MEMORY_WRITEBACK_CANDIDATE_DIAGNOSTICS_SCHEMA,
+                    "ready": false,
+                    "source": "rust_memory_object_store",
+                    "candidate_count": summary.candidate_object_count,
+                    "queue_pressure": "unknown",
+                    "noise_score": 0,
+                    "error_code": "memory_writeback_candidate_diagnostics_unavailable",
+                    "production_authority_change": false,
+                })),
                 "production_authority_change": false,
             },
             "semantic_index_enabled": false,
