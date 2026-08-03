@@ -6,9 +6,122 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const MIN_PROVIDER_SHADOW_COMPARE_REPORTS = 10;
+const INNER_FAILURE_SCHEMA = 'xhub.route_authority.inner_failure.v1';
 
 function safeString(value) {
   return String(value ?? '').trim();
+}
+
+function redactDiagnosticText(value) {
+  const original = String(value ?? '');
+  const redacted = original
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(/(X-XHub-Access-Key\s*[:=]\s*)[A-Za-z0-9._~+/=-]+/gi, '$1[REDACTED]')
+    .replace(/(XHUB_[A-Z0-9_]*ACCESS_KEY\s*=\s*)[^\s]+/gi, '$1[REDACTED]')
+    .replace(/("?(?:api_key|access_key|token|secret)"?\s*[:=]\s*")([^"\n]+)(")/gi, '$1[REDACTED]$3')
+    .replace(/([?&](?:api_key|access_key|access_token|token|key)=)[^&\s]+/gi, '$1[REDACTED]')
+    .replace(/\bsk-[A-Za-z0-9][A-Za-z0-9_-]{12,}\b/g, 'sk-[REDACTED]')
+    .replace(/\b[a-f0-9]{48,128}\b/gi, '[REDACTED_HEX]');
+  return { text: redacted, redaction_applied: redacted !== original };
+}
+
+function boundedDiagnostic(value, maxChars = 2000, maxLines = 20) {
+  const redacted = redactDiagnosticText(value);
+  const lines = redacted.text.split(/\r?\n/).slice(-maxLines).join('\n');
+  return {
+    text: lines.slice(-maxChars),
+    redaction_applied: redacted.redaction_applied,
+  };
+}
+
+function innerFailureKind(exitCode, parsed, decision) {
+  if (exitCode !== 0 && exitCode !== 2) return 'execution_failed';
+  if (!parsed) return 'output_not_parseable';
+  if (exitCode === 2 || decision === 'not_ready') return 'not_ready';
+  return 'contract_failed';
+}
+
+function innerFailure({
+  component,
+  stage,
+  parentStage,
+  exitCode,
+  parsed,
+  decision,
+  parseError,
+  stderr,
+  failedChecks,
+}) {
+  const parseDiagnostic = boundedDiagnostic(parseError, 500, 5);
+  const stderrDiagnostic = boundedDiagnostic(stderr, 2000, 20);
+  return {
+    schema_version: INNER_FAILURE_SCHEMA,
+    component: safeString(component).slice(0, 64),
+    stage: safeString(stage).slice(0, 128),
+    parent_stage: safeString(parentStage).slice(0, 128),
+    kind: innerFailureKind(Number(exitCode ?? -1), parsed === true, safeString(decision)),
+    exit_code: Number(exitCode ?? -1),
+    parsed: parsed === true,
+    decision: safeString(decision).slice(0, 128),
+    parse_error: parseDiagnostic.text,
+    stderr_tail: stderrDiagnostic.text,
+    failed_checks: Array.isArray(failedChecks)
+      ? failedChecks.map((value) => safeString(value).slice(0, 128)).filter(Boolean).slice(0, 32)
+      : [],
+    diagnostic_redaction_applied: parseDiagnostic.redaction_applied || stderrDiagnostic.redaction_applied,
+  };
+}
+
+function failedReadinessChecks(readiness, prefix = '') {
+  const checks = Array.isArray(readiness?.checks) ? readiness.checks : [];
+  return checks
+    .filter((item) => item?.ok !== true && (!prefix || safeString(item?.name).startsWith(prefix)))
+    .map((item) => safeString(item?.name))
+    .filter(Boolean);
+}
+
+function collectProviderInnerFailures(readinessResult) {
+  const payload = readinessResult?.payload || {};
+  const readiness = payload?.readiness || {};
+  const failures = [];
+  const childStages = [
+    ['provider_shadow_runner', 'provider_shadow'],
+    ['candidate_audit_runner', 'candidate_'],
+  ];
+  for (const [stage, checkPrefix] of childStages) {
+    const child = payload?.[stage];
+    if (!child) continue;
+    const exitCode = Number(child?.exit_code ?? -1);
+    const parsed = child?.parsed === true;
+    if (exitCode === 0 && parsed) continue;
+    failures.push(innerFailure({
+      component: 'provider_route',
+      stage,
+      parentStage: 'provider_cutover_readiness_runner',
+      exitCode,
+      parsed,
+      decision: safeString(readiness?.decision) || 'not_ready',
+      parseError: child?.parse_error,
+      stderr: child?.stderr || child?.stderr_tail,
+      failedChecks: failedReadinessChecks(readiness, checkPrefix),
+    }));
+  }
+  const runnerExitCode = Number(readinessResult?.exit_code ?? -1);
+  const runnerParsed = readinessResult?.parsed === true;
+  if ((!runnerParsed || runnerExitCode !== 0 || readiness?.ready !== true) && failures.length === 0) {
+    failures.push(innerFailure({
+      component: 'provider_route',
+      stage: 'provider_cutover_readiness_runner',
+      parentStage: 'provider_route_authority_plan_runner',
+      exitCode: runnerExitCode,
+      parsed: runnerParsed,
+      decision: safeString(readiness?.decision) || 'not_ready',
+      parseError: readinessResult?.parse_error,
+      stderr: readinessResult?.stderr,
+      failedChecks: failedReadinessChecks(readiness),
+    }));
+  }
+  return failures;
 }
 
 function parseIntInRange(value, fallback, min, max) {
@@ -206,6 +319,44 @@ function runSelfTest() {
   if (plan.ready !== true || plan.production_authority_change !== false) {
     throw new Error('self-test plan failed');
   }
+  if (!Array.isArray(plan.inner_failures) || plan.inner_failures.length !== 0) {
+    throw new Error('self-test ready plan must not report inner failures');
+  }
+  const secret = 'sk-provider-inner-failure-secret-1234567890';
+  const failedPlan = buildAuthorityPlan({
+    config: parsed,
+    readinessResult: {
+      exit_code: 2,
+      parsed: true,
+      payload: {
+        ok: false,
+        readiness: {
+          ready: false,
+          decision: 'not_ready',
+          checks: [{ name: 'provider_shadow_runner_ok', ok: false }],
+        },
+        provider_shadow_runner: {
+          exit_code: 1,
+          parsed: false,
+          parse_error: 'runner output did not contain a parseable final JSON object',
+          stderr: `Error [ERR_MODULE_NOT_FOUND]: missing js-yaml Bearer ${secret}`,
+        },
+      },
+      stderr: '',
+      parse_error: '',
+    },
+  });
+  const failure = failedPlan.inner_failures?.[0];
+  if (
+    failedPlan.ready !== false
+    || failure?.stage !== 'provider_shadow_runner'
+    || failure?.kind !== 'execution_failed'
+    || !failure?.stderr_tail.includes('ERR_MODULE_NOT_FOUND')
+    || failure?.stderr_tail.includes(secret)
+    || failure?.diagnostic_redaction_applied !== true
+  ) {
+    throw new Error('self-test provider inner failure propagation or redaction failed');
+  }
 }
 
 function parseLastJsonObject(stdout, expectedEvent = 'stop') {
@@ -270,7 +421,7 @@ function runCutoverReadiness(config) {
     parsed: !!payload,
     parse_error: parseError,
     payload,
-    stderr: stderr ? stderr.slice(0, 4000) : '',
+    stderr,
   };
 }
 
@@ -318,6 +469,7 @@ function buildAuthorityPlan({ config, readinessResult }) {
     ),
   ];
   const ready = checks.every((item) => item.ok === true);
+  const innerFailures = collectProviderInnerFailures(readinessResult);
   const requiredEnv = [
     envRow('XHUB_RUST_HUB_ROOT', ROOT_DIR, 'point Node Hub bridges at this Rust Hub package'),
     envRow('XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PREP', '1', 'enable readiness-gated Rust route calculation for prep calls only'),
@@ -371,6 +523,8 @@ function buildAuthorityPlan({ config, readinessResult }) {
       provider_shadow: readiness.provider_shadow || null,
       candidate_audit: readiness.candidate_audit || null,
     },
+    inner_failures: innerFailures,
+    inner_failure_count: innerFailures.length,
     required_env_for_manual_prep_trial: ready ? requiredEnv : [],
     env_to_unset_for_rollback: rollbackEnv,
     blocked_until_explicit_future_cutover: [
@@ -416,16 +570,23 @@ function main() {
   const readinessResult = runCutoverReadiness(config);
   const plan = buildAuthorityPlan({ config, readinessResult });
   const ok = config.expectReady ? plan.ready === true : true;
+  const readinessStderr = boundedDiagnostic(readinessResult.stderr, 2000, 20);
+  const readinessParseError = boundedDiagnostic(readinessResult.parse_error, 500, 5);
   const finalPayload = {
     event: 'stop',
     ok,
     schema_version: 'xhub.provider_route_authority_plan_runner.result.v1',
     plan,
+    inner_failures: plan.inner_failures,
+    inner_failure_count: plan.inner_failure_count,
     cutover_readiness_runner: {
       exit_code: readinessResult.exit_code,
       parsed: readinessResult.parsed,
-      parse_error: readinessResult.parse_error,
-      stderr: readinessResult.stderr,
+      parse_error: readinessParseError.text,
+      stderr: readinessStderr.text,
+      stderr_tail: readinessStderr.text,
+      diagnostic_redaction_applied: readinessParseError.redaction_applied
+        || readinessStderr.redaction_applied,
     },
   };
   console.log(JSON.stringify(finalPayload, null, 2));
