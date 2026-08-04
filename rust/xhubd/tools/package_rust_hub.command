@@ -1,8 +1,137 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+OUTPUT_FILE=""
+OUTPUT_PARENT=""
+OUTPUT_TMP_FILE=""
+PROVENANCE_OUTPUT_TMP=""
+RELEASE_BUILD=0
+EXPECTED_GIT_COMMIT=""
+
+usage() {
+  echo "Usage: $0 [--output-file <path>]" >&2
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-file)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "--output-file requires a path." >&2
+        usage
+        exit 64
+      fi
+      OUTPUT_FILE="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 64
+      ;;
+  esac
+done
+
+normalize_output_file() {
+  local output_name=""
+  [ -n "$OUTPUT_FILE" ] || return 0
+
+  output_name="$(basename "$OUTPUT_FILE")"
+  OUTPUT_PARENT="$(dirname "$OUTPUT_FILE")"
+  if [ "$output_name" = "." ] || [ "$output_name" = "/" ] || \
+     ! OUTPUT_PARENT="$(cd "$OUTPUT_PARENT" 2>/dev/null && pwd -P)"; then
+    echo "--output-file parent directory does not exist: $OUTPUT_FILE" >&2
+    exit 64
+  fi
+  if [ "$OUTPUT_PARENT" = "/" ]; then
+    OUTPUT_FILE="/$output_name"
+  else
+    OUTPUT_FILE="$OUTPUT_PARENT/$output_name"
+  fi
+  if [ -e "$OUTPUT_FILE" ] && [ ! -f "$OUTPUT_FILE" ]; then
+    echo "--output-file must name a regular file: $OUTPUT_FILE" >&2
+    exit 64
+  fi
+  if [ ! -w "$OUTPUT_PARENT" ]; then
+    echo "--output-file parent directory is not writable: $OUTPUT_PARENT" >&2
+    exit 73
+  fi
+}
+
+release_stamp() {
+  if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+    date -u +%Y%m%dT%H%M%SZ
+    return
+  fi
+
+  case "$SOURCE_DATE_EPOCH" in
+    *[!0-9]*|'')
+      echo "SOURCE_DATE_EPOCH must be a non-negative integer." >&2
+      return 64
+      ;;
+  esac
+
+  if date -u -r "$SOURCE_DATE_EPOCH" +%Y%m%dT%H%M%SZ 2>/dev/null; then
+    return
+  fi
+  if date -u -d "@$SOURCE_DATE_EPOCH" +%Y%m%dT%H%M%SZ 2>/dev/null; then
+    return
+  fi
+
+  echo "Unable to convert SOURCE_DATE_EPOCH with the installed date command." >&2
+  return 1
+}
+
+DIST_ROOT="$ROOT_DIR/dist"
+STAGING_DIR=""
+
+cleanup() {
+  if [ -n "$OUTPUT_TMP_FILE" ] && [ -f "$OUTPUT_TMP_FILE" ]; then
+    rm -f -- "$OUTPUT_TMP_FILE"
+  fi
+  if [ -n "$PROVENANCE_OUTPUT_TMP" ] && [ -f "$PROVENANCE_OUTPUT_TMP" ]; then
+    rm -f -- "$PROVENANCE_OUTPUT_TMP"
+  fi
+  if [ -n "$STAGING_DIR" ] && [ -d "$STAGING_DIR" ]; then
+    case "$STAGING_DIR" in
+      "$DIST_ROOT"/.rust-hub-stage.*)
+        rm -rf -- "$STAGING_DIR"
+        ;;
+      *)
+        echo "Refusing to clean unexpected staging path: $STAGING_DIR" >&2
+        ;;
+    esac
+  fi
+}
+trap cleanup EXIT
+
+normalize_output_file
+STAMP="$(release_stamp)"
+
+case "${XHUB_RELEASE_BUILD:-0}" in
+  1|true|TRUE|yes|YES|on|ON) RELEASE_BUILD=1 ;;
+esac
+
+if [ "$RELEASE_BUILD" = "1" ]; then
+  if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+    echo "SOURCE_DATE_EPOCH is required for a release package." >&2
+    exit 1
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    echo "node is required to verify release package identity." >&2
+    exit 127
+  fi
+  if [ -n "$(git -C "$ROOT_DIR" status --porcelain=v1 --untracked-files=all)" ]; then
+    echo "Refusing a release package from a dirty repository." >&2
+    exit 1
+  fi
+  EXPECTED_GIT_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+fi
 
 if ! command -v cargo >/dev/null 2>&1; then
   echo "cargo not found. Install Rust toolchain before packaging Rust Hub." >&2
@@ -12,8 +141,16 @@ fi
 cd "$ROOT_DIR"
 cargo build --release -p xhubd
 
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-DIST_DIR="$ROOT_DIR/dist/rust-hub-$STAMP"
+mkdir -p "$DIST_ROOT"
+STAGING_DIR="$(mktemp -d "$DIST_ROOT/.rust-hub-stage.XXXXXX")"
+STAGING_SUFFIX="${STAGING_DIR##*.rust-hub-stage.}"
+FINAL_DIR="$DIST_ROOT/rust-hub-$STAMP-$STAGING_SUFFIX"
+if [ -e "$FINAL_DIR" ]; then
+  echo "Refusing to reuse existing Rust Hub package directory: $FINAL_DIR" >&2
+  exit 1
+fi
+
+DIST_DIR="$STAGING_DIR"
 mkdir -p "$DIST_DIR/bin" "$DIST_DIR/config" "$DIST_DIR/assets/proto" "$DIST_DIR/migrations" "$DIST_DIR/tools" "$DIST_DIR/docs" "$DIST_DIR/skills" "$DIST_DIR/provenance"
 
 cp "$ROOT_DIR/target/release/xhubd" "$DIST_DIR/bin/xhubd"
@@ -27,6 +164,7 @@ cp "$ROOT_DIR"/docs/*.md "$DIST_DIR/docs/"
 cp -R "$ROOT_DIR"/skills/. "$DIST_DIR/skills/"
 cp "$ROOT_DIR/tools/run_packaged_rust_hub.command" "$DIST_DIR/tools/run_rust_hub.command"
 cp "$ROOT_DIR/tools/xhubd_daemon.js" "$DIST_DIR/tools/xhubd_daemon.js"
+cp "$ROOT_DIR/tools/verify_release_package_identity.js" "$DIST_DIR/tools/verify_release_package_identity.js"
 cp "$ROOT_DIR/tools/xhubd_daemon.command" "$DIST_DIR/tools/xhubd_daemon.command"
 cp "$ROOT_DIR/tools/daemon_ops_report.command" "$DIST_DIR/tools/daemon_ops_report.command"
 cp "$ROOT_DIR/tools/daemon_ops_gate.command" "$DIST_DIR/tools/daemon_ops_gate.command"
@@ -192,6 +330,7 @@ cp "$ROOT_DIR/tools/provider_route_authority_plan_runner.js" "$DIST_DIR/tools/pr
 cp "$ROOT_DIR/tools/provider_route_authority_plan_runner.command" "$DIST_DIR/tools/provider_route_authority_plan_runner.command"
 chmod +x "$DIST_DIR/tools/run_rust_hub.command" \
   "$DIST_DIR/tools/xhubd_daemon.js" \
+  "$DIST_DIR/tools/verify_release_package_identity.js" \
   "$DIST_DIR/tools/xhubd_daemon.command" \
   "$DIST_DIR/tools/daemon_ops_report.command" \
   "$DIST_DIR/tools/daemon_ops_gate.command" \
@@ -356,10 +495,29 @@ chmod +x "$DIST_DIR/tools/run_rust_hub.command" \
   "$DIST_DIR/tools/provider_route_authority_plan_runner.js" \
   "$DIST_DIR/tools/provider_route_authority_plan_runner.command"
 
-PROVENANCE_TMP="$DIST_DIR/provenance.json.tmp"
-"$DIST_DIR/bin/xhubd" provenance --package-manifest > "$PROVENANCE_TMP"
-mv "$PROVENANCE_TMP" "$DIST_DIR/provenance.json"
+PROVENANCE_OUTPUT_TMP="$(mktemp "$DIST_ROOT/.rust-hub-provenance.XXXXXX")"
+"$DIST_DIR/bin/xhubd" provenance --package-manifest > "$PROVENANCE_OUTPUT_TMP"
+mv "$PROVENANCE_OUTPUT_TMP" "$DIST_DIR/provenance.json"
+PROVENANCE_OUTPUT_TMP=""
 XHUB_PROVENANCE_MANIFEST="$DIST_DIR/provenance.json" \
   "$DIST_DIR/bin/xhubd" provenance >/dev/null
 
-echo "Packaged Rust Hub at: $DIST_DIR"
+if [ "$RELEASE_BUILD" = "1" ]; then
+  node "$ROOT_DIR/tools/verify_release_package_identity.js" \
+    --manifest "$DIST_DIR/provenance.json" \
+    --expected-commit "$EXPECTED_GIT_COMMIT" \
+    --expected-source-root "$ROOT_DIR" \
+    --expected-source-date-epoch "$SOURCE_DATE_EPOCH" >/dev/null
+fi
+
+mv "$STAGING_DIR" "$FINAL_DIR"
+STAGING_DIR=""
+
+if [ -n "$OUTPUT_FILE" ]; then
+  OUTPUT_TMP_FILE="$(mktemp "$OUTPUT_PARENT/.xhub-package-path.XXXXXX")"
+  printf '%s\n' "$FINAL_DIR" > "$OUTPUT_TMP_FILE"
+  mv "$OUTPUT_TMP_FILE" "$OUTPUT_FILE"
+  OUTPUT_TMP_FILE=""
+fi
+
+echo "Packaged Rust Hub at: $FINAL_DIR"
