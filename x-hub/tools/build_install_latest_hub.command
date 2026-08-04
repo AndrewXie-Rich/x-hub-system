@@ -53,6 +53,8 @@ RUST_DAEMON_INSTALL_LABEL="${XHUB_RUST_INSTALL_DAEMON_LABEL:-}"
 RUST_DAEMON_INSTALL_RUNTIME_ROOT="${XHUB_RUST_INSTALL_DAEMON_RUNTIME_ROOT:-}"
 RUST_DAEMON_INSTALL_PLIST_PATH="${XHUB_RUST_INSTALL_DAEMON_PLIST_PATH:-}"
 RUST_HTTP_ACCESS_KEY_FILE="${XHUB_RUST_HTTP_ACCESS_KEY_FILE:-${XHUB_RUST_HUB_ACCESS_KEY_FILE:-}}"
+SOURCE_DATE_EPOCH=""
+RUST_PACKAGE_OUTPUT_FILE=""
 
 pause_on_failure() {
   if [ "${XHUB_PAUSE_ON_FAILURE:-1}" != "1" ]; then
@@ -73,7 +75,14 @@ on_error() {
   exit "$exit_code"
 }
 
+cleanup_package_path_output() {
+  if [ -n "$RUST_PACKAGE_OUTPUT_FILE" ] && [ -f "$RUST_PACKAGE_OUTPUT_FILE" ]; then
+    rm -f "$RUST_PACKAGE_OUTPUT_FILE"
+  fi
+}
+
 trap on_error ERR
+trap cleanup_package_path_output EXIT
 
 is_enabled() {
   case "${1:-}" in
@@ -234,15 +243,6 @@ default_daemon_access_key_file() {
   fi
 }
 
-latest_rust_package_dir() {
-  local latest=""
-  latest="$(find "$RUST_SOURCE_ROOT/dist" -maxdepth 1 -type d -name 'rust-hub-*' 2>/dev/null | sort | tail -n 1)"
-  if [ -z "$latest" ] || [ ! -d "$latest" ]; then
-    return 1
-  fi
-  (cd "$latest" && pwd)
-}
-
 validate_rust_source_root() {
   if [ ! -x "$RUST_SOURCE_ROOT/tools/package_rust_hub.command" ]; then
     echo "[ERROR] Rust Hub package script not found or not executable:" >&2
@@ -265,6 +265,41 @@ validate_rust_source_root() {
   echo "[ERROR] Unified Hub builds must package the Rust kernel from: $CANONICAL_RUST_SOURCE_ROOT" >&2
   echo "[ERROR] Set XHUB_ALLOW_EXTERNAL_RUST_HUB_PACKAGE=1 only for a deliberate one-off diagnostic build." >&2
   exit 1
+}
+
+derive_source_date_epoch() {
+  SOURCE_DATE_EPOCH="$(
+    git -C "$SOURCE_ROOT" show -s --format=%ct HEAD 2>/dev/null || true
+  )"
+  case "$SOURCE_DATE_EPOCH" in
+    ''|*[!0-9]*)
+      echo "[ERROR] Could not derive SOURCE_DATE_EPOCH from $SOURCE_ROOT at HEAD." >&2
+      exit 1
+      ;;
+  esac
+  export SOURCE_DATE_EPOCH
+}
+
+read_rust_package_output() {
+  local output_file="$1"
+  local package_dir=""
+  local line_count=""
+
+  if [ ! -s "$output_file" ]; then
+    echo "[ERROR] Rust Hub packager did not report an output path." >&2
+    return 1
+  fi
+  line_count="$(awk 'END { print NR + 0 }' "$output_file")"
+  if [ "$line_count" -ne 1 ]; then
+    echo "[ERROR] Rust Hub packager reported an invalid multi-line output path." >&2
+    return 1
+  fi
+  IFS= read -r package_dir < "$output_file" || true
+  if [ -z "$package_dir" ]; then
+    echo "[ERROR] Rust Hub packager reported an empty output path." >&2
+    return 1
+  fi
+  printf '%s\n' "$package_dir"
 }
 
 validate_rust_package_dir() {
@@ -994,9 +1029,11 @@ set_safe_rust_session_env() {
 }
 
 validate_rust_source_root
+derive_source_date_epoch
 
 echo "[config] X-Hub source root: $SOURCE_ROOT"
 echo "[config] Rust Hub source root: $RUST_SOURCE_ROOT"
+echo "[config] SOURCE_DATE_EPOCH: $SOURCE_DATE_EPOCH"
 echo "[config] Installed app: $APP_DEST"
 echo "[config] Authority cutover: $ENABLE_AUTHORITY_CUTOVER"
 echo "[config] Provider/model production: $ENABLE_PROVIDER_MODEL_PRODUCTION"
@@ -1014,15 +1051,24 @@ echo "[config] Provider quota scheduler in Rust: $ENABLE_PROVIDER_QUOTA_SCHEDULE
 echo "[config] XT live cutover: $ENABLE_XT_LIVE_CUTOVER"
 echo "[config] Rust local ML execution: $ENABLE_RUST_ML_EXECUTION"
 
-run_step "Package latest Rust Hub" bash "$RUST_SOURCE_ROOT/tools/package_rust_hub.command"
-RUST_PACKAGE_DIR="$(latest_rust_package_dir)"
+RUST_PACKAGE_OUTPUT_FILE="$(
+  mktemp "${TMPDIR:-/tmp}/xhub-rust-package.XXXXXX"
+)"
+run_step "Package Rust Hub from source" \
+  env SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+  bash "$RUST_SOURCE_ROOT/tools/package_rust_hub.command" \
+    --output-file "$RUST_PACKAGE_OUTPUT_FILE"
+RUST_PACKAGE_DIR="$(read_rust_package_output "$RUST_PACKAGE_OUTPUT_FILE")"
+rm -f "$RUST_PACKAGE_OUTPUT_FILE"
+RUST_PACKAGE_OUTPUT_FILE=""
 validate_rust_package_dir "$RUST_PACKAGE_DIR"
-echo "[rust] Latest package: $RUST_PACKAGE_DIR"
+echo "[rust] Packaged source: $RUST_PACKAGE_DIR"
 run_step "Validate Memory Gateway execution release capabilities" \
   validate_memory_gateway_execution_release "$RUST_PACKAGE_DIR"
 
 run_step "Build X-Hub.app with embedded Rust Hub" \
   env \
+    SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
     XHUB_EMBED_RUST_HUB=1 \
     XHUB_RUST_HUB_PACKAGE_DIR="$RUST_PACKAGE_DIR" \
     "$BUILD_APP_COMMAND"

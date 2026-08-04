@@ -6,6 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+mod provenance;
+mod sha256;
+
 const SERVICE_NAME: &str = "xtd";
 const PROJECTION_PROTOCOL: &str = "xt-core-projection.v1";
 const HUB_REMOTE_LOG_DISPLAY_CHARACTER_LIMIT: usize = 16_000;
@@ -91,6 +94,7 @@ fn main() {
             println!("{}", run_once_json());
             Ok(())
         }
+        "provenance" => provenance::run(&args[2..]),
         "projection" => match projection_command_json(&args[2..]) {
             Ok(json) => {
                 println!("{}", json);
@@ -107,7 +111,11 @@ fn main() {
 
     if let Err(message) = result {
         eprintln!("{}", message);
-        print_help();
+        // Provenance verification emits a machine-readable JSON report before
+        // returning a failing status. Do not append general help to stdout.
+        if command != "provenance" {
+            print_help();
+        }
         process::exit(2);
     }
 }
@@ -457,7 +465,7 @@ fn epoch_ms() -> u128 {
 
 fn print_help() {
     println!(
-        "{} {}\n\nCommands:\n  health                         Print a JSON health snapshot\n  run-once                       Execute one placeholder runtime tick\n  projection <surface> [options] Print a versioned Swift-shell projection envelope\n  version                        Print version\n  help                           Show this help\n\nProjection surfaces:\n  sidebar\n  settings-diagnostics\n\nProjection options:\n  --generated-at-ms <ms>          Override timestamp for fixture tests\n  --input-json <json>             Build projection from a bounded input JSON envelope\n  --input-file <path>             Read projection input JSON from disk\n",
+        "{} {}\n\nCommands:\n  health                         Print a JSON health snapshot\n  run-once                       Execute one placeholder runtime tick\n  projection <surface> [options] Print a versioned Swift-shell projection envelope\n  provenance <create|verify>     Create or verify detached XT artifact provenance\n  version                        Print version\n  help                           Show this help\n\nProjection surfaces:\n  sidebar\n  settings-diagnostics\n\nProjection options:\n  --generated-at-ms <ms>          Override timestamp for fixture tests\n  --input-json <json>             Build projection from a bounded input JSON envelope\n  --input-file <path>             Read projection input JSON from disk\n",
         SERVICE_NAME,
         env!("CARGO_PKG_VERSION")
     );

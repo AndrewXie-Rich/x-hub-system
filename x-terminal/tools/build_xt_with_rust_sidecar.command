@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 XT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ROOT_DIR="$(cd "$XT_DIR/.." && pwd)"
+# shellcheck source=../scripts/lib/canonical_root_guard.sh
+source "$XT_DIR/scripts/lib/canonical_root_guard.sh"
+xterminal_assert_canonical_root "$ROOT_DIR" "$XT_DIR"
 RUST_XTD_DIR="$ROOT_DIR/rust/xtd"
 
 echo "[1/2] Building Rust XT sidecar..."

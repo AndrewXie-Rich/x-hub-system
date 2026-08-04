@@ -1,0 +1,4 @@
+# One exact Apple Developer Team ID per line.
+#
+# Formal release packaging fails closed until the approved X Hub publisher
+# Team ID is committed here. Ad-hoc signatures are never accepted for release.

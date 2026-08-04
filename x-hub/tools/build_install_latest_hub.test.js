@@ -55,3 +55,46 @@ test('frozen evidence source requires Node services and npm dependencies', () =>
   assert.match(evidenceBlock, /require\.resolve\('js-yaml'\)/);
   assert.doesNotMatch(evidenceBlock, /XHUB_SYSTEM_ROOT="\$SOURCE_ROOT"/);
 });
+
+test('Rust package handoff uses the exact newly packaged directory', () => {
+  const packageBlock = sourceBetween(
+    'RUST_PACKAGE_OUTPUT_FILE="$(',
+    'run_step "Validate Memory Gateway execution release capabilities"',
+  );
+  const buildBlock = sourceBetween(
+    'run_step "Build X-Hub.app with embedded Rust Hub"',
+    'run_step "Install X-Hub.app to /Applications"',
+  );
+
+  assert.doesNotMatch(commandSource, /latest_rust_package_dir/);
+  assert.doesNotMatch(
+    commandSource,
+    /find[^\n]*rust-hub-[^\n]*sort[^\n]*tail/,
+  );
+  assert.match(packageBlock, /mktemp[^\n]*xhub-rust-package\.XXXXXX/);
+  assert.match(
+    packageBlock,
+    /package_rust_hub\.command" \\\n+\s+--output-file "\$RUST_PACKAGE_OUTPUT_FILE"/,
+  );
+  assert.match(
+    packageBlock,
+    /RUST_PACKAGE_DIR="\$\(read_rust_package_output "\$RUST_PACKAGE_OUTPUT_FILE"\)"/,
+  );
+  assert.match(buildBlock, /XHUB_RUST_HUB_PACKAGE_DIR="\$RUST_PACKAGE_DIR"/);
+});
+
+test('local install propagates commit-derived SOURCE_DATE_EPOCH without release gates', () => {
+  assert.match(
+    commandSource,
+    /git -C "\$SOURCE_ROOT" show -s --format=%ct HEAD/,
+  );
+  assert.match(
+    commandSource,
+    /env SOURCE_DATE_EPOCH="\$SOURCE_DATE_EPOCH" \\\n+\s+bash "\$RUST_SOURCE_ROOT\/tools\/package_rust_hub\.command"/,
+  );
+  assert.match(
+    commandSource,
+    /run_step "Build X-Hub\.app with embedded Rust Hub"[\s\S]*?SOURCE_DATE_EPOCH="\$SOURCE_DATE_EPOCH"/,
+  );
+  assert.doesNotMatch(commandSource, /verify-tag|--exact-match|refs\/remotes/);
+});
