@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${XT_GATE_MOCK_SWIFT_LOG:?XT_GATE_MOCK_SWIFT_LOG is required}"
+: "${XT_GATE_MOCK_SWIFT_COUNTER:?XT_GATE_MOCK_SWIFT_COUNTER is required}"
+
+invocation_count=0
+if [[ -f "${XT_GATE_MOCK_SWIFT_COUNTER}" ]]; then
+  invocation_count="$(tr -d '[:space:]' < "${XT_GATE_MOCK_SWIFT_COUNTER}")"
+fi
+if [[ ! "${invocation_count}" =~ ^[0-9]+$ ]]; then
+  echo "invalid mock Swift invocation counter: ${invocation_count}" >&2
+  exit 97
+fi
+invocation_count=$((invocation_count + 1))
+printf '%s\n' "${invocation_count}" > "${XT_GATE_MOCK_SWIFT_COUNTER}"
+printf '%s\n' "$*" >> "${XT_GATE_MOCK_SWIFT_LOG}"
+
+if [[ -n "${XT_GATE_MOCK_SWIFT_FAIL_AT:-}" ]] \
+  && [[ "${invocation_count}" == "${XT_GATE_MOCK_SWIFT_FAIL_AT}" ]]; then
+  exit "${XT_GATE_MOCK_SWIFT_FAIL_CODE:-42}"
+fi
+
+exit 0

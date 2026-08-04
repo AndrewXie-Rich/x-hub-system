@@ -3,16 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 GATE_SCRIPT="${ROOT_DIR}/scripts/ci/xt_release_gate.sh"
-PROFILE_HELPER="${ROOT_DIR}/scripts/ci/xt_nested_gate_profile.sh"
 KEEP_WORKDIR="${XT_RELEASE_EVIDENCE_MATRIX_KEEP:-0}"
 
 if [[ ! -f "${GATE_SCRIPT}" ]]; then
   echo "[matrix] gate script missing: ${GATE_SCRIPT}" >&2
-  exit 2
-fi
-
-if [[ ! -f "${PROFILE_HELPER}" ]]; then
-  echo "[matrix] nested gate profile helper missing: ${PROFILE_HELPER}" >&2
   exit 2
 fi
 
@@ -103,7 +97,15 @@ run_case() {
   local report_file="${report_dir}/xt-gate-report.md"
   local report_index_file="${report_dir}/xt-report-index.json"
   local run_log="${case_dir}/run.log"
-  mkdir -p "${case_dir}" "${report_dir}"
+  local isolated_home="${case_dir}/home"
+  local isolated_tmp="${case_dir}/tmp"
+  local isolated_clang_cache="${case_dir}/clang-module-cache"
+  mkdir -p \
+    "${case_dir}" \
+    "${report_dir}" \
+    "${isolated_home}" \
+    "${isolated_tmp}" \
+    "${isolated_clang_cache}"
 
   local runtime_override=""
   if [[ "${runtime_mode}" == "missing" ]]; then
@@ -111,21 +113,18 @@ run_case() {
   fi
 
   local -a env_vars=(
+    "HOME=${isolated_home}"
+    "CFFIXED_USER_HOME=${isolated_home}"
+    "TMPDIR=${isolated_tmp}"
+    "CLANG_MODULE_CACHE_PATH=${isolated_clang_cache}"
     "XT_GATE_MODE=baseline"
     "XT_GATE_RELEASE_PRESET=${release_preset}"
     "XT_GATE_AUTO_PREPARE_RELEASE_EVIDENCE=${auto_prepare}"
+    "XT_GATE_INTERNAL_REGRESSION=1"
     "XT_GATE_REPORT_DIR=${report_dir}"
     "XT_GATE_REPORT_FILE=${report_file}"
     "XT_GATE_REPORT_INDEX_FILE=${report_index_file}"
   )
-
-  # Keep matrix cases focused on release-evidence behavior itself.
-  # Expensive regressions such as XT-W3-36 governance evidence are exercised by
-  # the top-level gate and do not need to be re-run for each matrix branch.
-  while IFS= read -r line; do
-    [[ -n "${line}" ]] || continue
-    env_vars+=("${line}")
-  done < <(bash "${PROFILE_HELPER}" release_matrix)
 
   if [[ -n "${runtime_override}" ]]; then
     env_vars+=("XT_READY_INCIDENT_EVENTS_JSON=${runtime_override}")
@@ -134,7 +133,9 @@ run_case() {
   set +e
   (
     cd "${ROOT_DIR}"
-    env -u XT_GATE_VALIDATE_SPLIT_FLOW_RUNTIME_POLICY "${env_vars[@]}" bash "${GATE_SCRIPT}"
+    env -u XT_GATE_VALIDATE_SPLIT_FLOW_RUNTIME_POLICY \
+      "${env_vars[@]}" \
+      bash "${GATE_SCRIPT}" --internal-test-release-evidence-case
   ) >"${run_log}" 2>&1
   local rc=$?
   set -e
