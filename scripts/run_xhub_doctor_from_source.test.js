@@ -17,7 +17,9 @@ function run(name, fn) {
 }
 
 function makeTmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "xhub-doctor-wrapper-"));
+  return fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "xhub-doctor-wrapper-"))
+  );
 }
 
 function writeExecutable(filePath, lines) {
@@ -45,6 +47,60 @@ function makeHelper(helperPath, logPath, exitCode = 0) {
   ]);
 }
 
+function runGit(repoRoot, args) {
+  const result = spawnSync("git", ["-C", repoRoot, ...args], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+}
+
+function makeCanonicalWrapperFixture(tmpDir, logPath, xtExitCode = 0) {
+  const fixtureRoot = path.join(tmpDir, "canonical repo");
+  const fixtureWrapper = path.join(
+    fixtureRoot,
+    "scripts",
+    "run_xhub_doctor_from_source.command"
+  );
+  const fixtureRootGuard = path.join(
+    fixtureRoot,
+    "x-terminal",
+    "scripts",
+    "lib",
+    "canonical_root_guard.sh"
+  );
+  const fixtureBuildMarker = path.join(
+    fixtureRoot,
+    "x-terminal",
+    "tools",
+    "build_xterminal_app.command"
+  );
+  const fixtureXtHelper = path.join(
+    fixtureRoot,
+    "x-terminal",
+    "tools",
+    "run_xterminal_from_source.command"
+  );
+
+  fs.mkdirSync(path.dirname(fixtureWrapper), { recursive: true });
+  fs.mkdirSync(path.dirname(fixtureRootGuard), { recursive: true });
+  fs.mkdirSync(path.dirname(fixtureXtHelper), { recursive: true });
+  fs.copyFileSync(wrapperPath, fixtureWrapper);
+  fs.copyFileSync(
+    path.join(repoRoot, "x-terminal", "scripts", "lib", "canonical_root_guard.sh"),
+    fixtureRootGuard
+  );
+  fs.writeFileSync(
+    path.join(fixtureRoot, "x-terminal", "Package.swift"),
+    "// fixture package\n"
+  );
+  writeExecutable(fixtureBuildMarker, ["#!/bin/bash", "exit 0"]);
+  makeHelper(fixtureXtHelper, logPath, xtExitCode);
+
+  runGit(fixtureRoot, ["init", "-q"]);
+  runGit(fixtureRoot, ["add", "."]);
+  return { fixtureRoot, fixtureWrapper, fixtureXtHelper };
+}
+
 const repoRoot = path.resolve(__dirname, "..");
 const wrapperPath = path.join(
   repoRoot,
@@ -56,9 +112,7 @@ run("dispatches hub doctor through the Hub helper", () => {
   const tmpDir = makeTmpDir();
   const logPath = path.join(tmpDir, "calls.log");
   const hubHelper = path.join(tmpDir, "hub_helper.command");
-  const xtHelper = path.join(tmpDir, "xt_helper.command");
   makeHelper(hubHelper, logPath);
-  makeHelper(xtHelper, logPath);
 
   const result = spawnSync(
     "bash",
@@ -69,7 +123,6 @@ run("dispatches hub doctor through the Hub helper", () => {
       env: {
         ...process.env,
         XHUB_HUB_SOURCE_HELPER: hubHelper,
-        XHUB_XT_SOURCE_HELPER: xtHelper,
       },
     }
   );
@@ -83,15 +136,13 @@ run("dispatches hub doctor through the Hub helper", () => {
 run("dispatches xt export through the XT helper", () => {
   const tmpDir = makeTmpDir();
   const logPath = path.join(tmpDir, "calls.log");
-  const hubHelper = path.join(tmpDir, "hub_helper.command");
-  const xtHelper = path.join(tmpDir, "xt_helper.command");
-  makeHelper(hubHelper, logPath);
-  makeHelper(xtHelper, logPath);
+  const { fixtureRoot, fixtureWrapper, fixtureXtHelper } =
+    makeCanonicalWrapperFixture(tmpDir, logPath);
 
   const result = spawnSync(
     "bash",
     [
-      wrapperPath,
+      fixtureWrapper,
       "--surface",
       "xt",
       "--workspace-root",
@@ -100,19 +151,17 @@ run("dispatches xt export through the XT helper", () => {
       "/tmp/xhub_doctor_output_xt.json",
     ],
     {
-      cwd: repoRoot,
+      cwd: fixtureRoot,
       encoding: "utf8",
       env: {
         ...process.env,
-        XHUB_HUB_SOURCE_HELPER: hubHelper,
-        XHUB_XT_SOURCE_HELPER: xtHelper,
       },
     }
   );
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.deepEqual(readLogLines(logPath), [
-    `${xtHelper}|--xt-unified-doctor-export --project-root /tmp/xt_workspace --out-json /tmp/xhub_doctor_output_xt.json`,
+    `${fixtureXtHelper}|--xt-unified-doctor-export --project-root /tmp/xt_workspace --out-json /tmp/xhub_doctor_output_xt.json`,
   ]);
 });
 
@@ -120,9 +169,7 @@ run("rejects xt-only flags on the hub surface", () => {
   const tmpDir = makeTmpDir();
   const logPath = path.join(tmpDir, "calls.log");
   const hubHelper = path.join(tmpDir, "hub_helper.command");
-  const xtHelper = path.join(tmpDir, "xt_helper.command");
   makeHelper(hubHelper, logPath);
-  makeHelper(xtHelper, logPath);
 
   const result = spawnSync(
     "bash",
@@ -133,7 +180,6 @@ run("rejects xt-only flags on the hub surface", () => {
       env: {
         ...process.env,
         XHUB_HUB_SOURCE_HELPER: hubHelper,
-        XHUB_XT_SOURCE_HELPER: xtHelper,
       },
     }
   );
@@ -151,14 +197,14 @@ run("dispatches both surfaces in all mode with a shared output directory", () =>
   const logPath = path.join(tmpDir, "calls.log");
   const outDir = path.join(tmpDir, "bundle");
   const hubHelper = path.join(tmpDir, "hub_helper.command");
-  const xtHelper = path.join(tmpDir, "xt_helper.command");
   makeHelper(hubHelper, logPath);
-  makeHelper(xtHelper, logPath);
+  const { fixtureRoot, fixtureWrapper, fixtureXtHelper } =
+    makeCanonicalWrapperFixture(tmpDir, logPath);
 
   const result = spawnSync(
     "bash",
     [
-      wrapperPath,
+      fixtureWrapper,
       "all",
       "--workspace-root",
       "/tmp/xt_workspace",
@@ -166,12 +212,11 @@ run("dispatches both surfaces in all mode with a shared output directory", () =>
       outDir,
     ],
     {
-      cwd: repoRoot,
+      cwd: fixtureRoot,
       encoding: "utf8",
       env: {
         ...process.env,
         XHUB_HUB_SOURCE_HELPER: hubHelper,
-        XHUB_XT_SOURCE_HELPER: xtHelper,
       },
     }
   );
@@ -180,7 +225,7 @@ run("dispatches both surfaces in all mode with a shared output directory", () =>
   assert.match(result.stdout, /final_exit_code=0/);
   assert.deepEqual(readLogLines(logPath), [
     `${hubHelper}|doctor --out-json ${path.join(outDir, "xhub_doctor_output_hub.json")}`,
-    `${xtHelper}|--xt-unified-doctor-export --project-root /tmp/xt_workspace --out-json ${path.join(outDir, "xhub_doctor_output_xt.json")}`,
+    `${fixtureXtHelper}|--xt-unified-doctor-export --project-root /tmp/xt_workspace --out-json ${path.join(outDir, "xhub_doctor_output_xt.json")}`,
   ]);
 });
 
@@ -188,17 +233,16 @@ run("returns a blocked exit code when one surface reports blocked in all mode", 
   const tmpDir = makeTmpDir();
   const logPath = path.join(tmpDir, "calls.log");
   const hubHelper = path.join(tmpDir, "hub_helper.command");
-  const xtHelper = path.join(tmpDir, "xt_helper.command");
   makeHelper(hubHelper, logPath, 1);
-  makeHelper(xtHelper, logPath, 0);
+  const { fixtureRoot, fixtureWrapper, fixtureXtHelper } =
+    makeCanonicalWrapperFixture(tmpDir, logPath, 0);
 
-  const result = spawnSync("bash", [wrapperPath, "all"], {
-    cwd: repoRoot,
+  const result = spawnSync("bash", [fixtureWrapper, "all"], {
+    cwd: fixtureRoot,
     encoding: "utf8",
     env: {
       ...process.env,
       XHUB_HUB_SOURCE_HELPER: hubHelper,
-      XHUB_XT_SOURCE_HELPER: xtHelper,
     },
   });
 
@@ -207,7 +251,7 @@ run("returns a blocked exit code when one surface reports blocked in all mode", 
   assert.match(result.stdout, /surface=xt raw_exit_code=0 normalized_exit_code=0/);
   assert.deepEqual(readLogLines(logPath), [
     `${hubHelper}|doctor`,
-    `${xtHelper}|--xt-unified-doctor-export`,
+    `${fixtureXtHelper}|--xt-unified-doctor-export`,
   ]);
 });
 
@@ -215,9 +259,7 @@ run("rejects out-json when all mode is selected", () => {
   const tmpDir = makeTmpDir();
   const logPath = path.join(tmpDir, "calls.log");
   const hubHelper = path.join(tmpDir, "hub_helper.command");
-  const xtHelper = path.join(tmpDir, "xt_helper.command");
   makeHelper(hubHelper, logPath);
-  makeHelper(xtHelper, logPath);
 
   const result = spawnSync(
     "bash",
@@ -228,7 +270,6 @@ run("rejects out-json when all mode is selected", () => {
       env: {
         ...process.env,
         XHUB_HUB_SOURCE_HELPER: hubHelper,
-        XHUB_XT_SOURCE_HELPER: xtHelper,
       },
     }
   );

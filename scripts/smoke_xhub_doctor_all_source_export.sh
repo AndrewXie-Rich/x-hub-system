@@ -46,6 +46,7 @@ else
   mkdir -p "$TMP_ROOT"
 fi
 SNAPSHOT_DIR="$TMP_ROOT/repo_snapshot"
+XT_SNAPSHOT_INVENTORY_PATH="$TMP_ROOT/xt_doctor_snapshot.inventory.json"
 WORKSPACE_DIR="$TMP_ROOT/workspace"
 REPORTS_DIR="$WORKSPACE_DIR/.axcoder/reports"
 OUTPUT_DIR="$TMP_ROOT/doctor_bundle"
@@ -71,7 +72,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$SNAPSHOT_DIR/scripts" "$WORKSPACE_DIR" "$REPORTS_DIR" "$OUTPUT_DIR" "$HUB_STATUS_DIR" "$REPORT_DIR"
+mkdir -p "$SNAPSHOT_DIR" "$WORKSPACE_DIR" "$REPORTS_DIR" "$OUTPUT_DIR" "$HUB_STATUS_DIR" "$REPORT_DIR"
 
 rsync -a --delete \
   --exclude '.build' \
@@ -99,12 +100,10 @@ rsync -a --delete \
   --exclude '.DS_Store' \
   "$ROOT_DIR/x-hub/" "$SNAPSHOT_DIR/x-hub/"
 
-cp -f "$ROOT_DIR/scripts/run_xhub_doctor_from_source.command" \
-  "$SNAPSHOT_DIR/scripts/run_xhub_doctor_from_source.command"
-chmod +x \
-  "$SNAPSHOT_DIR/scripts/run_xhub_doctor_from_source.command" \
-  "$SNAPSHOT_DIR/x-hub/tools/run_xhub_from_source.command" \
-  "$SNAPSHOT_DIR/x-terminal/tools/run_xterminal_from_source.command"
+python3 "$ROOT_DIR/scripts/lib/xt_doctor_snapshot_inventory.py" create \
+  --repo-root "$ROOT_DIR" \
+  --snapshot-root "$SNAPSHOT_DIR/x-terminal" \
+  --inventory "$XT_SNAPSHOT_INVENTORY_PATH"
 
 python3 - "$XT_SOURCE_REPORT_PATH" "$XT_SOURCE_REPAIR_LEDGER_PATH" "$HUB_STATUS_DIR" <<'PY'
 import json
@@ -349,6 +348,9 @@ provider_key_selection_projection = {
             "selected": True,
             "reasonCode": "selected_by_scheduler",
             "retryAtMs": 0,
+            "retryAtSource": "",
+            "statusMessage": "",
+            "requiredMetadata": [],
         },
         {
             "accountKey": "openai:cooldown",
@@ -365,6 +367,9 @@ provider_key_selection_projection = {
             "selected": False,
             "reasonCode": "provider_timeout",
             "retryAtMs": 1741300185000,
+            "retryAtSource": "account_error_state",
+            "statusMessage": "provider timed out",
+            "requiredMetadata": [],
         },
         {
             "accountKey": "openai:stale",
@@ -380,6 +385,9 @@ provider_key_selection_projection = {
             "selected": False,
             "reasonCode": "runtime_stale",
             "retryAtMs": 0,
+            "retryAtSource": "",
+            "statusMessage": "runtime evidence is stale",
+            "requiredMetadata": [],
         },
     ],
 }
@@ -857,10 +865,11 @@ if ! env \
   XTERMINAL_SOURCE_RUN_SWIFT_MODULE_CACHE_PATH="$SNAPSHOT_DIR/.xt_swift-module-cache" \
   XTERMINAL_SOURCE_RUN_DISABLE_SANDBOX=1 \
   XTERMINAL_SOURCE_RUN_DISABLE_INDEX_STORE=1 \
-  XHUB_XT_SOURCE_HELPER="$SNAPSHOT_DIR/x-terminal/tools/run_xterminal_from_source.command" \
-  XHUB_ALLOW_LEGACY_XTERMINAL_RUN=1 \
-  bash "$SNAPSHOT_DIR/scripts/run_xhub_doctor_from_source.command" \
+  XHUB_HUB_SOURCE_HELPER="$SNAPSHOT_DIR/x-hub/tools/run_xhub_from_source.command" \
+  bash "$ROOT_DIR/scripts/run_xhub_doctor_from_source.command" \
     all \
+    --xt-diagnostic-snapshot "$SNAPSHOT_DIR/x-terminal" \
+    --xt-snapshot-inventory "$XT_SNAPSHOT_INVENTORY_PATH" \
     --workspace-root "$WORKSPACE_DIR" \
     --out-dir "$OUTPUT_DIR" >"$DOCTOR_STDOUT_PATH" 2>&1; then
   cat "$DOCTOR_STDOUT_PATH" >&2 || true
