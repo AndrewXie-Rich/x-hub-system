@@ -41,7 +41,7 @@ Each bullet maps to a `validated` or `preview-working` row in the [capability ma
 
 Anything not in the matrix as `validated` or `preview-working` should be read as implementation-in-progress or direction-only.
 
-## How to run it
+## Quick Start
 
 **macOS, today.** Apple Silicon. Combined DMG with `X-Hub.app` + `X-Terminal.app`.
 
@@ -50,6 +50,9 @@ git clone https://github.com/AndrewXie-Rich/x-hub-system.git
 cd x-hub-system && ./x-hub/tools/build_hub_app.command
 open build/X-Hub.app   # pair X-Terminal once Hub is up
 ```
+
+Before packaging a release, run
+`bash "./x-terminal/scripts/ci/xt_release_gate.sh"` from the repository root.
 
 **Linux daemon, in flight.** `docker-compose up` deployment, 90-day P0. Track [Status & Roadmap](docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md) for the cutover.
 
@@ -68,6 +71,19 @@ Source-run, Rust kernel, packaged release details: [`docs/REPO_LAYOUT.md`](docs/
 Pair → resolve client capability → retrieve governed memory and policy → resolve model and capability route → check grants and readiness → execute through a governed surface → audit and report runtime truth. All authority sits in the Hub; terminals call into it.
 
 Deep dives: [`docs/REPO_LAYOUT.md`](docs/REPO_LAYOUT.md), [`docs/xhub-hub-architecture-tradeoffs-v1.md`](docs/xhub-hub-architecture-tradeoffs-v1.md), [archived long-form README](docs/legacy/README_full_v1.md).
+
+Machine-readable XT diagnostics follow
+[`xt_unified_doctor_report_contract.v1.json`](docs/memory-new/schema/xt_unified_doctor_report_contract.v1.json)
+(`xt.unified_doctor_report_contract.v1`). The normalized evidence bundle keeps
+`heartbeat_governance_snapshot`, `provider_key_selection_snapshot`,
+`provider_key_route_context_snapshot`, `latest_quality_band`,
+`project_remote_snapshot_cache_snapshot`,
+`supervisor_remote_snapshot_cache_snapshot`, `durableCandidateMirrorProjection`
+/ `durable_candidate_mirror_snapshot`, `localStoreWriteProjection` /
+`local_store_write_snapshot`, `hubMemoryPromptProjection` /
+`hub_memory_prompt_projection`, and `skillDoctorTruthProjection` /
+`skill_doctor_truth_snapshot` explicit so clients do not have to reconstruct
+governance or provenance truth from display text.
 
 ## Specs (extracted)
 

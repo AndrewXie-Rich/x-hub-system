@@ -16,7 +16,7 @@
 
 ## Implementation Status 2026-06-03
 
-First implementation slice landed in `rust/rust hub`:
+First implementation slice landed in `rust/xhubd`:
 
 - `UML-W0`: v1 contract captured in this work-order doc.
 - Runtime authority and reality map captured in `docs/memory-new/xhub-memory-runtime-authority-and-reality-map-v1.md`.
@@ -649,10 +649,10 @@ Current answer to "have we absorbed all useful memsearch advantages?": no. We ha
 当前代码路径：
 
 - Rust memory crate:
-  - `rust/rust hub/crates/xhub-memory/src/lib.rs`
+  - `rust/xhubd/crates/xhub-memory/src/lib.rs`
 - Rust daemon endpoints:
-  - `rust/rust hub/crates/xhubd/src/main.rs`
-  - `rust/rust hub/crates/xhubd/src/memory_bridge.rs`
+  - `rust/xhubd/crates/xhubd/src/main.rs`
+  - `rust/xhubd/crates/xhubd/src/memory_bridge.rs`
 - XT Hub memory client:
   - `x-terminal/Sources/Hub/HubIPCClient.swift`
 - XT memory role/use-mode policy:
@@ -948,14 +948,14 @@ Parallel lanes:
   4. Extract current Project Coder Memory V1 sections.
   5. Freeze the object schema and event schema.
   6. Freeze mapping from universal scopes to X-Hub scopes.
-  7. Add a baseline report under `rust/rust hub/reports/` or `x-hub-system/build/reports/`.
+  7. Add a baseline report under `rust/xhubd/reports/` or `x-hub-system/build/reports/`.
 - acceptance:
   - A new AI can read the frozen schema and implement APIs without asking what fields mean.
   - Scope mapping table is explicit.
   - Personal memory default deny for Coder is explicitly documented.
   - Remote export behavior is explicitly documented.
 - verification commands:
-  - `rg -n "memory_writer_authority|MemoryMode|RetrievalPlan" "rust/rust hub/crates/xhub-memory/src/lib.rs"`
+  - `rg -n "memory_writer_authority|MemoryMode|RetrievalPlan" "rust/xhubd/crates/xhub-memory/src/lib.rs"`
   - `rg -n "XTMemoryUseMode|XTMemoryRequesterRole|XTMemoryLayer" x-terminal/Sources/Hub/XTMemoryUsePolicy.swift`
   - `rg -n "MEMORY_V1|L0_CONSTITUTION|L1_CANONICAL|L4_RAW_EVIDENCE" x-terminal/Sources/Chat/ChatSessionModel.swift`
 - risks:
@@ -973,10 +973,10 @@ Parallel lanes:
   - Add a durable Rust-owned memory object store.
   - Stop treating memory write as only file append.
 - write set:
-  - `rust/rust hub/crates/xhub-memory/src/lib.rs`
-  - `rust/rust hub/crates/xhubd/src/memory_bridge.rs`
-  - `rust/rust hub/crates/xhubd/src/main.rs`
-  - any existing SQLite/storage helper under `rust/rust hub/crates/*`
+  - `rust/xhubd/crates/xhub-memory/src/lib.rs`
+  - `rust/xhubd/crates/xhubd/src/memory_bridge.rs`
+  - `rust/xhubd/crates/xhubd/src/main.rs`
+  - any existing SQLite/storage helper under `rust/xhubd/crates/*`
   - tests under the relevant Rust crates
 - design:
   - Use SQLite as durable canonical store.
@@ -1092,10 +1092,10 @@ Parallel lanes:
   - `POST /memory/candidates/{candidate_id}/approve`
   - `POST /memory/candidates/{candidate_id}/reject`
 - write set:
-  - `rust/rust hub/crates/xhubd/src/main.rs`
-  - `rust/rust hub/crates/xhubd/src/memory_bridge.rs`
-  - `rust/rust hub/crates/xhub-memory/src/lib.rs`
-  - command wrappers under `rust/rust hub/tools/` if existing style supports it
+  - `rust/xhubd/crates/xhubd/src/main.rs`
+  - `rust/xhubd/crates/xhubd/src/memory_bridge.rs`
+  - `rust/xhubd/crates/xhub-memory/src/lib.rs`
+  - command wrappers under `rust/xhubd/tools/` if existing style supports it
 - API request examples:
 
 ```json
@@ -1184,9 +1184,9 @@ Parallel lanes:
 - goal:
   - Move core memory access decisions into Rust so all models share the same safety contract.
 - write set:
-  - `rust/rust hub/crates/xhub-memory/src/lib.rs`
-  - `rust/rust hub/crates/xhubd/src/memory_bridge.rs`
-  - `rust/rust hub/crates/xhubd/src/xt_contract.rs`
+  - `rust/xhubd/crates/xhub-memory/src/lib.rs`
+  - `rust/xhubd/crates/xhubd/src/memory_bridge.rs`
+  - `rust/xhubd/crates/xhubd/src/xt_contract.rs`
   - `x-terminal/Sources/Hub/XTMemoryUsePolicy.swift`
   - tests in Rust and Swift
 - policy input:
@@ -1294,8 +1294,8 @@ Parallel lanes:
   - `x-terminal/Sources/Project/AXMemoryPipeline.swift`
   - `x-terminal/Sources/Project/AXProjectStore.swift`
   - `x-terminal/Sources/Hub/HubIPCClient.swift`
-  - `rust/rust hub/crates/xhub-memory/src/lib.rs`
-  - `rust/rust hub/crates/xhubd/src/memory_bridge.rs`
+  - `rust/xhubd/crates/xhub-memory/src/lib.rs`
+  - `rust/xhubd/crates/xhubd/src/memory_bridge.rs`
 - current source:
   - `.xterminal/ax_memory.json`
   - `.xterminal/AX_MEMORY.md`
@@ -1370,9 +1370,9 @@ Parallel lanes:
   - mem0 advantage is that any model can use the same memory layer.
   - X-Hub should do this at kernel level, not per UI prompt.
 - write set:
-  - `rust/rust hub/crates/xhubd/src/main.rs`
-  - `rust/rust hub/crates/xhubd/src/model_bridge.rs`
-  - `rust/rust hub/crates/xhubd/src/memory_bridge.rs`
+  - `rust/xhubd/crates/xhubd/src/main.rs`
+  - `rust/xhubd/crates/xhubd/src/model_bridge.rs`
+  - `rust/xhubd/crates/xhubd/src/memory_bridge.rs`
   - `x-terminal/Sources/Hub/HubIPCClient.swift`
   - `x-terminal/Sources/Hub/HubPairingCoordinator.swift`
   - `x-terminal/Sources/Chat/ChatSessionModel.swift`
@@ -1513,9 +1513,9 @@ Parallel lanes:
 - goal:
   - Improve retrieval beyond lexical file scan without jumping directly to always-on embeddings.
 - write set:
-  - `rust/rust hub/crates/xhub-memory/src/lib.rs`
+  - `rust/xhubd/crates/xhub-memory/src/lib.rs`
   - Rust storage/index helper modules
-  - `rust/rust hub/crates/xhubd/src/memory_bridge.rs`
+  - `rust/xhubd/crates/xhubd/src/memory_bridge.rs`
   - tests
 - design:
   - Stage 1: policy gate
@@ -1682,10 +1682,10 @@ Parallel lanes:
   - memsearch's `gpahal/bge-m3-onnx-int8` evaluation is the best current local default candidate for bilingual coding memory: CPU-only, no API key, small enough for managed download, and better Chinese recall than common API/default alternatives.
   - X-Hub should support this as optional profile-based capability.
 - write set:
-  - `rust/rust hub/crates/xhub-memory/src/lib.rs`
+  - `rust/xhubd/crates/xhub-memory/src/lib.rs`
   - Rust local ML bridge modules
-  - `rust/rust hub/crates/xhubd/src/main.rs`
-  - `rust/rust hub/crates/xhubd/src/memory_bridge.rs`
+  - `rust/xhubd/crates/xhubd/src/main.rs`
+  - `rust/xhubd/crates/xhubd/src/memory_bridge.rs`
   - readiness/report tools
 - design:
   - Embedding provider is pluggable.
@@ -1751,8 +1751,8 @@ Parallel lanes:
   - memsearch adds BM25+dense RRF plus optional cross-encoder rerank.
   - X-Hub should use fusion/rerank selectively, not always-on.
 - write set:
-  - `rust/rust hub/crates/xhub-memory/src/lib.rs`
-  - `rust/rust hub/crates/xhubd/src/memory_bridge.rs`
+  - `rust/xhubd/crates/xhub-memory/src/lib.rs`
+  - `rust/xhubd/crates/xhubd/src/memory_bridge.rs`
   - `x-terminal/Sources/Hub/XTMemoryUsePolicy.swift`
   - `x-terminal/Sources/Chat/ChatSessionModel.swift`
   - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
@@ -1824,8 +1824,8 @@ Parallel lanes:
   - Candidates require policy gate before becoming canonical.
   - Sensitive/personal/project boundaries stay intact.
 - write set:
-  - `rust/rust hub/crates/xhub-memory/src/lib.rs`
-  - `rust/rust hub/crates/xhubd/src/memory_bridge.rs`
+  - `rust/xhubd/crates/xhub-memory/src/lib.rs`
+  - `rust/xhubd/crates/xhubd/src/memory_bridge.rs`
   - `x-terminal/Sources/Project/AXMemoryPipeline.swift`
   - `x-terminal/Sources/Hub/HubIPCClient.swift`
   - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
@@ -2105,8 +2105,8 @@ Parallel lanes:
 - goal:
   - Make Universal Memory Layer observable and releasable.
 - write set:
-  - `rust/rust hub/crates/xhubd/src/main.rs`
-  - `rust/rust hub/tools/daemon_ops_gate.command`
+  - `rust/xhubd/crates/xhubd/src/main.rs`
+  - `rust/xhubd/tools/daemon_ops_gate.command`
   - relevant Rust report tools
   - `x-terminal/Sources/UI/XTUnifiedDoctor.swift`
   - `x-terminal/Sources/UI/RustHubReadinessPresentation.swift`
@@ -2417,11 +2417,11 @@ Personal memory is denied to Project Coder by default.
 All endpoints must return schema_versioned JSON and fail closed on secrets.
 
 Before editing, inspect:
-- rust/rust hub/crates/xhub-memory/src/lib.rs
-- rust/rust hub/crates/xhubd/src/memory_bridge.rs
-- rust/rust hub/crates/xhubd/src/main.rs
-- rust/rust hub/crates/xhub-db/src/lib.rs
-- rust/rust hub/migrations/0007_memory_objects.sql
+- rust/xhubd/crates/xhub-memory/src/lib.rs
+- rust/xhubd/crates/xhubd/src/memory_bridge.rs
+- rust/xhubd/crates/xhubd/src/main.rs
+- rust/xhubd/crates/xhub-db/src/lib.rs
+- rust/xhubd/migrations/0007_memory_objects.sql
 - x-terminal/Sources/Hub/XTMemoryUsePolicy.swift
 - x-terminal/Sources/Project/AXMemory.swift
 - x-terminal/Sources/Project/AXMemoryPipeline.swift

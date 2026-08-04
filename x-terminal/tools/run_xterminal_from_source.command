@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 XT_DIR="$ROOT_DIR/x-terminal"
+# shellcheck source=../scripts/lib/canonical_root_guard.sh
+source "$XT_DIR/scripts/lib/canonical_root_guard.sh"
+xterminal_assert_canonical_root "$ROOT_DIR" "$XT_DIR"
 SOURCE_RUN_HOME="${XTERMINAL_SOURCE_RUN_HOME:-$HOME}"
 SOURCE_RUN_TMPDIR="${XTERMINAL_SOURCE_RUN_TMPDIR:-${TMPDIR:-/tmp}}"
 SOURCE_RUN_SCRATCH_PATH="${XTERMINAL_SOURCE_RUN_SCRATCH_PATH:-}"

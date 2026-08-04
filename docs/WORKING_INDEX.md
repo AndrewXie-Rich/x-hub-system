@@ -11,15 +11,19 @@ Use it to answer three questions quickly:
 This page is a working map, not a release-scope expansion document.
 Each document should appear here under one primary track whenever possible; if a topic spans multiple areas, prefer its primary track first and use the task sections below for code entry points.
 
-## Active Root Guard
+## Canonical Root Guard
 
-For this local workspace, active implementation roots are split:
+For this local workspace, all canonical implementation roots are versioned in
+the same repository:
 
 - Hub app / control plane: `/Users/andrew.xie/Documents/AX/x-hub-system/x-hub/`
-- Hub Rust kernel: `/Users/andrew.xie/Documents/AX/rust/rust hub`
-- Active X-Terminal: `/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal`
+- Hub Rust kernel: `/Users/andrew.xie/Documents/AX/x-hub-system/rust/xhubd`
+- X-Terminal: `/Users/andrew.xie/Documents/AX/x-hub-system/x-terminal`
 
-The in-repo `x-terminal/` tree is legacy/read-only unless a task explicitly asks for migration or archival comparison. `x-hub/macos/RELFlowHub/` is the current Hub Swift shell's historical package name, not proof of a separate old Hub product.
+The sibling `rust/rust hub` and `rust/rust xt/swift-xterminal` trees are
+migration/reference copies only. Work found there must be migrated into this
+repository and validated here. `x-hub/macos/RELFlowHub/` is the current Hub
+Swift shell's historical package name, not proof of a separate old Hub product.
 
 ## Read Order
 

@@ -4,8 +4,8 @@
 - status: in_progress
 - last_updated: 2026-05-16
 - source_reference: `/Users/andrew.xie/Documents/AX/source/kilocode-main`
-- target_root: `/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal`
-- build_command: `/Users/andrew.xie/Documents/AX/rust/rust xt/commands/build_xt.command`
+- target_root: `/Users/andrew.xie/Documents/AX/x-hub-system/x-terminal`
+- build_command: `/Users/andrew.xie/Documents/AX/x-hub-system/x-terminal/tools/build_xt_with_rust_sidecar.command`
 - purpose: 将 Kilo Code 中真正提升代码与 debug 能力的工程机制，落到当前 `Hub-first trust + XT execution surface + Supervisor lane orchestration` 架构中。
 
 ## 0) 给接手 AI 的执行说明
@@ -27,8 +27,8 @@
 - XT 的角色边界不是单一 agent：除 `Supervisor` 外，还必须显式保留 `Coder` 和 `Reviewer`。代码实现 lane 归 Coder，审查/验收/mergeback 证据评估归 Reviewer，任务拆分/调度/授权/合回决策归 Supervisor。
 - 不要默认放宽 bash / shell 权限。Kilo 的能力要经过 XT 的 tool policy、Hub grant、runtime surface policy 和审计。
 - 不要改 `/Users/andrew.xie/Documents/AX/source/kilocode-main`，除非用户明确要求修改 Kilo 本身。
-- XT 改动应落在 `/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal`。
-- 构建验证使用 `/Users/andrew.xie/Documents/AX/rust/rust xt/commands/build_xt.command`。
+- XT 改动应落在 `/Users/andrew.xie/Documents/AX/x-hub-system/x-terminal`。
+- 构建验证使用 `/Users/andrew.xie/Documents/AX/x-hub-system/x-terminal/tools/build_xt_with_rust_sidecar.command`。
 
 ### 0.1 本系统专属架构约束
 
@@ -506,13 +506,13 @@ recommended_next_action: inspect_changed_files_and_fix_minimally
 执行：
 
 ```bash
-"/Users/andrew.xie/Documents/AX/rust/rust xt/commands/build_xt.command"
+"/Users/andrew.xie/Documents/AX/x-hub-system/x-terminal/tools/build_xt_with_rust_sidecar.command"
 ```
 
 如命令环境要求 shell 解析空格路径，可用：
 
 ```bash
-/Users/andrew.xie/Documents/AX/rust/rust\ xt/commands/build_xt.command
+/Users/andrew.xie/Documents/AX/x-hub-system/x-terminal/tools/build_xt_with_rust_sidecar.command
 ```
 
 ### 10.3 建议新增回归样例
