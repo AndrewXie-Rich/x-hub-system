@@ -174,7 +174,7 @@ fn readiness_contract() -> Value {
         },
         "fields": {
             "core_ready": "daemon dependencies and base Rust kernel surfaces are usable",
-            "serving_ready": "core is ready and provider/model shadow-compare evidence meets configured thresholds",
+            "serving_ready": "core is ready and provider/model shadow-compare evidence is fresh and meets configured thresholds",
             "cutover_ready": "serving is ready, scheduler production authority is enabled, and provider/model production authority is coherent"
         },
         "structured_status_field": "readiness_layers",
@@ -183,13 +183,15 @@ fn readiness_contract() -> Value {
                 "component": "provider_route",
                 "endpoint": "/provider/readiness",
                 "default_min_compare_reports": 10,
-                "default_max_mismatches": 0
+                "default_max_mismatches": 0,
+                "default_max_evidence_age_ms": 900000
             },
             "model_inventory": {
                 "component": "model_inventory",
                 "endpoint": "/model/readiness",
                 "default_min_compare_reports": 10,
-                "default_max_mismatches": 0
+                "default_max_mismatches": 0,
+                "default_max_evidence_age_ms": 900000
             },
             "aggregate_reads_are_read_only": true,
             "aggregate_applies_migrations": false

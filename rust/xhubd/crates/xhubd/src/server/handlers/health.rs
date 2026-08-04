@@ -33,6 +33,7 @@ const PROVIDER_ROUTE_COMPONENT: &str = "provider_route";
 const MODEL_INVENTORY_COMPONENT: &str = "model_inventory";
 const DEFAULT_ROUTE_COMPARE_REPORTS: usize = 10;
 const DEFAULT_ROUTE_COMPARE_MISMATCHES: usize = 0;
+const DEFAULT_ROUTE_COMPARE_EVIDENCE_MAX_AGE_MS: u128 = 15 * 60 * 1000;
 pub(crate) const LEGACY_OBSERVABILITY_MODE: &str = "shadow_http";
 pub(crate) const PRODUCTION_APPLIED_OBSERVABILITY_MODE: &str = "production_applied";
 pub(crate) const HTTP_TRANSPORT_MODE: &str = "http";
@@ -48,6 +49,10 @@ pub(crate) struct CompareEvidenceReadiness {
     latest_compared_at_ms: i64,
     min_compare_reports: i64,
     max_mismatches: i64,
+    max_evidence_age_ms: i64,
+    evidence_age_ms: Option<i64>,
+    evidence_fresh: bool,
+    evidence_timestamp_valid: bool,
     blocker_codes: Vec<String>,
     read_error: String,
 }
@@ -55,7 +60,7 @@ pub(crate) struct CompareEvidenceReadiness {
 impl CompareEvidenceReadiness {
     pub(crate) fn to_value(&self) -> Value {
         json!({
-            "schema_version": "xhub.rust_hub.compare_evidence_readiness.v1",
+            "schema_version": "xhub.rust_hub.compare_evidence_readiness.v2",
             "component": self.component,
             "read_only": true,
             "migrations_applied": false,
@@ -73,6 +78,7 @@ impl CompareEvidenceReadiness {
             "thresholds": {
                 "min_compare_reports": self.min_compare_reports,
                 "max_mismatches": self.max_mismatches,
+                "max_evidence_age_ms": self.max_evidence_age_ms,
             },
             "evidence": {
                 "actual_reports": self.total,
@@ -81,6 +87,9 @@ impl CompareEvidenceReadiness {
                 "mismatched_reports": self.mismatched,
                 "max_mismatches": self.max_mismatches,
                 "latest_compared_at_ms": self.latest_compared_at_ms,
+                "age_ms": self.evidence_age_ms,
+                "fresh": self.evidence_fresh,
+                "timestamp_valid": self.evidence_timestamp_valid,
             },
             "checks": [
                 {
@@ -100,6 +109,13 @@ impl CompareEvidenceReadiness {
                     "ok": self.mismatched <= self.max_mismatches,
                     "actual": self.mismatched,
                     "threshold": self.max_mismatches,
+                    "blocking": true,
+                },
+                {
+                    "name": format!("{}_evidence_freshness", self.component),
+                    "ok": self.evidence_fresh,
+                    "actual_age_ms": self.evidence_age_ms,
+                    "threshold_ms": self.max_evidence_age_ms,
                     "blocking": true,
                 }
             ],
@@ -159,10 +175,30 @@ pub(crate) fn compare_evidence_readiness(
     component: &str,
     min_compare_reports: i64,
     max_mismatches: i64,
+    max_evidence_age_ms: i64,
+) -> CompareEvidenceReadiness {
+    compare_evidence_readiness_at(
+        db_path,
+        component,
+        min_compare_reports,
+        max_mismatches,
+        max_evidence_age_ms,
+        now_ms().min(i64::MAX as u128) as i64,
+    )
+}
+
+pub(crate) fn compare_evidence_readiness_at(
+    db_path: &Path,
+    component: &str,
+    min_compare_reports: i64,
+    max_mismatches: i64,
+    max_evidence_age_ms: i64,
+    evaluated_at_ms: i64,
 ) -> CompareEvidenceReadiness {
     let component = component.trim();
     let min_compare_reports = min_compare_reports.max(0);
     let max_mismatches = max_mismatches.max(0);
+    let max_evidence_age_ms = max_evidence_age_ms.max(0);
     match read_shadow_compare_report_summary(db_path, component, 1) {
         Ok(summary) => {
             let mut blocker_codes = Vec::new();
@@ -172,16 +208,41 @@ pub(crate) fn compare_evidence_readiness(
             if summary.mismatched > max_mismatches {
                 blocker_codes.push(format!("{}_compare_mismatch_threshold_exceeded", component));
             }
+            let evidence_required = min_compare_reports > 0;
+            let evidence_timestamp_valid = !evidence_required
+                || (summary.latest_compared_at_ms > 0
+                    && summary.latest_compared_at_ms <= evaluated_at_ms);
+            let evidence_age_ms = if evidence_timestamp_valid && summary.latest_compared_at_ms > 0 {
+                Some(evaluated_at_ms.saturating_sub(summary.latest_compared_at_ms))
+            } else {
+                None
+            };
+            let evidence_fresh = !evidence_required
+                || (evidence_timestamp_valid
+                    && evidence_age_ms
+                        .map(|age| age <= max_evidence_age_ms)
+                        .unwrap_or(false));
+            if evidence_required && summary.latest_compared_at_ms <= 0 {
+                blocker_codes.push(format!("{}_compare_evidence_timestamp_missing", component));
+            } else if evidence_required && !evidence_timestamp_valid {
+                blocker_codes.push(format!("{}_compare_evidence_timestamp_invalid", component));
+            } else if evidence_required && !evidence_fresh {
+                blocker_codes.push(format!("{}_compare_evidence_stale", component));
+            }
             CompareEvidenceReadiness {
                 component: component.to_string(),
                 read_ok: true,
-                ready: blocker_codes.is_empty(),
+                ready: blocker_codes.is_empty() && evidence_fresh,
                 total: summary.total,
                 matched: summary.matched,
                 mismatched: summary.mismatched,
                 latest_compared_at_ms: summary.latest_compared_at_ms,
                 min_compare_reports,
                 max_mismatches,
+                max_evidence_age_ms,
+                evidence_age_ms,
+                evidence_fresh,
+                evidence_timestamp_valid,
                 blocker_codes,
                 read_error: String::new(),
             }
@@ -196,6 +257,10 @@ pub(crate) fn compare_evidence_readiness(
             latest_compared_at_ms: 0,
             min_compare_reports,
             max_mismatches,
+            max_evidence_age_ms,
+            evidence_age_ms: None,
+            evidence_fresh: false,
+            evidence_timestamp_valid: false,
             blocker_codes: vec![format!("{}_compare_evidence_unavailable", component)],
             read_error: err.to_string(),
         },
@@ -257,7 +322,7 @@ pub(crate) fn layered_readiness_value(
         },
         "serving": {
             "ready": serving_ready,
-            "semantics": "core is ready and provider/model shadow-compare evidence meets serving thresholds",
+            "semantics": "core is ready and provider/model shadow-compare evidence is fresh and meets serving thresholds",
             "blocker_codes": serving_blocker_codes,
             "provider_route_evidence": provider_evidence.to_value(),
             "model_inventory_evidence": model_evidence.to_value(),
@@ -736,6 +801,12 @@ pub(crate) fn readiness_json(
         0,
         1_000_000,
     ) as i64;
+    let provider_max_evidence_age_ms = env_u128_in_range(
+        "XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MAX_EVIDENCE_AGE_MS",
+        DEFAULT_ROUTE_COMPARE_EVIDENCE_MAX_AGE_MS,
+        1_000,
+        7 * 24 * 60 * 60 * 1000,
+    ) as i64;
     let model_min_compare_reports = env_usize_in_range(
         "XHUB_RUST_MODEL_ROUTE_AUTHORITY_MIN_COMPARE_REPORTS",
         DEFAULT_ROUTE_COMPARE_REPORTS,
@@ -748,17 +819,25 @@ pub(crate) fn readiness_json(
         0,
         1_000_000,
     ) as i64;
+    let model_max_evidence_age_ms = env_u128_in_range(
+        "XHUB_RUST_MODEL_ROUTE_AUTHORITY_MAX_EVIDENCE_AGE_MS",
+        DEFAULT_ROUTE_COMPARE_EVIDENCE_MAX_AGE_MS,
+        1_000,
+        7 * 24 * 60 * 60 * 1000,
+    ) as i64;
     let provider_evidence = compare_evidence_readiness(
         &config.db_path,
         PROVIDER_ROUTE_COMPONENT,
         provider_min_compare_reports,
         provider_max_mismatches,
+        provider_max_evidence_age_ms,
     );
     let model_evidence = compare_evidence_readiness(
         &config.db_path,
         MODEL_INVENTORY_COMPONENT,
         model_min_compare_reports,
         model_max_mismatches,
+        model_max_evidence_age_ms,
     );
     let readiness_layers = layered_readiness_value(
         core_ready,

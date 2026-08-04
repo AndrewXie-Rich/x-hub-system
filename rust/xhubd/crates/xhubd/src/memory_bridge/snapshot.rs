@@ -54,6 +54,23 @@ fn readiness_json_from_snapshot_inner(
     let object_store_ready = object_summary.is_some();
     let summary = object_summary.unwrap_or_default();
     let index = index_summary.unwrap_or_default();
+    let index_coverage_complete = index.indexed_object_count == index.active_indexable_object_count;
+    let index_timestamp_current = index.active_indexable_object_count == 0
+        || (index.latest_indexed_at_ms > 0
+            && index.latest_indexed_at_ms >= index.latest_indexable_object_updated_at_ms);
+    let mut index_blocker_codes = Vec::<&str>::new();
+    if !index.schema_ready {
+        index_blocker_codes.push("memory_object_index_schema_unavailable");
+    }
+    if index.stale_index_count > 0 {
+        index_blocker_codes.push("memory_object_index_stale");
+    }
+    if !index_coverage_complete {
+        index_blocker_codes.push("memory_object_index_coverage_incomplete");
+    }
+    if !index_timestamp_current {
+        index_blocker_codes.push("memory_object_index_timestamp_behind_source");
+    }
     Ok(json!({
         "schema_version": SCHEMA_VERSION,
         "ok": true,
@@ -72,15 +89,26 @@ fn readiness_json_from_snapshot_inner(
             "policy_gate_ready": true,
             "crud_create_get_list_history_http": true,
             "memory_index_ready": index.index_ready,
+            "memory_index_schema_ready": index.schema_ready,
             "memory_index_row_count": index.index_row_count,
+            "memory_index_indexed_object_count": index.indexed_object_count,
             "memory_index_stale_count": index.stale_index_count,
             "memory_index_active_indexable_object_count": index.active_indexable_object_count,
             "memory_index_latest_indexed_at_ms": index.latest_indexed_at_ms,
+            "memory_index_latest_source_updated_at_ms": index.latest_indexable_object_updated_at_ms,
             "memory_index_generation": {
                 "source": "rust_hub_memory_object_index",
+                "ready": index.index_ready,
+                "schema_ready": index.schema_ready,
                 "row_count": index.index_row_count,
+                "indexed_object_count": index.indexed_object_count,
+                "active_indexable_object_count": index.active_indexable_object_count,
+                "coverage_complete": index_coverage_complete,
                 "stale_count": index.stale_index_count,
                 "latest_indexed_at_ms": index.latest_indexed_at_ms,
+                "latest_source_updated_at_ms": index.latest_indexable_object_updated_at_ms,
+                "timestamp_current": index_timestamp_current,
+                "blocker_codes": index_blocker_codes,
             },
             "writeback_candidates": {
                 "schema_version": MEMORY_WRITEBACK_CANDIDATE_SCHEMA,
@@ -119,13 +147,22 @@ fn readiness_json_from_snapshot_inner(
 }
 
 pub(crate) fn memory_object_index_summary_to_json(summary: &MemoryObjectIndexSummary) -> Value {
+    let coverage_complete = summary.indexed_object_count == summary.active_indexable_object_count;
+    let timestamp_current = summary.active_indexable_object_count == 0
+        || (summary.latest_indexed_at_ms > 0
+            && summary.latest_indexed_at_ms >= summary.latest_indexable_object_updated_at_ms);
     json!({
         "source": "rust_hub_memory_object_index",
         "ready": summary.index_ready,
+        "schema_ready": summary.schema_ready,
         "row_count": summary.index_row_count,
+        "indexed_object_count": summary.indexed_object_count,
         "active_indexable_object_count": summary.active_indexable_object_count,
+        "coverage_complete": coverage_complete,
         "stale_count": summary.stale_index_count,
         "latest_indexed_at_ms": summary.latest_indexed_at_ms,
+        "latest_source_updated_at_ms": summary.latest_indexable_object_updated_at_ms,
+        "timestamp_current": timestamp_current,
     })
 }
 

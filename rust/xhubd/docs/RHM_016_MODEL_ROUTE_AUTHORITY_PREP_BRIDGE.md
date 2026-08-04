@@ -47,7 +47,12 @@ XHUB_RUST_MODEL_ROUTE_AUTHORITY_REQUIRE_NODE_MATCH
 XHUB_RUST_MODEL_ROUTE_AUTHORITY_FALLBACK_ON_ERROR
 XHUB_RUST_MODEL_ROUTE_AUTHORITY_MIN_COMPARE_REPORTS
 XHUB_RUST_MODEL_ROUTE_AUTHORITY_MAX_MISMATCHES
+XHUB_RUST_MODEL_ROUTE_AUTHORITY_MAX_EVIDENCE_AGE_MS
 ```
+
+Aggregate serving and cutover readiness also require the latest model compare
+evidence to be no older than 900000 ms by default. Missing, future-dated, or
+stale evidence fails closed without changing the legacy `core_ready` alias.
 
 ## Generate Hook
 

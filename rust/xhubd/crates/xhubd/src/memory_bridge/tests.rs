@@ -124,6 +124,66 @@ fn seed_diagnostics_test_object(config: &HubConfig, object: &MemoryObjectRecord)
 }
 
 #[test]
+fn memory_readiness_fails_closed_until_object_index_is_current() {
+    let config = test_config("index_readiness");
+    apply_baseline_migrations(&config.db_path).expect("migrate memory db");
+    let body = json!({
+        "memory_id": "mem_index_readiness",
+        "requester_role": "chat",
+        "use_mode": "project_chat",
+        "scope": "project",
+        "owner_id": "project-index-readiness",
+        "project_id": "project-index-readiness",
+        "source_kind": "decision_track",
+        "layer": "l1_canonical",
+        "title": "Index readiness decision",
+        "text": "Decision: stale derived memory indexes must fail readiness closed.",
+        "audit_ref": "index-readiness-test",
+    })
+    .to_string();
+    create_memory_object_json_from_body(&config, &body).expect("create canonical memory object");
+    let snapshot = scan_memory_snapshot(&config.root_dir.join("memory"));
+
+    let stale_raw = readiness_json_from_snapshot_with_config(&config, &snapshot)
+        .expect("stale memory readiness");
+    let stale: Value = serde_json::from_str(&stale_raw).expect("stale readiness json");
+    assert_eq!(stale["object_store"]["memory_index_ready"], false);
+    assert_eq!(
+        stale["object_store"]["memory_index_generation"]["coverage_complete"],
+        false
+    );
+    assert!(
+        stale["object_store"]["memory_index_generation"]["blocker_codes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("memory_object_index_stale"))
+    );
+
+    rebuild_memory_object_index(&config.db_path).expect("rebuild memory index");
+    let ready_raw = readiness_json_from_snapshot_with_config(&config, &snapshot)
+        .expect("current memory readiness");
+    let ready: Value = serde_json::from_str(&ready_raw).expect("ready json");
+    assert_eq!(ready["object_store"]["memory_index_ready"], true);
+    assert_eq!(
+        ready["object_store"]["memory_index_generation"]["coverage_complete"],
+        true
+    );
+    assert_eq!(
+        ready["object_store"]["memory_index_generation"]["timestamp_current"],
+        true
+    );
+    assert_eq!(
+        ready["object_store"]["memory_index_generation"]["blocker_codes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    let _ = fs::remove_dir_all(config.root_dir);
+}
+
+#[test]
 fn retrieve_json_returns_xt_result_shape() {
     let dir = temp_dir("retrieve");
     fs::create_dir_all(&dir).expect("mkdir");

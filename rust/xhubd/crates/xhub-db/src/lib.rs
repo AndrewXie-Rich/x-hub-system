@@ -882,11 +882,14 @@ pub struct MemoryObjectIndexRecord {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MemoryObjectIndexSummary {
+    pub schema_ready: bool,
     pub index_ready: bool,
     pub index_row_count: i64,
+    pub indexed_object_count: i64,
     pub active_indexable_object_count: i64,
     pub stale_index_count: i64,
     pub latest_indexed_at_ms: i64,
+    pub latest_indexable_object_updated_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2175,11 +2178,38 @@ pub fn read_memory_object_index_summary(
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     conn.execute_batch("PRAGMA busy_timeout = 2000;")?;
+    let schema_table_count = query_i64_or_zero(
+        &conn,
+        "SELECT COUNT(*) FROM sqlite_schema
+         WHERE type = 'table'
+           AND name IN ('rust_hub_memory_objects', 'rust_hub_memory_object_index')",
+    )?;
+    let schema_ready = schema_table_count == 2;
     let index_row_count =
         query_i64_or_zero(&conn, "SELECT COUNT(*) FROM rust_hub_memory_object_index")?;
+    let indexed_object_count = query_i64_or_zero(
+        &conn,
+        "SELECT COUNT(DISTINCT memory_id) FROM rust_hub_memory_object_index",
+    )?;
     let active_indexable_object_count = query_i64_or_zero(
         &conn,
         "SELECT COUNT(*) FROM rust_hub_memory_objects
+         WHERE status = 'active'
+           AND sensitivity != 'secret'
+           AND lower(title || char(10) || summary || char(10) || text) NOT LIKE '%api key%'
+           AND lower(title || char(10) || summary || char(10) || text) NOT LIKE '%apikey%'
+           AND lower(title || char(10) || summary || char(10) || text) NOT LIKE '%secret%'
+           AND lower(title || char(10) || summary || char(10) || text) NOT LIKE '%password%'
+           AND lower(title || char(10) || summary || char(10) || text) NOT LIKE '%private key%'
+           AND lower(title || char(10) || summary || char(10) || text) NOT LIKE '%authorization:%'
+           AND lower(title || char(10) || summary || char(10) || text) NOT LIKE '%bearer %'
+           AND lower(title || char(10) || summary || char(10) || text) NOT LIKE '%sk-%'
+           AND lower(title || char(10) || summary || char(10) || text) NOT LIKE '%xoxb-%'
+           AND lower(title || char(10) || summary || char(10) || text) NOT LIKE '%aws_secret_access_key%'",
+    )?;
+    let latest_indexable_object_updated_at_ms = query_i64_or_zero(
+        &conn,
+        "SELECT COALESCE(MAX(updated_at_ms), 0) FROM rust_hub_memory_objects
          WHERE status = 'active'
            AND sensitivity != 'secret'
            AND lower(title || char(10) || summary || char(10) || text) NOT LIKE '%api key%'
@@ -2221,18 +2251,39 @@ pub fn read_memory_object_index_summary(
          LEFT JOIN rust_hub_memory_objects o ON o.memory_id = i.memory_id
          WHERE o.memory_id IS NULL
             OR o.status != 'active'
-            OR o.sensitivity = 'secret'",
+            OR o.sensitivity = 'secret'
+            OR lower(o.title || char(10) || o.summary || char(10) || o.text) LIKE '%api key%'
+            OR lower(o.title || char(10) || o.summary || char(10) || o.text) LIKE '%apikey%'
+            OR lower(o.title || char(10) || o.summary || char(10) || o.text) LIKE '%secret%'
+            OR lower(o.title || char(10) || o.summary || char(10) || o.text) LIKE '%password%'
+            OR lower(o.title || char(10) || o.summary || char(10) || o.text) LIKE '%private key%'
+            OR lower(o.title || char(10) || o.summary || char(10) || o.text) LIKE '%authorization:%'
+            OR lower(o.title || char(10) || o.summary || char(10) || o.text) LIKE '%bearer %'
+            OR lower(o.title || char(10) || o.summary || char(10) || o.text) LIKE '%sk-%'
+            OR lower(o.title || char(10) || o.summary || char(10) || o.text) LIKE '%xoxb-%'
+            OR lower(o.title || char(10) || o.summary || char(10) || o.text) LIKE '%aws_secret_access_key%'",
     )?;
     let latest_indexed_at_ms = query_i64_or_zero(
         &conn,
         "SELECT COALESCE(MAX(indexed_at_ms), 0) FROM rust_hub_memory_object_index",
     )?;
+    let stale_index_count = stale_missing + stale_orphan;
+    let coverage_complete = indexed_object_count == active_indexable_object_count;
+    let timestamp_current = active_indexable_object_count == 0
+        || (latest_indexed_at_ms > 0
+            && latest_indexed_at_ms >= latest_indexable_object_updated_at_ms);
     Ok(MemoryObjectIndexSummary {
-        index_ready: true,
+        schema_ready,
+        index_ready: schema_ready
+            && stale_index_count == 0
+            && coverage_complete
+            && timestamp_current,
         index_row_count,
+        indexed_object_count,
         active_indexable_object_count,
-        stale_index_count: stale_missing + stale_orphan,
+        stale_index_count,
         latest_indexed_at_ms,
+        latest_indexable_object_updated_at_ms,
     })
 }
 
@@ -3020,15 +3071,27 @@ mod tests {
         .expect("create secret object");
 
         let before = read_memory_object_index_summary(&db_path).expect("summary before");
+        assert!(before.schema_ready);
+        assert!(!before.index_ready);
         assert_eq!(before.index_row_count, 0);
+        assert_eq!(before.indexed_object_count, 0);
         assert_eq!(before.active_indexable_object_count, 1);
         assert_eq!(before.stale_index_count, 1);
+        assert_eq!(before.latest_indexable_object_updated_at_ms, 1_000);
 
         let report = rebuild_memory_object_index(&db_path).expect("rebuild index");
         assert_eq!(report.indexed_count, 1);
         assert_eq!(report.skipped_secret_count, 1);
         assert_eq!(report.stale_before_count, 1);
         assert_eq!(report.stale_after_count, 0);
+
+        let after = read_memory_object_index_summary(&db_path).expect("summary after");
+        assert!(after.schema_ready);
+        assert!(after.index_ready);
+        assert_eq!(after.indexed_object_count, 1);
+        assert_eq!(after.active_indexable_object_count, 1);
+        assert_eq!(after.stale_index_count, 0);
+        assert!(after.latest_indexed_at_ms >= after.latest_indexable_object_updated_at_ms);
 
         let rows = list_memory_object_index(
             &db_path,

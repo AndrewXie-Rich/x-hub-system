@@ -255,7 +255,12 @@ export XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_CANDIDATE_CACHE_MAX_ENTRIES=128
 export XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_REQUIRE_READY=1
 export XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MIN_COMPARE_REPORTS=10
 export XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MAX_MISMATCHES=0
+export XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MAX_EVIDENCE_AGE_MS=900000
 ```
+
+`/ready` treats missing, future-dated, or older provider evidence as a serving
+and cutover blocker. The default freshness window is 15 minutes; `core_ready`
+remains the backward-compatible base-kernel signal.
 
 Validation:
 
