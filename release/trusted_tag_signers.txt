@@ -1,6 +1,0 @@
-# One exact signing-key fingerprint or SSH key fingerprint per line.
-#
-# Formal release packaging fails closed until this tracked registry contains
-# the approved X Hub release signer. Provision the signing key, add its
-# fingerprint here in a reviewed commit, then create and publish the signed
-# annotated release tag from that commit.
