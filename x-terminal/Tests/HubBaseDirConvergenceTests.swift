@@ -7,9 +7,114 @@ import Glibc
 #endif
 @testable import XTerminal
 
+private actor HubPathsTaskIsolationBarrier {
+    private var arrivals = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func arriveAndWait() async {
+        arrivals += 1
+        if arrivals == 2 {
+            let pending = waiters
+            waiters.removeAll()
+            for waiter in pending {
+                waiter.resume()
+            }
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+}
+
+struct HubPathsTaskIsolationTests {
+    @Test
+    func lexicalPinnedOverridePropagatesToChildTask() async {
+        let expectedURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hub_paths_lexical_child_\(UUID().uuidString)")
+
+        let resolved = await HubPaths.withPinnedBaseDirOverride(expectedURL) {
+            await Task {
+                HubPaths.baseDirOverride()?.standardizedFileURL
+            }.value
+        }
+
+        #expect(resolved == expectedURL.standardizedFileURL)
+    }
+
+    @Test
+    func concurrentLexicalOverridesRemainIsolatedAcrossChildTasks() async {
+        let barrier = HubPathsTaskIsolationBarrier()
+        let firstURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hub_paths_lexical_first_\(UUID().uuidString)")
+        let secondURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hub_paths_lexical_second_\(UUID().uuidString)")
+
+        async let firstResolved = resolveLexicalPinnedOverride(firstURL, barrier: barrier)
+        async let secondResolved = resolveLexicalPinnedOverride(secondURL, barrier: barrier)
+        let (first, second) = await (firstResolved, secondResolved)
+
+        #expect(first == firstURL.standardizedFileURL)
+        #expect(second == secondURL.standardizedFileURL)
+    }
+
+    @Test
+    func concurrentPinnedOverridesRemainTaskScoped() async {
+        let barrier = HubPathsTaskIsolationBarrier()
+        let firstURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hub_paths_task_first_\(UUID().uuidString)")
+        let secondURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hub_paths_task_second_\(UUID().uuidString)")
+
+        async let firstResolved = resolvePinnedOverride(firstURL, barrier: barrier)
+        async let secondResolved = resolvePinnedOverride(secondURL, barrier: barrier)
+        let (first, second) = await (firstResolved, secondResolved)
+
+        #expect(first == firstURL.standardizedFileURL)
+        #expect(second == secondURL.standardizedFileURL)
+    }
+
+    private func resolvePinnedOverride(
+        _ url: URL,
+        barrier: HubPathsTaskIsolationBarrier
+    ) async -> URL? {
+        HubPaths.setPinnedBaseDirOverride(url)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+        await barrier.arriveAndWait()
+        return HubPaths.baseDirOverride()?.standardizedFileURL
+    }
+
+    private func resolveLexicalPinnedOverride(
+        _ url: URL,
+        barrier: HubPathsTaskIsolationBarrier
+    ) async -> URL? {
+        await HubPaths.withPinnedBaseDirOverride(url) {
+            await barrier.arriveAndWait()
+            return await Task {
+                HubPaths.baseDirOverride()?.standardizedFileURL
+            }.value
+        }
+    }
+}
+
 @Suite(.serialized)
 struct HubBaseDirConvergenceTests {
     private let hubBaseDirDefaultsKey = "xterminal_hub_base_dir"
+
+    @Test
+    func repeatedPinnedOverrideForSameDirectoryIsIdempotent() throws {
+        let tempRoot = try makeTempDir(prefix: "hub_paths_repeated_pin")
+        defer {
+            HubPaths.clearPinnedBaseDirOverride()
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+
+        HubPaths.setPinnedBaseDirOverride(tempRoot)
+        HubPaths.setPinnedBaseDirOverride(tempRoot)
+
+        #expect(HubPaths.baseDirOverride()?.standardizedFileURL == tempRoot.standardizedFileURL)
+    }
 
     @Test
     func baseDirIgnoresStaleLocalCandidateWhenRemotePairingStateExists() throws {

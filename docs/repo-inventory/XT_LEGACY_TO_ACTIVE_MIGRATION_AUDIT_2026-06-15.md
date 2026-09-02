@@ -1,5 +1,12 @@
 # XT Legacy To Active Migration Audit - 2026-06-15
 
+> Superseded root-governance notice (2026-08-01): this file is a historical
+> audit of the split-root state observed on 2026-06-15. Its path labels and
+> `active`/`legacy` conclusions are intentionally retained as evidence, not as
+> current instructions. The canonical XT source is now
+> `x-hub-system/x-terminal/`, and the sibling `rust/rust xt/swift-xterminal`
+> tree is migration/reference only.
+
 Status: audit complete; focused migrations are in progress. Active XT source has been changed only by narrow cherry-picks, not by wholesale legacy overwrite.
 
 Update 2026-06-15: P0 profile foundation has now been migrated into active XT after this audit:

@@ -2,13 +2,15 @@
 
 <p>
   <img src="https://img.shields.io/badge/spec-v0.1%20draft-yellow.svg" alt="Spec v0.1 draft" />
-  <img src="https://img.shields.io/badge/status-pre--RFC-orange.svg" alt="Pre RFC" />
-  <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0" />
+  <img src="https://img.shields.io/badge/status-draft-orange.svg" alt="Draft" />
+  <img src="https://img.shields.io/badge/license-MIT%20%2F%20CC--BY--4.0-blue.svg" alt="License" />
 </p>
 
 > **Touch ID for AI agent actions.** Per-action confirmation with paired authorizer devices, signed receipts, fail-closed defaults. So your AI agent can't `rm -rf` because a prompt injection convinced it to.
 
-[Specification (v0.1 draft)](protocol-v0.1.md) · [60-second demo](demo-60s.md) · 中文 (TBD)
+[Canonical repo](https://github.com/AndrewXie-Rich/agent-2fa) · [Local spec mirror](protocol-v0.1.md) · [60-second demo](demo-60s.md) · [Reference proxy](https://github.com/AndrewXie-Rich/agent-2fa/tree/main/proxy) · 中文 (TBD)
+
+> Canonical public source lives at [`github.com/AndrewXie-Rich/agent-2fa`](https://github.com/AndrewXie-Rich/agent-2fa). This directory is the X-Hub-System mirror/reference pointer; public-facing spec and proxy changes should land in the standalone repo first, then be mirrored back here.
 
 ## What you see
 
@@ -41,15 +43,15 @@ Banks figured this out two decades ago. Per-transaction confirmation, with proof
 > v0.1 is a draft. APIs may break. Not for production.
 
 ```bash
-brew install agent2fa            # macOS preview tap
-cargo install agent2fa-cli       # any platform with Rust
+cargo install --git https://github.com/AndrewXie-Rich/agent-2fa agent-2fa-proxy
+agent-2fa-proxy verify --example
 ```
 
-Wrap your agent runtime:
+Wrap your agent runtime (planned for v0.1.1 once cross-device transport lands):
 
 ```bash
 # Before:  agent-cli "deploy to prod"
-# After:   agent2fa run -- agent-cli "deploy to prod"
+# After:   agent-2fa-proxy run -- agent-cli "deploy to prod"
 ```
 
 ## How it works
@@ -68,10 +70,12 @@ Full data model and wire format: [`protocol-v0.1.md`](protocol-v0.1.md).
 
 | Component | State |
 |---|---|
-| Specification v0.1 | Draft, pre-RFC |
+| Specification v0.1 | Draft |
+| JSON Schemas + examples | CI validated |
+| Reference proxy (Rust) — keygen, challenge, authorize, verify, policy-check, receipts | ✓ shipped in the [standalone repo](https://github.com/AndrewXie-Rich/agent-2fa/tree/main/proxy) (v0.1.0, 13/13 tests, MIT) |
 | Modalities | Touch ID / Face ID / voice / passphrase required; YubiKey, Apple Watch optional |
 | Transport | LAN + mDNS + TLS-pinned required; APNs / FCM / BLE optional |
-| `agent2fa-cli` (Rust) + Authorizer iOS app | Skeleton |
+| Authorizer iOS app + cross-device transport | Deferred to v0.1.1 |
 
 A reference deployment ships inside [X-Hub-System](https://github.com/AndrewXie-Rich/x-hub-system) as its mobile-confirmation-latch subsystem.
 
@@ -79,22 +83,24 @@ A reference deployment ships inside [X-Hub-System](https://github.com/AndrewXie-
 
 agent-2fa is **not WebAuthn**. WebAuthn is per-website 2FA for human-initiated browser flows; agent-2fa is per-Action confirmation for AI agent flows. WebAuthn primitives MAY underlie the device-level proof for `touch_id`/`face_id` Modalities, but the cross-device protocol shape is different.
 
-agent-2fa is **orthogonal to MCP**. MCP servers MAY invoke `agent2fa.request_authorization` via a standard tool call interface, but the protocol does not depend on MCP. Agents without MCP integration use agent-2fa identically.
+agent-2fa is **orthogonal to AI tool protocols** (MCP, A2A, OpenAI tool calling, custom RPC). A tool server MAY invoke `agent2fa.request_authorization` via a standard tool call interface, but the protocol does not depend on any specific tool RPC. Agents without tool-server integration use agent-2fa identically.
 
 Receipts reuse the **Hub Receipt v0.1** envelope rather than redefining a signed-receipt format. See [`hub-receipt/v0.1.md`](../hub-receipt/v0.1.md).
 
+A kin spec, [**skill-trust-registry**](../skill-trust-registry/), addresses a different layer: pre-install attestation and capability-scoping for tool servers themselves. agent-2fa covers the *per-action* confirmation; skill-trust-registry covers the *per-install* trust decision. Both use the same Hub Receipt envelope and the same ed25519 + JCS conventions.
+
 ## Contributing
 
-We are pre-RFC. The most valuable contribution right now is **review of the spec**, especially:
+This is a draft. The most valuable contribution right now is **review of the spec**, especially:
 
 - Policy DSL granularity (§5) — regex vs structured tool-call matching.
 - Action representation for structured tool calls (§16(a)).
 - Latency target for `confirm` flow (§16(b)).
 
-Open issues at <https://github.com/AndrewXie-Rich/agent-2fa/issues> (placeholder). Until that repo is live, comment on the X-Hub-System repo's discussions.
+Open issues at <https://github.com/AndrewXie-Rich/agent-2fa/issues>.
 
 ## License
 
-Specification: **CC BY 4.0**. Reference implementations: **Apache 2.0**.
+Specification: **CC BY 4.0**. Reference implementations: **MIT**.
 
 Contributions to this project are accepted under the same licences. By contributing, you agree to the Developer Certificate of Origin.

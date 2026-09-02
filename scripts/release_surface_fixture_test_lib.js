@@ -25,7 +25,7 @@ function createReleaseSurfaceFixture() {
       "",
       "## Quick Start",
       "",
-      "Run `bash \"/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal/scripts/ci/xt_release_gate.sh\"` to reproduce the XT release smoke.",
+      "Run `bash \"./x-terminal/scripts/ci/xt_release_gate.sh\"` to reproduce the XT release smoke.",
       "",
       "This fixture keeps the release surface frozen to the validated mainline only.",
       "",

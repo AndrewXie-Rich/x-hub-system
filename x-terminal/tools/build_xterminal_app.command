@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 XT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$XT_DIR/.." && pwd)"
 ROOT_DIR="$XT_DIR"
+# shellcheck source=../scripts/lib/canonical_root_guard.sh
+source "$XT_DIR/scripts/lib/canonical_root_guard.sh"
+xterminal_assert_canonical_root "$WORKSPACE_ROOT" "$XT_DIR"
 # shellcheck source=../scripts/lib/build_snapshot_retention.sh
 source "$XT_DIR/scripts/lib/build_snapshot_retention.sh"
 OUT_DIR="${XTERMINAL_BUILD_OUT_DIR:-$WORKSPACE_ROOT/build}"

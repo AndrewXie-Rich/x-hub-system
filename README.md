@@ -41,7 +41,7 @@ Each bullet maps to a `validated` or `preview-working` row in the [capability ma
 
 Anything not in the matrix as `validated` or `preview-working` should be read as implementation-in-progress or direction-only.
 
-## How to run it
+## Quick Start
 
 **macOS, today.** Apple Silicon. Combined DMG with `X-Hub.app` + `X-Terminal.app`.
 
@@ -51,11 +51,14 @@ cd x-hub-system && ./x-hub/tools/build_hub_app.command
 open build/X-Hub.app   # pair X-Terminal once Hub is up
 ```
 
+Before packaging a release, run
+`bash "./x-terminal/scripts/ci/xt_release_gate.sh"` from the repository root.
+
 **Linux daemon, in flight.** `docker-compose up` deployment, 90-day P0. Track [Status & Roadmap](docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md) for the cutover.
 
-**Spec-only, no X-Hub needed.** If you only want the trust layer above MCP or the per-action confirmation primitive, take just the spec:
+**Spec-only, no X-Hub needed.** If you only want the trust layer for agent tool servers or the per-action confirmation primitive, take just the spec:
 
-- [mcp-trust-registry](specs/mcp-trust-registry/)
+- [skill-trust-registry](specs/skill-trust-registry/)
 - [agent-2fa](specs/agent-2fa/)
 - [hub-receipt](specs/hub-receipt/)
 
@@ -69,12 +72,25 @@ Pair → resolve client capability → retrieve governed memory and policy → r
 
 Deep dives: [`docs/REPO_LAYOUT.md`](docs/REPO_LAYOUT.md), [`docs/xhub-hub-architecture-tradeoffs-v1.md`](docs/xhub-hub-architecture-tradeoffs-v1.md), [archived long-form README](docs/legacy/README_full_v1.md).
 
+Machine-readable XT diagnostics follow
+[`xt_unified_doctor_report_contract.v1.json`](docs/memory-new/schema/xt_unified_doctor_report_contract.v1.json)
+(`xt.unified_doctor_report_contract.v1`). The normalized evidence bundle keeps
+`heartbeat_governance_snapshot`, `provider_key_selection_snapshot`,
+`provider_key_route_context_snapshot`, `latest_quality_band`,
+`project_remote_snapshot_cache_snapshot`,
+`supervisor_remote_snapshot_cache_snapshot`, `durableCandidateMirrorProjection`
+/ `durable_candidate_mirror_snapshot`, `localStoreWriteProjection` /
+`local_store_write_snapshot`, `hubMemoryPromptProjection` /
+`hub_memory_prompt_projection`, and `skillDoctorTruthProjection` /
+`skill_doctor_truth_snapshot` explicit so clients do not have to reconstruct
+governance or provenance truth from display text.
+
 ## Specs (extracted)
 
 Two protocol specs (plus a shared envelope) live as standalone repos for community review. X-Hub-System is their reference implementation:
 
-- [**mcp-trust-registry**](specs/mcp-trust-registry/) — A trust layer above MCP. Stops a "patch update" from silently adding `shell:exec` to an MCP server you trusted yesterday. Schemas, examples, CI validation in repo.
-- [**agent-2fa**](specs/agent-2fa/) — Per-action 2FA for AI agent actions. Touch ID confirmation on a paired device before a destructive command lands. Spec + 4 JSON Schemas + example chain.
+- [**skill-trust-registry**](specs/skill-trust-registry/) — A trust layer for AI agent tool servers (MCP, A2A, OpenAI tools, custom RPC). Stops a "patch update" from silently adding `shell:exec` to a tool server you trusted yesterday. Schemas, examples, CI validation, and a reference Rust proxy in repo.
+- [**agent-2fa**](specs/agent-2fa/) — Per-action 2FA for AI agent actions. Touch ID confirmation on a paired device before a destructive command lands. Local spec mirror here; canonical standalone repo includes the reference Rust proxy.
 - [**hub-receipt**](specs/hub-receipt/) — Shared signed-receipt envelope used by both. Receipts verifiable outside X-Hub; embeddable in commits, IDE metadata, chat.
 
 ## License and commercial

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mcp-trust.org/spec/agent-2fa/v0.1/authorization.schema.json",
+  "$id": "https://agent-2fa.org/spec/v0.1/authorization.schema.json",
   "title": "agent-2fa — Authorization",
   "description": "Schema for an Authorization envelope returned by an Authorizer Device, per agent-2fa protocol v0.1 §7.",
   "type": "object",

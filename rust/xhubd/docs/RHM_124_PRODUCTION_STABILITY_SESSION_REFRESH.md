@@ -4,6 +4,11 @@
 
 Live-verified on 2026-05-13.
 
+> Historical record: the live-root path below records the 2026-05-13 session
+> and is intentionally preserved. As of 2026-08-01, the canonical Rust source
+> root is `x-hub-system/rust/xhubd/`; do not reuse the historical source path as
+> current build or release authority.
+
 ## Purpose
 
 After the X-Hub.app relaunch hardening, keep the already applied production

@@ -104,7 +104,7 @@ The trust dividend is large. Buyers who've been burned by "vendor claimed X, ven
 ### 8. Adopt the spec spinoffs as cited dependencies once stable
 
 X-Hub has extracted two protocols + one primitive into independent specs:
-- **mcp-trust-registry** — federated attestation + capability tokens above MCP. Solves "which MCP server / model / tool is officially trusted in this deployment".
+- **skill-trust-registry** — federated attestation + capability tokens for agent tool servers (MCP, A2A, OpenAI tools, custom RPC). Solves "which tool server / model / tool is officially trusted in this deployment".
 - **agent-2fa** — Touch ID / dual-confirm for AI agent actions. Solves "AI tried to run something destructive, who authorizes".
 - **hub-receipt** — shared signed-receipt primitive used by both above.
 
@@ -115,7 +115,7 @@ These are protocols, not features. Adopting them in RELFLOWHUB:
 
 **How to apply:**
 - Wait until the specs publish v0.1 stable (likely Q3 2026).
-- Adopt mcp-trust-registry first — it's the most reusable, and RELFLOWHUB's model registry maps almost directly onto its publisher / capability model.
+- Adopt skill-trust-registry first — it's the most reusable, and RELFLOWHUB's model registry maps almost directly onto its publisher / capability model.
 - agent-2fa second — relevant when high-risk actions cross the air-gap boundary.
 - Cite the specs in RELFLOWHUB's docs; do not implement private equivalents in parallel.
 
@@ -140,7 +140,7 @@ A team running RELFLOWHUB will have engineers wanting `A=high, S=low, Heartbeat=
 
 RELFLOWHUB's analysis pointed at "model registry as shared manifest" as a tactical improvement (let IT publish models centrally, all Personal Hubs auto-see). The X-Hub direction is one level deeper: the registry entries are **signed** by publishers, with capability declarations attached (what files/resources/permissions the model or its companion code needs).
 
-This is what mcp-trust-registry generalizes. Adopting that spec means RELFLOWHUB's model registry inherits:
+This is what skill-trust-registry generalizes. Adopting that spec means RELFLOWHUB's model registry inherits:
 - Publisher identity (ed25519 + optional org SSO)
 - Capability declarations (`fs:read:/models/**`, `net:fetch:disabled` for air-gap enforcement)
 - Pinning (lock to specific (manifest, artifact) hash)
@@ -210,7 +210,7 @@ Lowest-risk-first ordering:
 7. **Item 6 (Writer+Gate)** — pick one module, prove the pattern. 2–3 weeks.
 8. **Item 11 (repositioning)** — README + landing page reframe. 2 days.
 9. **Item 12 (open-core licensing)** — legal review + license split. 1–2 weeks (mostly waiting on legal).
-10. **Item 8 (spec adoption)** — wait for mcp-trust-registry v0.1 stable, then adopt. Pending external timing.
+10. **Item 8 (spec adoption)** — wait for skill-trust-registry v0.1 stable, then adopt. Pending external timing.
 11. **Item 10 (signed model registry)** — depends on item 8 landing.
 12. **Item 9 (three-axis autonomy)** — depends on item 3 landing. Late-stage feature.
 

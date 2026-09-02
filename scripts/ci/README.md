@@ -47,7 +47,7 @@ Low-disk guardrails:
 Build snapshot hygiene:
 
 - `x-hub/tools/build_hub_app.command` prunes historical `build/.xhub-build-src-*` directories before recreating the current frozen source snapshot. Override the default retention of the newest `2` historical snapshots with `XHUB_BUILD_SNAPSHOT_RETENTION_COUNT`.
-- Legacy `x-terminal/tools/build_xterminal_app.command` is blocked by default and must not be used for active XT packaging. Active XT builds use `/Users/andrew.xie/Documents/AX/rust/rust xt/commands/build_xt.command`; its snapshot retention remains owned by the active XT build surface.
+- Canonical XT builds use `x-terminal/tools/build_xterminal_app.command` or `x-terminal/tools/build_xt_with_rust_sidecar.command`. These entrypoints verify the tracked in-repo XT root before building; external migration/reference trees are rejected.
 - The live snapshot roots remain `build/.xhub-build-src` and `build/.xterminal-build-src`; retention only targets timestamped historical siblings and leaves the current snapshot root alone.
 - `bash scripts/smoke_build_snapshot_retention.sh` gives a focused regression check for the shared retention helper without running a full Hub or XT app build.
 - `node scripts/generate_build_snapshot_inventory_report.js --out-json build/reports/build_snapshot_inventory.v1.json` exports the current snapshot roots, timestamped history siblings, and the retention-based prune preview so operators can see what the next local build would reclaim before deleting anything.

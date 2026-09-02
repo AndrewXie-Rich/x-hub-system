@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
+const MIN_LIVE_MODEL_COMPARE_REPORTS = 10;
 
 function safeString(value) {
   return String(value ?? '').trim();
@@ -36,7 +37,7 @@ function parseArgs(argv) {
     maxCandidateMismatches: 0,
     maxCandidateFallbacks: 0,
     maxGenerateMs: 2000,
-    minCompareReports: 0,
+    minCompareReports: MIN_LIVE_MODEL_COMPARE_REPORTS,
     maxMismatches: 0,
     reportPath: '',
     planPath: '',
@@ -95,7 +96,12 @@ function parseArgs(argv) {
         i += 1;
         break;
       case '--min-compare-reports':
-        out.minCompareReports = parseIntInRange(next, out.minCompareReports, 0, 1000000);
+        out.minCompareReports = parseIntInRange(
+          next,
+          out.minCompareReports,
+          MIN_LIVE_MODEL_COMPARE_REPORTS,
+          1000000,
+        );
         i += 1;
         break;
       case '--max-mismatches':
@@ -154,7 +160,7 @@ function usage() {
     '  --max-candidate-mismatches <n>    Model/route-kind mismatch threshold, default 0',
     '  --max-candidate-fallbacks <n>     Candidate fallback threshold, default 0',
     '  --max-generate-ms <n>             Generate latency threshold, default 2000',
-    '  --min-compare-reports <n>         Model readiness report threshold for prep env, default 0',
+    '  --min-compare-reports <n>         Model readiness report threshold for prep env, default/minimum 10',
     '  --max-mismatches <n>              Model readiness mismatch threshold for prep env, default 0',
     '  --report-path <path>              Candidate evidence report path',
     '  --plan-path <path>                Persisted authority plan path',
@@ -188,16 +194,22 @@ function publicConfig(config) {
 }
 
 function runSelfTest() {
+  const defaults = parseArgs([]);
+  if (defaults.minCompareReports !== MIN_LIVE_MODEL_COMPARE_REPORTS) {
+    throw new Error('model compare threshold default failed');
+  }
   const parsed = parseArgs([
     '--remote-runs', '3',
     '--local-runs', '4',
     '--concurrency', '2',
+    '--min-compare-reports', '0',
     '--expect-ready',
   ]);
   if (
     parsed.remoteRuns !== 3
     || parsed.localRuns !== 4
     || parsed.concurrency !== 2
+    || parsed.minCompareReports !== MIN_LIVE_MODEL_COMPARE_REPORTS
     || parsed.minRemoteCandidateAudits !== 6
     || parsed.minLocalCandidateAudits !== 8
     || parsed.expectReady !== true

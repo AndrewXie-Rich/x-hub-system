@@ -8,6 +8,7 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const STATE_DIR = path.join(ROOT_DIR, 'reports', 'route_authority_prep');
 const STATE_FILE = path.join(STATE_DIR, 'launchctl_session_env_state.json');
+const MIN_LIVE_COMPARE_REPORTS = 10;
 
 const KEYS = [
   'XHUB_RUST_HUB_ROOT',
@@ -59,9 +60,9 @@ function parseArgs(argv) {
     mode: 'status',
     rustHubRoot: ROOT_DIR,
     httpBaseUrl: 'http://127.0.0.1:50151',
-    providerMinCompareReports: 3,
+    providerMinCompareReports: MIN_LIVE_COMPARE_REPORTS,
     providerMaxMismatches: 0,
-    modelMinCompareReports: 0,
+    modelMinCompareReports: MIN_LIVE_COMPARE_REPORTS,
     modelMaxMismatches: 0,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -89,11 +90,21 @@ function parseArgs(argv) {
         i += 1;
         break;
       case '--provider-min-compare-reports':
-        out.providerMinCompareReports = parseIntInRange(next, out.providerMinCompareReports, 0, 1000000);
+        out.providerMinCompareReports = parseIntInRange(
+          next,
+          out.providerMinCompareReports,
+          MIN_LIVE_COMPARE_REPORTS,
+          1000000,
+        );
         i += 1;
         break;
       case '--model-min-compare-reports':
-        out.modelMinCompareReports = parseIntInRange(next, out.modelMinCompareReports, 0, 1000000);
+        out.modelMinCompareReports = parseIntInRange(
+          next,
+          out.modelMinCompareReports,
+          MIN_LIVE_COMPARE_REPORTS,
+          1000000,
+        );
         i += 1;
         break;
       case '--self-test':
@@ -127,8 +138,8 @@ function usage() {
     '  --clear-production-env           Unset provider/model production route env only',
     '  --rust-hub-root <p>              Rust Hub root exported to X-Hub/Node',
     '  --http-base-url <u>              Rust xhubd HTTP base URL',
-    '  --provider-min-compare-reports <n>',
-    '  --model-min-compare-reports <n>',
+    '  --provider-min-compare-reports <n> Live provider evidence threshold, default/minimum 10',
+    '  --model-min-compare-reports <n>    Live model evidence threshold, default/minimum 10',
     '  --self-test                      Run in-memory self-test',
   ].join('\n');
 }
@@ -223,11 +234,20 @@ function readState() {
 }
 
 function runSelfTest() {
-  const config = parseArgs(['--apply', '--rust-hub-root', '/tmp/rust-hub', '--provider-min-compare-reports', '7']);
+  const defaults = parseArgs([]);
+  if (defaults.providerMinCompareReports !== MIN_LIVE_COMPARE_REPORTS) throw new Error('provider threshold default failed');
+  if (defaults.modelMinCompareReports !== MIN_LIVE_COMPARE_REPORTS) throw new Error('model threshold default failed');
+  const config = parseArgs([
+    '--apply',
+    '--rust-hub-root', '/tmp/rust-hub',
+    '--provider-min-compare-reports', '7',
+    '--model-min-compare-reports', '3',
+  ]);
   const env = desiredEnv(config);
   if (env.XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PREP !== '1') throw new Error('provider prep env missing');
   if (env.XHUB_RUST_MODEL_ROUTE_AUTHORITY_PREP !== '1') throw new Error('model prep env missing');
-  if (env.XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MIN_COMPARE_REPORTS !== '7') throw new Error('threshold override failed');
+  if (env.XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MIN_COMPARE_REPORTS !== '10') throw new Error('provider threshold clamp failed');
+  if (env.XHUB_RUST_MODEL_ROUTE_AUTHORITY_MIN_COMPARE_REPORTS !== '10') throw new Error('model threshold clamp failed');
   if (parseArgs(['--clear-production-env']).mode !== 'clear-production-env') throw new Error('clear production mode failed');
 }
 

@@ -17,6 +17,8 @@ BUILD_SNAPSHOT_RETENTION_COUNT="${XHUB_BUILD_SNAPSHOT_RETENTION_COUNT:-2}"
 RESET_BUILD_SNAPSHOT="${XHUB_RESET_BUILD_SNAPSHOT:-0}"
 BUILD_HEARTBEAT_SECONDS="${XHUB_BUILD_HEARTBEAT_SECONDS:-15}"
 RELEASE_DISABLE_WMO="${XHUB_RELEASE_DISABLE_WMO:-1}"
+APP_VERSION="${XHUB_APP_VERSION:-}"
+BUILD_VERSION="${XHUB_BUILD_VERSION:-}"
 
 run_with_heartbeat() {
   local label="${1:-[build]}"
@@ -91,10 +93,28 @@ path_realpath_dir() {
   (cd "$path" && pwd -P)
 }
 
-rust_external_package_allowed() {
-  case "${XHUB_ALLOW_EXTERNAL_RUST_HUB_PACKAGE:-0}" in
+rust_flag_enabled() {
+  case "${1:-}" in
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
     *) return 1 ;;
+  esac
+}
+
+rust_external_package_allowed() {
+  if rust_flag_enabled "${XHUB_RELEASE_BUILD:-0}"; then
+    return 1
+  fi
+  rust_flag_enabled "${XHUB_ALLOW_EXTERNAL_RUST_HUB_PACKAGE:-0}"
+}
+
+rust_external_package_rejection_hint() {
+  case "${XHUB_RELEASE_BUILD:-0}" in
+    1|true|TRUE|yes|YES|on|ON)
+      echo "[RUST] External Rust roots/packages are forbidden when XHUB_RELEASE_BUILD=1." >&2
+      ;;
+    *)
+      echo "[RUST] Set XHUB_ALLOW_EXTERNAL_RUST_HUB_PACKAGE=1 only for a deliberate one-off diagnostic build." >&2
+      ;;
   esac
 }
 
@@ -118,7 +138,7 @@ assert_canonical_rust_source_root() {
   fi
   echo "[RUST] Refusing external Rust Hub source root: $candidate" >&2
   echo "[RUST] Unified Hub builds must use: $SOURCE_ROOT/rust/xhubd" >&2
-  echo "[RUST] Set XHUB_ALLOW_EXTERNAL_RUST_HUB_PACKAGE=1 only for a deliberate one-off diagnostic build." >&2
+  rust_external_package_rejection_hint
   exit 1
 }
 
@@ -141,7 +161,7 @@ assert_canonical_rust_package_dir() {
   echo "[RUST] Refusing external Rust Hub package: $package_dir" >&2
   echo "[RUST] Unified Hub builds must embed a package from: $SOURCE_ROOT/rust/xhubd/dist" >&2
   echo "[RUST] Run: $SOURCE_ROOT/rust/xhubd/tools/package_rust_hub.command" >&2
-  echo "[RUST] Set XHUB_ALLOW_EXTERNAL_RUST_HUB_PACKAGE=1 only for a deliberate one-off diagnostic build." >&2
+  rust_external_package_rejection_hint
   exit 1
 }
 
@@ -164,6 +184,11 @@ assert_rust_package_capability_floor() {
 preflight_rust_hub_source_selection() {
   local mode="${XHUB_EMBED_RUST_HUB:-auto}"
   local require_package=0
+  if rust_flag_enabled "${XHUB_RELEASE_BUILD:-0}" && \
+     rust_flag_enabled "${XHUB_ALLOW_EXTERNAL_RUST_HUB_PACKAGE:-0}"; then
+    echo "[RUST] XHUB_ALLOW_EXTERNAL_RUST_HUB_PACKAGE is forbidden when XHUB_RELEASE_BUILD is enabled." >&2
+    exit 1
+  fi
   case "$mode" in
     1|true|TRUE|yes|YES) require_package=1 ;;
     auto|AUTO) require_package=0 ;;
@@ -463,6 +488,14 @@ cp -f "$BIN_PATH" "$APP_DIR/Contents/MacOS/XHub"
 chmod +x "$APP_DIR/Contents/MacOS/XHub"
 
 cp -f "$TPL_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
+
+PLIST_BUDDY="/usr/libexec/PlistBuddy"
+if [ -n "$APP_VERSION" ]; then
+  "$PLIST_BUDDY" -c "Set :CFBundleShortVersionString $APP_VERSION" "$APP_DIR/Contents/Info.plist"
+fi
+if [ -n "$BUILD_VERSION" ]; then
+  "$PLIST_BUDDY" -c "Set :CFBundleVersion $BUILD_VERSION" "$APP_DIR/Contents/Info.plist"
+fi
 
 # SwiftPM materializes target resources as a sibling .bundle next to the built executable.
 # Keep that bundle in Contents/Resources so packaged builds can load the processed resource tree.
@@ -910,6 +943,11 @@ fi
 if [ -f "$APP_DIR/Contents/Resources/rust-hub/bin/xhubd" ]; then
   echo "[3b/4] Codesigning embedded Rust Hub daemon…"
   codesign --force --sign "$IDENTITY" "$APP_DIR/Contents/Resources/rust-hub/bin/xhubd"
+fi
+
+if [ -f "$APP_DIR/Contents/Resources/rust-hub/bin/xhubd" ]; then
+  echo "[3c/4] Finalizing embedded Rust Hub provenance after codesign…"
+  "$APP_DIR/Contents/Resources/rust-hub/bin/xhubd" provenance --finalize-package-manifest >/dev/null
 fi
 
 # Sign the bundle in one shot, so the main executable keeps the entitlements.

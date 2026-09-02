@@ -20,7 +20,10 @@ use xhub_db::apply_baseline_migrations;
 use crate::config::{enforce_http_bind_policy, env_bool, env_u128_in_range};
 use crate::local_ml_bridge;
 use crate::server::handler::handle_client;
-use crate::server::handlers::health::{readiness_json_uncached, store_readiness_cache_body};
+use crate::server::handlers::health::{
+    current_observability_mode, readiness_json_uncached, store_readiness_cache_body,
+    HTTP_TRANSPORT_MODE, LEGACY_OBSERVABILITY_MODE,
+};
 use crate::server::state::HubState;
 use crate::{xt_compat, xt_file_ipc};
 
@@ -30,9 +33,12 @@ pub(crate) fn serve_http(config: HubConfig) -> Result<(), String> {
         .map_err(|err| format!("serve migration preflight failed: {err}"))?;
     let addr = config.http_addr();
     let listener = TcpListener::bind(&addr).map_err(|err| format!("bind {addr} failed: {err}"))?;
-    println!("[xhubd] shadow HTTP listening on http://{addr}");
+    let mode = current_observability_mode();
+    println!("[xhubd] HTTP listening on http://{addr} mode={mode}");
     println!("[xhubd] health: http://{addr}/health");
-    println!("[xhubd] mode=shadow_http grpc=not_started");
+    println!(
+        "[xhubd] mode={mode} legacy_mode={LEGACY_OBSERVABILITY_MODE} transport_mode={HTTP_TRANSPORT_MODE} grpc=not_started"
+    );
 
     let shared = Arc::new(HubState::new(config));
     start_readiness_cache_prewarm_if_enabled(Arc::clone(&shared));

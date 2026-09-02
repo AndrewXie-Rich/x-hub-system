@@ -5,9 +5,13 @@ set -euo pipefail
 # Assumes the .app is already built at: build/X-Terminal.app
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+XT_DIR="$ROOT_DIR/x-terminal"
+# shellcheck source=../scripts/lib/canonical_root_guard.sh
+source "$XT_DIR/scripts/lib/canonical_root_guard.sh"
+xterminal_assert_canonical_root "$ROOT_DIR" "$XT_DIR"
 APP_PATH="$ROOT_DIR/build/X-Terminal.app"
 APP_PLIST="$APP_PATH/Contents/Info.plist"
-SRC_PLIST="$ROOT_DIR/x-terminal/Info.plist"
+SRC_PLIST="$XT_DIR/Info.plist"
 
 if [ ! -d "$APP_PATH" ]; then
   echo "X-Terminal app not found: $APP_PATH" >&2

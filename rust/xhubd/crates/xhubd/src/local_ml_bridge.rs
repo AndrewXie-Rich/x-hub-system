@@ -578,12 +578,10 @@ fn run_python_local_runtime(
 ) -> Result<Value, String> {
     let payload =
         serde_json::to_string(request).map_err(|err| format!("serialize_request_failed:{err}"))?;
-    let mut child = Command::new(python_executable)
-        .arg(script_path)
-        .arg(command)
-        .arg("-")
-        .env("REL_FLOW_HUB_BASE_DIR", runtime_base_dir)
-        .env("PYTHONUNBUFFERED", "1")
+    let mut runtime_command = Command::new(python_executable);
+    runtime_command.arg(script_path).arg(command).arg("-");
+    configure_python_runtime_environment(&mut runtime_command, runtime_base_dir);
+    let mut child = runtime_command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -672,10 +670,10 @@ fn maybe_start_resident_local_runtime_with_wait(status: &LocalMlReadiness, wait_
         return true;
     }
 
-    let spawn_result = Command::new(&status.python_executable)
-        .arg(&status.script_path)
-        .env("REL_FLOW_HUB_BASE_DIR", &status.runtime_base_dir)
-        .env("PYTHONUNBUFFERED", "1")
+    let mut runtime_command = Command::new(&status.python_executable);
+    runtime_command.arg(&status.script_path);
+    configure_python_runtime_environment(&mut runtime_command, &status.runtime_base_dir);
+    let spawn_result = runtime_command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -699,6 +697,17 @@ fn maybe_start_resident_local_runtime_with_wait(status: &LocalMlReadiness, wait_
         }
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn configure_python_runtime_environment(command: &mut Command, runtime_base_dir: &Path) {
+    command
+        .env("REL_FLOW_HUB_BASE_DIR", runtime_base_dir)
+        .env("PYTHONUNBUFFERED", "1")
+        // The packaged runtime script lives inside the signed app bundle. Python
+        // bytecode caches would mutate that bundle after first launch and break
+        // codesign verification, so every Rust-owned Python process is read-only
+        // with respect to its source tree.
+        .env("PYTHONDONTWRITEBYTECODE", "1");
 }
 
 fn local_runtime_command_proxy_ready(runtime_base_dir: &Path, max_age: Duration) -> bool {
@@ -1232,6 +1241,34 @@ mod tests {
             "/Users/test/.lmstudio/bin/lms"
         ));
         assert!(path_basename_contains_python("/opt/homebrew/bin/python3"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn python_runtime_process_disables_bytecode_writes() {
+        let dir = unique_temp_dir("xhub-local-ml-python-env");
+        fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("runtime_env_probe.sh");
+        fs::write(
+            &script,
+            r#"if [ "${PYTHONDONTWRITEBYTECODE:-}" != "1" ]; then
+  echo "PYTHONDONTWRITEBYTECODE missing" >&2
+  exit 42
+fi
+printf '{"ok":true,"python_dont_write_bytecode":"%s"}\n' "$PYTHONDONTWRITEBYTECODE"
+"#,
+        )
+        .unwrap();
+
+        let result = run_python_local_runtime("/bin/sh", &script, "probe", &json!({}), &dir, 2_000)
+            .expect("run local runtime environment probe");
+        assert_eq!(
+            result
+                .get("python_dont_write_bytecode")
+                .and_then(Value::as_str),
+            Some("1")
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

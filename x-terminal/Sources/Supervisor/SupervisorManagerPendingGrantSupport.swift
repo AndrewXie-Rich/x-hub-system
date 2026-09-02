@@ -124,4 +124,88 @@ extension SupervisorManager {
         }
         return approval.id
     }
+
+    func bestPendingHubGrant(for projectID: UUID?) -> SupervisorPendingGrant? {
+        selectPendingGrant(for: projectID)
+    }
+
+    func autoApprovePendingHubGrant(
+        for projectID: UUID?,
+        auditRef: String
+    ) async -> SupervisorAutoGrantResolution {
+        var candidate = selectPendingGrant(for: projectID)
+        if candidate == nil {
+            await refreshSchedulerSnapshot(force: true)
+            candidate = selectPendingGrant(for: projectID)
+        }
+
+        guard let grant = candidate else {
+            return SupervisorAutoGrantResolution(
+                ok: false,
+                reasonCode: "pending_grant_not_found",
+                grantRequestId: nil
+            )
+        }
+
+        let grantId = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !grantId.isEmpty else {
+            return SupervisorAutoGrantResolution(
+                ok: false,
+                reasonCode: "grant_request_id_empty",
+                grantRequestId: nil
+            )
+        }
+        if pendingHubGrantActionsInFlight.contains(grantId) {
+            return SupervisorAutoGrantResolution(
+                ok: false,
+                reasonCode: "grant_action_inflight",
+                grantRequestId: grantId
+            )
+        }
+
+        pendingHubGrantActionsInFlight.insert(grantId)
+        let projectId = grant.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ttlOverride = grant.requestedTtlSec > 0 ? grant.requestedTtlSec : nil
+        let tokenOverride = grant.requestedTokenCap > 0 ? grant.requestedTokenCap : nil
+        let result = await approvePendingHubGrantRequest(
+            grantRequestId: grantId,
+            projectId: projectId.isEmpty ? nil : projectId,
+            requestedTtlSec: ttlOverride,
+            requestedTokenCap: tokenOverride,
+            note: "x_terminal_supervisor_auto_grant:\(auditRef)"
+        )
+
+        await completePendingHubGrantAction(
+            grantId: grantId,
+            grant: grant,
+            approve: true,
+            result: result
+        )
+
+        return SupervisorAutoGrantResolution(
+            ok: result.ok,
+            reasonCode: result.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? (result.ok ? "ok" : "unknown"),
+            grantRequestId: grantId
+        )
+    }
+
+    func refreshPendingSupervisorSkillApprovalsNow() {
+        rebuildPendingSupervisorSkillApprovalViewState()
+    }
+
+    func refreshRecentSupervisorSkillActivitiesNow() {
+        rebuildPendingSupervisorSkillApprovalViewState()
+    }
+
+    func selectPendingGrant(for projectID: UUID?) -> SupervisorPendingGrant? {
+        let projectToken = projectID?.uuidString.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !projectToken.isEmpty {
+            if let exact = pendingHubGrants.first(where: {
+                $0.projectId.trimmingCharacters(in: .whitespacesAndNewlines) == projectToken
+            }) {
+                return exact
+            }
+        }
+        return pendingHubGrants.first
+    }
 }

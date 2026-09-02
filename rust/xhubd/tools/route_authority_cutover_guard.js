@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const REPORT_DIR = path.join(ROOT_DIR, 'reports');
+const MIN_PROVIDER_SHADOW_COMPARE_REPORTS = 10;
+const MIN_LIVE_MODEL_COMPARE_REPORTS = 10;
 
 function parseIntInRange(value, fallback, min, max) {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -16,7 +18,7 @@ function parseIntInRange(value, fallback, min, max) {
 
 function parseArgs(argv) {
   const out = {
-    providerShadowRuns: 3,
+    providerShadowRuns: MIN_PROVIDER_SHADOW_COMPARE_REPORTS,
     providerCandidateRuns: 3,
     modelRemoteRuns: 1,
     modelLocalRuns: 1,
@@ -24,6 +26,7 @@ function parseArgs(argv) {
     provider: 'openai',
     providerModelId: 'gpt-4o',
     providerMinCompareReports: null,
+    modelMinCompareReports: MIN_LIVE_MODEL_COMPARE_REPORTS,
     remoteModelId: 'gpt-5.5',
     localModelId: 'local.summary',
     timeoutMs: 45000,
@@ -39,7 +42,12 @@ function parseArgs(argv) {
     const next = argv[i + 1];
     switch (arg) {
       case '--provider-shadow-runs':
-        out.providerShadowRuns = parseIntInRange(next, out.providerShadowRuns, 1, 10000);
+        out.providerShadowRuns = parseIntInRange(
+          next,
+          out.providerShadowRuns,
+          MIN_PROVIDER_SHADOW_COMPARE_REPORTS,
+          10000,
+        );
         i += 1;
         break;
       case '--provider-candidate-runs':
@@ -67,7 +75,21 @@ function parseArgs(argv) {
         i += 1;
         break;
       case '--provider-min-compare-reports':
-        out.providerMinCompareReports = parseIntInRange(next, 0, 0, 1000000);
+        out.providerMinCompareReports = parseIntInRange(
+          next,
+          MIN_PROVIDER_SHADOW_COMPARE_REPORTS,
+          MIN_PROVIDER_SHADOW_COMPARE_REPORTS,
+          1000000,
+        );
+        i += 1;
+        break;
+      case '--model-min-compare-reports':
+        out.modelMinCompareReports = parseIntInRange(
+          next,
+          out.modelMinCompareReports,
+          MIN_LIVE_MODEL_COMPARE_REPORTS,
+          1000000,
+        );
         i += 1;
         break;
       case '--remote-model-id':
@@ -129,14 +151,15 @@ function usage() {
     'route_authority_cutover_guard.js',
     '',
     'Options:',
-    '  --provider-shadow-runs <n>       Provider shadow compare runs, default 3',
+    '  --provider-shadow-runs <n>       Provider shadow compare runs, default/minimum 10',
     '  --provider-candidate-runs <n>    Provider candidate runs, default 3',
     '  --model-remote-runs <n>          Model remote candidate runs, default 1',
     '  --model-local-runs <n>           Model local candidate runs, default 1',
     '  --concurrency <n>                Candidate concurrency, default 1',
     '  --provider <id>                  Provider, default openai',
     '  --provider-model-id <id>         Provider route model, default gpt-4o',
-    '  --provider-min-compare-reports <n> Provider readiness minimum reports, default provider-shadow-runs',
+    '  --provider-min-compare-reports <n> Provider readiness minimum reports, default provider-shadow-runs, minimum 10',
+    '  --model-min-compare-reports <n>  Live model readiness minimum reports, default/minimum 10',
     '  --remote-model-id <id>           Remote model route model, default gpt-5.5',
     '  --local-model-id <id>            Local model route model, default local.summary',
     '  --timeout-ms <n>                 Runner timeout, default 45000',
@@ -245,6 +268,7 @@ function collect(config) {
     '--provider', config.provider,
     '--remote-model-id', config.remoteModelId,
     '--local-model-id', config.localModelId,
+    '--min-compare-reports', String(config.modelMinCompareReports),
     '--max-generate-ms', String(config.maxGenerateMs),
     '--timeout-ms', String(config.timeoutMs),
     '--expect-ready',
@@ -316,6 +340,7 @@ function reduce(collected, config) {
       provider: config.provider,
       provider_model_id: config.providerModelId,
       provider_min_compare_reports: config.providerMinCompareReports,
+      model_min_compare_reports: config.modelMinCompareReports,
       remote_model_id: config.remoteModelId,
       local_model_id: config.localModelId,
       max_generate_ms: config.maxGenerateMs,
@@ -370,6 +395,30 @@ function reportPath() {
 }
 
 function runSelfTest() {
+  const defaults = parseArgs([]);
+  if (defaults.providerShadowRuns !== MIN_PROVIDER_SHADOW_COMPARE_REPORTS) {
+    throw new Error('provider shadow run default failed');
+  }
+  if (defaults.providerMinCompareReports !== MIN_PROVIDER_SHADOW_COMPARE_REPORTS) {
+    throw new Error('provider compare threshold default failed');
+  }
+  if (defaults.modelMinCompareReports !== MIN_LIVE_MODEL_COMPARE_REPORTS) {
+    throw new Error('model compare threshold default failed');
+  }
+  const clamped = parseArgs([
+    '--provider-shadow-runs', '3',
+    '--provider-min-compare-reports', '7',
+    '--model-min-compare-reports', '0',
+  ]);
+  if (clamped.providerShadowRuns !== MIN_PROVIDER_SHADOW_COMPARE_REPORTS) {
+    throw new Error('provider shadow run clamp failed');
+  }
+  if (clamped.providerMinCompareReports !== MIN_PROVIDER_SHADOW_COMPARE_REPORTS) {
+    throw new Error('provider compare threshold clamp failed');
+  }
+  if (clamped.modelMinCompareReports !== MIN_LIVE_MODEL_COMPARE_REPORTS) {
+    throw new Error('model compare threshold clamp failed');
+  }
   const result = reduce({
     schedulerGuard: { parsed: true, payload: { ok: true, ui_product_change: false } },
     schedulerPlan: null,

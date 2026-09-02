@@ -2,6 +2,10 @@
 
 Date: 2026-05-13
 
+> Historical record: package and source paths below describe the 2026-05-13
+> convergence and are intentionally preserved. Current canonical Rust source
+> lives in `x-hub-system/rust/xhubd/`.
+
 ## Scope
 
 Converge the live active Rust Hub root to the final package-store package after

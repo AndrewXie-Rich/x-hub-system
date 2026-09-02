@@ -1,0 +1,35 @@
+{
+  "schema": "skill-trust/manifest/v0.1",
+  "name": "weather-tool",
+  "version": "0.3.0",
+  "publisher": {
+    "key_id": "ed25519:examplepublisherkeyfornonmcpopenaiopenaitoolopena2"
+  },
+  "artifact": {
+    "type": "npm",
+    "name": "@example/openai-weather-tool",
+    "version": "0.3.0",
+    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "fetch_url": "https://registry.npmjs.org/@example/openai-weather-tool/-/openai-weather-tool-0.3.0.tgz"
+  },
+  "mcp": {
+    "transport": [],
+    "tools": [],
+    "resources": [],
+    "prompts": []
+  },
+  "capabilities": {
+    "required": [
+      "net:fetch:api.weather.gov",
+      "env:read:WEATHER_API_KEY"
+    ],
+    "optional": []
+  },
+  "metadata": {
+    "homepage": "https://github.com/example/openai-weather-tool",
+    "source_repo": "https://github.com/example/openai-weather-tool",
+    "license": "MIT",
+    "released_at": "2026-06-29T00:00:00Z",
+    "description": "Illustrative non-MCP example: a weather-fetching tool exposed via OpenAI tool calling. The `mcp` block is a v0.1 placeholder (empty transport) until v0.2 adds an `openai` sibling binding block (see protocol-v0.1.md §1.5). Unsigned — for documentation only; would need its own keypair + sign step to verify."
+  }
+}

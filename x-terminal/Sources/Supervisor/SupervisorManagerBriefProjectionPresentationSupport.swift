@@ -133,4 +133,491 @@ extension SupervisorManager {
             return "先打开 Hub Diagnostics & Recovery 检查路由，再重新问一次状态。"
         }
     }
+
+    func supervisorBriefProjectionUnavailableReply(
+        presentation: SupervisorBriefProjectionUnavailablePresentation,
+        fromVoice: Bool
+    ) -> SupervisorBriefProjectionVoiceReply {
+        let spokenOutcome: SupervisorSpeechSynthesizer.Outcome
+        if !fromVoice {
+            spokenOutcome = .suppressed("not_voice_triggered")
+        } else {
+            spokenOutcome = dispatchSupervisorBriefProjectionUnavailablePresentation(
+                presentation,
+                trigger: .userQueryReply,
+                source: "brief_projection_unavailable_reply"
+            )
+        }
+        return SupervisorBriefProjectionVoiceReply(
+            text: presentation.text,
+            spokenOutcome: spokenOutcome
+        )
+    }
+
+    func dispatchSupervisorBriefProjectionUnavailablePresentation(
+        _ presentation: SupervisorBriefProjectionUnavailablePresentation,
+        trigger: SupervisorVoiceJobTrigger,
+        source: String
+    ) -> SupervisorSpeechSynthesizer.Outcome {
+        if presentation.script.isEmpty {
+            return speakSupervisorVoiceReply(presentation.text)
+        }
+        let job = SupervisorVoiceTTSJob(
+            trigger: trigger,
+            priority: .normal,
+            script: presentation.script,
+            dedupeKey: presentation.dedupeKey
+        )
+        return dispatchSupervisorVoiceJob(
+            job,
+            preferences: currentVoicePreferences(),
+            source: source,
+            suppressRapidSameSourceRepeat: false,
+            cancelPendingHeartbeat: true
+        )
+    }
+
+    private func localSupervisorBriefReply(
+        focus: SupervisorFocusedProjectSelection,
+        fromVoice: Bool
+    ) -> SupervisorBriefProjectionVoiceReply? {
+        localSupervisorBriefReply(
+            projectName: focus.project.displayName,
+            fromVoice: fromVoice
+        )
+    }
+
+    private func localSupervisorBriefReply(
+        projectName: String,
+        fromVoice: Bool
+    ) -> SupervisorBriefProjectionVoiceReply? {
+        guard let signal = heartbeatGovernanceVoicePresentation() else { return nil }
+
+        let replyText = renderLocalSupervisorGovernanceVoiceReply(
+            signal,
+            projectName: projectName
+        )
+        let spokenOutcome: SupervisorSpeechSynthesizer.Outcome
+        if !fromVoice {
+            spokenOutcome = .suppressed("not_voice_triggered")
+        } else {
+            let script = heartbeatScriptPrefixedWithMemoryReadiness(
+                SupervisorVoiceScriptBuilder.governanceSignalHeartbeatScript(
+                    signal: signal,
+                    progressLine: nil,
+                    nextStepLine: nil
+                )
+            )
+            if script.isEmpty {
+                spokenOutcome = speakSupervisorVoiceReply(replyText)
+            } else {
+                let job = SupervisorVoiceTTSJob(
+                    trigger: .userQueryReply,
+                    priority: .normal,
+                    script: script,
+                    dedupeKey: "voice-query:local-brief:\(signal.fingerprint)\(heartbeatMemoryReadinessDedupeSuffix())"
+                )
+                spokenOutcome = dispatchSupervisorVoiceJob(
+                    job,
+                    preferences: currentVoicePreferences(),
+                    source: "brief_projection_local_voice_reply",
+                    suppressRapidSameSourceRepeat: false,
+                    cancelPendingHeartbeat: true
+                )
+            }
+        }
+        return SupervisorBriefProjectionVoiceReply(
+            text: replyText,
+            spokenOutcome: spokenOutcome
+        )
+    }
+
+    func renderSupervisorBriefProjectionVoiceReply(
+        _ projection: HubIPCClient.SupervisorBriefProjectionSnapshot,
+        projectName: String
+    ) -> String {
+        if let governedReviewSignal = projectionGovernedReviewVoicePresentation(
+            from: projection,
+            projectName: projectName
+        ) {
+            return renderSupervisorGovernanceBrief(
+                projectName: projectName,
+                headline: governedReviewSignal.headlineText,
+                detail: governedReviewSignal.detailText,
+                metadata: governedReviewSignal.metadataText,
+                action: governedReviewSignal.actionText
+            )
+        }
+
+        var lines = ["🧭 Supervisor Brief · \(projectName)"]
+        if let memoryLine = supervisorMemoryReadinessBriefTextLine() {
+            lines.append(memoryLine)
+        }
+        let topline = projection.topline.trimmingCharacters(in: .whitespacesAndNewlines)
+        let blocker = projection.criticalBlocker.trimmingCharacters(in: .whitespacesAndNewlines)
+        let next = projection.nextBestAction.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = projection.cardSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !topline.isEmpty {
+            lines.append(topline)
+        } else if !summary.isEmpty {
+            lines.append(summary)
+        }
+        if !blocker.isEmpty {
+            lines.append("阻塞：\(SupervisorBlockerPresentation.label(blocker))")
+        }
+        if projection.pendingGrantCount > 0 {
+            lines.append("待授权：\(projection.pendingGrantCount)")
+        }
+        if let routeHint = projectionRouteTruthHint(from: projection) {
+            lines.append(routeHint)
+        }
+        if !next.isEmpty {
+            lines.append("下一步：\(next)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func projectionLooksLikeRouteRepairAttention(
+        _ projection: HubIPCClient.SupervisorBriefProjectionSnapshot
+    ) -> Bool {
+        let fields = [
+            projection.projectionId,
+            projection.cardSummary,
+            projection.topline,
+            projection.nextBestAction,
+            projection.criticalBlocker,
+            projection.evidenceRefs.joined(separator: " ")
+        ]
+        let tokens = [
+            "route-repair",
+            "route_repair",
+            "route repair",
+            "route:repair",
+            "route diagnose",
+            "model route",
+            "模型路由"
+        ]
+        return fields.contains { field in
+            let normalizedField = normalizedLookupKey(field)
+            return tokens.contains { token in
+                normalizedField.contains(normalizedLookupKey(token))
+            }
+        }
+    }
+
+    private func projectionRouteRepairWatchItem(
+        from projection: HubIPCClient.SupervisorBriefProjectionSnapshot
+    ) -> AXRouteRepairProjectWatchItem? {
+        guard projectionLooksLikeRouteRepairAttention(projection),
+              let project = allProjects().first(where: {
+                  $0.projectId.compare(
+                      projection.projectId,
+                      options: .caseInsensitive
+                  ) == .orderedSame
+              }) else {
+            return nil
+        }
+        return AXRouteRepairLogStore.watchItems(for: [project], limit: 1).first
+    }
+
+    private func projectionRouteTruthHint(
+        from projection: HubIPCClient.SupervisorBriefProjectionSnapshot
+    ) -> String? {
+        guard let item = projectionRouteRepairWatchItem(from: projection),
+              let hint = AXRouteRepairLogStore.watchRouteTruthHint(
+                for: item.digest,
+                paidAccessSnapshot: appModel?.hubRemotePaidAccessSnapshot
+              )?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !hint.isEmpty else {
+            return nil
+        }
+        return hint
+    }
+
+    private func projectionRouteTruthSpokenHint(
+        from projection: HubIPCClient.SupervisorBriefProjectionSnapshot
+    ) -> String? {
+        guard let hint = projectionRouteTruthHint(from: projection)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !hint.isEmpty else {
+            return nil
+        }
+        let withoutPeriod = hint.hasSuffix("。") ? String(hint.dropLast()) : hint
+        let trimmed = withoutPeriod.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = "更像 "
+        if trimmed.hasPrefix(prefix) {
+            return String(trimmed.dropFirst(prefix.count))
+        }
+        return trimmed
+    }
+
+    func enrichProjectionVoiceScriptWithRouteTruthHint(
+        _ lines: [String],
+        projection: HubIPCClient.SupervisorBriefProjectionSnapshot
+    ) -> [String] {
+        guard let routeHint = projectionRouteTruthSpokenHint(from: projection),
+              !routeHint.isEmpty else {
+            return lines
+        }
+
+        let normalizedHint = normalizedLookupKey(routeHint)
+        let directionToken = normalizedLookupKey("方向上更像")
+        if lines.contains(where: { line in
+            let normalized = normalizedLookupKey(line)
+            return normalized.contains(directionToken) || normalized.contains(normalizedHint)
+        }) {
+            return lines
+        }
+
+        let actionPrefixes = [
+            normalizedLookupKey("建议下一步"),
+            normalizedLookupKey("你现在只需要"),
+            normalizedLookupKey("如果你现在要介入")
+        ]
+
+        var enriched: [String] = []
+        var inserted = false
+        for line in lines {
+            let normalized = normalizedLookupKey(line)
+            if !inserted,
+               actionPrefixes.contains(where: { normalized.contains($0) }) {
+                enriched.append("方向上更像：\(routeHint)")
+                inserted = true
+            }
+            enriched.append(line)
+        }
+
+        if !inserted {
+            enriched.append("方向上更像：\(routeHint)")
+        }
+        return enriched
+    }
+
+    private func renderLocalSupervisorGovernanceVoiceReply(
+        _ signal: SupervisorGovernanceSignalVoicePresentation,
+        projectName: String
+    ) -> String {
+        renderSupervisorGovernanceBrief(
+            projectName: projectName,
+            headline: signal.headlineText,
+            detail: signal.detailText,
+            metadata: signal.metadataText,
+            action: signal.actionText
+        )
+    }
+
+    func renderSupervisorGovernanceOverviewBrief(
+        _ overview: SupervisorSignalCenterOverviewPresentation,
+        projectName: String
+    ) -> String {
+        renderSupervisorGovernanceBrief(
+            projectName: projectName,
+            headline: overview.headlineText,
+            detail: overview.detailText,
+            metadata: overview.metadataText,
+            action: overview.focusAction?.label
+        )
+    }
+
+    private func workbenchGovernanceOverview() -> SupervisorSignalCenterOverviewPresentation? {
+        if let overview = heartbeatSignalCenterOverviewPresentation(),
+           overview.priority != .stable {
+            return overview
+        }
+
+        let frontstageGrants = frontstagePendingHubGrants
+        let frontstageApprovals = frontstagePendingSupervisorSkillApprovals
+        let frontstageCandidateReviews = frontstageSupervisorCandidateReviews
+
+        let grantPresentation = SupervisorPendingHubGrantPresentation.board(
+            grants: frontstageGrants,
+            source: pendingHubGrantSource,
+            hasFreshSnapshot: hasFreshPendingHubGrantSnapshot,
+            updatedAt: pendingHubGrantUpdatedAt,
+            recentSkillActivities: frontstageRecentSupervisorSkillActivities,
+            inFlightGrantIDs: pendingHubGrantActionsInFlight,
+            hubInteractive: appModel?.hubInteractive ?? false,
+            focusedRowAnchor: nil
+        )
+        if let firstGrant = grantPresentation.rows.first {
+            return SupervisorSignalCenterOverviewPresentation(
+                priority: .immediate,
+                priorityText: SupervisorHeartbeatPriority.immediate.label,
+                priorityTone: .warning,
+                headlineText: "Hub 待处理授权",
+                detailText: firstGrant.nextActionText ?? firstGrant.summary,
+                metadataText: [
+                    "\(grantPresentation.rows.count) 项待处理",
+                    grantPresentation.snapshotText,
+                    firstGrant.ageText
+                ]
+                .filter { !$0.isEmpty }
+                .joined(separator: " · "),
+                focusAction: SupervisorSignalCenterOverviewActionDescriptor(
+                    action: .scrollToBoard(SupervisorFocusPresentation.pendingHubGrantBoardAnchorID),
+                    label: "查看授权板",
+                    tone: .warning
+                )
+            )
+        }
+
+        let approvalPresentation = SupervisorPendingSkillApprovalPresentation.board(
+            approvals: frontstageApprovals,
+            focusedRowAnchor: nil
+        )
+        if approvalPresentation.rows.first != nil {
+            return pendingSupervisorSkillOverviewPresentation(from: approvalPresentation)
+        }
+
+        let candidateReviewPresentation = SupervisorCandidateReviewPresentation.board(
+            items: frontstageCandidateReviews,
+            source: supervisorCandidateReviewSource,
+            hasFreshSnapshot: hasFreshSupervisorCandidateReviewSnapshot,
+            updatedAt: supervisorCandidateReviewUpdatedAt,
+            inFlightRequestIDs: supervisorCandidateReviewActionsInFlight,
+            hubInteractive: appModel?.hubInteractive ?? false,
+            projectNamesByID: frontstageSupervisorCandidateReviewProjectNames,
+            focusedRowAnchor: nil
+        )
+        if let firstCandidateReview = candidateReviewPresentation.rows.first {
+            return SupervisorSignalCenterOverviewPresentation(
+                priority: .attention,
+                priorityText: SupervisorHeartbeatPriority.attention.label,
+                priorityTone: .accent,
+                headlineText: "候选记忆待审查",
+                detailText: firstCandidateReview.summary,
+                metadataText: [
+                    "\(candidateReviewPresentation.rows.count) 项待处理",
+                    candidateReviewPresentation.snapshotText,
+                    firstCandidateReview.reviewStateText,
+                    firstCandidateReview.ageText
+                ]
+                .filter { !$0.isEmpty }
+                .joined(separator: " · "),
+                focusAction: SupervisorSignalCenterOverviewActionDescriptor(
+                    action: .scrollToBoard(SupervisorFocusPresentation.candidateReviewBoardAnchorID),
+                    label: "查看候选审查",
+                    tone: .accent
+                )
+            )
+        }
+
+        return nil
+    }
+
+    func prependWorkbenchGovernanceBriefIfAvailable(
+        to lines: inout [String]
+    ) {
+        guard let governanceOverview = workbenchGovernanceOverview() else { return }
+        lines.append(
+            renderSupervisorGovernanceOverviewBrief(
+                governanceOverview,
+                projectName: "当前工作台"
+            )
+        )
+        lines.append("")
+    }
+
+    private func renderSupervisorGovernanceBrief(
+        projectName: String,
+        headline: String,
+        detail: String,
+        metadata: String,
+        action: String?
+    ) -> String {
+        var lines = ["🧭 Supervisor Brief · \(projectName)"]
+        if let memoryLine = supervisorMemoryReadinessBriefTextLine() {
+            lines.append(memoryLine)
+        }
+
+        let normalizedHeadline = headline.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedDetail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedMetadata = metadata.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedAction = action?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if !normalizedHeadline.isEmpty {
+            lines.append(normalizedHeadline)
+        }
+        if !normalizedDetail.isEmpty {
+            lines.append(normalizedDetail)
+        }
+        if !normalizedMetadata.isEmpty {
+            lines.append(normalizedMetadata)
+        }
+        if !normalizedAction.isEmpty {
+            lines.append("查看：\(normalizedAction)")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    func supervisorMemoryReadinessBriefTextLine() -> String? {
+        guard let readiness = currentSupervisorMemoryAssemblyReadinessForLanguageLayer(),
+              !readiness.ready else {
+            return nil
+        }
+
+        let topIssue = readiness.issues.first?.summary.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if topIssue.isEmpty {
+            return "当前项目背景记忆还没喂够，我先不做战略纠偏；如果要纠偏，请先补长期目标和完成标准、关键决策原因、当前卡点与已试动作、以及可作为依据的日志或结果。"
+        }
+        return "当前项目背景记忆还没喂够（\(capped(topIssue, maxChars: 28))），我先不做战略纠偏；如果要纠偏，请先补长期目标和完成标准、关键决策原因、当前卡点与已试动作、以及可作为依据的日志或结果。"
+    }
+
+    func heartbeatSignalCenterOverviewPresentation() -> SupervisorSignalCenterOverviewPresentation? {
+        guard let appModel else { return nil }
+
+        let selectedAutomationProject = SupervisorViewStateSupport.selectedAutomationProject(
+            appModel: appModel
+        )
+        let selectedAutomationRecipe = SupervisorViewStateSupport.selectedAutomationRecipe(
+            appModel: appModel,
+            selectedAutomationProject: selectedAutomationProject
+        )
+        let selectedAutomationLastLaunchRef = SupervisorViewStateSupport.selectedAutomationLastLaunchRef(
+            appModel: appModel,
+            supervisor: self,
+            selectedAutomationProject: selectedAutomationProject
+        )
+
+        return SupervisorSignalCenterOverviewPresentationMapper.map(
+            pendingHubGrantPresentation: SupervisorViewRuntimePresentationSupport.pendingHubGrantBoardPresentation(
+                supervisor: self,
+                hubInteractive: appModel.hubInteractive,
+                focusedRowAnchor: nil
+            ),
+            pendingSkillApprovalPresentation: SupervisorViewRuntimePresentationSupport.pendingSkillApprovalBoardPresentation(
+                supervisor: self,
+                focusedRowAnchor: nil
+            ),
+            candidateReviewPresentation: SupervisorViewRuntimePresentationSupport.supervisorCandidateReviewBoardPresentation(
+                supervisor: self,
+                hubInteractive: appModel.hubInteractive,
+                focusedRowAnchor: nil
+            ),
+            doctorPresentation: SupervisorViewRuntimePresentationSupport.doctorBoardPresentation(
+                supervisor: self,
+                appModel: appModel
+            ),
+            projectCreationPresentation: projectCreationStatusPresentation(),
+            runtimeActivityPresentation: SupervisorRuntimeActivityPresentation.map(
+                entries: frontstageRuntimeActivityEntries
+            ),
+            automationPresentation: SupervisorViewRuntimePresentationSupport.automationRuntimePresentation(
+                supervisor: self,
+                appModel: appModel,
+                selectedProject: selectedAutomationProject,
+                selectedRecipe: selectedAutomationRecipe,
+                selectedLastLaunchRef: selectedAutomationLastLaunchRef
+            ),
+            laneHealthPresentation: SupervisorViewRuntimePresentationSupport.laneHealthBoardPresentation(
+                supervisor: self,
+                appModel: appModel,
+                filter: .all,
+                focusedLaneID: nil
+            )
+        )
+    }
 }

@@ -15,7 +15,7 @@ examples:
 
 notes:
   - `hub` forwards to `bash x-hub/tools/run_xhub_from_source.command doctor`
-  - `xt` forwards to the active refactored XT helper under `../rust/rust xt/swift-xterminal`
+  - `xt` forwards to the canonical in-repo helper under `x-terminal/`
   - `all` runs both surfaces sequentially and returns `0`, `1`, or `2` using the highest-severity result
   - `--workspace-root` is the preferred unified alias; `--project-root` remains supported for XT compatibility
   - `--out-json` is only valid for a single surface; use `--out-dir` when running `all`
@@ -35,10 +35,16 @@ project_root=""
 out_json=""
 out_dir=""
 hub_helper="${XHUB_HUB_SOURCE_HELPER:-$ROOT_DIR/x-hub/tools/run_xhub_from_source.command}"
-xt_root="${XHUB_ACTIVE_XT_ROOT:-$ROOT_DIR/../rust/rust xt}"
-xt_helper="${XHUB_XT_SOURCE_HELPER:-$xt_root/swift-xterminal/tools/run_xterminal_from_source.command}"
+xt_root="${XHUB_ACTIVE_XT_ROOT:-$ROOT_DIR/x-terminal}"
+xt_helper="${XHUB_XT_SOURCE_HELPER:-$xt_root/tools/run_xterminal_from_source.command}"
 aggregate_exit_code=0
 surface_cmd=()
+
+if [ -z "${XHUB_XT_SOURCE_HELPER:-}" ]; then
+  # shellcheck source=../x-terminal/scripts/lib/canonical_root_guard.sh
+  source "$ROOT_DIR/x-terminal/scripts/lib/canonical_root_guard.sh"
+  xterminal_assert_canonical_root "$ROOT_DIR" "$xt_root"
+fi
 
 expand_path() {
   local value="$1"

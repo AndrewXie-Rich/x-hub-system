@@ -25,8 +25,10 @@ enum HubIPCClient {
     private static var scopedSkillPinOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (SkillPinRequestPayload) async -> SkillPinResult)] = [:]
     private static var resolvedSkillsOverrideForTesting: (@Sendable (String?) async -> ResolvedSkillsResult)?
     private static var scopedResolvedSkillsOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (String?) async -> ResolvedSkillsResult)] = [:]
+    private static var resolvedSkillsOverridesForTestingByProjectID: [String: (@Sendable (String?) async -> ResolvedSkillsResult)] = [:]
     private static var skillManifestOverrideForTesting: (@Sendable (String) async -> SkillManifestResult)?
     private static var scopedSkillManifestOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (String) async -> SkillManifestResult)] = [:]
+    private static var skillManifestOverridesForTestingByPackageSHA256: [String: (@Sendable (String) async -> SkillManifestResult)] = [:]
     private static var skillPackageDownloadOverrideForTesting: (@Sendable (String) async -> SkillPackageDownloadResult)?
     private static var scopedSkillPackageDownloadOverridesForTesting: [TestingOverrideScopeKey: (@Sendable (String) async -> SkillPackageDownloadResult)] = [:]
     private static var skillRunnerGateOverrideForTesting: (@Sendable (SkillRunnerGateRequestPayload) async -> SkillRunnerGateResult)?
@@ -4857,12 +4859,17 @@ enum HubIPCClient {
         projectId: String? = nil
     ) async -> ResolvedSkillsResult {
         let normalizedProjectId = normalized(projectId)
-        if let override = withTestingOverrideLock({
-            testingOverride(
+        let override: (@Sendable (String?) async -> ResolvedSkillsResult)? = withTestingOverrideLock {
+            if let normalizedProjectId,
+               let scopedOverride = resolvedSkillsOverridesForTestingByProjectID[normalizedProjectId] {
+                return scopedOverride
+            }
+            return testingOverride(
                 fallback: resolvedSkillsOverrideForTesting,
                 scoped: scopedResolvedSkillsOverridesForTesting
             )
-        }) {
+        }
+        if let override {
             return await override(normalizedProjectId)
         }
         let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
@@ -4921,12 +4928,14 @@ enum HubIPCClient {
             )
         }
 
-        if let override = withTestingOverrideLock({
-            testingOverride(
-                fallback: skillManifestOverrideForTesting,
-                scoped: scopedSkillManifestOverridesForTesting
-            )
-        }) {
+        let override: (@Sendable (String) async -> SkillManifestResult)? = withTestingOverrideLock {
+            skillManifestOverridesForTestingByPackageSHA256[normalizedPackageSHA256]
+                ?? testingOverride(
+                    fallback: skillManifestOverrideForTesting,
+                    scoped: scopedSkillManifestOverridesForTesting
+                )
+        }
+        if let override {
             return await override(normalizedPackageSHA256)
         }
 
@@ -9864,9 +9873,19 @@ enum HubIPCClient {
     }
 
     static func installResolvedSkillsOverrideForTesting(
+        projectId: String? = nil,
         _ override: (@Sendable (String?) async -> ResolvedSkillsResult)?
     ) {
+        let normalizedProjectId = normalized(projectId)
         withTestingOverrideLock {
+            if let normalizedProjectId {
+                if let override {
+                    resolvedSkillsOverridesForTestingByProjectID[normalizedProjectId] = override
+                } else {
+                    resolvedSkillsOverridesForTestingByProjectID.removeValue(forKey: normalizedProjectId)
+                }
+                return
+            }
             resolvedSkillsOverrideForTesting = override
             setTestingOverride(
                 override,
@@ -9877,9 +9896,19 @@ enum HubIPCClient {
     }
 
     static func installSkillManifestOverrideForTesting(
+        packageSHA256: String? = nil,
         _ override: (@Sendable (String) async -> SkillManifestResult)?
     ) {
+        let normalizedPackageSHA256 = normalized(packageSHA256)?.lowercased()
         withTestingOverrideLock {
+            if let normalizedPackageSHA256 {
+                if let override {
+                    skillManifestOverridesForTestingByPackageSHA256[normalizedPackageSHA256] = override
+                } else {
+                    skillManifestOverridesForTestingByPackageSHA256.removeValue(forKey: normalizedPackageSHA256)
+                }
+                return
+            }
             skillManifestOverrideForTesting = override
             setTestingOverride(
                 override,
@@ -10513,8 +10542,13 @@ enum HubIPCClient {
         }
     }
 
-    static func resetResolvedSkillsOverrideForTesting() {
+    static func resetResolvedSkillsOverrideForTesting(projectId: String? = nil) {
+        let normalizedProjectId = normalized(projectId)
         withTestingOverrideLock {
+            if let normalizedProjectId {
+                resolvedSkillsOverridesForTestingByProjectID.removeValue(forKey: normalizedProjectId)
+                return
+            }
             resolvedSkillsOverrideForTesting = nil
             resetTestingOverride(
                 fallback: &resolvedSkillsOverrideForTesting,
@@ -10523,8 +10557,13 @@ enum HubIPCClient {
         }
     }
 
-    static func resetSkillManifestOverrideForTesting() {
+    static func resetSkillManifestOverrideForTesting(packageSHA256: String? = nil) {
+        let normalizedPackageSHA256 = normalized(packageSHA256)?.lowercased()
         withTestingOverrideLock {
+            if let normalizedPackageSHA256 {
+                skillManifestOverridesForTestingByPackageSHA256.removeValue(forKey: normalizedPackageSHA256)
+                return
+            }
             skillManifestOverrideForTesting = nil
             resetTestingOverride(
                 fallback: &skillManifestOverrideForTesting,

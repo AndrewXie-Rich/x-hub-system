@@ -29,7 +29,7 @@ X-Terminal remains owner of:
 
 The guard is based on the current XT source under:
 
-`/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal`
+`/Users/andrew.xie/Documents/AX/x-hub-system/x-terminal`
 
 Primary files:
 

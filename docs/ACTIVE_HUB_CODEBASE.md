@@ -4,8 +4,10 @@ This file is the handoff marker for AIs and humans updating Hub.
 
 ## Source Of Truth
 
-- Active Hub app and Swift shell repo: `/Users/andrew.xie/Documents/AX/x-hub-system`
-- Active Rust kernel source: `/Users/andrew.xie/Documents/AX/rust/rust hub`
+- Canonical Hub system repository: `/Users/andrew.xie/Documents/AX/x-hub-system`
+- Active Hub app and Swift shell source: `x-hub/`
+- Canonical Rust kernel source: `rust/xhubd/`
+- Canonical X-Terminal source: `x-terminal/`
 - Active installed app: `/Applications/X-Hub.app`
 - Required app executable: `Contents/MacOS/XHub`
 
@@ -22,7 +24,9 @@ From `/Users/andrew.xie/Documents/AX/x-hub-system`:
 ./x-hub/tools/install_hub_app.command
 ```
 
-The build script embeds the latest packaged Rust kernel from `/Users/andrew.xie/Documents/AX/rust/rust hub/dist/rust-hub-*` unless `XHUB_RUST_HUB_PACKAGE_DIR` overrides it.
+The build script embeds the latest packaged Rust kernel from
+`rust/xhubd/dist/rust-hub-*`. External roots/packages are refused by default;
+the full release build forbids external and prebuilt package overrides.
 
 ## XT-Facing Hub Contracts
 
@@ -38,5 +42,9 @@ Keep these endpoints current when changing Hub behavior that XT consumes:
 
 1. Confirm the working directory is `/Users/andrew.xie/Documents/AX/x-hub-system`.
 2. Do not copy old UI code or package outputs from `x-hub-system-github-clean`.
-3. If touching Rust kernel behavior, edit `/Users/andrew.xie/Documents/AX/rust/rust hub` and rebuild/package it before rebuilding Hub.
+3. If touching Rust kernel behavior, edit `rust/xhubd/` and rebuild/package it before rebuilding Hub.
 4. Preserve unrelated dirty work. This repo often has concurrent AI/user edits.
+
+The sibling `rust/rust hub` and `rust/rust xt/swift-xterminal` trees outside
+this repository are migration/reference copies only, not build or release
+sources.

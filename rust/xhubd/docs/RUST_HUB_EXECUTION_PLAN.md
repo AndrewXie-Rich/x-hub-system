@@ -1,9 +1,9 @@
 # Rust Hub Execution Plan
 
 Status: active
-Target root: `/Users/andrew.xie/Documents/AX/rust/rust hub`
+Target root: `/Users/andrew.xie/Documents/AX/x-hub-system/rust/xhubd`
 Source system: `/Users/andrew.xie/Documents/AX/x-hub-system`
-Contract source: `x-hub-system/protocol/hub_protocol_v1.proto`
+Contract source: `protocol/hub_protocol_v1.proto`
 
 ## 0. Operating Rules
 
@@ -13,7 +13,7 @@ fallback semantics.
 
 Hard rules:
 
-- All Rust Hub files live under `rust/rust hub`.
+- All Rust Hub files live under `rust/xhubd`.
 - The existing Node Hub remains the production authority until explicit cutover.
 - Proto and JSON contracts are shared truth. Rust must not invent incompatible
   field names, error codes, or fallback behavior.
@@ -30,7 +30,7 @@ Hard rules:
 Create and maintain this layout:
 
 ```text
-rust/rust hub/
+rust/xhubd/
   Cargo.toml
   README.md
   config/default.toml
@@ -81,9 +81,9 @@ Tasks:
 Validation commands:
 
 ```bash
-bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/build_rust_hub.command"
-bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" doctor
-bash "/Users/andrew.xie/Documents/AX/rust/rust hub/tools/run_rust_hub.command" serve
+bash "/Users/andrew.xie/Documents/AX/x-hub-system/rust/xhubd/tools/build_rust_hub.command"
+bash "/Users/andrew.xie/Documents/AX/x-hub-system/rust/xhubd/tools/run_rust_hub.command" doctor
+bash "/Users/andrew.xie/Documents/AX/x-hub-system/rust/xhubd/tools/run_rust_hub.command" serve
 ```
 
 Current environment:

@@ -151,6 +151,90 @@ extension SupervisorManager {
         return "audit-xt-auto-\(actionToken)-\(projectToken)-\(Int(Date().timeIntervalSince1970))"
     }
 
+    func automationStatusLine(runID: String, state: XTAutomationRunState, detail: String) -> String {
+        let cleanDetail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanDetail.isEmpty {
+            return "自动化执行：\(runID) -> \(humanizedAutomationRunState(state))"
+        }
+        return "自动化执行：\(runID) -> \(humanizedAutomationRunState(state)) (\(cleanDetail))"
+    }
+
+    func humanizedAutomationRunState(_ state: XTAutomationRunState) -> String {
+        switch state {
+        case .queued:
+            return "排队中"
+        case .running:
+            return "运行中"
+        case .blocked:
+            return "受阻"
+        case .takeover:
+            return "待接管"
+        case .delivered:
+            return "已交付"
+        case .failed:
+            return "失败"
+        case .downgraded:
+            return "已降级"
+        }
+    }
+
+    func makeManualAutomationRunRequest(
+        for project: AXProjectEntry,
+        ctx: AXProjectContext
+    ) throws -> XTAutomationRunRequest {
+        let config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        guard let recipe = config.activeAutomationRecipe else {
+            throw XTAutomationRunCoordinatorError.activeRecipeMissing
+        }
+        let trustedAutomationStatus = config.trustedAutomationStatus(
+            forProjectRoot: ctx.root,
+            permissionReadiness: AXTrustedAutomationPermissionOwnerReadiness.current(),
+            requiredDeviceToolGroups: recipe.requiredDeviceToolGroups
+        )
+
+        let now = Date()
+        let timestamp = Int(now.timeIntervalSince1970)
+        let projectToken = normalizedLookupKey(project.displayName).isEmpty
+            ? normalizedLookupKey(project.projectId)
+            : normalizedLookupKey(project.displayName)
+        let triggerID = recipe.triggerRefs.first?
+            .split(separator: ":")
+            .last
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "manual/supervisor"
+        let requiresGrant = !recipe.grantPolicyRef.isEmpty
+        let policyRef = requiresGrant ? recipe.grantPolicyRef : ""
+
+        return XTAutomationRunRequest(
+            triggerSeeds: [
+                XTAutomationTriggerSeed(
+                    triggerID: triggerID.isEmpty ? "manual/supervisor" : triggerID,
+                    triggerType: .manual,
+                    source: .hub,
+                    payloadRef: "local://supervisor/manual-start/\(projectToken)/\(timestamp)",
+                    requiresGrant: requiresGrant,
+                    policyRef: policyRef,
+                    dedupeKey: "manual|\(project.projectId)|\(timestamp)"
+                )
+            ],
+            trustedAutomationReady: trustedAutomationStatus.trustedAutomationReady,
+            permissionOwnerReady: trustedAutomationStatus.permissionOwnerReady,
+            currentOwner: trustedAutomationStatus.permissionOwnerReady ? "XT-TRUSTED" : "XT-L2",
+            blockedTaskID: "XT-AUTO-MANUAL-START",
+            operatorConsoleEvidenceRef: "build/reports/xt_auto_manual_operator_console.v1.json",
+            latestDeltaRef: "build/reports/xt_auto_manual_delta.v1.json",
+            deliveryRef: "build/reports/xt_auto_manual_delivery.v1.json",
+            additionalEvidenceRefs: [
+                "manual://supervisor_command/start",
+                "recipe://\(recipe.ref)",
+                "trusted_automation://\(trustedAutomationStatus.state.rawValue)"
+            ] + trustedAutomationStatus.missingPrerequisites.map {
+                "trusted_automation_issue://\($0)"
+            },
+            now: now
+        )
+    }
+
     func automationRetryDepthValue(from retryPackage: XTAutomationRetryPackage) -> Int {
         if let retryDepth = retryPackage.lineage?.retryDepth,
            retryDepth > 0 {
@@ -307,5 +391,118 @@ extension SupervisorManager {
             }
             lines.append("last_recovery_retry_depth: \(deliveryClosure.lineage.retryDepth)")
         }
+    }
+
+    func automationRetryTrigger(from retryPackage: XTAutomationRetryPackage?) -> String {
+        guard let retryPackage else { return "" }
+        for ref in retryPackage.additionalEvidenceRefs where ref.hasPrefix("retry://trigger/") {
+            return String(ref.dropFirst("retry://trigger/".count))
+        }
+        return automationManualRetryTrigger
+    }
+
+    func automationProjectEntry(for ctx: AXProjectContext) -> AXProjectEntry {
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let normalizedRootPath = AXProjectRegistryStore.normalizedRootPath(ctx.root)
+        let projects = knownProjects()
+        if let project = projects.first(where: { $0.projectId == projectId }) {
+            return project
+        }
+        if let project = projects.first(where: {
+            let rootPath = $0.rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rootPath.isEmpty else { return false }
+            return AXProjectRegistryStore.normalizedRootPath(URL(fileURLWithPath: rootPath)) == normalizedRootPath
+        }) {
+            return project
+        }
+        return AXProjectEntry(
+            projectId: projectId,
+            rootPath: ctx.root.path,
+            displayName: ctx.displayName(registry: appModel?.registry),
+            lastOpenedAt: Date().timeIntervalSince1970,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+    }
+
+    func projectDisplayName(for ctx: AXProjectContext) -> String {
+        automationProjectEntry(for: ctx).displayName
+    }
+
+    func latestAutomationLaunchRef(for ctx: AXProjectContext) throws -> String {
+        guard let runID = effectiveAutomationRunRef(for: ctx) else {
+            throw XTAutomationRunCoordinatorError.runNotFound("last_launch")
+        }
+        return runID
+    }
+
+    func effectiveAutomationRunRef(
+        for ctx: AXProjectContext,
+        allowedStates: Set<XTAutomationRunState>? = nil
+    ) -> String? {
+        let preferredRunID = (try? AXProjectStore.loadOrCreateConfig(for: ctx))?
+            .lastAutomationLaunchRef
+        return automationRunCoordinator.latestPersistedRunID(
+            for: ctx,
+            preferredRunID: preferredRunID,
+            allowedStates: allowedStates,
+            excludeCancelled: allowedStates != nil
+        )
+    }
+
+    func automationPresentationRunRef(for project: AXProjectEntry?) -> String {
+        guard let project else { return "" }
+
+        if let ctx = projectContext(from: project) {
+            let persistedRunID = (try? AXProjectStore.loadOrCreateConfig(for: ctx))?
+                .lastAutomationLaunchRef
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return effectiveAutomationRunRef(for: ctx) ?? persistedRunID
+        }
+
+        return appModel?
+            .projectConfigSnapshot(for: project.projectId)?
+            .lastAutomationLaunchRef
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    func updateAutomationSelfIterateConfig(
+        for project: AXProjectEntry,
+        ctx: AXProjectContext,
+        enabled: Bool? = nil,
+        maxAutoRetryDepth: Int? = nil
+    ) throws -> AXProjectConfig {
+        let config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        let updated = config.settingAutomationSelfIteration(
+            enabled: enabled,
+            maxAutoRetryDepth: maxAutoRetryDepth
+        )
+        try AXProjectStore.saveConfig(updated, for: ctx)
+        if appModel?.selectedProjectId == project.projectId {
+            appModel?.projectConfig = updated
+        }
+        return updated
+    }
+
+    func resolvedAutomationRunID(_ runID: String?) throws -> String {
+        let candidate = runID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !candidate.isEmpty {
+            return candidate
+        }
+        if let checkpointRunID = automationCurrentCheckpoint?.runID,
+           !checkpointRunID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return checkpointRunID
+        }
+        if let preparedRunID = automationPreparedRun?.launchRef,
+           !preparedRunID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return preparedRunID
+        }
+        throw XTAutomationRunCoordinatorError.runNotFound("active")
     }
 }

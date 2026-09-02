@@ -4,17 +4,19 @@ This is the single-file handoff entrypoint for AI collaborators.
 
 Use it when a new AI needs to pick up work without rediscovering the repo structure, or when the branch is noisy enough that old status files and generated reports are more confusing than helpful.
 
-## Active Root Guard
+## Canonical Root Guard
 
 Before editing code, verify the active surface:
 
 - Hub app / control-plane source lives in `/Users/andrew.xie/Documents/AX/x-hub-system/x-hub/`.
-- Hub Rust kernel source lives in `/Users/andrew.xie/Documents/AX/rust/rust hub`; the Hub build packages the latest Rust output into `X-Hub.app`.
-- Active X-Terminal source lives in `/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal`.
-- This repository's `x-terminal/` tree is legacy/read-only unless a task explicitly asks for archival comparison or migration.
+- Hub Rust kernel source lives in `/Users/andrew.xie/Documents/AX/x-hub-system/rust/xhubd`; the Hub build packages its latest verified output into `X-Hub.app`.
+- X-Terminal source lives in `/Users/andrew.xie/Documents/AX/x-hub-system/x-terminal`.
+- The sibling `rust/rust hub` and `rust/rust xt/swift-xterminal` trees are migration/reference copies only, never default edit/build/package roots.
 - `x-hub/macos/RELFlowHub/` is the historical Swift package name for the current Hub app shell, not a separate old product.
 
-If a requested XT behavior has only been changed under `x-hub-system/x-terminal/`, treat it as not landed in the active XT until the same focused change is migrated to `/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal` and validated there.
+If requested behavior exists only in an external migration/reference tree,
+treat it as not landed until the focused change is migrated into this
+repository and validated in `rust/xhubd/` or `x-terminal/` as appropriate.
 
 ## Mandatory Read Order
 

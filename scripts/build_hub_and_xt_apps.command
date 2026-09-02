@@ -6,9 +6,12 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/build"
 LOG_DIR="$OUT_DIR/logs"
 LOG_FILE="$LOG_DIR/build_hub_and_xt_apps.log"
-ACTIVE_XT_ROOT="${XHUB_ACTIVE_XT_ROOT:-$ROOT_DIR/../rust/rust xt}"
-ACTIVE_XT_BUILD_COMMAND="${XHUB_ACTIVE_XT_BUILD_COMMAND:-$ACTIVE_XT_ROOT/commands/build_xt.command}"
-ACTIVE_XT_APP_DIR="${XHUB_ACTIVE_XT_APP_DIR:-$ACTIVE_XT_ROOT/build/X-Terminal.app}"
+ACTIVE_XT_ROOT="$ROOT_DIR/x-terminal"
+# shellcheck source=../x-terminal/scripts/lib/canonical_root_guard.sh
+source "$ACTIVE_XT_ROOT/scripts/lib/canonical_root_guard.sh"
+xterminal_assert_canonical_root "$ROOT_DIR" "$ACTIVE_XT_ROOT"
+ACTIVE_XT_BUILD_COMMAND="${XHUB_ACTIVE_XT_BUILD_COMMAND:-$ACTIVE_XT_ROOT/tools/build_xt_with_rust_sidecar.command}"
+ACTIVE_XT_APP_DIR="${XHUB_ACTIVE_XT_APP_DIR:-$OUT_DIR/X-Terminal.app}"
 
 BUILD_HUB=1
 BUILD_XT=1
@@ -20,10 +23,8 @@ Usage: $(basename "$0") [--hub-only | --xt-only] [--xt-first] [--hub-first]
 
 Build both app bundles in one go:
   - X-Hub.app via x-hub/tools/build_hub_app.command
-  - X-Terminal.app via the active refactored XT build command:
+  - X-Terminal.app via the canonical in-repo XT build command:
     $ACTIVE_XT_BUILD_COMMAND
-
-Legacy x-hub-system/x-terminal packaging is blocked by default.
 
 Options:
   --hub-only   Build only X-Hub.app

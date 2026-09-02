@@ -1,0 +1,30 @@
+[package]
+name = "skill-trust-proxy"
+version = "0.1.0"
+edition = "2021"
+description = "Reference implementation of the Skill Trust Registry v0.1 trust layer (protocol-agnostic — compatible with MCP, A2A, OpenAI tools, and other agent tool RPCs)"
+license = "MIT"
+repository = "https://github.com/AndrewXie-Rich/skill-trust-registry"
+
+[[bin]]
+name = "skill-trust-proxy"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+data-encoding = "2"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+glob = "0.3"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_jcs = "0.1"
+sha2 = "0.10"
+time = { version = "0.3", features = ["formatting", "parsing", "serde-well-known", "macros"] }
+unicode-normalization = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

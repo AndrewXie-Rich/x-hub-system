@@ -1588,9 +1588,28 @@ run_gate_g4() {
     local smoke_args=("$@")
     local runtime_state="pass"
     local command=()
+    local isolated_home=""
+    local isolated_tmp=""
+
+    if [[ "${smoke_flag}" == "--xt-supervisor-voice-smoke" ]]; then
+      isolated_home="${REPORT_DIR}/.xt-supervisor-voice-smoke-home-$$-${RANDOM}"
+      isolated_tmp="${REPORT_DIR}/.xt-supervisor-voice-smoke-tmp-$$-${RANDOM}"
+      mkdir -p "${isolated_home}" "${isolated_tmp}"
+    fi
 
     if [[ -n "${xt_cli_binary}" ]]; then
-      command=("${xt_cli_binary}" "${smoke_flag}")
+      if [[ -n "${isolated_home}" ]]; then
+        command=(
+          env
+          "HOME=${isolated_home}"
+          "CFFIXED_USER_HOME=${isolated_home}"
+          "TMPDIR=${isolated_tmp}"
+          "${xt_cli_binary}"
+          "${smoke_flag}"
+        )
+      else
+        command=("${xt_cli_binary}" "${smoke_flag}")
+      fi
       if [[ ${#smoke_args[@]} -gt 0 ]]; then
         command+=("${smoke_args[@]}")
       fi
@@ -1611,7 +1630,18 @@ run_gate_g4() {
         fi
       fi
     else
-      command=(swift run XTerminal "${smoke_flag}")
+      if [[ -n "${isolated_home}" ]]; then
+        command=(
+          env
+          "HOME=${isolated_home}"
+          "CFFIXED_USER_HOME=${isolated_home}"
+          "TMPDIR=${isolated_tmp}"
+          swift run XTerminal
+          "${smoke_flag}"
+        )
+      else
+        command=(swift run XTerminal "${smoke_flag}")
+      fi
       if [[ ${#smoke_args[@]} -gt 0 ]]; then
         command+=("${smoke_args[@]}")
       fi
@@ -1631,6 +1661,10 @@ run_gate_g4() {
           runtime_state="fail"
         fi
       fi
+    fi
+
+    if [[ -n "${isolated_home}" ]]; then
+      rm -rf "${isolated_home}" "${isolated_tmp}"
     fi
 
     printf -v "${result_var}" "%s" "${runtime_state}"

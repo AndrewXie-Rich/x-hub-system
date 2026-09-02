@@ -14,6 +14,10 @@ use xhub_contract::proto::{self, hub_runtime_client::HubRuntimeClient};
 use xhub_core::{now_ms, path_exists, HubConfig};
 
 const SCHEMA_XT_CLASSIC_COMPAT_V1: &str = "xhub.rust_hub.xt_classic_compat.v1";
+const SCHEMA_XT_CLASSIC_STATUS_V1: &str = "xhub.rust_hub.xt_classic_status.v1";
+pub(crate) const XT_CLASSIC_STATUS_AUTHORITY_LEGACY: &str = "explicit_cutover_only";
+pub(crate) const XT_CLASSIC_STATUS_AUTHORITY_PRODUCTION_APPLIED: &str =
+    "rust_xt_file_ipc_production_applied";
 static STATUS_WRITE_LOCK: Mutex<()> = Mutex::new(());
 static STATUS_TMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 static LIVE_STATUS_CACHE: Mutex<Option<Value>> = Mutex::new(None);
@@ -193,15 +197,19 @@ pub fn classic_hub_production_surface_ready(config: &HubConfig) -> bool {
             .map(|status| raw_status_xt_live(&input, status) && status_is_rust_owned(status))
             .unwrap_or(false);
 
-    input.compat_enabled
-        && input.status_writer_enabled
-        && input.status_writer_apply_enabled
-        && input.status_writer_heartbeat_enabled
-        && input.file_ipc_surface_ready
-        && input.production_cutover_authorized
-        && input.rollback_contract_enabled
-        && preferred_parent_ok
-        && active_rust_status
+    preferred_parent_ok && rust_status_writer_is_applied(&input, active_rust_status)
+}
+
+pub(crate) fn classic_hub_status_writer_applied_for_observation(
+    config: &HubConfig,
+    status_path: &Path,
+    raw_status: &Value,
+) -> bool {
+    let input = XtClassicCompatInput::from_config(config);
+    let status_path = status_path.to_path_buf();
+    preferred_status_parent_ok(&input, &status_path)
+        && raw_status_xt_live(&input, raw_status)
+        && rust_status_writer_is_applied(&input, status_is_rust_owned(raw_status))
 }
 
 fn classic_hub_compat_value(input: &XtClassicCompatInput) -> Value {
@@ -260,6 +268,8 @@ fn classic_hub_compat_value(input: &XtClassicCompatInput) -> Value {
     });
     let active_rust_hub = active_status.map(status_is_rust_owned).unwrap_or(false);
     let active_classic_hub = active_status.is_some() && !active_rust_hub;
+    let rust_status_writer_applied =
+        preferred_parent_ok && rust_status_writer_is_applied(input, active_rust_hub);
     let rust_owned_live_fast_path =
         rust_owned_live_status_fast_path_enabled(input, active_rust_hub);
     let grpc_probe = if rust_owned_live_fast_path {
@@ -363,8 +373,8 @@ fn classic_hub_compat_value(input: &XtClassicCompatInput) -> Value {
         "authority": {
             "production_authority_change": false,
             "production_authority_change_if_written": can_mark_xt_hub_interactive,
-            "node_remains_authority": true,
-            "rust_writes_classic_hub_status": false,
+            "node_remains_authority": !rust_status_writer_applied,
+            "rust_writes_classic_hub_status": rust_status_writer_applied,
             "rust_starts_grpc_compat": false,
             "rust_grpc_compat_probe_ready": grpc_probe.ok,
             "rust_executes_ml": false,
@@ -837,6 +847,11 @@ fn planned_hub_status_json(
         .now_ms
         .saturating_add(input.status_writer_lease_ms.min(10_000));
     let lease_seconds = (lease_now_ms as f64) / 1000.0;
+    let authority = if live_cutover_status_overlay_allowed(input) {
+        XT_CLASSIC_STATUS_AUTHORITY_PRODUCTION_APPLIED
+    } else {
+        XT_CLASSIC_STATUS_AUTHORITY_LEGACY
+    };
     json!({
         "pid": process::id(),
         "startedAt": now_seconds,
@@ -849,10 +864,11 @@ fn planned_hub_status_json(
         "loadedModelCount": 0,
         "modelsUpdatedAt": lease_seconds,
         "rustHub": {
-            "schema_version": "xhub.rust_hub.xt_classic_status.v1",
+            "schema_version": SCHEMA_XT_CLASSIC_STATUS_V1,
             "http_addr": input.http_addr,
             "grpc_endpoint": grpc_endpoint(input.grpc_host.as_str(), input.grpc_port),
-            "authority": "explicit_cutover_only",
+            "authority": authority,
+            "legacy_authority": XT_CLASSIC_STATUS_AUTHORITY_LEGACY,
             "status_lease_ms": input.status_writer_lease_ms.min(10_000),
         }
     })
@@ -1257,29 +1273,34 @@ fn status_summary_from_raw(
     })
 }
 
+pub(crate) fn xt_classic_status_authority_is_rust_owned(authority: &str) -> bool {
+    authority == XT_CLASSIC_STATUS_AUTHORITY_LEGACY
+        || authority == XT_CLASSIC_STATUS_AUTHORITY_PRODUCTION_APPLIED
+}
+
 fn status_is_rust_owned(status: &Value) -> bool {
     let summary_owned = status
         .get("rust_hub_authority")
         .and_then(Value::as_str)
-        .unwrap_or("")
-        == "explicit_cutover_only"
+        .map(xt_classic_status_authority_is_rust_owned)
+        .unwrap_or(false)
         && status
             .get("rust_hub_schema_version")
             .and_then(Value::as_str)
             .unwrap_or("")
-            == "xhub.rust_hub.xt_classic_status.v1";
+            == SCHEMA_XT_CLASSIC_STATUS_V1;
     let raw_owned = status
         .get("rustHub")
         .and_then(|value| value.get("authority"))
         .and_then(Value::as_str)
-        .unwrap_or("")
-        == "explicit_cutover_only"
+        .map(xt_classic_status_authority_is_rust_owned)
+        .unwrap_or(false)
         && status
             .get("rustHub")
             .and_then(|value| value.get("schema_version"))
             .and_then(Value::as_str)
             .unwrap_or("")
-            == "xhub.rust_hub.xt_classic_status.v1";
+            == SCHEMA_XT_CLASSIC_STATUS_V1;
     summary_owned || raw_owned
 }
 
@@ -1343,6 +1364,10 @@ fn live_cutover_status_overlay_allowed(input: &XtClassicCompatInput) -> bool {
         && input.rollback_contract_enabled
         && input.file_ipc_surface_ready
         && input.production_cutover_authorized
+}
+
+fn rust_status_writer_is_applied(input: &XtClassicCompatInput, active_rust_hub: bool) -> bool {
+    active_rust_hub && live_cutover_status_overlay_allowed(input)
 }
 
 fn cached_rust_owned_live_status(
@@ -1598,6 +1623,36 @@ mod tests {
         assert_eq!(value["deny_code"], "xt_classic_compat_not_enabled");
         assert_eq!(value["authority"]["production_authority_change"], false);
         assert_eq!(value["authority"]["node_remains_authority"], true);
+        assert_eq!(value["authority"]["rust_writes_classic_hub_status"], false);
+    }
+
+    #[test]
+    fn rust_owned_status_accepts_legacy_and_production_applied_authorities() {
+        for authority in [
+            XT_CLASSIC_STATUS_AUTHORITY_LEGACY,
+            XT_CLASSIC_STATUS_AUTHORITY_PRODUCTION_APPLIED,
+        ] {
+            let raw = json!({
+                "rustHub": {
+                    "schema_version": SCHEMA_XT_CLASSIC_STATUS_V1,
+                    "authority": authority,
+                }
+            });
+            let summary = json!({
+                "rust_hub_schema_version": SCHEMA_XT_CLASSIC_STATUS_V1,
+                "rust_hub_authority": authority,
+            });
+
+            assert!(status_is_rust_owned(&raw));
+            assert!(status_is_rust_owned(&summary));
+        }
+
+        assert!(!status_is_rust_owned(&json!({
+            "rustHub": {
+                "schema_version": SCHEMA_XT_CLASSIC_STATUS_V1,
+                "authority": "node_classic_hub",
+            }
+        })));
     }
 
     #[test]
@@ -1914,7 +1969,14 @@ mod tests {
         );
         assert_eq!(written["ipcMode"], "file");
         assert_eq!(written["aiReady"], true);
-        assert_eq!(written["rustHub"]["authority"], "explicit_cutover_only");
+        assert_eq!(
+            written["rustHub"]["authority"],
+            XT_CLASSIC_STATUS_AUTHORITY_LEGACY
+        );
+        assert_eq!(
+            written["rustHub"]["legacy_authority"],
+            XT_CLASSIC_STATUS_AUTHORITY_LEGACY
+        );
 
         let _ = shutdown.send(());
         let _ = handle.join();
@@ -1980,6 +2042,9 @@ mod tests {
         let compat = classic_hub_compat_value(&input);
         assert_eq!(compat["xt_contract"]["active_rust_hub"], true);
         assert_eq!(compat["deny_code"], "");
+        assert_eq!(compat["authority"]["production_authority_change"], false);
+        assert_eq!(compat["authority"]["node_remains_authority"], true);
+        assert_eq!(compat["authority"]["rust_writes_classic_hub_status"], false);
 
         let _ = shutdown.send(());
         let _ = handle.join();
@@ -2033,7 +2098,14 @@ mod tests {
 
         let written = read_json(&preferred).expect("heartbeat refreshed hub status json");
         assert_eq!(written["updatedAt"], 108.0);
-        assert_eq!(written["rustHub"]["authority"], "explicit_cutover_only");
+        assert_eq!(
+            written["rustHub"]["authority"],
+            XT_CLASSIC_STATUS_AUTHORITY_PRODUCTION_APPLIED
+        );
+        assert_eq!(
+            written["rustHub"]["legacy_authority"],
+            XT_CLASSIC_STATUS_AUTHORITY_LEGACY
+        );
 
         let _ = fs::remove_dir_all(temp);
     }
@@ -2079,6 +2151,9 @@ mod tests {
         assert_eq!(value["ready"], true);
         assert_eq!(value["deny_code"], "");
         assert_eq!(value["xt_contract"]["active_rust_hub"], true);
+        assert_eq!(value["authority"]["production_authority_change"], false);
+        assert_eq!(value["authority"]["node_remains_authority"], false);
+        assert_eq!(value["authority"]["rust_writes_classic_hub_status"], true);
         assert_eq!(value["grpc_compat"]["probe_ok"], true);
         assert_eq!(
             value["grpc_compat"]["error_code"],
@@ -2137,7 +2212,7 @@ mod tests {
         );
         assert_eq!(
             value["xt_contract"]["candidate_statuses"][0]["rust_hub_authority"],
-            "explicit_cutover_only"
+            XT_CLASSIC_STATUS_AUTHORITY_PRODUCTION_APPLIED
         );
         assert_eq!(preferred.exists(), true);
         let written = read_json(&preferred).expect("written hub status json");
@@ -2147,7 +2222,15 @@ mod tests {
                 .and_then(|value| value.get("authority"))
                 .and_then(Value::as_str)
                 .unwrap_or(""),
-            "explicit_cutover_only"
+            XT_CLASSIC_STATUS_AUTHORITY_PRODUCTION_APPLIED
+        );
+        assert_eq!(
+            written
+                .get("rustHub")
+                .and_then(|value| value.get("legacy_authority"))
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+            XT_CLASSIC_STATUS_AUTHORITY_LEGACY
         );
         assert!(
             written
@@ -2219,7 +2302,15 @@ mod tests {
                 .and_then(|value| value.get("authority"))
                 .and_then(Value::as_str)
                 .unwrap_or(""),
-            "explicit_cutover_only"
+            XT_CLASSIC_STATUS_AUTHORITY_PRODUCTION_APPLIED
+        );
+        assert_eq!(
+            written
+                .get("rustHub")
+                .and_then(|value| value.get("legacy_authority"))
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+            XT_CLASSIC_STATUS_AUTHORITY_LEGACY
         );
 
         let _ = fs::remove_dir_all(temp);

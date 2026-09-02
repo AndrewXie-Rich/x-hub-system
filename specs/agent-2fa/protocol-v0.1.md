@@ -17,7 +17,7 @@ The protocol is intentionally orthogonal to MCP, WebAuthn, and OS-level prompts:
 
 ## 1. Status of This Document
 
-This is a v0.1 draft. The intended community is cross-agent: AI agent runtime maintainers, IDE-ecosystem maintainers, and standards observers from WebAuthn and OS-level authentication communities. The protocol is published under CC BY 4.0; the recommended implementation license is Apache 2.0 to match the broader spinoff family.
+This is a v0.1 draft. The intended community is cross-agent: AI agent runtime maintainers, IDE-ecosystem maintainers, and standards observers from WebAuthn and OS-level authentication communities. The protocol is published under CC BY 4.0; reference implementations are published under MIT unless otherwise stated.
 
 This specification depends on [Hub Receipt v0.1](../hub-receipt/v0.1.md) for receipt envelope semantics. Implementations of agent-2fa MUST also implement the Hub Receipt envelope.
 
@@ -418,4 +418,4 @@ The Verifier MUST emit the Receipt before returning the decision to the caller, 
 
 ## 21. Acknowledgements
 
-This specification builds on the [Hub Receipt v0.1](../hub-receipt/v0.1.md) envelope and shares its signing conventions with [mcp-trust-registry v0.1](../mcp-trust-registry/protocol-v0.1.md). Device-level proof-of-presence techniques for the `touch_id` and `face_id` Modalities are informed by the WebAuthn / FIDO2 specifications. The "per-action confirmation" UX framing is informed by per-transaction confirmation flows that exist in mobile banking and similar high-stakes consumer applications.
+This specification builds on the [Hub Receipt v0.1](../hub-receipt/v0.1.md) envelope and shares its signing conventions with [skill-trust-registry v0.1](../skill-trust-registry/protocol-v0.1.md). Device-level proof-of-presence techniques for the `touch_id` and `face_id` Modalities are informed by the WebAuthn / FIDO2 specifications. The "per-action confirmation" UX framing is informed by per-transaction confirmation flows that exist in mobile banking and similar high-stakes consumer applications.

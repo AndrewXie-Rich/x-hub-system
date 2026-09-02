@@ -166,6 +166,40 @@ fn readiness_contract() -> Value {
         "requires_mtls": false,
         "cache_policy": "short_ttl_readiness",
         "fallback_policy": "show_degraded_state_do_not_invent_readiness",
+        "schema_version": "xhub.rust_hub.readiness.v1",
+        "layer_schema_version": "xhub.rust_hub.layered_readiness.v1",
+        "legacy_compatibility": {
+            "ready_field": "alias_of_core_ready",
+            "existing_ready_consumers_remain_supported": true
+        },
+        "fields": {
+            "core_ready": "daemon dependencies and base Rust kernel surfaces are usable",
+            "serving_ready": "core is ready and provider/model shadow-compare evidence meets configured thresholds",
+            "cutover_ready": "serving is ready, scheduler production authority is enabled, and provider/model production authority is coherent"
+        },
+        "structured_status_field": "readiness_layers",
+        "serving_evidence": {
+            "provider_route": {
+                "component": "provider_route",
+                "endpoint": "/provider/readiness",
+                "default_min_compare_reports": 10,
+                "default_max_mismatches": 0
+            },
+            "model_inventory": {
+                "component": "model_inventory",
+                "endpoint": "/model/readiness",
+                "default_min_compare_reports": 10,
+                "default_max_mismatches": 0
+            },
+            "aggregate_reads_are_read_only": true,
+            "aggregate_applies_migrations": false
+        },
+        "cutover_semantics": {
+            "ready_for_apply": "provider/model authority is coherently disabled and all cutover prerequisites are green",
+            "applied": "provider/model authority is coherently enabled and all cutover prerequisites are green",
+            "partial_authority_blocked": "only one of provider/model production authority is enabled; XT must fail closed",
+            "production_authority_change_on_read": false
+        }
     })
 }
 
@@ -487,6 +521,35 @@ mod tests {
         assert_eq!(
             skills["fallback_policy"],
             "fail_closed_on_missing_pin_grant_or_preflight"
+        );
+    }
+
+    #[test]
+    fn xt_contract_declares_layered_readiness_without_changing_legacy_ready() {
+        let value = contract_value(&test_config());
+        let readiness = &value["capabilities"]["readiness"];
+
+        assert_eq!(readiness["endpoint"], "/ready");
+        assert_eq!(
+            readiness["legacy_compatibility"]["ready_field"],
+            "alias_of_core_ready"
+        );
+        assert_eq!(readiness["structured_status_field"], "readiness_layers");
+        assert_eq!(
+            readiness["serving_evidence"]["provider_route"]["default_min_compare_reports"],
+            10
+        );
+        assert_eq!(
+            readiness["serving_evidence"]["model_inventory"]["default_max_mismatches"],
+            0
+        );
+        assert_eq!(
+            readiness["serving_evidence"]["aggregate_reads_are_read_only"],
+            true
+        );
+        assert_eq!(
+            readiness["cutover_semantics"]["production_authority_change_on_read"],
+            false
         );
     }
 }

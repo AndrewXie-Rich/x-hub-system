@@ -970,7 +970,7 @@ struct AXSkillsCompatibilityTests {
 
         HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
         defer { HubPaths.clearPinnedBaseDirOverride() }
-        HubIPCClient.installResolvedSkillsOverrideForTesting { _ in
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: fixture.projectID) { _ in
             HubIPCClient.ResolvedSkillsResult(
                 ok: false,
                 source: "hub_runtime_grpc",
@@ -978,7 +978,7 @@ struct AXSkillsCompatibilityTests {
                 reasonCode: "compat_test_force_local_fixture"
             )
         }
-        defer { HubIPCClient.resetResolvedSkillsOverrideForTesting() }
+        defer { HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: fixture.projectID) }
 
         let manager = SupervisorManager.makeForTesting()
         manager.setAppModel(appModel)

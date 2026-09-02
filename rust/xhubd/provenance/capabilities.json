@@ -1,0 +1,90 @@
+{
+  "schema_version": "xhub.rust_hub.capabilities.v1",
+  "daemon": "xhubd",
+  "cli_commands": [
+    "doctor",
+    "migrate",
+    "scheduler",
+    "network",
+    "provider",
+    "model",
+    "memory",
+    "evidence",
+    "skills",
+    "xt",
+    "scheduler-smoke",
+    "serve",
+    "serve-grpc",
+    "provenance",
+    "version",
+    "plan"
+  ],
+  "capabilities": {
+    "scheduler": [
+      "enqueue",
+      "lease",
+      "heartbeat",
+      "release",
+      "cancel",
+      "status",
+      "shadow_compare",
+      "cutover_readiness"
+    ],
+    "provider_routing": [
+      "key_import",
+      "pool_inventory",
+      "route_decision",
+      "quota_state",
+      "oauth_refresh",
+      "shadow_compare",
+      "cutover_readiness"
+    ],
+    "model_management": [
+      "inventory",
+      "local_capabilities",
+      "repair_plan",
+      "repair_apply",
+      "repair_jobs",
+      "route_decision",
+      "shadow_compare",
+      "cutover_readiness",
+      "diagnostics"
+    ],
+    "memory": [
+      "retrieve",
+      "write",
+      "object_store",
+      "candidate_review",
+      "derived_index",
+      "policy_evaluation",
+      "gateway_context",
+      "readiness"
+    ],
+    "skills": [
+      "catalog",
+      "pin",
+      "capability_grant",
+      "preflight",
+      "audited_execution",
+      "policy_events",
+      "readiness"
+    ],
+    "evidence": [
+      "ledger_write",
+      "ledger_list"
+    ],
+    "integration": [
+      "http",
+      "grpc",
+      "xt_contract",
+      "xt_file_ipc",
+      "remote_entry_candidates",
+      "local_ml_http"
+    ]
+  },
+  "invariants": [
+    "hub_is_authority_for_memory_skills_grants_audit_and_routing",
+    "third_party_skill_execution_requires_policy_preflight",
+    "provider_and_model_cutover_require_explicit_readiness_evidence"
+  ]
+}

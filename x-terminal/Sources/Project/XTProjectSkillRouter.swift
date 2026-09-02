@@ -23,16 +23,18 @@ enum XTProjectSkillRouter {
     static func loadRegistrySnapshot(
         projectId: String,
         projectName: String?,
-        projectRoot: URL? = nil
+        projectRoot: URL? = nil,
+        hubBaseDir: URL? = nil
     ) -> SupervisorSkillRegistrySnapshot? {
         let normalizedProjectId = normalized(projectId)
         guard !normalizedProjectId.isEmpty else { return nil }
+        let resolvedHubBaseDir = hubBaseDir ?? HubPaths.baseDir()
         if let projectRoot {
             if let persistedRemoteSnapshot = AXSkillsLibrary.persistedRemoteResolvedSkillsCacheSnapshot(
                 projectId: normalizedProjectId,
                 projectName: projectName?.trimmingCharacters(in: .whitespacesAndNewlines),
                 projectRoot: projectRoot,
-                hubBaseDir: HubPaths.baseDir()
+                hubBaseDir: resolvedHubBaseDir
             ) {
                 return AXSkillsLibrary.supervisorSkillRegistrySnapshot(
                     fromResolvedCache: persistedRemoteSnapshot
@@ -42,13 +44,13 @@ enum XTProjectSkillRouter {
                 projectId: normalizedProjectId,
                 projectName: projectName?.trimmingCharacters(in: .whitespacesAndNewlines),
                 projectRoot: projectRoot,
-                hubBaseDir: HubPaths.baseDir()
+                hubBaseDir: resolvedHubBaseDir
             )
         }
         return AXSkillsLibrary.supervisorSkillRegistrySnapshot(
             projectId: normalizedProjectId,
             projectName: projectName?.trimmingCharacters(in: .whitespacesAndNewlines),
-            hubBaseDir: HubPaths.baseDir()
+            hubBaseDir: resolvedHubBaseDir
         )
     }
 
@@ -72,7 +74,8 @@ enum XTProjectSkillRouter {
         let snapshot = registrySnapshot ?? loadRegistrySnapshot(
             projectId: normalizedProjectId,
             projectName: projectName,
-            projectRoot: projectRoot
+            projectRoot: projectRoot,
+            hubBaseDir: hubBaseDir
         )
 
         let item: SupervisorSkillRegistryItem

@@ -304,7 +304,9 @@ pub fn live_status_http_json(config: &HubConfig, method: &str) -> (&'static str,
                     "ready": false,
                     "deny_code": "method_not_allowed",
                     "required_method": "GET",
-                    "authority": authority_json(false),
+                    "projection_is_read_only": true,
+                    "request_writes_classic_hub_status": false,
+                    "authority": live_status_authority_json(false, ""),
                 })
             ),
         );
@@ -457,7 +459,9 @@ fn live_status_value(config: &HubConfig, generated_at_ms: u128) -> Value {
             "cache_ttl_ms": LIVE_STATUS_CACHE_TTL_MS.min(i64::MAX as u128) as i64,
             "stale_cache_max_ms": live_status_stale_cache_max_ms().min(i64::MAX as u128) as i64,
             "root_dir": config.root_dir.display().to_string(),
-            "authority": authority_json(false),
+            "projection_is_read_only": true,
+            "request_writes_classic_hub_status": false,
+            "authority": live_status_authority_json(false, ""),
             "checks": [
                 {"name": "live_base_dir_configured", "ok": false, "blocking": true},
                 {"name": "read_only_status_projection", "ok": true, "blocking": false},
@@ -499,6 +503,18 @@ fn live_status_value_for_base(
         Err(error) if status_file_exists => (json!({}), false, error),
         Err(_) => (json!({}), false, String::new()),
     };
+    let rust_status_writer_applied =
+        crate::xt_compat::classic_hub_status_writer_applied_for_observation(
+            config,
+            status_path,
+            &status,
+        );
+    let classic_hub_status_authority = status
+        .get("rustHub")
+        .and_then(|value| value.get("authority"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let generated_at_sec = (generated_at_ms as f64) / 1000.0;
 
     if let Some(object) = status.as_object_mut() {
@@ -537,7 +553,10 @@ fn live_status_value_for_base(
             "schema_version".to_string(),
             json!("xhub.rust_hub.xt_classic_status.v1"),
         );
-        rust_hub.insert("authority".to_string(), json!("rust_live_status_http"));
+        rust_hub.insert(
+            "projection_authority".to_string(),
+            json!("rust_live_status_http"),
+        );
         rust_hub.insert("http_addr".to_string(), json!(config.http_addr()));
         rust_hub.insert(
             "status_path".to_string(),
@@ -568,14 +587,12 @@ fn live_status_value_for_base(
         "status_file_error": status_file_error,
         "status_file_modified_at_ms": status_file_modified_at_ms,
         "status": status,
-        "authority": {
-            "production_authority_change": false,
-            "rust_writes_classic_hub_status": false,
-            "rust_serves_live_status_http": true,
-            "rust_executes_ml": false,
-            "rust_executes_third_party_skills": false,
-            "memory_writer_authority_in_rust": false,
-        },
+        "projection_is_read_only": true,
+        "request_writes_classic_hub_status": false,
+        "authority": live_status_authority_json(
+            rust_status_writer_applied,
+            &classic_hub_status_authority,
+        ),
         "checks": [
             {"name": "live_base_dir_configured", "ok": true, "blocking": true},
             {"name": "live_base_dir_exists", "ok": base_dir.is_dir(), "blocking": false},
@@ -583,6 +600,30 @@ fn live_status_value_for_base(
             {"name": "read_only_status_projection", "ok": true, "blocking": false},
             {"name": "hub_status_untouched", "ok": true, "blocking": false}
         ],
+    })
+}
+
+fn live_status_authority_json(
+    rust_status_writer_applied: bool,
+    classic_hub_status_authority: &str,
+) -> Value {
+    json!({
+        "production_authority_change": false,
+        "node_remains_authority": !rust_status_writer_applied,
+        "rust_writes_classic_hub_status": rust_status_writer_applied,
+        "global_rust_classic_hub_status_writer_applied": rust_status_writer_applied,
+        "current_classic_hub_status_writer_authority": if rust_status_writer_applied {
+            crate::xt_compat::XT_CLASSIC_STATUS_AUTHORITY_PRODUCTION_APPLIED
+        } else {
+            ""
+        },
+        "observed_classic_hub_status_authority": classic_hub_status_authority,
+        "rust_serves_live_status_http": true,
+        "projection_is_read_only": true,
+        "request_writes_classic_hub_status": false,
+        "rust_executes_ml": false,
+        "rust_executes_third_party_skills": false,
+        "memory_writer_authority_in_rust": false,
     })
 }
 
@@ -4588,12 +4629,59 @@ mod tests {
         );
         assert_eq!(
             value["status"]["rustHub"]["authority"],
+            crate::xt_compat::XT_CLASSIC_STATUS_AUTHORITY_LEGACY
+        );
+        assert_eq!(
+            value["status"]["rustHub"]["projection_authority"],
             "rust_live_status_http"
         );
+        assert_eq!(value["projection_is_read_only"], true);
+        assert_eq!(value["request_writes_classic_hub_status"], false);
+        assert_eq!(value["authority"]["node_remains_authority"], true);
         assert_eq!(value["authority"]["rust_writes_classic_hub_status"], false);
+        assert_eq!(
+            value["authority"]["global_rust_classic_hub_status_writer_applied"],
+            false
+        );
+        assert_eq!(
+            value["authority"]["current_classic_hub_status_writer_authority"],
+            ""
+        );
+        assert_eq!(
+            value["authority"]["observed_classic_hub_status_authority"],
+            crate::xt_compat::XT_CLASSIC_STATUS_AUTHORITY_LEGACY
+        );
+        assert_eq!(value["authority"]["projection_is_read_only"], true);
+        assert_eq!(
+            value["authority"]["request_writes_classic_hub_status"],
+            false
+        );
         assert_eq!(fs::read_to_string(&status_path).unwrap(), before);
 
         let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn live_status_authority_separates_applied_writer_from_read_only_get() {
+        let value = live_status_authority_json(
+            true,
+            crate::xt_compat::XT_CLASSIC_STATUS_AUTHORITY_PRODUCTION_APPLIED,
+        );
+
+        assert_eq!(value["node_remains_authority"], false);
+        assert_eq!(value["rust_writes_classic_hub_status"], true);
+        assert_eq!(
+            value["current_classic_hub_status_writer_authority"],
+            crate::xt_compat::XT_CLASSIC_STATUS_AUTHORITY_PRODUCTION_APPLIED
+        );
+        assert_eq!(
+            value["observed_classic_hub_status_authority"],
+            crate::xt_compat::XT_CLASSIC_STATUS_AUTHORITY_PRODUCTION_APPLIED
+        );
+        assert_eq!(value["global_rust_classic_hub_status_writer_applied"], true);
+        assert_eq!(value["projection_is_read_only"], true);
+        assert_eq!(value["request_writes_classic_hub_status"], false);
+        assert_eq!(value["production_authority_change"], false);
     }
 
     #[test]

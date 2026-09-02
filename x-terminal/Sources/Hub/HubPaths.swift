@@ -1,6 +1,12 @@
 import Foundation
 
 enum HubPaths {
+    private struct PinnedBaseDirOverrideScopeKey: Hashable {
+        let task: UnsafeCurrentTask
+    }
+
+    @TaskLocal private static var lexicalPinnedBaseDirOverride: URL?
+
     private struct HubRuntimeStatusHeartbeat: Decodable {
         var updatedAt: Double?
         var pid: Int32?
@@ -12,10 +18,9 @@ enum HubPaths {
     }
 
     private static let lock = DispatchQueue(label: "xterminal.hubpaths")
-    private static let pinnedOverrideLease = DispatchSemaphore(value: 1)
     private static var _baseDirOverride: URL? = nil
     private static var _baseDirOverridePinned: Bool = false
-    private static var _pinnedOverrideLeaseActive: Bool = false
+    private static var _pinnedBaseDirOverridesByTask: [PinnedBaseDirOverrideScopeKey: URL] = [:]
     private static var _candidateBaseDirsOverrideForTesting: [URL]? = nil
     private static var _defaultGroupBaseDirOverrideForTesting: URL? = nil
     private static let runtimeDirectoryAliases = ["XHub", "RELFlowHub"]
@@ -32,30 +37,70 @@ enum HubPaths {
             clearPinnedBaseDirOverride()
             return
         }
-        pinnedOverrideLease.wait()
+        let standardizedURL = url.standardizedFileURL
+
+        // Swift Testing executes test bodies in concurrent tasks. Keep pinned
+        // overrides scoped to the current task so independent fixtures cannot
+        // overwrite each other, and never block cooperative executor threads on
+        // a process-wide semaphore. The non-task path remains available for the
+        // synchronous production/bootstrap callers that predate async tests.
+        if let taskKey = currentTaskOverrideKey() {
+            lock.sync {
+                _pinnedBaseDirOverridesByTask[taskKey] = standardizedURL
+            }
+            return
+        }
+
         lock.sync {
-            _baseDirOverride = url
+            _baseDirOverride = standardizedURL
             _baseDirOverridePinned = true
-            _pinnedOverrideLeaseActive = true
         }
     }
 
     static func clearPinnedBaseDirOverride() {
-        let shouldSignal = lock.sync { () -> Bool in
-            let wasActive = _pinnedOverrideLeaseActive
-            _pinnedOverrideLeaseActive = false
+        if let taskKey = currentTaskOverrideKey() {
+            _ = lock.sync {
+                _pinnedBaseDirOverridesByTask.removeValue(forKey: taskKey)
+            }
+            return
+        }
+
+        lock.sync {
             _baseDirOverridePinned = false
             _baseDirOverride = nil
-            return wasActive
-        }
-        if shouldSignal {
-            pinnedOverrideLease.signal()
         }
     }
 
     static func baseDirOverride() -> URL? {
-        lock.sync {
-            _baseDirOverride
+        if let lexicalPinnedBaseDirOverride {
+            return lexicalPinnedBaseDirOverride
+        }
+        let taskKey = currentTaskOverrideKey()
+        return lock.sync {
+            if let taskKey,
+               let taskOverride = _pinnedBaseDirOverridesByTask[taskKey] {
+                return taskOverride
+            }
+            return _baseDirOverride
+        }
+    }
+
+    private static func currentTaskOverrideKey() -> PinnedBaseDirOverrideScopeKey? {
+        var scopeKey: PinnedBaseDirOverrideScopeKey?
+        withUnsafeCurrentTask { task in
+            if let task {
+                scopeKey = PinnedBaseDirOverrideScopeKey(task: task)
+            }
+        }
+        return scopeKey
+    }
+
+    static func withPinnedBaseDirOverride<T>(
+        _ url: URL,
+        operation: () async throws -> T
+    ) async rethrows -> T {
+        try await $lexicalPinnedBaseDirOverride.withValue(url.standardizedFileURL) {
+            try await operation()
         }
     }
 

@@ -432,4 +432,907 @@ extension SupervisorManager {
         }
         return nil
     }
+
+    func autoExportXTReadyIncidentEventsIfNeeded() {
+        guard isXTReadyIncidentAutoExportEnabled else {
+            xtReadyIncidentAutoExportTask?.cancel()
+            xtReadyIncidentAutoExportTask = nil
+            xtReadyIncidentEventsAutoExportStatus = "disabled"
+            return
+        }
+
+        let now = Date().timeIntervalSince1970
+        guard now - lastXTReadyIncidentAutoExportAt >= xtReadyIncidentAutoExportMinIntervalSec else {
+            return
+        }
+        lastXTReadyIncidentAutoExportAt = now
+
+        xtReadyIncidentAutoExportTask?.cancel()
+        xtReadyIncidentAutoExportTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled, let self else { return }
+            _ = self.exportXTReadyIncidentEventsReport()
+            if !Task.isCancelled {
+                self.xtReadyIncidentAutoExportTask = nil
+            }
+        }
+    }
+
+    private var isXTReadyIncidentAutoExportEnabled: Bool {
+        let raw = (ProcessInfo.processInfo.environment["XTERMINAL_AUTO_EXPORT_XT_READY_INCIDENT_EVENTS"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if raw.isEmpty {
+            return true
+        }
+        return !["0", "false", "off", "no", "n"].contains(raw)
+    }
+
+    static func evaluateSupervisorMemoryAssemblyReadiness(
+        snapshot: SupervisorMemoryAssemblySnapshot?
+    ) -> SupervisorMemoryAssemblyReadiness {
+        SupervisorMemoryAssemblyDiagnostics.evaluate(
+            snapshot: snapshot,
+            canonicalSyncSnapshot: HubIPCClient.canonicalMemorySyncStatusSnapshot(limit: 120),
+            rustGatewayShadowCompare: HubIPCClient.rustMemoryGatewayShadowCompareStatus()
+        )
+    }
+
+    private static func xtReadyStrictIssueCodes(
+        incidentReadiness: XTReadyIncidentReadiness,
+        memoryReadiness: SupervisorMemoryAssemblyReadiness,
+        hubRuntimeDiagnosis: XTHubRuntimeDiagnosisSnapshot? = nil
+    ) -> [String] {
+        var issues = incidentReadiness.issues + memoryReadiness.issueCodes.map { "memory:\($0)" }
+        if let hubIssue = hubRuntimeDiagnosis?.strictIssueCode {
+            issues.append("hub_runtime:\(hubIssue)")
+        }
+        return issues
+    }
+
+    private static func xtReadyHubRuntimeDiagnosisSnapshot(
+        baseDir: URL = HubPaths.baseDir()
+    ) -> XTHubRuntimeDiagnosisSnapshot? {
+        let report = XHubDoctorOutputStore.loadHubReport(baseDir: baseDir)
+        let localServiceSnapshot = XHubDoctorOutputStore.loadHubLocalServiceSnapshot(baseDir: baseDir)
+        let localRuntimeMonitorSnapshot = XHubDoctorOutputStore.loadHubLocalRuntimeMonitorSnapshot(baseDir: baseDir)
+        let recoveryGuidance = XHubDoctorOutputStore.loadHubLocalServiceRecoveryGuidance(baseDir: baseDir)
+
+        let reportDiagnosis = report.flatMap { xtReadyHubRuntimeDiagnosisSnapshot(from: $0) }
+        let snapshotDiagnosis = localServiceSnapshot.flatMap { xtReadyHubRuntimeDiagnosisSnapshot(from: $0) }
+        let guidanceDiagnosis = recoveryGuidance.flatMap { xtReadyHubRuntimeDiagnosisSnapshot(from: $0) }
+
+        let baseDiagnosis: XTHubRuntimeDiagnosisSnapshot?
+        if let report, let localServiceSnapshot,
+           localServiceSnapshot.generatedAtMs > report.generatedAtMs {
+            baseDiagnosis = snapshotDiagnosis ?? reportDiagnosis
+        } else {
+            baseDiagnosis = reportDiagnosis ?? snapshotDiagnosis
+        }
+        let diagnosis = xtReadyMergedHubRuntimeDiagnosis(baseDiagnosis, guidance: guidanceDiagnosis)
+        return xtReadyMergeHubRuntimeMonitorDetails(
+            diagnosis,
+            monitor: localRuntimeMonitorSnapshot
+        )
+    }
+
+    static func xtReadySupervisorVoiceDiagnosisSnapshot(
+        workspaceRoot: URL = XTUnifiedDoctorStore.workspaceRootFromEnvOrCWD()
+    ) -> XTSupervisorVoiceDiagnosisSnapshot? {
+        let reportURL = XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: workspaceRoot)
+        guard let report = XHubDoctorOutputStore.loadReport(from: reportURL) else {
+            return nil
+        }
+        return xtReadySupervisorVoiceDiagnosisSnapshot(from: report)
+    }
+
+    private static func xtReadyFreshPairReconnectSmokeSnapshot(
+        workspaceRoot: URL = XTUnifiedDoctorStore.workspaceRootFromEnvOrCWD()
+    ) -> XTFreshPairReconnectSmokeDiagnosisSnapshot? {
+        let reportURL = XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: workspaceRoot)
+        guard let report = XHubDoctorOutputStore.loadReport(from: reportURL) else {
+            return nil
+        }
+        return xtReadyFreshPairReconnectSmokeSnapshot(from: report)
+    }
+
+    private static func xtReadyFirstPairCompletionProofSnapshot(
+        workspaceRoot: URL = XTUnifiedDoctorStore.workspaceRootFromEnvOrCWD()
+    ) -> XTFirstPairCompletionProofDiagnosisSnapshot? {
+        let reportURL = XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: workspaceRoot)
+        guard let report = XHubDoctorOutputStore.loadReport(from: reportURL) else {
+            return nil
+        }
+        return xtReadyFirstPairCompletionProofSnapshot(from: report)
+    }
+
+    private static func xtReadyPairedRouteSnapshot(
+        workspaceRoot: URL = XTUnifiedDoctorStore.workspaceRootFromEnvOrCWD()
+    ) -> XHubDoctorOutputRouteSnapshot? {
+        let reportURL = XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: workspaceRoot)
+        guard let report = XHubDoctorOutputStore.loadReport(from: reportURL) else {
+            return nil
+        }
+        return report.routeSnapshot
+    }
+
+    private static func xtReadyPairedRouteSetSnapshot(
+        workspaceRoot: URL = XTUnifiedDoctorStore.workspaceRootFromEnvOrCWD()
+    ) -> XHubDoctorOutputPairedRouteSetSnapshot? {
+        let reportURL = XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: workspaceRoot)
+        guard let report = XHubDoctorOutputStore.loadReport(from: reportURL) else {
+            return nil
+        }
+        return report.pairedRouteSetSnapshot
+    }
+
+    private static func xtReadySupervisorVoiceDiagnosisSnapshot(
+        from report: XHubDoctorOutputReport
+    ) -> XTSupervisorVoiceDiagnosisSnapshot? {
+        guard let primaryCheck = xtReadySupervisorVoicePrimaryCheck(in: report) else {
+            return nil
+        }
+
+        return XTSupervisorVoiceDiagnosisSnapshot(
+            status: primaryCheck.status.rawValue,
+            headline: primaryCheck.headline.trimmingCharacters(in: .whitespacesAndNewlines),
+            message: primaryCheck.message.trimmingCharacters(in: .whitespacesAndNewlines),
+            detailLines: primaryCheck.detailLines,
+            nextStep: primaryCheck.nextStep.trimmingCharacters(in: .whitespacesAndNewlines),
+            repairDestinationRef: primaryCheck.repairDestinationRef?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            actionURL: {
+                let repairRef = primaryCheck.repairDestinationRef?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                guard let destination = UITroubleshootDestination(rawValue: repairRef) else { return nil }
+                let detail = [
+                    primaryCheck.message.trimmingCharacters(in: .whitespacesAndNewlines),
+                    primaryCheck.nextStep.trimmingCharacters(in: .whitespacesAndNewlines)
+                ]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n")
+                return troubleshootActionURL(
+                    repairEntry: destination,
+                    headline: primaryCheck.headline,
+                    detail: detail,
+                    detailLines: primaryCheck.detailLines
+                )
+            }(),
+            generatedAtMs: primaryCheck.observedAtMs > 0 ? primaryCheck.observedAtMs : report.generatedAtMs
+        )
+    }
+
+    private static func xtReadyFreshPairReconnectSmokeSnapshot(
+        from report: XHubDoctorOutputReport
+    ) -> XTFreshPairReconnectSmokeDiagnosisSnapshot? {
+        let primaryCheck = report.checks.first { check in
+            check.checkID == XTUnifiedDoctorSectionKind.hubReachability.rawValue
+        } ?? report.checks.first { check in
+            check.freshPairReconnectSmokeSnapshot != nil
+        }
+        guard let primaryCheck else {
+            return nil
+        }
+
+        if let structured = primaryCheck.freshPairReconnectSmokeSnapshot {
+            return XTFreshPairReconnectSmokeDiagnosisSnapshot(structured)
+        }
+
+        guard let legacy = XTFreshPairReconnectSmokeSnapshot.from(
+            doctorDetailLines: primaryCheck.detailLines
+        ) else {
+            return nil
+        }
+        return XTFreshPairReconnectSmokeDiagnosisSnapshot(legacy)
+    }
+
+    private static func xtReadyFirstPairCompletionProofSnapshot(
+        from report: XHubDoctorOutputReport
+    ) -> XTFirstPairCompletionProofDiagnosisSnapshot? {
+        guard let structured = report.firstPairCompletionProofSnapshot else {
+            return nil
+        }
+        return XTFirstPairCompletionProofDiagnosisSnapshot(structured)
+    }
+
+    private static func xtReadyConnectivityIncidentSnapshot(
+        workspaceRoot: URL = XTUnifiedDoctorStore.workspaceRootFromEnvOrCWD()
+    ) -> XHubDoctorOutputConnectivityIncidentSnapshot? {
+        XHubDoctorOutputStore.loadXTConnectivityIncidentSnapshot(workspaceRoot: workspaceRoot)
+    }
+
+    private static func xtReadyConnectivityIncidentHistory(
+        workspaceRoot: URL = XTUnifiedDoctorStore.workspaceRootFromEnvOrCWD()
+    ) -> XHubDoctorOutputConnectivityIncidentHistoryReport? {
+        XHubDoctorOutputStore.loadXTConnectivityIncidentHistory(workspaceRoot: workspaceRoot)
+    }
+
+    private static func xtReadyConnectivityRepairLedger(
+        workspaceRoot: URL = XTUnifiedDoctorStore.workspaceRootFromEnvOrCWD()
+    ) -> XTConnectivityRepairLedgerSnapshot? {
+        let snapshot = XTConnectivityRepairLedgerStore.loadSnapshot(workspaceRoot: workspaceRoot)
+        return snapshot.entries.isEmpty ? nil : snapshot
+    }
+
+    private static func xtReadySupervisorVoicePrimaryCheck(
+        in report: XHubDoctorOutputReport
+    ) -> XHubDoctorOutputCheckResult? {
+        let voiceCheckIDs = Set([
+            XTUnifiedDoctorSectionKind.wakeProfileReadiness.rawValue,
+            XTUnifiedDoctorSectionKind.talkLoopReadiness.rawValue,
+            XTUnifiedDoctorSectionKind.voicePlaybackReadiness.rawValue
+        ])
+        let actionable = report.checks.filter { check in
+            guard voiceCheckIDs.contains(check.checkID) else { return false }
+            switch check.status {
+            case .fail, .warn:
+                return true
+            case .pass, .skip:
+                return false
+            }
+        }
+        guard !actionable.isEmpty else { return nil }
+
+        return actionable.min { lhs, rhs in
+            let lhsPriority = xtReadySupervisorVoiceStatusPriority(lhs.status)
+            let rhsPriority = xtReadySupervisorVoiceStatusPriority(rhs.status)
+            if lhsPriority != rhsPriority {
+                return lhsPriority < rhsPriority
+            }
+            let lhsOrder = xtReadySupervisorVoiceCheckOrder(lhs.checkID)
+            let rhsOrder = xtReadySupervisorVoiceCheckOrder(rhs.checkID)
+            if lhsOrder != rhsOrder {
+                return lhsOrder < rhsOrder
+            }
+            return lhs.observedAtMs < rhs.observedAtMs
+        }
+    }
+
+    private static func xtReadySupervisorVoiceStatusPriority(
+        _ status: XHubDoctorCheckStatus
+    ) -> Int {
+        switch status {
+        case .fail:
+            return 0
+        case .warn:
+            return 1
+        case .pass, .skip:
+            return 2
+        }
+    }
+
+    private static func xtReadySupervisorVoiceCheckOrder(_ checkID: String) -> Int {
+        switch checkID {
+        case XTUnifiedDoctorSectionKind.wakeProfileReadiness.rawValue:
+            return 0
+        case XTUnifiedDoctorSectionKind.talkLoopReadiness.rawValue:
+            return 1
+        case XTUnifiedDoctorSectionKind.voicePlaybackReadiness.rawValue:
+            return 2
+        default:
+            return 99
+        }
+    }
+
+    private static func xtReadyHubRuntimeDiagnosisSnapshot(
+        from report: XHubDoctorOutputReport
+    ) -> XTHubRuntimeDiagnosisSnapshot? {
+        let failureCode = report.currentFailureCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let primaryCheck = xtReadyHubRuntimePrimaryCheck(
+            in: report,
+            failureCode: failureCode
+        )
+        let headline = (
+            primaryCheck?.headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                ? primaryCheck?.headline
+                : report.summary.headline
+        )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let nextStep = (
+            primaryCheck?.nextStep.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                ? primaryCheck?.nextStep
+                : report.nextSteps.first?.instruction
+        )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        return XTHubRuntimeDiagnosisSnapshot(
+            overallState: report.overallState.rawValue,
+            readyForFirstTask: report.readyForFirstTask,
+            failureCode: failureCode,
+            headline: headline,
+            detailLines: xtReadyHubRuntimeDetailLines(primaryCheck),
+            nextStep: nextStep,
+            repairDestinationRef: (
+                primaryCheck?.repairDestinationRef?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    ? primaryCheck?.repairDestinationRef
+                    : report.nextSteps.first?.destinationRef
+            )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            generatedAtMs: report.generatedAtMs
+        )
+    }
+
+    private static func xtReadyHubRuntimeDiagnosisSnapshot(
+        from snapshot: XHubLocalServiceSnapshotReport
+    ) -> XTHubRuntimeDiagnosisSnapshot? {
+        guard snapshot.doctorProjection != nil
+                || snapshot.primaryIssue != nil
+                || !snapshot.providers.isEmpty else {
+            return nil
+        }
+
+        let projection = snapshot.doctorProjection
+        let primaryIssue = snapshot.primaryIssue
+        let projectionFailureCode = projection?.currentFailureCode.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let projectionHeadline = projection?.headline.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let projectionNextStep = projection?.nextStep.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let primaryFailureCode = primaryIssue?.reasonCode.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let primaryHeadline = primaryIssue?.headline.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let primaryNextStep = primaryIssue?.nextStep.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let overallState = projection?.overallState.rawValue
+            ?? (snapshot.runtimeAlive ? XHubDoctorOverallState.degraded.rawValue : XHubDoctorOverallState.blocked.rawValue)
+        let failureCode = projectionFailureCode.isEmpty ? primaryFailureCode : projectionFailureCode
+        let headline = projectionHeadline.isEmpty ? primaryHeadline : projectionHeadline
+        let nextStep = projectionNextStep.isEmpty ? primaryNextStep : projectionNextStep
+
+        return XTHubRuntimeDiagnosisSnapshot(
+            overallState: overallState,
+            readyForFirstTask: projection?.readyForFirstTask ?? false,
+            failureCode: failureCode,
+            headline: headline,
+            detailLines: snapshot.preferredDetailLines(),
+            nextStep: nextStep,
+            repairDestinationRef: projection?.repairDestinationRef.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            generatedAtMs: snapshot.generatedAtMs
+        )
+    }
+
+    private static func xtReadyHubRuntimeDiagnosisSnapshot(
+        from guidance: XHubLocalServiceRecoveryGuidanceReport
+    ) -> XTHubRuntimeDiagnosisSnapshot? {
+        let failureCode = guidance.primaryFailureCode
+        let actionCategory = guidance.actionCategory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let installHint = guidance.installHint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard guidance.guidancePresent
+                || guidance.primaryIssue != nil
+                || !failureCode.isEmpty
+                || !actionCategory.isEmpty
+                || !installHint.isEmpty else {
+            return nil
+        }
+
+        let providerCheckStatus = XHubDoctorCheckStatus(
+            rawValue: guidance.providerCheckStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        let overallState: String
+        if guidance.providerCheckBlocking {
+            overallState = XHubDoctorOverallState.blocked.rawValue
+        } else {
+            switch providerCheckStatus {
+            case .pass:
+                overallState = failureCode.isEmpty ? XHubDoctorOverallState.ready.rawValue : XHubDoctorOverallState.degraded.rawValue
+            case .warn, .fail:
+                overallState = XHubDoctorOverallState.degraded.rawValue
+            case .skip, .none:
+                overallState = guidance.runtimeAlive
+                    ? XHubDoctorOverallState.degraded.rawValue
+                    : XHubDoctorOverallState.blocked.rawValue
+            }
+        }
+
+        let primaryIssue = guidance.primaryIssue
+        let headline = (
+            primaryIssue?.headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                ? primaryIssue?.headline
+                : installHint
+        )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let primaryNextStep = primaryIssue?.nextStep.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let recommendedAction = guidance.topRecommendedActionSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextStep = !primaryNextStep.isEmpty
+            ? primaryNextStep
+            : (!recommendedAction.isEmpty ? recommendedAction : installHint)
+        let readyForFirstTask = !guidance.providerCheckBlocking
+            && failureCode.isEmpty
+            && providerCheckStatus == .pass
+            && guidance.readyProviderCount > 0
+
+        return XTHubRuntimeDiagnosisSnapshot(
+            overallState: overallState,
+            readyForFirstTask: readyForFirstTask,
+            failureCode: failureCode,
+            headline: headline,
+            detailLines: guidance.preferredDetailLines(),
+            nextStep: nextStep,
+            actionCategory: actionCategory,
+            installHint: installHint,
+            recommendedAction: recommendedAction,
+            supportFAQSummary: guidance.topSupportFAQSummary,
+            repairDestinationRef: guidance.repairDestinationRef.trimmingCharacters(in: .whitespacesAndNewlines),
+            generatedAtMs: guidance.generatedAtMs
+        )
+    }
+
+    private static func xtReadyMergedHubRuntimeDiagnosis(
+        _ base: XTHubRuntimeDiagnosisSnapshot?,
+        guidance: XTHubRuntimeDiagnosisSnapshot?
+    ) -> XTHubRuntimeDiagnosisSnapshot? {
+        guard let guidance else { return base }
+        guard var merged = base else { return guidance }
+
+        let mergedFailureCode = merged.failureCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let guidanceFailureCode = guidance.failureCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let codesMatch = !guidanceFailureCode.isEmpty
+            && (mergedFailureCode.isEmpty || mergedFailureCode == guidanceFailureCode)
+        let guidanceIsNewerOrSame = guidance.generatedAtMs >= merged.generatedAtMs
+        let shouldApplyGuidance = guidanceIsNewerOrSame || codesMatch || mergedFailureCode.isEmpty
+        guard shouldApplyGuidance else { return merged }
+
+        if mergedFailureCode.isEmpty, !guidanceFailureCode.isEmpty {
+            merged.failureCode = guidanceFailureCode
+        }
+        if merged.headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !guidance.headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            merged.headline = guidance.headline
+        }
+        if merged.nextStep.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !guidance.nextStep.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            merged.nextStep = guidance.nextStep
+        }
+        if merged.detailLines.isEmpty, !guidance.detailLines.isEmpty {
+            merged.detailLines = guidance.detailLines
+        }
+        if merged.actionCategory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !guidance.actionCategory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            merged.actionCategory = guidance.actionCategory
+        }
+        if merged.installHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !guidance.installHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            merged.installHint = guidance.installHint
+        }
+        if merged.recommendedAction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !guidance.recommendedAction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            merged.recommendedAction = guidance.recommendedAction
+        }
+        if merged.supportFAQSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !guidance.supportFAQSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            merged.supportFAQSummary = guidance.supportFAQSummary
+        }
+        if merged.repairDestinationRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !guidance.repairDestinationRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            merged.repairDestinationRef = guidance.repairDestinationRef
+        }
+        merged.generatedAtMs = max(merged.generatedAtMs, guidance.generatedAtMs)
+        return merged
+    }
+
+    private static func xtReadyMergeHubRuntimeMonitorDetails(
+        _ diagnosis: XTHubRuntimeDiagnosisSnapshot?,
+        monitor: XHubLocalRuntimeMonitorSnapshotReport?
+    ) -> XTHubRuntimeDiagnosisSnapshot? {
+        guard var diagnosis else { return nil }
+        guard let monitor else { return diagnosis }
+
+        let monitorLines = monitor.preferredDetailLines(limit: 2)
+        let monitorLoadConfigLine = monitor.preferredLoadConfigLine()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if diagnosis.loadConfigSummaryLine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !monitorLoadConfigLine.isEmpty {
+            diagnosis.loadConfigSummaryLine = monitorLoadConfigLine
+        }
+        guard !monitorLines.isEmpty else {
+            diagnosis.generatedAtMs = max(diagnosis.generatedAtMs, monitor.generatedAtMs)
+            return diagnosis
+        }
+
+        var mergedLines = diagnosis.detailLines
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        for line in monitorLines where !mergedLines.contains(line) {
+            mergedLines.append(line)
+        }
+        diagnosis.detailLines = Array(mergedLines.prefix(4))
+        diagnosis.generatedAtMs = max(diagnosis.generatedAtMs, monitor.generatedAtMs)
+        return diagnosis
+    }
+
+    private static func xtReadyHubRuntimePrimaryCheck(
+        in report: XHubDoctorOutputReport,
+        failureCode: String
+    ) -> XHubDoctorOutputCheckResult? {
+        if !failureCode.isEmpty,
+           let failureCheck = report.checks.first(where: { $0.checkID == failureCode }) {
+            return failureCheck
+        }
+        if let blocking = report.checks.first(where: \.blocking) {
+            return blocking
+        }
+        if let degraded = report.checks.first(where: { $0.status == .warn || $0.status == .fail }) {
+            return degraded
+        }
+        return report.checks.first
+    }
+
+    private static func xtReadyHubRuntimeDetailLines(
+        _ primaryCheck: XHubDoctorOutputCheckResult?
+    ) -> [String] {
+        guard let primaryCheck,
+              primaryCheck.status != .pass else {
+            return []
+        }
+
+        let normalized = primaryCheck.detailLines
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !normalized.isEmpty else { return [] }
+
+        let preferred = normalized.filter { line in
+            line.hasPrefix("ready_providers=")
+                || line.hasPrefix("provider_count=")
+                || line.hasPrefix("managed_service_provider_count=")
+                || line.hasPrefix("managed_service_ready_count=")
+                || line.contains("service_state=")
+                || line.contains("runtime_reason=")
+                || line.contains("endpoint=")
+                || line.contains("execution_mode=")
+                || line.contains("loaded_instances=")
+                || line.contains("queued=")
+        }
+
+        let detailPool = preferred.isEmpty ? normalized : preferred
+        let readyProvidersLine = detailPool.first(where: { $0.hasPrefix("ready_providers=") })
+        let providerLine = detailPool.first(where: { $0.contains("service_state=") || $0.contains("endpoint=") })
+        var prioritized: [String] = []
+        if let readyProvidersLine {
+            prioritized.append(readyProvidersLine)
+        }
+        if let providerLine, !prioritized.contains(providerLine) {
+            prioritized.append(providerLine)
+        }
+        for line in detailPool where !prioritized.contains(line) {
+            prioritized.append(line)
+        }
+        return Array(prioritized.prefix(2))
+    }
+
+    private static func xtReadyAutoExportStatus(
+        ok: Bool,
+        reason: String,
+        strictIssues: [String]
+    ) -> String {
+        guard ok else {
+            return "failed:\(reason)"
+        }
+        guard strictIssues.isEmpty else {
+            return "strict_risk:\(strictIssues.joined(separator: ","))"
+        }
+        return "ok"
+    }
+
+    func exportXTReadyIncidentEventsReport(
+        outputURL: URL? = nil,
+        limit: Int = 120
+    ) -> XTReadyIncidentEventsExportResult {
+        let rows = Self.buildXTReadyIncidentEvents(from: supervisorIncidentLedger, limit: limit)
+        let missing = Self.missingXTReadyIncidentCodes(in: rows)
+        let readiness = Self.evaluateXTReadyIncidentReadiness(events: rows)
+        let memoryReadiness = Self.evaluateSupervisorMemoryAssemblyReadiness(
+            snapshot: supervisorMemoryAssemblySnapshot
+        )
+        let pairedRouteSetSnapshot = Self.xtReadyPairedRouteSetSnapshot()
+        let pairedRouteSnapshot = Self.xtReadyPairedRouteSnapshot()
+        let connectivityIncidentSnapshot = Self.xtReadyConnectivityIncidentSnapshot()
+        let connectivityIncidentHistory = Self.xtReadyConnectivityIncidentHistory()
+        let connectivityRepairLedger = Self.xtReadyConnectivityRepairLedger()
+        let hubRuntimeDiagnosis = Self.xtReadyHubRuntimeDiagnosisSnapshot()
+        let freshPairReconnectSmoke = Self.xtReadyFreshPairReconnectSmokeSnapshot()
+        let firstPairCompletionProof = Self.xtReadyFirstPairCompletionProofSnapshot()
+        let strictIssues = Self.xtReadyStrictIssueCodes(
+            incidentReadiness: readiness,
+            memoryReadiness: memoryReadiness,
+            hubRuntimeDiagnosis: hubRuntimeDiagnosis
+        )
+        let mirrorState = Self.supervisorDurableCandidateMirrorExportState(
+            snapshot: supervisorMemoryAssemblySnapshot
+        )
+        let destination = outputURL ?? defaultXTReadyIncidentEventsReportURL()
+        let summary = XTReadyIncidentSummary(
+            highRiskLaneWithoutGrant: 0,
+            unauditedAutoResolution: 0,
+            highRiskBypassCount: 0,
+            blockedEventMissRate: 0,
+            nonMessageIngressPolicyCoverage: rows.isEmpty ? 0 : 1,
+            memoryAssemblyReady: memoryReadiness.ready,
+            memoryAssemblyIssueCount: memoryReadiness.issues.count,
+            memoryAssemblyRequestedProfile: supervisorMemoryAssemblySnapshot?.requestedProfile ?? "",
+            memoryAssemblyResolvedProfile: supervisorMemoryAssemblySnapshot?.resolvedProfile ?? "",
+            memoryAssemblyTruncatedLayerCount: supervisorMemoryAssemblySnapshot?.truncatedLayers.count ?? 0,
+            durableCandidateMirrorStatus: mirrorState.status.rawValue,
+            durableCandidateMirrorTarget: mirrorState.target,
+            durableCandidateMirrorAttempted: mirrorState.attempted,
+            durableCandidateMirrorErrorCode: mirrorState.errorCode,
+            durableCandidateLocalStoreRole: mirrorState.localStoreRole,
+            pairedRouteSetSnapshot: pairedRouteSetSnapshot,
+            pairedRouteSnapshot: pairedRouteSnapshot,
+            connectivityIncident: connectivityIncidentSnapshot,
+            connectivityIncidentHistory: connectivityIncidentHistory,
+            connectivityRepairLedger: connectivityRepairLedger,
+            freshPairReconnectSmoke: freshPairReconnectSmoke,
+            firstPairCompletionProof: firstPairCompletionProof
+        )
+        let payload = XTReadyIncidentEventsPayload(
+            runId: "xt_ready_runtime_\(Int64((Date().timeIntervalSince1970 * 1000).rounded()))",
+            schemaVersion: "xt_ready_incident_events.v1",
+            generatedAtMs: Int64((Date().timeIntervalSince1970 * 1000).rounded()),
+            source: "supervisor_manager",
+            summary: summary,
+            events: rows
+        )
+
+        do {
+            try Self.writeXTReadyIncidentEventsPayload(payload, to: destination)
+            let result = XTReadyIncidentEventsExportResult(
+                ok: true,
+                outputPath: destination.path,
+                exportedEventCount: rows.count,
+                missingIncidentCodes: missing,
+                reason: "ok"
+            )
+            xtReadyIncidentEventsReportPath = result.outputPath
+            xtReadyIncidentEventsAutoExportStatus = Self.xtReadyAutoExportStatus(
+                ok: result.ok,
+                reason: result.reason,
+                strictIssues: strictIssues
+            )
+            return result
+        } catch {
+            let result = XTReadyIncidentEventsExportResult(
+                ok: false,
+                outputPath: destination.path,
+                exportedEventCount: rows.count,
+                missingIncidentCodes: missing,
+                reason: "write_failed:\(error.localizedDescription)"
+            )
+            xtReadyIncidentEventsReportPath = result.outputPath
+            xtReadyIncidentEventsAutoExportStatus = Self.xtReadyAutoExportStatus(
+                ok: result.ok,
+                reason: result.reason,
+                strictIssues: strictIssues
+            )
+            return result
+        }
+    }
+
+    private static func writeXTReadyIncidentEventsPayload(
+        _ payload: XTReadyIncidentEventsPayload,
+        to destination: URL
+    ) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(payload)
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        do {
+            try writeXTReadyIncidentReportData(data, to: destination, options: .atomic)
+        } catch {
+            guard looksLikeXTReadyIncidentReportDiskSpaceExhaustion(error),
+                  FileManager.default.fileExists(atPath: destination.path) else {
+                throw error
+            }
+            try writeXTReadyIncidentReportData(data, to: destination, options: [])
+        }
+    }
+
+    private static func writeXTReadyIncidentReportData(
+        _ data: Data,
+        to destination: URL,
+        options: Data.WritingOptions
+    ) throws {
+        if let override = withXTReadyIncidentReportWriteTestingLock({
+            xtReadyIncidentReportWriteAttemptOverrideForTesting
+        }) {
+            try override(data, destination, options)
+            return
+        }
+        try data.write(to: destination, options: options)
+    }
+
+    private static func looksLikeXTReadyIncidentReportDiskSpaceExhaustion(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain, nsError.code == NSFileWriteOutOfSpaceError {
+            return true
+        }
+        if nsError.domain == NSPOSIXErrorDomain, nsError.code == 28 {
+            return true
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return looksLikeXTReadyIncidentReportDiskSpaceExhaustion(underlying)
+        }
+        return false
+    }
+
+    @discardableResult
+    static func withXTReadyIncidentReportWriteTestingLock<T>(_ body: () -> T) -> T {
+        xtReadyIncidentReportWriteTestingLock.lock()
+        defer { xtReadyIncidentReportWriteTestingLock.unlock() }
+        return body()
+    }
+
+    @discardableResult
+    static func withSupervisorVoiceSkillActionTestingLock<T>(_ body: () -> T) -> T {
+        supervisorVoiceSkillActionTestingLock.lock()
+        defer { supervisorVoiceSkillActionTestingLock.unlock() }
+        return body()
+    }
+
+    func xtReadyIncidentExportSnapshot(limit: Int = 120) -> XTReadyIncidentExportSnapshot {
+        let rows = Self.buildXTReadyIncidentEvents(from: supervisorIncidentLedger, limit: limit)
+        let missing = Self.missingXTReadyIncidentCodes(in: rows)
+        let incidentReadiness = Self.evaluateXTReadyIncidentReadiness(events: rows)
+        let memoryReadiness = Self.evaluateSupervisorMemoryAssemblyReadiness(
+            snapshot: supervisorMemoryAssemblySnapshot
+        )
+        let pairedRouteSetSnapshot = Self.xtReadyPairedRouteSetSnapshot()
+        let pairedRouteSnapshot = Self.xtReadyPairedRouteSnapshot()
+        let connectivityIncidentSnapshot = Self.xtReadyConnectivityIncidentSnapshot()
+        let connectivityIncidentHistory = Self.xtReadyConnectivityIncidentHistory()
+        let connectivityRepairLedger = Self.xtReadyConnectivityRepairLedger()
+        let hubRuntimeDiagnosis = Self.xtReadyHubRuntimeDiagnosisSnapshot()
+        let freshPairReconnectSmoke = Self.xtReadyFreshPairReconnectSmokeSnapshot()
+        let firstPairCompletionProof = Self.xtReadyFirstPairCompletionProofSnapshot()
+        let supervisorVoiceDiagnosis = Self.xtReadySupervisorVoiceDiagnosisSnapshot()
+        let strictIssues = Self.xtReadyStrictIssueCodes(
+            incidentReadiness: incidentReadiness,
+            memoryReadiness: memoryReadiness,
+            hubRuntimeDiagnosis: hubRuntimeDiagnosis
+        )
+        let mirrorState = Self.supervisorDurableCandidateMirrorExportState(
+            snapshot: supervisorMemoryAssemblySnapshot
+        )
+        let defaultPath = defaultXTReadyIncidentEventsReportURL().path
+        return XTReadyIncidentExportSnapshot(
+            autoExportEnabled: isXTReadyIncidentAutoExportEnabled,
+            ledgerIncidentCount: supervisorIncidentLedger.count,
+            requiredIncidentEventCount: rows.count,
+            missingIncidentCodes: missing,
+            memoryAssemblyReady: memoryReadiness.ready,
+            memoryAssemblyIssues: memoryReadiness.issueCodes,
+            memoryAssemblyDetailLines: Self.xtReadyMemoryAssemblyDetailLines(
+                memoryReadiness,
+                snapshot: supervisorMemoryAssemblySnapshot
+            ),
+            memoryAssemblyStatusLine: memoryReadiness.statusLine,
+            durableCandidateMirrorStatus: mirrorState.status,
+            durableCandidateMirrorTarget: mirrorState.target,
+            durableCandidateMirrorAttempted: mirrorState.attempted,
+            durableCandidateMirrorErrorCode: mirrorState.errorCode,
+            durableCandidateLocalStoreRole: mirrorState.localStoreRole,
+            strictE2EReady: strictIssues.isEmpty,
+            strictE2EIssues: strictIssues,
+            pairedRouteSetSnapshot: pairedRouteSetSnapshot,
+            pairedRouteSnapshot: pairedRouteSnapshot,
+            connectivityIncidentSnapshot: connectivityIncidentSnapshot,
+            connectivityIncidentHistory: connectivityIncidentHistory,
+            connectivityRepairLedger: connectivityRepairLedger,
+            hubRuntimeDiagnosis: hubRuntimeDiagnosis,
+            freshPairReconnectSmokeSnapshot: freshPairReconnectSmoke,
+            firstPairCompletionProofSnapshot: firstPairCompletionProof,
+            supervisorVoiceDiagnosis: supervisorVoiceDiagnosis,
+            status: xtReadyIncidentEventsAutoExportStatus,
+            reportPath: xtReadyIncidentEventsReportPath.isEmpty ? defaultPath : xtReadyIncidentEventsReportPath
+        )
+    }
+
+    private static func xtReadyMemoryAssemblyDetailLines(
+        _ memoryReadiness: SupervisorMemoryAssemblyReadiness,
+        snapshot: SupervisorMemoryAssemblySnapshot?
+    ) -> [String] {
+        var lines: [String] = memoryReadiness.issues.prefix(2).compactMap { issue in
+            let detailParts = issue.detail
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            guard !detailParts.isEmpty else { return nil }
+            return "\(issue.code): \(detailParts.prefix(2).joined(separator: " | "))"
+        }
+        if let snapshot,
+           shouldSurfaceMemoryAssemblySnapshotDetails(snapshot) {
+            lines.append(contentsOf: prioritizedMemoryAssemblySnapshotDetailLines(snapshot))
+        }
+        return Array(lines.prefix(4))
+    }
+
+    private static func supervisorDurableCandidateMirrorExportState(
+        snapshot: SupervisorMemoryAssemblySnapshot?
+    ) -> (
+        status: SupervisorDurableCandidateMirrorStatus,
+        target: String?,
+        attempted: Bool,
+        errorCode: String?,
+        localStoreRole: String
+    ) {
+        guard let snapshot else {
+            return (
+                status: .notNeeded,
+                target: nil,
+                attempted: false,
+                errorCode: nil,
+                localStoreRole: XTSupervisorDurableCandidateMirror.localStoreRole
+            )
+        }
+        return (
+            status: snapshot.durableCandidateMirrorStatus,
+            target: snapshot.durableCandidateMirrorTarget,
+            attempted: snapshot.durableCandidateMirrorAttempted,
+            errorCode: snapshot.durableCandidateMirrorErrorCode,
+            localStoreRole: snapshot.durableCandidateLocalStoreRole
+        )
+    }
+
+    private static func shouldSurfaceMemoryAssemblySnapshotDetails(
+        _ snapshot: SupervisorMemoryAssemblySnapshot
+    ) -> Bool {
+        snapshot.rawWindowSource != "xt_cache"
+            || snapshot.lowSignalDroppedMessages > 0
+            || !snapshot.continuityFloorSatisfied
+            || snapshot.rollingDigestPresent
+            || !snapshot.lowSignalDropSampleLines.isEmpty
+            || snapshot.durableCandidateMirrorAttempted
+            || snapshot.durableCandidateMirrorStatus != .notNeeded
+            || snapshot.localPersonalMemoryWriteIntent != nil
+            || snapshot.localCrossLinkWriteIntent != nil
+            || snapshot.localPersonalReviewWriteIntent != nil
+            || snapshot.scopedPromptRecoveryHumanLine != nil
+    }
+
+    static func prioritizedMemoryAssemblySnapshotDetailLines(
+        _ snapshot: SupervisorMemoryAssemblySnapshot
+    ) -> [String] {
+        let drillDownLines = snapshot.continuityDrillDownLines
+        let continuityLine = drillDownLines.first { $0.hasPrefix("continuity ") }
+        let scopedRecoveryLine = drillDownLines.first { $0.hasPrefix("scoped_prompt_recovery:") }
+        let mirrorLine = drillDownLines.first { $0.hasPrefix("durable_candidate_mirror ") }
+        let localWriteLine = drillDownLines.first { $0.hasPrefix("xt_local_store_writes ") }
+        let remotePromptLine = drillDownLines.first { $0.hasPrefix("remote_prompt ") }
+        let traceLine = drillDownLines.first { line in
+            !line.hasPrefix("continuity ")
+                && !line.hasPrefix("scoped_prompt_recovery:")
+                && !line.hasPrefix("durable_candidate_mirror ")
+                && !line.hasPrefix("xt_local_store_writes ")
+                && !line.hasPrefix("remote_prompt ")
+                && !line.hasPrefix("low_signal_samples:")
+        }
+        let lowSignalLine = drillDownLines.first { $0.hasPrefix("low_signal_samples:") }
+
+        var lines: [String] = []
+        func append(_ line: String?) {
+            guard let trimmed = line?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !trimmed.isEmpty,
+                  !lines.contains(trimmed) else {
+                return
+            }
+            lines.append(trimmed)
+        }
+
+        append(continuityLine)
+        append(scopedRecoveryLine)
+        append(mirrorLine)
+        append(localWriteLine)
+        append(remotePromptLine)
+        append(traceLine)
+        append(lowSignalLine)
+
+        for line in drillDownLines {
+            append(line)
+        }
+        return lines
+    }
+
+    private func defaultXTReadyIncidentEventsReportURL() -> URL {
+        let env = (ProcessInfo.processInfo.environment["XTERMINAL_XT_READY_INCIDENT_EVENTS_PATH"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !env.isEmpty {
+            let expanded = NSString(string: env).expandingTildeInPath
+            return URL(fileURLWithPath: expanded)
+        }
+        let root = SupervisorDoctorChecker.defaultWorkspaceRoot()
+        return root.appendingPathComponent(".axcoder/reports/xt_ready_incident_events.runtime.json")
+    }
+
 }

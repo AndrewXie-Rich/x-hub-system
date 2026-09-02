@@ -178,7 +178,7 @@ struct ToolExecutorSkillsAndSummarizeTests {
 
         let gate = SkillRunnerGateCapture(mode: .approve)
         installSkillRunnerOverrides(package: package, gate: gate)
-        defer { resetSkillRunnerOverrides() }
+        defer { resetSkillRunnerOverrides(packageSHA256: package.packageSHA256) }
 
         let result = try await ToolExecutor.execute(call: mapped.toolCall, projectRoot: fixture.root)
 
@@ -223,7 +223,7 @@ struct ToolExecutorSkillsAndSummarizeTests {
 
         let gate = SkillRunnerGateCapture(mode: .approve)
         installSkillRunnerOverrides(package: package, gate: gate)
-        defer { resetSkillRunnerOverrides() }
+        defer { resetSkillRunnerOverrides(packageSHA256: package.packageSHA256) }
 
         let result = try await ToolExecutor.execute(
             call: ToolCall(
@@ -259,7 +259,7 @@ struct ToolExecutorSkillsAndSummarizeTests {
 
         let gate = SkillRunnerGateCapture(mode: .approve)
         installSkillRunnerOverrides(package: package, gate: gate)
-        defer { resetSkillRunnerOverrides() }
+        defer { resetSkillRunnerOverrides(packageSHA256: package.packageSHA256) }
 
         let projectID = AXProjectRegistryStore.projectId(forRoot: fixture.root)
         let result = try await ToolExecutor.execute(
@@ -312,7 +312,7 @@ struct ToolExecutorSkillsAndSummarizeTests {
 
         let gate = SkillRunnerGateCapture(mode: .deny("revoked"))
         installSkillRunnerOverrides(package: package, gate: gate)
-        defer { resetSkillRunnerOverrides() }
+        defer { resetSkillRunnerOverrides(packageSHA256: package.packageSHA256) }
 
         let result = try await ToolExecutor.execute(
             call: ToolCall(
@@ -345,7 +345,7 @@ struct ToolExecutorSkillsAndSummarizeTests {
 
         let gate = SkillRunnerGateCapture(mode: .approve)
         installSkillRunnerOverrides(package: package, gate: gate)
-        defer { resetSkillRunnerOverrides() }
+        defer { resetSkillRunnerOverrides(packageSHA256: package.packageSHA256) }
 
         let result = try await ToolExecutor.execute(
             call: ToolCall(
@@ -385,7 +385,7 @@ struct ToolExecutorSkillsAndSummarizeTests {
 
         let gate = SkillRunnerGateCapture(mode: .approve)
         installSkillRunnerOverrides(package: package, gate: gate)
-        defer { resetSkillRunnerOverrides() }
+        defer { resetSkillRunnerOverrides(packageSHA256: package.packageSHA256) }
 
         let result = try await ToolExecutor.execute(
             call: ToolCall(
@@ -413,7 +413,7 @@ struct ToolExecutorSkillsAndSummarizeTests {
 
         let gate = SkillRunnerGateCapture(mode: .approve)
         installSkillRunnerOverrides(package: package, gate: gate)
-        defer { resetSkillRunnerOverrides() }
+        defer { resetSkillRunnerOverrides(packageSHA256: package.packageSHA256) }
 
         let result = try await ToolExecutor.execute(
             call: ToolCall(
@@ -446,7 +446,7 @@ struct ToolExecutorSkillsAndSummarizeTests {
 
         let gate = SkillRunnerGateCapture(mode: .approve)
         installSkillRunnerOverrides(package: package, gate: gate)
-        defer { resetSkillRunnerOverrides() }
+        defer { resetSkillRunnerOverrides(packageSHA256: package.packageSHA256) }
 
         let result = try await ToolExecutor.execute(
             call: ToolCall(
@@ -479,7 +479,7 @@ struct ToolExecutorSkillsAndSummarizeTests {
 
         let gate = SkillRunnerGateCapture(mode: .approve)
         installSkillRunnerOverrides(package: package, gate: gate)
-        defer { resetSkillRunnerOverrides() }
+        defer { resetSkillRunnerOverrides(packageSHA256: package.packageSHA256) }
 
         let result = try await ToolExecutor.execute(
             call: ToolCall(
@@ -514,7 +514,7 @@ struct ToolExecutorSkillsAndSummarizeTests {
 
         let gate = SkillRunnerGateCapture(mode: .approve)
         installSkillRunnerOverrides(package: package, gate: gate)
-        defer { resetSkillRunnerOverrides() }
+        defer { resetSkillRunnerOverrides(packageSHA256: package.packageSHA256) }
 
         let result = try await ToolExecutor.execute(
             call: ToolCall(
@@ -1609,7 +1609,9 @@ private func installSkillRunnerOverrides(
     packageData: Data,
     gate: SkillRunnerGateCapture
 ) {
-    HubIPCClient.installSkillManifestOverrideForTesting { packageSHA256 in
+    HubIPCClient.installSkillManifestOverrideForTesting(
+        packageSHA256: expectedPackageSHA256
+    ) { packageSHA256 in
         #expect(packageSHA256 == expectedPackageSHA256)
         return HubIPCClient.SkillManifestResult(
             ok: true,
@@ -1634,8 +1636,8 @@ private func installSkillRunnerOverrides(
     }
 }
 
-private func resetSkillRunnerOverrides() {
-    HubIPCClient.resetSkillManifestOverrideForTesting()
+private func resetSkillRunnerOverrides(packageSHA256: String) {
+    HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: packageSHA256)
     HubIPCClient.resetSkillPackageDownloadOverrideForTesting()
     HubIPCClient.resetSkillRunnerGateOverrideForTesting()
 }

@@ -27,7 +27,8 @@ function parseBool(value, fallback = false) {
   return fallback;
 }
 
-function parseArgs(argv) {
+function parseArgs(argv, env = process.env) {
+  const envDbPath = safeString(env.HUB_DB_PATH);
   const out = {
     runs: 10,
     specs: [{ provider: 'openai', modelId: 'gpt-4o' }],
@@ -40,6 +41,8 @@ function parseArgs(argv) {
     continueAfterReady: false,
     expectReady: false,
     expectZeroMismatch: false,
+    dbPath: envDbPath,
+    dbPathSource: envDbPath ? 'HUB_DB_PATH' : 'temporary',
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -85,6 +88,12 @@ function parseArgs(argv) {
         out.maxMismatches = parseIntInRange(next, out.maxMismatches, 0, 1000000);
         i += 1;
         break;
+      case '--db-path':
+        out.dbPath = safeString(next);
+        if (!out.dbPath) throw new Error('--db-path requires a non-empty path');
+        out.dbPathSource = '--db-path';
+        i += 1;
+        break;
       case '--continue-after-ready':
         out.continueAfterReady = true;
         break;
@@ -111,6 +120,7 @@ function parseArgs(argv) {
   if (out.specs.length === 0) {
     throw new Error('at least one model spec is required');
   }
+  if (out.dbPath) out.dbPath = path.resolve(out.dbPath);
   return out;
 }
 
@@ -143,6 +153,7 @@ function usage() {
     '  --models <p:m,p:m>          Model matrix, example openai:gpt-4o,claude:claude-3.5-sonnet',
     '  --min-compare-reports <n>   Readiness minimum reports, default 10',
     '  --max-mismatches <n>        Readiness mismatch threshold, default 0',
+    '  --db-path <p>               Rust report DB; defaults to HUB_DB_PATH, otherwise a temporary DB',
     '  --expect-ready              Exit non-zero unless readiness is true',
     '  --expect-zero-mismatch      Exit non-zero if newly added reports mismatch',
     '  --continue-after-ready      Keep running after readiness is reached',
@@ -155,10 +166,40 @@ function runSelfTest() {
   const parsed = parseArgs([
     '--runs', '3',
     '--models', 'openai:gpt-4o,claude:claude-3.5-sonnet',
+    '--db-path', './tmp/provider-route-shadow-self-test.sqlite3',
     '--expect-ready',
-  ]);
-  if (parsed.runs !== 3 || parsed.specs.length !== 2 || parsed.expectReady !== true) {
+  ], {});
+  if (
+    parsed.runs !== 3
+    || parsed.specs.length !== 2
+    || parsed.expectReady !== true
+    || parsed.dbPath !== path.resolve('./tmp/provider-route-shadow-self-test.sqlite3')
+    || parsed.dbPathSource !== '--db-path'
+  ) {
     throw new Error('self-test parser failed');
+  }
+  const fromEnv = parseArgs([], { HUB_DB_PATH: './tmp/provider-route-shadow-env.sqlite3' });
+  if (
+    fromEnv.dbPath !== path.resolve('./tmp/provider-route-shadow-env.sqlite3')
+    || fromEnv.dbPathSource !== 'HUB_DB_PATH'
+  ) {
+    throw new Error('self-test HUB_DB_PATH failed');
+  }
+  const temporary = resolveRustDbTarget(parseArgs([], {}), '/tmp/provider-route-shadow-self-test');
+  const external = resolveRustDbTarget(fromEnv, '/tmp/provider-route-shadow-self-test');
+  const exposed = publicConfig(fromEnv);
+  if (
+    temporary.external !== false
+    || temporary.cleanup !== 'temporary_on_exit'
+    || temporary.path !== '/tmp/provider-route-shadow-self-test/rust_hub.sqlite3'
+    || external.external !== true
+    || external.cleanup !== 'external_never_cleanup'
+    || external.path !== fromEnv.dbPath
+    || exposed.db_path !== fromEnv.dbPath
+    || exposed.db_path_source !== 'HUB_DB_PATH'
+    || exposed.db_cleanup !== 'external_never_cleanup'
+  ) {
+    throw new Error('self-test Rust DB ownership failed');
   }
 }
 
@@ -172,6 +213,24 @@ function cleanupPath(target) {
   } catch {
     // ignore
   }
+}
+
+function resolveRustDbTarget(config, scratchDbDir) {
+  const externalPath = safeString(config.dbPath);
+  if (externalPath) {
+    return {
+      path: path.resolve(externalPath),
+      external: true,
+      source: config.dbPathSource || 'explicit',
+      cleanup: 'external_never_cleanup',
+    };
+  }
+  return {
+    path: path.join(scratchDbDir, 'rust_hub.sqlite3'),
+    external: false,
+    source: 'temporary',
+    cleanup: 'temporary_on_exit',
+  };
 }
 
 function resolveXHubSystemRoot() {
@@ -310,6 +369,9 @@ function publicConfig(config) {
     max_mismatches: config.maxMismatches,
     expect_ready: config.expectReady,
     expect_zero_mismatch: config.expectZeroMismatch,
+    db_path: config.resolvedDbPath || config.dbPath || null,
+    db_path_source: config.dbPathSource || 'temporary',
+    db_cleanup: config.dbCleanup || (config.dbPath ? 'external_never_cleanup' : 'temporary_on_exit'),
     rust_hub_root: ROOT_DIR,
   };
 }
@@ -357,9 +419,13 @@ async function main() {
   ]);
 
   const runtimeBaseDir = makeTempDir('xhub-provider-route-runner-runtime-');
-  const dbDir = makeTempDir('xhub-provider-route-runner-db-');
-  const nodeDbPath = path.join(dbDir, 'node_hub.sqlite3');
-  const rustDbPath = path.join(dbDir, 'rust_hub.sqlite3');
+  const scratchDbDir = makeTempDir('xhub-provider-route-runner-db-');
+  const nodeDbPath = path.join(scratchDbDir, 'node_hub.sqlite3');
+  const rustDbTarget = resolveRustDbTarget(config, scratchDbDir);
+  const rustDbPath = rustDbTarget.path;
+  config.resolvedDbPath = rustDbPath;
+  config.dbPathSource = rustDbTarget.source;
+  config.dbCleanup = rustDbTarget.cleanup;
   const runnerPath = path.join(ROOT_DIR, 'tools', 'run_rust_hub.command');
   const runnerEnv = {
     ...process.env,
@@ -576,6 +642,8 @@ async function main() {
           warnings,
           runtime_base_dir: runtimeBaseDir,
           rust_db_path: rustDbPath,
+          rust_db_external: rustDbTarget.external,
+          rust_db_cleanup: rustDbTarget.cleanup,
         };
         console.log(JSON.stringify(finalPayload, null, 2));
         if (!ok) process.exitCode = 2;
@@ -585,7 +653,7 @@ async function main() {
     });
   } finally {
     cleanupPath(runtimeBaseDir);
-    cleanupPath(dbDir);
+    cleanupPath(scratchDbDir);
   }
 }
 

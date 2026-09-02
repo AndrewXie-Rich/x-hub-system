@@ -17,7 +17,7 @@ ROOT = (
 REPORT_DIR = ROOT / "build" / "reports"
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
-ACTIVE_XT_RELEASE_GATE_COMMAND = 'bash "/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal/scripts/ci/xt_release_gate.sh"'
+ACTIVE_XT_RELEASE_GATE_COMMAND = 'bash "./x-terminal/scripts/ci/xt_release_gate.sh"'
 
 ALLOWLIST_DIRS = [
     ".github",

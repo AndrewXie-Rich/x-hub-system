@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
+const MIN_PROVIDER_SHADOW_COMPARE_REPORTS = 10;
 
 function safeString(value) {
   return String(value ?? '').trim();
@@ -18,13 +19,13 @@ function parseIntInRange(value, fallback, min, max) {
 
 function parseArgs(argv) {
   const out = {
-    shadowRuns: 3,
+    shadowRuns: MIN_PROVIDER_SHADOW_COMPARE_REPORTS,
     candidateRuns: 3,
     concurrency: 1,
     provider: 'openai',
     modelId: 'gpt-4o',
     timeoutMs: 30000,
-    minCompareReports: 3,
+    minCompareReports: MIN_PROVIDER_SHADOW_COMPARE_REPORTS,
     maxMismatches: 0,
     minCandidateAudits: 0,
     maxCandidateMismatches: 0,
@@ -37,7 +38,12 @@ function parseArgs(argv) {
     const next = argv[i + 1];
     switch (arg) {
       case '--shadow-runs':
-        out.shadowRuns = parseIntInRange(next, out.shadowRuns, 1, 10000);
+        out.shadowRuns = parseIntInRange(
+          next,
+          out.shadowRuns,
+          MIN_PROVIDER_SHADOW_COMPARE_REPORTS,
+          10000,
+        );
         i += 1;
         break;
       case '--candidate-runs':
@@ -61,7 +67,12 @@ function parseArgs(argv) {
         i += 1;
         break;
       case '--min-compare-reports':
-        out.minCompareReports = parseIntInRange(next, out.minCompareReports, 0, 1000000);
+        out.minCompareReports = parseIntInRange(
+          next,
+          out.minCompareReports,
+          MIN_PROVIDER_SHADOW_COMPARE_REPORTS,
+          1000000,
+        );
         i += 1;
         break;
       case '--max-mismatches':
@@ -112,12 +123,12 @@ function usage() {
     'provider_route_authority_plan_runner.js',
     '',
     'Options:',
-    '  --shadow-runs <n>              Provider shadow compare iterations, default 3',
+    '  --shadow-runs <n>              Provider shadow compare iterations, default/minimum 10',
     '  --candidate-runs <n>           Generate candidate audit batches, default 3',
     '  --concurrency <n>              Generate concurrency per candidate batch, default 1',
     '  --provider <id>                Provider, default openai',
     '  --model-id <id>                Model ID, default gpt-4o',
-    '  --min-compare-reports <n>      Provider readiness minimum reports, default 3',
+    '  --min-compare-reports <n>      Provider readiness minimum reports, default/minimum 10',
     '  --max-mismatches <n>           Provider readiness mismatch threshold, default 0',
     '  --min-candidate-audits <n>     Candidate readiness minimum audits, default candidate-runs * concurrency',
     '  --max-candidate-mismatches <n> Candidate account mismatch threshold, default 0',
@@ -149,17 +160,26 @@ function publicConfig(config) {
 }
 
 function runSelfTest() {
+  const defaults = parseArgs([]);
+  if (defaults.shadowRuns !== MIN_PROVIDER_SHADOW_COMPARE_REPORTS) {
+    throw new Error('provider shadow run default failed');
+  }
+  if (defaults.minCompareReports !== MIN_PROVIDER_SHADOW_COMPARE_REPORTS) {
+    throw new Error('provider compare threshold default failed');
+  }
   const parsed = parseArgs([
     '--shadow-runs', '5',
     '--candidate-runs', '2',
     '--concurrency', '2',
+    '--min-compare-reports', '3',
     '--max-generate-ms', '2500',
     '--expect-ready',
   ]);
   if (
-    parsed.shadowRuns !== 5
+    parsed.shadowRuns !== MIN_PROVIDER_SHADOW_COMPARE_REPORTS
     || parsed.candidateRuns !== 2
     || parsed.concurrency !== 2
+    || parsed.minCompareReports !== MIN_PROVIDER_SHADOW_COMPARE_REPORTS
     || parsed.minCandidateAudits !== 4
     || parsed.maxGenerateMs !== 2500
     || parsed.expectReady !== true

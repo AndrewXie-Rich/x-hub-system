@@ -40,6 +40,7 @@ pub(crate) async fn run() -> Result<(), String> {
         "evidence" => evidence_bridge::run(&config, &args[2..]),
         "skills" => skills_bridge::run(&config, &args[2..]),
         "xt" => xt_contract::run(&config, &args[2..]),
+        "provenance" => crate::provenance::run(&args[2..]),
         "scheduler-smoke" => scheduler_smoke(&config),
         "serve" => {
             if args.iter().any(|arg| arg == "--grpc" || arg == "grpc") {
@@ -102,6 +103,8 @@ pub(crate) fn print_help() {
     println!("           JSON skill catalog, policy, and preflight audit commands without code execution");
     println!("  xt <contract>");
     println!("           JSON Hub capability contract for X-Terminal integrations");
+    println!("  provenance [--package-manifest|--finalize-package-manifest]");
+    println!("           JSON build, binary, migration, capability, and package identity");
     println!("  provider <route>");
     println!("           JSON provider routing shadow commands");
     println!("  scheduler-smoke");

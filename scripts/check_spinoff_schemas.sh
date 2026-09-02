@@ -6,12 +6,12 @@
 set -euo pipefail
 
 checks=(
-  "mcp manifest|specs/mcp-trust-registry/schemas/manifest.schema.json|specs/mcp-trust-registry/schemas/examples/manifest.example.json"
-  "mcp attestation|specs/mcp-trust-registry/schemas/attestation.schema.json|specs/mcp-trust-registry/schemas/examples/attestation.example.json"
-  "mcp pin|specs/mcp-trust-registry/schemas/pin.schema.json|specs/mcp-trust-registry/schemas/examples/pin.example.json"
-  "mcp policy|specs/mcp-trust-registry/schemas/policy.schema.json|specs/mcp-trust-registry/schemas/examples/policy.example.json"
-  "mcp recall|specs/mcp-trust-registry/schemas/recall.schema.json|specs/mcp-trust-registry/schemas/examples/recall.example.json"
-  "mcp receipt|specs/mcp-trust-registry/schemas/receipt.schema.json|specs/mcp-trust-registry/schemas/examples/receipt.example.json"
+  "skill-trust manifest|specs/skill-trust-registry/schemas/manifest.schema.json|specs/skill-trust-registry/schemas/examples/manifest.example.json"
+  "skill-trust attestation|specs/skill-trust-registry/schemas/attestation.schema.json|specs/skill-trust-registry/schemas/examples/attestation.example.json"
+  "skill-trust pin|specs/skill-trust-registry/schemas/pin.schema.json|specs/skill-trust-registry/schemas/examples/pin.example.json"
+  "skill-trust policy|specs/skill-trust-registry/schemas/policy.schema.json|specs/skill-trust-registry/schemas/examples/policy.example.json"
+  "skill-trust recall|specs/skill-trust-registry/schemas/recall.schema.json|specs/skill-trust-registry/schemas/examples/recall.example.json"
+  "skill-trust receipt|specs/skill-trust-registry/schemas/receipt.schema.json|specs/skill-trust-registry/schemas/examples/receipt.example.json"
   "hub receipt envelope|specs/hub-receipt/schema/receipt-envelope.schema.json|specs/hub-receipt/schema/examples/envelope.example.json"
   "agent-2fa challenge|specs/agent-2fa/schemas/challenge.schema.json|specs/agent-2fa/schemas/examples/challenge.example.json"
   "agent-2fa authorization|specs/agent-2fa/schemas/authorization.schema.json|specs/agent-2fa/schemas/examples/authorization.example.json"

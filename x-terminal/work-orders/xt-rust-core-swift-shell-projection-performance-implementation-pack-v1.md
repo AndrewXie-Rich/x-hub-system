@@ -3,7 +3,7 @@
 - status: active
 - priority: P0/P1 bridge
 - createdAt: 2026-05-15
-- scope: `rust/rust xt/` only
+- scope: canonical `rust/xtd/` core + `x-terminal/` Swift shell only
 - product thesis: one XT product = Rust core + Swift shell
 - primary goal: remove structural SwiftUI jank without changing the current user-facing UI
 
@@ -22,15 +22,15 @@
 - 2026-05-17: Hardened Hub pairing tests to assert parsed `connection.json`
   fields instead of JSON pretty-print whitespace. This keeps the Hub/XT pairing
   gate focused on contract fields rather than serializer formatting.
-- Contract gate: `swift-xterminal/scripts/ci/xt_core_projection_contract_gate.sh`
+- Contract gate: `x-terminal/scripts/ci/xt_core_projection_contract_gate.sh`
 
 Validation:
 
-- `cargo test` in `rust-xtd`
+- `cargo test` in `rust/xtd`
 - `swift test --scratch-path /private/tmp/xt-core-projection-test-build --filter XTCoreProjectionEnvelopeTests`
-- `bash swift-xterminal/scripts/ci/xt_core_projection_contract_gate.sh`
+- `bash x-terminal/scripts/ci/xt_core_projection_contract_gate.sh`
 - `./commands/xt_smooth_guard.command`
-- `XTERMINAL_RELEASE_DISABLE_WMO=1 ./commands/build_xt.command`
+- `XTERMINAL_RELEASE_DISABLE_WMO=1 ./x-terminal/tools/build_xt_with_rust_sidecar.command`
 - `build/X-Terminal.app/Contents/Resources/xtd projection sidebar --generated-at-ms 0`
 - `build/X-Terminal.app/Contents/Resources/xtd projection settings-diagnostics --generated-at-ms 0`
 - `swift test --disable-sandbox --scratch-path /private/tmp/xt-core-projection-contract-build --filter HubPairingCoordinatorTests`
@@ -773,7 +773,7 @@ env XTERMINAL_RELEASE_DISABLE_WMO=1 ./commands/build_xt.command
 Run the release app:
 
 ```bash
-open "/Users/andrew.xie/Documents/AX/rust/rust xt/build/X-Terminal.app"
+open "/Users/andrew.xie/Documents/AX/x-hub-system/build/X-Terminal.app"
 ```
 
 Smoke flows:
