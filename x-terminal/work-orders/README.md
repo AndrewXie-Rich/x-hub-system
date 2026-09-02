@@ -1,6 +1,6 @@
 # X-Terminal Work Orders Index
 
-- updatedAt: 2026-04-02
+- updatedAt: 2026-08-12
 - scope: `x-terminal/` module only
 
 This page is the priority-ordered execution map for X-Terminal work orders.
@@ -17,17 +17,27 @@ If you are resuming X-Terminal work, read in this order:
 1. `README.md`
 2. `docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md`
 3. `docs/open-source/XHUB_V1_PRODUCT_BOUNDARY_AND_PRIORITIES_v1.md`
-4. `docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md`
-5. `docs/WORKING_INDEX.md`
-6. `x-terminal/README.md`
-7. this file
+4. `x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md`
+5. `x-terminal/work-orders/xt-v1-product-readiness-backlog.v1.json`
+6. `docs/WORKING_INDEX.md`
+7. `x-terminal/README.md`
+8. this file
+
+Read `docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md` additionally when the
+task needs repository-wide Hub/XT sequencing rather than an XT implementation
+ticket.
 
 After that, open the matching pack family below.
 
 ## Default Rules
 
 - If a pack conflicts with `docs/open-source/XHUB_V1_PRODUCT_BOUNDARY_AND_PRIORITIES_v1.md`, the v1 boundary doc wins.
-- If you need a concrete default task instead of a pack family, use `docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md`.
+- If you need a concrete XT task, select the first dependency-ready item from
+  `xt-v1-product-readiness-backlog.v1.json`, then execute it against the detailed
+  acceptance and rollback contract in
+  `xt-v1-product-readiness-golden-path-execution-pack-v1.md`.
+- Use `docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md` as a cross-system
+  planning reference, not as the default XT ticket queue.
 - If a pack is technically active but sits outside the current v1 mainline, do not treat it as the default starting point.
 - If you are unsure where to start, choose a `P0` family first.
 - Do not start from `P2` or `Frozen / Deprioritized` unless the user explicitly asks for that direction.
@@ -35,11 +45,56 @@ After that, open the matching pack family below.
 ## Concrete Next Backlog
 
 When another AI collaborator joins mid-stream, do not start by browsing random packs.
-Use `docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md` first:
+
+For current XT product-readiness closure, start from:
+
+- `xt-v1-product-readiness-golden-path-execution-pack-v1.md`
+- `xt-v1-product-readiness-backlog.v1.json` for machine-readable task selection and dependency calculation
+
+It turns the current product direction into atomic `XT-R0-*` through `XT-R6-*`
+work orders with explicit dependencies, file anchors, live evidence, DoD, and
+rollback rules. Its default critical path is:
+
+```text
+R0 canonical/release truth
+  -> R1 first real governed task
+  -> R2 governance require-real + R3 model/memory/skill truth
+  -> R4 voice/remote approval
+  -> R6 public packaging
+```
+
+`R5 Rust core + Swift shell` may run in parallel after R0, but it must not delay
+the first real task merely to pursue a broad rewrite.
+
+The older repository-wide planning view remains available in
+`docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md`:
 
 - items `1-5` are the default mainline blockers
 - items `6-9` are important follow-ups once the blockers above have owners
 - item `10` is the public-layer packaging pass and should not replace core product work
+
+## P0-0 - XT v1 Product Readiness Closure
+
+This is the current default starting point when the task asks what XT should do
+next, how to become release-ready, or how to turn existing implementation into a
+real product success path.
+
+- `xt-v1-product-readiness-golden-path-execution-pack-v1.md`
+
+Use it when the task concerns:
+
+- canonical source snapshot and binary provenance
+- strict release truth versus baseline/fixture evidence
+- first real pairing -> model -> project -> mutation -> test -> review task
+- A/S/Heartbeat governance require-real coverage
+- real model, memory, and skill truth
+- real-device voice and governed remote approval
+- Rust-core projection cutover after the product spine is stable
+- quickstart, demos, troubleshooting, or external design-context packaging
+
+Do not treat the retained 2026-08-01 baseline gate `GO` as live product readiness.
+The new pack keeps the overall product at `NO-GO` or
+`INSUFFICIENT_EVIDENCE` until its required live stages pass.
 
 ## P0 - Current Default Starting Points
 

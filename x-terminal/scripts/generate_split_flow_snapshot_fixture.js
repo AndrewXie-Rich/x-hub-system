@@ -82,7 +82,7 @@ function resolveXTerminalCommand(options) {
 
   return {
     command: "swift",
-    args: ["run", "--disable-sandbox", "XTerminal"]
+    args: ["run", "XTerminal"]
   };
 }
 

@@ -1,6 +1,36 @@
 import Foundation
 
 extension SupervisorManager {
+    func annotatedUserVisibleReason(
+        raw: String?,
+        display: String?,
+        fallback: String = "未知原因"
+    ) -> String {
+        let rawTrimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayTrimmed = (display ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let punctuation = CharacterSet(charactersIn: "。.!?！？；;")
+        let displayBase = displayTrimmed.trimmingCharacters(in: punctuation)
+
+        if displayBase.isEmpty {
+            return rawTrimmed.isEmpty ? fallback : rawTrimmed
+        }
+        if rawTrimmed.isEmpty {
+            return displayBase
+        }
+        if displayBase == rawTrimmed || displayTrimmed == rawTrimmed {
+            return displayBase
+        }
+        return "\(displayBase)（\(rawTrimmed)）"
+    }
+
+    func blockerReasonText(_ raw: String?, fallback: String = "未知原因") -> String {
+        annotatedUserVisibleReason(
+            raw: raw,
+            display: SupervisorBlockerPresentation.displayText(raw),
+            fallback: fallback
+        )
+    }
+
     func paidModelAccessResolution(from error: Error) -> XTPaidModelAccessResolution? {
         guard let hubError = error as? HubAIError,
               case let .responseDoneNotOk(failure) = hubError else {

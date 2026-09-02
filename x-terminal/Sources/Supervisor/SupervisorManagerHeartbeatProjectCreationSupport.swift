@@ -1,6 +1,37 @@
 import Foundation
 
 extension SupervisorManager {
+    func heartbeatProjectCreationNotificationDisposition(
+        _ presentation: SupervisorProjectCreationStatusPresentation,
+        changed: Bool
+    ) -> (title: String, unread: Bool) {
+        let createdProjectAwaitingGoal = heartbeatProjectCreationRepresentsCreatedProjectAwaitingGoal(
+            presentation
+        )
+        switch presentation.reasonCode {
+        case "create_bootstrap_in_progress":
+            return (
+                changed
+                    ? "📁 Supervisor 心跳：项目创建处理中"
+                    : "Supervisor 心跳：项目创建处理中（静默）",
+                changed
+            )
+        case "create_trigger_required_pending_intake":
+            return ("📁 Supervisor 心跳：项目创建差一句触发", true)
+        case "create_trigger_required_recovered_proposal":
+            return ("📁 Supervisor 心跳：项目创建待确认", true)
+        case "create_goal_missing":
+            return (
+                createdProjectAwaitingGoal
+                    ? "📁 Supervisor 心跳：项目已创建待补目标"
+                    : "📁 Supervisor 心跳：项目创建缺目标",
+                true
+            )
+        default:
+            return ("Supervisor 心跳：项目创建状态待确认", changed)
+        }
+    }
+
     func heartbeatProjectCreationSummaryText(
         _ presentation: SupervisorProjectCreationStatusPresentation
     ) -> String {

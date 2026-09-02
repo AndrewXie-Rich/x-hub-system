@@ -1,0 +1,780 @@
+{
+  "schema_version": "xt.v1_product_readiness_backlog.v1",
+  "generated_at": "2026-08-12",
+  "authority": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md",
+  "purpose": "Machine-readable selection and dependency map. The Markdown authority remains the source of DoD, steps, safety, and rollback rules.",
+  "selection_rules": {
+    "default_start": [
+      "XT-R0-01"
+    ],
+    "max_parallel_lanes": 3,
+    "required_evidence_statuses": [
+      "pass",
+      "fail",
+      "blocked",
+      "insufficient_evidence"
+    ],
+    "required_work_must_not_skip": true,
+    "fixture_does_not_satisfy_live_evidence": true,
+    "dependency_status_field": "work_order_status",
+    "product_verdict_does_not_block_intermediate_dependencies": true,
+    "ready_when": "all depends_on work_order_status values are pass; profile conditions are evaluated separately"
+  },
+  "release_profiles": {
+    "local_governed_preview": {
+      "required_stages": [
+        "R0",
+        "R1",
+        "R2",
+        "R3"
+      ],
+      "conditional_stage": "R4 local voice subset only when voice is claimed",
+      "conditional_work": {
+        "XT-R4-01..XT-R4-07": "required only for the declared local voice subset; otherwise excluded_by_profile",
+        "XT-R6-01": "voice and remote claims require XT-R4-07 pass; otherwise those claims are excluded_by_profile",
+        "XT-R6-03": "governed project and starter skill demos are required; voice/remote demo is excluded_by_profile unless claimed",
+        "XT-R6-04": "voice/remote troubleshooting entries are excluded_by_profile unless the corresponding capability is claimed",
+        "XT-R5-02": "required when an xtd binary is bundled; validates canonical provenance and protocol only",
+        "XT-R5-09": "required only when a production Rust projection/cutover claim is enabled"
+      }
+    },
+    "governed_remote_preview": {
+      "required_stages": [
+        "R0",
+        "R1",
+        "R2",
+        "R3",
+        "R4"
+      ],
+      "conditional_work": {
+        "XT-R6-01": "voice and remote claims require XT-R4-07 pass",
+        "XT-R6-03": "all three demos are required and voice/remote demo requires XT-R4-07 pass",
+        "XT-R6-04": "voice/remote troubleshooting coverage requires XT-R4-07 pass",
+        "XT-R5-02": "required when an xtd binary is bundled; validates canonical provenance and protocol only",
+        "XT-R5-09": "required only when a production Rust projection/cutover claim is enabled"
+      }
+    }
+  },
+  "work_orders": [
+    {
+      "id": "XT-R0-01",
+      "stage": "R0",
+      "priority": "P0",
+      "title": "当前源码快照与改动分类",
+      "depends_on": [],
+      "owner": "Release / Repo Steward",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r0/source_inventory.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R0-02",
+      "stage": "R0",
+      "priority": "P0",
+      "title": "Canonical root 与 binary provenance 收口",
+      "depends_on": [
+        "XT-R0-01"
+      ],
+      "owner": "Build / Release / Hub Runtime",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r0/binary_provenance.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R0-03",
+      "stage": "R0",
+      "priority": "P0",
+      "title": "Tracked source closure 与可审查提交拆分",
+      "depends_on": [
+        "XT-R0-01"
+      ],
+      "owner": "XT Maintainer",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r0/change_sets.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R0-04",
+      "stage": "R0",
+      "priority": "P0",
+      "title": "Baseline gate 与 product readiness gate 分离",
+      "depends_on": [
+        "XT-R0-01"
+      ],
+      "owner": "QA / Release",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r0/product_readiness_gate_contract.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R0-05",
+      "stage": "R0",
+      "priority": "P0",
+      "title": "当天 live doctor 与发布裁决包",
+      "depends_on": [
+        "XT-R0-02",
+        "XT-R0-03",
+        "XT-R0-04"
+      ],
+      "owner": "Release Operator",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r0/release_verdict.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R1-01",
+      "stage": "R1",
+      "priority": "P0",
+      "title": "Golden Project 与固定验收任务",
+      "depends_on": [
+        "XT-R0-05"
+      ],
+      "owner": "XT QA / Developer Experience",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r1/golden_project_baseline.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R1-02",
+      "stage": "R1",
+      "priority": "P0",
+      "title": "Hub 启动、发现、首次配对和 cached reconnect",
+      "depends_on": [
+        "XT-R0-02",
+        "XT-R1-01"
+      ],
+      "owner": "Hub Runtime / XT Pairing",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r1/pairing_reconnect.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R1-03",
+      "stage": "R1",
+      "priority": "P0",
+      "title": "至少一个真实模型进入 interactive route",
+      "depends_on": [
+        "XT-R1-02"
+      ],
+      "owner": "Hub Model Runtime / XT Route Truth",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r1/interactive_model_route.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R1-04",
+      "stage": "R1",
+      "priority": "P0",
+      "title": "创建真实项目并绑定治理配置",
+      "depends_on": [
+        "XT-R1-01",
+        "XT-R1-03"
+      ],
+      "owner": "XT Project / Supervisor",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r1/project_governance_binding.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R1-05",
+      "stage": "R1",
+      "priority": "P0",
+      "title": "真实修改、diagnostics、build/test 闭环",
+      "depends_on": [
+        "XT-R1-04",
+        "XT-R1-08"
+      ],
+      "owner": "Project Coder / Tool Runtime",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r1/mutation_diagnostics.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R1-06",
+      "stage": "R1",
+      "priority": "P0",
+      "title": "Checkpoint、进程中断与恢复",
+      "depends_on": [
+        "XT-R1-05"
+      ],
+      "owner": "Session Runtime / Automation",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r1/checkpoint_recovery.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R1-07",
+      "stage": "R1",
+      "priority": "P0",
+      "title": "Supervisor Review、完成判定与证据收口",
+      "depends_on": [
+        "XT-R1-05",
+        "XT-R1-06"
+      ],
+      "owner": "Supervisor / Reviewer",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r1/review_completion.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R1-08",
+      "stage": "R1",
+      "priority": "P0",
+      "title": "Golden Path runner 与负向 repair 场景",
+      "depends_on": [
+        "XT-R0-04",
+        "XT-R1-07"
+      ],
+      "owner": "QA / Release",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r1/first_real_task.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R2-01",
+      "stage": "R2",
+      "priority": "P0",
+      "title": "Effective Governance 单一 typed truth",
+      "depends_on": [
+        "XT-R1-04",
+        "XT-R1-08"
+      ],
+      "owner": "Project Governance",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r2/effective_governance_truth.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R2-02",
+      "stage": "R2",
+      "priority": "P0",
+      "title": "A0 只读拒绝链",
+      "depends_on": [
+        "XT-R2-01"
+      ],
+      "owner": "Governance QA",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r2/a0_observe.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R2-03",
+      "stage": "R2",
+      "priority": "P0",
+      "title": "A2 Repo Auto 正向链",
+      "depends_on": [
+        "XT-R1-05",
+        "XT-R2-01"
+      ],
+      "owner": "Governance QA / Tool Runtime",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r2/a2_repo_auto.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R2-04",
+      "stage": "R2",
+      "priority": "P0",
+      "title": "A3 Deliver Auto 本地交付链",
+      "depends_on": [
+        "XT-R2-03"
+      ],
+      "owner": "Governance QA / Delivery Runtime",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r2/a3_deliver_auto.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R2-05",
+      "stage": "R2",
+      "priority": "P0",
+      "title": "A4 高风险 clamp 与 grant 负向链",
+      "depends_on": [
+        "XT-R2-01"
+      ],
+      "owner": "Security / Governance",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r2/a4_clamp_grant.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R2-06",
+      "stage": "R2",
+      "priority": "P0",
+      "title": "Review Note → Guidance → Safe Point → Ack",
+      "depends_on": [
+        "XT-R1-07",
+        "XT-R2-01"
+      ],
+      "owner": "Supervisor Governance",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r2/review_guidance_ack.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R2-07",
+      "stage": "R2",
+      "priority": "P0",
+      "title": "TTL、Hub clamp、kill-switch、legacy migration",
+      "depends_on": [
+        "XT-R2-01"
+      ],
+      "owner": "Governance / Migration / Security",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r2/clamp_migration.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R2-08",
+      "stage": "R2",
+      "priority": "P0",
+      "title": "Governance require-real gate",
+      "depends_on": [
+        "XT-R0-04",
+        "XT-R2-02",
+        "XT-R2-03",
+        "XT-R2-04",
+        "XT-R2-05",
+        "XT-R2-06",
+        "XT-R2-07"
+      ],
+      "owner": "QA / Release",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r2/governance_require_real.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R3-01",
+      "stage": "R3",
+      "priority": "P0",
+      "title": "Route truth 多 surface 收口",
+      "depends_on": [
+        "XT-R1-03",
+        "XT-R1-08",
+        "XT-R2-01"
+      ],
+      "owner": "Model Routing / XT UI",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r3/route_truth.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R3-02",
+      "stage": "R3",
+      "priority": "P0",
+      "title": "Project Coder 真实 Memory assembly",
+      "depends_on": [
+        "XT-R1-05",
+        "XT-R1-08",
+        "XT-R2-01"
+      ],
+      "owner": "Hub Memory / Project Coder",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r3/project_memory_assembly.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R3-03",
+      "stage": "R3",
+      "priority": "P0",
+      "title": "Writeback candidate lifecycle",
+      "depends_on": [
+        "XT-R3-02"
+      ],
+      "owner": "Hub Memory / Supervisor",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r3/writeback_candidate.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R3-04",
+      "stage": "R3",
+      "priority": "P0",
+      "title": "Starter Skill 正向供应链",
+      "depends_on": [
+        "XT-R1-05",
+        "XT-R1-08",
+        "XT-R2-01"
+      ],
+      "owner": "Skills / Package Trust",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r3/starter_skill.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R3-05",
+      "stage": "R3",
+      "priority": "P0",
+      "title": "Skill revoke、deny 和 governed retry",
+      "depends_on": [
+        "XT-R3-04"
+      ],
+      "owner": "Skills Security / Supervisor",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r3/skill_negative_retry.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R3-06",
+      "stage": "R3",
+      "priority": "P0",
+      "title": "Truth-loop gate 与 Unified Doctor 收口",
+      "depends_on": [
+        "XT-R0-04",
+        "XT-R3-01",
+        "XT-R3-02",
+        "XT-R3-03",
+        "XT-R3-04",
+        "XT-R3-05"
+      ],
+      "owner": "QA / Doctor / Release",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r3/truth_loop.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R4-01",
+      "stage": "R4",
+      "priority": "P0",
+      "title": "Device permission 与 Voice readiness truth",
+      "depends_on": [
+        "XT-R1-02"
+      ],
+      "required_for_profiles": [
+        "governed_remote_preview",
+        "local_governed_preview_when_voice_claimed"
+      ],
+      "owner": "Voice Runtime / QA",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r4/device_voice_readiness.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R4-02",
+      "stage": "R4",
+      "priority": "P0",
+      "title": "真实 wake / STT / TTS / talk loop",
+      "depends_on": [
+        "XT-R1-03",
+        "XT-R4-01"
+      ],
+      "required_for_profiles": [
+        "governed_remote_preview",
+        "local_governed_preview_when_voice_claimed"
+      ],
+      "owner": "Voice Runtime",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r4/voice_talk_loop.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R4-03",
+      "stage": "R4",
+      "priority": "P0",
+      "title": "Pending grant guided authorization",
+      "depends_on": [
+        "XT-R2-06",
+        "XT-R4-02"
+      ],
+      "required_for_profiles": [
+        "governed_remote_preview",
+        "local_governed_preview_when_voice_claimed"
+      ],
+      "owner": "Voice Authorization / Hub Grants",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r4/guided_authorization.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R4-04",
+      "stage": "R4",
+      "priority": "P0",
+      "title": "Remote/mobile confirmation 主链",
+      "depends_on": [
+        "XT-R3-05",
+        "XT-R4-03"
+      ],
+      "required_for_profiles": [
+        "governed_remote_preview"
+      ],
+      "owner": "Remote Channel / Authz",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r4/remote_mobile_confirmation.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R4-05",
+      "stage": "R4",
+      "priority": "P0",
+      "title": "Interrupt、掉线、重连和 exactly-once resume",
+      "depends_on": [
+        "XT-R1-06",
+        "XT-R4-04"
+      ],
+      "required_for_profiles": [
+        "governed_remote_preview"
+      ],
+      "owner": "Voice / Session Reliability",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r4/interrupt_reconnect_resume.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R4-06",
+      "stage": "R4",
+      "priority": "P0",
+      "title": "稳定远程入口与 first-pair proof 完成",
+      "depends_on": [
+        "XT-R1-02"
+      ],
+      "required_for_profiles": [
+        "governed_remote_preview"
+      ],
+      "owner": "Pairing / Remote Route",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r4/remote_route_proof.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R4-07",
+      "stage": "R4",
+      "priority": "P0",
+      "title": "Real-device voice/remote evidence gate",
+      "depends_on": [
+        "XT-R0-04",
+        "XT-R4-01",
+        "XT-R4-02",
+        "XT-R4-03"
+      ],
+      "conditional_dependencies": {
+        "governed_remote_preview": [
+          "XT-R4-04",
+          "XT-R4-05",
+          "XT-R4-06"
+        ]
+      },
+      "required_for_profiles": [
+        "governed_remote_preview",
+        "local_governed_preview_when_voice_claimed"
+      ],
+      "owner": "QA / Release",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r4/voice_remote_approval.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R5-01",
+      "stage": "R5",
+      "priority": "P1",
+      "title": "Rust/Swift ownership map 与 README truth",
+      "depends_on": [
+        "XT-R0-01"
+      ],
+      "owner": "XT Architecture",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r5/ownership_map.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R5-02",
+      "stage": "R5",
+      "priority": "P1",
+      "title": "xtd crate/module 和 projection protocol 收口",
+      "depends_on": [
+        "XT-R5-01"
+      ],
+      "owner": "Rust XT Core",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r5/projection_protocol.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R5-03",
+      "stage": "R5",
+      "priority": "P1",
+      "title": "Sidebar 与 Settings Diagnostics productionization",
+      "depends_on": [
+        "XT-R5-02"
+      ],
+      "owner": "Rust Core / Swift UI",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r5/sidebar_settings_projection.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R5-04",
+      "stage": "R5",
+      "priority": "P1",
+      "title": "Model Route Projection",
+      "depends_on": [
+        "XT-R3-01",
+        "XT-R5-02"
+      ],
+      "owner": "Rust Core / Model UI",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r5/model_route_projection.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R5-05",
+      "stage": "R5",
+      "priority": "P1",
+      "title": "Pending Approval Projection",
+      "depends_on": [
+        "XT-R2-05",
+        "XT-R4-03",
+        "XT-R5-02"
+      ],
+      "owner": "Rust Core / Approval UI",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r5/pending_approval_projection.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R5-06",
+      "stage": "R5",
+      "priority": "P1",
+      "title": "Refresh scheduler 与 duplicate suppression",
+      "depends_on": [
+        "XT-R5-03",
+        "XT-R5-04"
+      ],
+      "owner": "Rust Core / App Lifecycle",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r5/refresh_scheduler.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R5-07",
+      "stage": "R5",
+      "priority": "P1",
+      "title": "Execution queue 与 checkpoint helper",
+      "depends_on": [
+        "XT-R1-06",
+        "XT-R5-02"
+      ],
+      "owner": "Rust Core / Session Runtime",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r5/execution_checkpoint.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R5-08",
+      "stage": "R5",
+      "priority": "P1",
+      "title": "SupervisorManager domain service 收口",
+      "depends_on": [
+        "XT-R1-07",
+        "XT-R5-01"
+      ],
+      "owner": "XT Supervisor Architecture",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r5/supervisor_domains.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R5-09",
+      "stage": "R5",
+      "priority": "P1",
+      "title": "Performance、visual parity 和 cutover gate",
+      "depends_on": [
+        "XT-R5-03",
+        "XT-R5-04",
+        "XT-R5-05",
+        "XT-R5-06",
+        "XT-R5-07",
+        "XT-R5-08"
+      ],
+      "owner": "Performance QA / Release",
+      "evidence_path": "build/reports/xt-v1-product-readiness/r5/projection_performance.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R6-01",
+      "stage": "R6",
+      "priority": "P1",
+      "title": "Capability/claim/evidence traceability matrix",
+      "depends_on": [
+        "XT-R1-08",
+        "XT-R2-08",
+        "XT-R3-06"
+      ],
+      "owner": "Product / Docs / Release",
+      "required_for_profiles": [
+        "local_governed_preview",
+        "governed_remote_preview"
+      ],
+      "conditional_dependencies": {
+        "governed_remote_preview": [
+          "XT-R4-07"
+        ],
+        "local_governed_preview_when_voice_or_remote_claimed": [
+          "XT-R4-07"
+        ]
+      },
+      "evidence_path": "docs/open-source/evidence/xt_v1_public_traceability.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R6-02",
+      "stage": "R6",
+      "priority": "P1",
+      "title": "5 分钟 Quickstart 与 first-run wizard",
+      "depends_on": [
+        "XT-R1-08",
+        "XT-R3-06"
+      ],
+      "owner": "Developer Experience / XT UI",
+      "required_for_profiles": [
+        "local_governed_preview",
+        "governed_remote_preview"
+      ],
+      "evidence_path": "build/reports/xt-v1-product-readiness/r6/quickstart_first_run.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R6-03",
+      "stage": "R6",
+      "priority": "P1",
+      "title": "三个可复验 demo",
+      "depends_on": [
+        "XT-R6-02"
+      ],
+      "owner": "Product Demo / QA",
+      "required_for_profiles": [
+        "local_governed_preview",
+        "governed_remote_preview"
+      ],
+      "conditional_dependencies": {
+        "governed_remote_preview": [
+          "XT-R4-07"
+        ]
+      },
+      "profile_scope": {
+        "local_governed_preview": "governed_project and starter_skill required; voice_remote_approval excluded_by_profile",
+        "governed_remote_preview": "all three demos required"
+      },
+      "evidence_path": "build/reports/xt-v1-product-readiness/r6/public_demos.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R6-04",
+      "stage": "R6",
+      "priority": "P1",
+      "title": "Unified troubleshooting 与 repair deep links",
+      "depends_on": [
+        "XT-R1-08",
+        "XT-R3-06"
+      ],
+      "owner": "Doctor / Product Support",
+      "required_for_profiles": [
+        "local_governed_preview",
+        "governed_remote_preview"
+      ],
+      "conditional_dependencies": {
+        "governed_remote_preview": [
+          "XT-R4-07"
+        ],
+        "local_governed_preview_when_voice_or_remote_claimed": [
+          "XT-R4-07"
+        ]
+      },
+      "evidence_path": "build/reports/xt-v1-product-readiness/r6/troubleshooting.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R6-05",
+      "stage": "R6",
+      "priority": "P1",
+      "title": "给其它项目的 XT Design Context Package",
+      "depends_on": [
+        "XT-R6-01"
+      ],
+      "owner": "Architecture / Docs",
+      "required_for_profiles": [
+        "local_governed_preview",
+        "governed_remote_preview"
+      ],
+      "evidence_path": "build/reports/xt-v1-product-readiness/r6/design_context_manifest.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    },
+    {
+      "id": "XT-R6-06",
+      "stage": "R6",
+      "priority": "P1",
+      "title": "Public adoption release gate",
+      "depends_on": [
+        "XT-R6-01",
+        "XT-R6-02",
+        "XT-R6-03",
+        "XT-R6-04",
+        "XT-R6-05"
+      ],
+      "owner": "Release / Docs",
+      "required_for_profiles": [
+        "local_governed_preview",
+        "governed_remote_preview"
+      ],
+      "evidence_path": "build/reports/xt-v1-product-readiness/r6/public_adoption.v1.json",
+      "details_source": "x-terminal/work-orders/xt-v1-product-readiness-golden-path-execution-pack-v1.md"
+    }
+  ]
+}

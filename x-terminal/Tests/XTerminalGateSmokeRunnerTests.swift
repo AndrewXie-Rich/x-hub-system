@@ -32,6 +32,15 @@ struct XTerminalGateSmokeRunnerTests {
             try? FileManager.default.removeItem(at: workspace)
         }
 
+        let legacyProjectRoot = workspace
+            .appendingPathComponent("voice_supervisor_smoke_project", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacyProjectRoot, withIntermediateDirectories: true)
+        try "stale smoke state".write(
+            to: legacyProjectRoot.appendingPathComponent("stale-state.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+
         let outputURL = workspace
             .appendingPathComponent(".axcoder/reports", isDirectory: true)
             .appendingPathComponent("xt_supervisor_voice_smoke.runtime.json")
@@ -52,6 +61,10 @@ struct XTerminalGateSmokeRunnerTests {
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect((json["schema_version"] as? String) == "xt.supervisor_voice_smoke.v1")
         #expect((json["voice_route"] as? String) == VoiceRouteMode.funasrStreaming.rawValue)
+        let projectRoot = try #require(json["project_root"] as? String)
+        #expect(projectRoot.contains("/.axcoder/tmp/supervisor_voice_smoke_"))
+        #expect(projectRoot != legacyProjectRoot.path)
+        #expect(!FileManager.default.fileExists(atPath: projectRoot))
 
         let checks = try #require(json["checks"] as? [[String: Any]])
         #expect(!checks.isEmpty)

@@ -1255,7 +1255,9 @@ final class ChatSessionModel: ObservableObject {
             return
         }
 
+        let hubBaseDir = HubPaths.baseDir()
         Task {
+            await HubPaths.withPinnedBaseDirOverride(hubBaseDir) {
             let flow = ToolFlowState(
                 ctx: ctx,
                 memory: memory,
@@ -1276,6 +1278,7 @@ final class ChatSessionModel: ObservableObject {
                 executionRetryUsed: false
             )
             await runToolLoop(flow: flow, router: router)
+            }
         }
     }
 
@@ -1314,7 +1317,9 @@ final class ChatSessionModel: ObservableObject {
         activeConfig = flow.config
         isSending = true
 
+        let hubBaseDir = HubPaths.baseDir()
         Task {
+            await HubPaths.withPinnedBaseDirOverride(hubBaseDir) {
             var updated = flow
             let resolvedConfig = resolvedToolRuntimeConfig(ctx: flow.ctx, config: flow.config)
             let trustedAutomationRepair = trustedAutomationConfigForApprovedDeviceTools(
@@ -1394,6 +1399,7 @@ final class ChatSessionModel: ObservableObject {
                 }
             }
             await runToolLoop(flow: updated, router: router)
+            }
         }
     }
 
@@ -1440,7 +1446,9 @@ final class ChatSessionModel: ObservableObject {
         activeConfig = flow.config
         isSending = true
 
+        let hubBaseDir = HubPaths.baseDir()
         Task {
+            await HubPaths.withPinnedBaseDirOverride(hubBaseDir) {
             var updated = flow
             let resolvedConfig = resolvedToolRuntimeConfig(ctx: flow.ctx, config: flow.config)
             let trustedAutomationRepair = trustedAutomationConfigForApprovedDeviceTools(
@@ -1565,6 +1573,7 @@ final class ChatSessionModel: ObservableObject {
             )
             isSending = false
             currentReqId = nil
+            }
         }
     }
 
@@ -1745,7 +1754,9 @@ final class ChatSessionModel: ObservableObject {
             resolutionSource: "manual_retry"
         )
 
+        let hubBaseDir = HubPaths.baseDir()
         Task {
+            await HubPaths.withPinnedBaseDirOverride(hubBaseDir) {
             var flow = ToolFlowState(
                 ctx: ctx,
                 memory: memory,
@@ -1911,6 +1922,7 @@ final class ChatSessionModel: ObservableObject {
             }
             isSending = false
             currentReqId = nil
+            }
         }
     }
 

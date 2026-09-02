@@ -1,6 +1,109 @@
 import Foundation
 
 extension SupervisorManager {
+    func automationProjectGovernanceOverview(
+        for project: AXProjectEntry
+    ) -> SupervisorSignalCenterOverviewPresentation? {
+        let projectId = project.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !projectId.isEmpty else { return nil }
+
+        let projectGrants = pendingHubGrants.filter {
+            $0.projectId.trimmingCharacters(in: .whitespacesAndNewlines) == projectId
+        }
+        if !projectGrants.isEmpty {
+            let presentation = SupervisorPendingHubGrantPresentation.board(
+                grants: projectGrants,
+                source: pendingHubGrantSource,
+                hasFreshSnapshot: hasFreshPendingHubGrantSnapshot,
+                updatedAt: pendingHubGrantUpdatedAt,
+                recentSkillActivities: frontstageRecentSupervisorSkillActivities.filter {
+                    $0.projectId.trimmingCharacters(in: .whitespacesAndNewlines) == projectId
+                },
+                inFlightGrantIDs: pendingHubGrantActionsInFlight,
+                hubInteractive: appModel?.hubInteractive ?? false,
+                focusedRowAnchor: nil
+            )
+            if let firstGrant = presentation.rows.first {
+                return SupervisorSignalCenterOverviewPresentation(
+                    priority: .immediate,
+                    priorityText: SupervisorHeartbeatPriority.immediate.label,
+                    priorityTone: .warning,
+                    headlineText: "Hub 待处理授权",
+                    detailText: firstGrant.nextActionText ?? firstGrant.summary,
+                    metadataText: [
+                        "\(presentation.rows.count) 项待处理",
+                        presentation.snapshotText,
+                        firstGrant.ageText
+                    ]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " · "),
+                    focusAction: SupervisorSignalCenterOverviewActionDescriptor(
+                        action: .scrollToBoard(SupervisorFocusPresentation.pendingHubGrantBoardAnchorID),
+                        label: "查看授权板",
+                        tone: .warning
+                    )
+                )
+            }
+        }
+
+        let projectApprovals = pendingSupervisorSkillApprovals.filter {
+            $0.projectId.trimmingCharacters(in: .whitespacesAndNewlines) == projectId
+        }
+        if !projectApprovals.isEmpty {
+            let presentation = SupervisorPendingSkillApprovalPresentation.board(
+                approvals: projectApprovals,
+                focusedRowAnchor: nil
+            )
+            if presentation.rows.first != nil {
+                return pendingSupervisorSkillOverviewPresentation(from: presentation)
+            }
+        }
+
+        return nil
+    }
+
+    func prependAutomationProjectGovernanceBriefIfAvailable(
+        for project: AXProjectEntry,
+        to lines: inout [String]
+    ) {
+        guard let governanceOverview = automationProjectGovernanceOverview(for: project) else { return }
+        lines.append(
+            renderSupervisorGovernanceOverviewBrief(
+                governanceOverview,
+                projectName: project.displayName
+            )
+        )
+        lines.append("")
+    }
+
+    func automationRuntimeProjectHintSuffix(limit: Int = 4) -> String {
+        let hints = allProjects().prefix(limit).map { $0.displayName }.joined(separator: "、")
+        return hints.isEmpty ? "" : "。可用项目：\(hints)"
+    }
+
+    func effectiveAutomationRunRefForPresentation(
+        for ctx: AXProjectContext
+    ) -> String? {
+        effectiveAutomationRunRef(for: ctx)
+    }
+
+    func automationRecoveryCandidateForPresentation(
+        ctx: AXProjectContext,
+        now: TimeInterval
+    ) -> XTAutomationRecoveryCandidate? {
+        try? automationRunCoordinator.latestRecoveryCandidate(
+            for: ctx,
+            now: now
+        )
+    }
+
+    func automationCheckpointForPresentation(
+        runID: String,
+        ctx: AXProjectContext
+    ) -> XTAutomationRunCheckpoint? {
+        try? automationRunCoordinator.latestCheckpoint(for: runID, in: ctx)
+    }
+
     func renderAutomationRuntimeStatus(
         for project: AXProjectEntry,
         ctx: AXProjectContext

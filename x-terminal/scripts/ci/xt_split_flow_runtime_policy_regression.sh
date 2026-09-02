@@ -3,10 +3,16 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 GATE_SCRIPT="${ROOT_DIR}/scripts/ci/xt_release_gate.sh"
+PROFILE_HELPER="${ROOT_DIR}/scripts/ci/xt_nested_gate_profile.sh"
 KEEP_WORKDIR="${XT_SPLIT_FLOW_POLICY_REGRESSION_KEEP:-0}"
 
 if [[ ! -f "${GATE_SCRIPT}" ]]; then
   echo "[split-flow-policy] gate script missing: ${GATE_SCRIPT}" >&2
+  exit 2
+fi
+
+if [[ ! -f "${PROFILE_HELPER}" ]]; then
+  echo "[split-flow-policy] nested gate profile helper missing: ${PROFILE_HELPER}" >&2
   exit 2
 fi
 
@@ -30,6 +36,12 @@ trap cleanup EXIT
 
 pass_count=0
 fail_count=0
+
+DEFAULT_DOCTOR_REPORT="${ROOT_DIR}/.axcoder/reports/doctor-report.json"
+DEFAULT_SECRETS_DRY_RUN_REPORT="${ROOT_DIR}/.axcoder/reports/secrets-dry-run-report.json"
+FALLBACK_FIXTURE_DIR="${WORK_DIR}/fixtures"
+FALLBACK_DOCTOR_REPORT="${FALLBACK_FIXTURE_DIR}/doctor-report.sample.json"
+FALLBACK_SECRETS_DRY_RUN_REPORT="${FALLBACK_FIXTURE_DIR}/secrets-dry-run-report.sample.json"
 
 record_pass() {
   pass_count=$((pass_count + 1))
@@ -66,6 +78,47 @@ try {
 ' "${path}"
 }
 
+prepare_release_report_fallbacks() {
+  mkdir -p "${FALLBACK_FIXTURE_DIR}"
+
+  if [[ ! -f "${FALLBACK_DOCTOR_REPORT}" ]]; then
+    cat >"${FALLBACK_DOCTOR_REPORT}" <<'JSON'
+{
+  "doctor": {
+    "dmPolicy": "allow",
+    "allowFrom": ["workspace"],
+    "ws_origin": "https://example.com",
+    "shared_token_auth": true,
+    "authz_parity_for_all_ingress": true,
+    "non_message_ingress_policy_coverage": 1,
+    "unauthorized_flood_drop_count": 0
+  }
+}
+JSON
+  fi
+
+  if [[ ! -f "${FALLBACK_SECRETS_DRY_RUN_REPORT}" ]]; then
+    cat >"${FALLBACK_SECRETS_DRY_RUN_REPORT}" <<'JSON'
+{
+  "dry_run": true,
+  "target_path": ".axcoder/secrets/ws_shared_token.env",
+  "missing_variables": [],
+  "permission_boundary": "ok"
+}
+JSON
+  fi
+}
+
+resolve_release_report_path() {
+  local preferred="$1"
+  local fallback="$2"
+  if [[ -f "${preferred}" ]]; then
+    echo "${preferred}"
+    return
+  fi
+  echo "${fallback}"
+}
+
 run_case() {
   local case_name="$1"
   local mode="$2"
@@ -80,28 +133,27 @@ run_case() {
   local report_file="${report_dir}/xt-gate-report.md"
   local report_index_file="${report_dir}/xt-report-index.json"
   local run_log="${case_dir}/run.log"
-  local isolated_home="${case_dir}/home"
-  local isolated_tmp="${case_dir}/tmp"
-  local isolated_clang_cache="${case_dir}/clang-module-cache"
-  mkdir -p \
-    "${case_dir}" \
-    "${report_dir}" \
-    "${isolated_home}" \
-    "${isolated_tmp}" \
-    "${isolated_clang_cache}"
+  mkdir -p "${case_dir}" "${report_dir}"
+
+  local doctor_report_path
+  doctor_report_path="$(resolve_release_report_path "${DEFAULT_DOCTOR_REPORT}" "${FALLBACK_DOCTOR_REPORT}")"
+  local secrets_report_path
+  secrets_report_path="$(resolve_release_report_path "${DEFAULT_SECRETS_DRY_RUN_REPORT}" "${FALLBACK_SECRETS_DRY_RUN_REPORT}")"
 
   local -a env_vars=(
-    "HOME=${isolated_home}"
-    "CFFIXED_USER_HOME=${isolated_home}"
-    "TMPDIR=${isolated_tmp}"
-    "CLANG_MODULE_CACHE_PATH=${isolated_clang_cache}"
     "XT_GATE_MODE=${mode}"
     "XT_GATE_RELEASE_PRESET=${release_preset}"
-    "XT_GATE_INTERNAL_REGRESSION=1"
+    "XT_DOCTOR_REPORT=${doctor_report_path}"
+    "XT_SECRETS_DRY_RUN_REPORT=${secrets_report_path}"
     "XT_GATE_REPORT_DIR=${report_dir}"
     "XT_GATE_REPORT_FILE=${report_file}"
     "XT_GATE_REPORT_INDEX_FILE=${report_index_file}"
   )
+
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    env_vars+=("${line}")
+  done < <(bash "${PROFILE_HELPER}" split_flow_policy)
 
   if [[ "${runtime_regression}" != "__unset__" ]]; then
     env_vars+=("XT_GATE_SPLIT_FLOW_RUNTIME_REGRESSION=${runtime_regression}")
@@ -110,7 +162,7 @@ run_case() {
   set +e
   (
     cd "${ROOT_DIR}"
-    env "${env_vars[@]}" bash "${GATE_SCRIPT}" --internal-test-split-flow-runtime-case
+    env "${env_vars[@]}" bash "${GATE_SCRIPT}"
   ) >"${run_log}" 2>&1
   local rc=$?
   set -e
@@ -143,6 +195,8 @@ run_case() {
 
   record_pass "${case_name}"
 }
+
+prepare_release_report_fallbacks
 
 run_case "baseline_default_runtime_off" "baseline" "0" "__unset__" 0 "skipped" ""
 run_case "strict_default_runtime_on" "strict" "0" "__unset__" 0 "pass" \

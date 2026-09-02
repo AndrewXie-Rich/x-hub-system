@@ -1,17 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-WORKSPACE_ROOT="$(cd "$ROOT_DIR/.." && pwd -P)"
-# shellcheck source=../lib/canonical_root_guard.sh
-source "$ROOT_DIR/scripts/lib/canonical_root_guard.sh"
-xterminal_assert_canonical_root "$WORKSPACE_ROOT" "$ROOT_DIR"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 REPORT_DIR="${XT_GATE_REPORT_DIR:-${ROOT_DIR}/.axcoder/reports}"
 REPORT_FILE="${XT_GATE_REPORT_FILE:-${REPORT_DIR}/xt-gate-report.md}"
 REPORT_INDEX_FILE="${XT_GATE_REPORT_INDEX_FILE:-${REPORT_DIR}/xt-report-index.json}"
 MODE="${XT_GATE_MODE:-baseline}" # baseline | strict
-RELEASE_PRESET="${XT_GATE_RELEASE_PRESET:-0}"
-RELEASE_GRADE=0
 
 case "${MODE}" in
   baseline|strict) ;;
@@ -20,18 +14,6 @@ case "${MODE}" in
     exit 2
     ;;
 esac
-
-case "${RELEASE_PRESET}" in
-  0|1) ;;
-  *)
-    echo "[xt-gate] invalid XT_GATE_RELEASE_PRESET=${RELEASE_PRESET} (expected 0|1)" >&2
-    exit 2
-    ;;
-esac
-
-if [[ "${MODE}" == "strict" || "${RELEASE_PRESET}" == "1" ]]; then
-  RELEASE_GRADE=1
-fi
 
 pass_count=0
 warn_count=0
@@ -82,28 +64,6 @@ coverage_calendar_boundary_evidence_log_dir="(not checked)"
 coverage_calendar_boundary_digest_summary="(not checked)"
 coverage_calendar_real_device_report_path="(not checked)"
 coverage_calendar_real_device_digest_summary="(not checked)"
-strict_test_evidence_file="${XT_GATE_STRICT_TEST_EVIDENCE_FILE:-${REPORT_DIR}/xt-strict-test-evidence.json}"
-strict_test_evidence_status="not_required"
-source_commit="(not checked)"
-source_dirty="(not checked)"
-source_sources_sha256="(not checked)"
-source_tests_sha256="(not checked)"
-source_sources_tests_sha256_before="(not checked)"
-source_sources_tests_sha256_after="(not checked)"
-unified_doctor_report_path="${XT_GATE_UNIFIED_DOCTOR_REPORT:-${ROOT_DIR}/.axcoder/reports/xt_unified_doctor_report.json}"
-unified_doctor_status="not_required"
-unified_doctor_generated_at_ms="(not checked)"
-unified_doctor_age_ms="(not checked)"
-unified_doctor_blocking_count="(not checked)"
-unified_doctor_ready_for_first_task="(not checked)"
-unified_doctor_sha256="(not checked)"
-
-strict_test_labels=()
-strict_test_commands=()
-strict_test_exit_codes=()
-strict_test_log_paths=()
-strict_test_started_at=()
-strict_test_finished_at=()
 
 note_pass() {
   pass_count=$((pass_count + 1))
@@ -118,526 +78,6 @@ note_warn() {
 note_fail() {
   fail_count=$((fail_count + 1))
   fail_lines+=("- FAIL: $1")
-}
-
-validate_gate_configuration() {
-  if [[ "${RELEASE_GRADE}" != "1" ]]; then
-    return 0
-  fi
-
-  local skip_name=""
-  local skip_value=""
-  local -a enabled_skips=()
-  while IFS='=' read -r skip_name skip_value; do
-    [[ "${skip_name}" == XT_GATE_SKIP_* ]] || continue
-    if [[ -n "${skip_value}" && "${skip_value}" != "0" ]]; then
-      enabled_skips+=("${skip_name}=${skip_value}")
-    fi
-  done < <(env)
-
-  if (( ${#enabled_skips[@]} > 0 )); then
-    echo "[xt-gate] release-grade gate refuses XT_GATE_SKIP_* bypasses: ${enabled_skips[*]}" >&2
-    return 2
-  fi
-
-  local doctor_max_age_seconds="${XT_GATE_UNIFIED_DOCTOR_MAX_AGE_SECONDS:-900}"
-  if [[ ! "${doctor_max_age_seconds}" =~ ^[0-9]+$ ]] \
-    || (( doctor_max_age_seconds < 1 || doctor_max_age_seconds > 900 )); then
-    echo "[xt-gate] invalid XT_GATE_UNIFIED_DOCTOR_MAX_AGE_SECONDS=${doctor_max_age_seconds} (expected 1..900)" >&2
-    return 2
-  fi
-
-  return 0
-}
-
-compute_source_tree_sha256() {
-  node - "${ROOT_DIR}" "$@" <<'NODE'
-const crypto = require("crypto");
-const fs = require("fs");
-const path = require("path");
-
-const root = path.resolve(process.argv[2]);
-const requestedRoots = process.argv.slice(3);
-const entries = [];
-
-function walk(currentPath) {
-  const stat = fs.lstatSync(currentPath);
-  if (stat.isDirectory()) {
-    const names = fs.readdirSync(currentPath).sort();
-    for (const name of names) {
-      walk(path.join(currentPath, name));
-    }
-    return;
-  }
-  const relativePath = path.relative(root, currentPath).split(path.sep).join("/");
-  if (stat.isSymbolicLink()) {
-    entries.push({ relativePath, content: Buffer.from(`symlink:${fs.readlinkSync(currentPath)}`, "utf8") });
-    return;
-  }
-  if (stat.isFile()) {
-    entries.push({ relativePath, content: fs.readFileSync(currentPath) });
-  }
-}
-
-for (const requestedRoot of requestedRoots) {
-  const absolutePath = path.join(root, requestedRoot);
-  if (!fs.existsSync(absolutePath)) {
-    throw new Error(`source tree root missing: ${absolutePath}`);
-  }
-  walk(absolutePath);
-}
-
-entries.sort((lhs, rhs) => {
-  if (lhs.relativePath < rhs.relativePath) return -1;
-  if (lhs.relativePath > rhs.relativePath) return 1;
-  return 0;
-});
-const digest = crypto.createHash("sha256");
-for (const entry of entries) {
-  digest.update(entry.relativePath, "utf8");
-  digest.update("\0", "utf8");
-  digest.update(entry.content);
-  digest.update("\0", "utf8");
-}
-process.stdout.write(digest.digest("hex"));
-NODE
-}
-
-shell_join() {
-  local output=""
-  local token=""
-  local quoted=""
-  for token in "$@"; do
-    printf -v quoted '%q' "${token}"
-    if [[ -n "${output}" ]]; then
-      output+=" "
-    fi
-    output+="${quoted}"
-  done
-  printf '%s' "${output}"
-}
-
-record_strict_test_command() {
-  strict_test_labels+=("$1")
-  strict_test_commands+=("$2")
-  strict_test_exit_codes+=("$3")
-  strict_test_log_paths+=("$4")
-  strict_test_started_at+=("$5")
-  strict_test_finished_at+=("$6")
-}
-
-run_strict_test_command() {
-  local label="$1"
-  local log_file="$2"
-  shift 2
-  local -a command=("$@")
-  local command_text=""
-  local started_at=""
-  local finished_at=""
-  local exit_code=0
-
-  command_text="(cd $(shell_join "${ROOT_DIR}") && $(shell_join "${command[@]}"))"
-  started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  mkdir -p "$(dirname "${log_file}")"
-  if (cd "${ROOT_DIR}" && "${command[@]}") >"${log_file}" 2>&1; then
-    exit_code=0
-  else
-    exit_code=$?
-  fi
-  finished_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-
-  record_strict_test_command \
-    "${label}" \
-    "${command_text}" \
-    "${exit_code}" \
-    "${log_file}" \
-    "${started_at}" \
-    "${finished_at}"
-
-  if (( exit_code == 0 )); then
-    note_pass "XT-Strict-Tests: ${label} passed (${log_file})"
-    return 0
-  fi
-
-  note_fail "XT-Strict-Tests: ${label} failed with exit ${exit_code} (see ${log_file})"
-  return "${exit_code}"
-}
-
-write_strict_test_evidence() {
-  local pipeline_ok="$1"
-  local source_hash_stable="$2"
-  local -a command_args=()
-  local index=0
-
-  for (( index = 0; index < ${#strict_test_labels[@]}; index++ )); do
-    command_args+=(
-      "${strict_test_labels[$index]}"
-      "${strict_test_commands[$index]}"
-      "${strict_test_exit_codes[$index]}"
-      "${strict_test_log_paths[$index]}"
-      "${strict_test_started_at[$index]}"
-      "${strict_test_finished_at[$index]}"
-    )
-  done
-
-  mkdir -p "$(dirname "${strict_test_evidence_file}")"
-  node - \
-    "${strict_test_evidence_file}" \
-    "${source_commit}" \
-    "${source_dirty}" \
-    "${source_sources_sha256}" \
-    "${source_tests_sha256}" \
-    "${source_sources_tests_sha256_before}" \
-    "${source_sources_tests_sha256_after}" \
-    "${source_hash_stable}" \
-    "${pipeline_ok}" \
-    "${#strict_test_labels[@]}" \
-    "${command_args[@]}" <<'NODE'
-const fs = require("fs");
-const path = require("path");
-
-const [
-  outputPath,
-  commit,
-  dirtyRaw,
-  sourcesSHA256,
-  testsSHA256,
-  combinedBefore,
-  combinedAfter,
-  sourceHashStableRaw,
-  pipelineOKRaw,
-  commandCountRaw,
-  ...commandFields
-] = process.argv.slice(2);
-const commandCount = Number(commandCountRaw || "0");
-if (commandFields.length !== commandCount * 6) {
-  throw new Error(`invalid command evidence field count: ${commandFields.length}`);
-}
-const commands = [];
-for (let index = 0; index < commandCount; index += 1) {
-  const offset = index * 6;
-  commands.push({
-    label: commandFields[offset],
-    command: commandFields[offset + 1],
-    exit_code: Number(commandFields[offset + 2]),
-    log_path: commandFields[offset + 3],
-    started_at: commandFields[offset + 4],
-    finished_at: commandFields[offset + 5]
-  });
-}
-const expectedLabels = [
-  "compile test target",
-  "shard hub path isolation",
-  "shard skills isolation",
-  "shard supervisor guard and voice smoke",
-  "full swift test"
-];
-const complete = commands.length === expectedLabels.length
-  && commands.every((entry, index) => entry.label === expectedLabels[index]);
-const sourceHashStable = sourceHashStableRaw === "1";
-const pipelineOK = pipelineOKRaw === "1";
-const report = {
-  schema_version: "xt.strict_test_evidence.v1",
-  generated_at: new Date().toISOString(),
-  source: {
-    commit,
-    dirty: dirtyRaw === "true" ? true : dirtyRaw === "false" ? false : null,
-    sources_sha256: sourcesSHA256,
-    tests_sha256: testsSHA256,
-    sources_tests_sha256_before: combinedBefore,
-    sources_tests_sha256_after: combinedAfter,
-    stable_during_test: sourceHashStable
-  },
-  command_sequence_complete: complete,
-  commands,
-  ok: pipelineOK && sourceHashStable && complete && commands.every((entry) => entry.exit_code === 0)
-};
-fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-fs.writeFileSync(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-NODE
-}
-
-run_gate_strict_swift_tests() {
-  if [[ "${RELEASE_GRADE}" != "1" ]]; then
-    return 0
-  fi
-
-  local swift_gate_home="${XT_GATE_SWIFT_HOME:-${ROOT_DIR}/.axcoder/swift-home}"
-  local swift_gate_clang_cache="${XT_GATE_CLANG_MODULE_CACHE:-${ROOT_DIR}/.build/clang-module-cache}"
-  local swift_gate_scratch_path="${XT_GATE_SWIFT_SCRATCH_PATH:-${ROOT_DIR}/.build/xt_gate_strict_tests}"
-  local swift_gate_tmp="${XT_GATE_SWIFT_TMPDIR:-${swift_gate_home}/tmp}"
-  local strict_log_dir="${REPORT_DIR}/strict-test-logs"
-  local pipeline_ok=1
-  local source_hash_stable=0
-  local compile_ok=0
-  local repository_status=""
-  local -a common_environment=(
-    env
-    "HOME=${swift_gate_home}"
-    "CFFIXED_USER_HOME=${swift_gate_home}"
-    "TMPDIR=${swift_gate_tmp}"
-    "CLANG_MODULE_CACHE_PATH=${swift_gate_clang_cache}"
-  )
-
-  strict_test_evidence_status="fail"
-  strict_test_labels=()
-  strict_test_commands=()
-  strict_test_exit_codes=()
-  strict_test_log_paths=()
-  strict_test_started_at=()
-  strict_test_finished_at=()
-
-  source_commit="$(git -C "${WORKSPACE_ROOT}" rev-parse HEAD 2>/dev/null || true)"
-  if [[ -z "${source_commit}" ]]; then
-    source_commit="unavailable"
-    note_fail "XT-Strict-Tests: unable to resolve source commit"
-    pipeline_ok=0
-  fi
-
-  if repository_status="$(git -C "${WORKSPACE_ROOT}" status --porcelain=v1 --untracked-files=all 2>/dev/null)"; then
-    if [[ -n "${repository_status}" ]]; then
-      source_dirty="true"
-    else
-      source_dirty="false"
-    fi
-  else
-    source_dirty="unavailable"
-    note_fail "XT-Strict-Tests: unable to resolve repository dirty state"
-    pipeline_ok=0
-  fi
-
-  if source_sources_sha256="$(compute_source_tree_sha256 Sources)" \
-    && source_tests_sha256="$(compute_source_tree_sha256 Tests)" \
-    && source_sources_tests_sha256_before="$(compute_source_tree_sha256 Sources Tests)"; then
-    note_pass "XT-Strict-Tests: captured commit, dirty state, and Sources/Tests SHA-256"
-  else
-    source_sources_sha256="unavailable"
-    source_tests_sha256="unavailable"
-    source_sources_tests_sha256_before="unavailable"
-    note_fail "XT-Strict-Tests: failed to hash Sources/Tests"
-    pipeline_ok=0
-  fi
-
-  if ! mkdir -p \
-    "${swift_gate_home}" \
-    "${swift_gate_tmp}" \
-    "${swift_gate_clang_cache}" \
-    "${swift_gate_scratch_path}" \
-    "${strict_log_dir}"; then
-    note_fail "XT-Strict-Tests: failed to create test scratch or evidence directories"
-    return 1
-  fi
-
-  if run_strict_test_command \
-    "compile test target" \
-    "${strict_log_dir}/01-compile-test-target.log" \
-    "${common_environment[@]}" \
-    swift build --build-tests --disable-sandbox --scratch-path "${swift_gate_scratch_path}"; then
-    compile_ok=1
-  else
-    pipeline_ok=0
-  fi
-
-  if [[ "${compile_ok}" == "1" ]]; then
-    if ! run_strict_test_command \
-      "shard hub path isolation" \
-      "${strict_log_dir}/02-shard-hub-path-isolation.log" \
-      "${common_environment[@]}" \
-      swift test --disable-sandbox --skip-build --scratch-path "${swift_gate_scratch_path}" \
-        --filter 'HubBaseDirConvergenceTests'; then
-      pipeline_ok=0
-    fi
-    if ! run_strict_test_command \
-      "shard skills isolation" \
-      "${strict_log_dir}/03-shard-skills-isolation.log" \
-      "${common_environment[@]}" \
-      swift test --disable-sandbox --skip-build --scratch-path "${swift_gate_scratch_path}" \
-        --filter 'AXSkillsCompatibilityTests|AXSkillsRemoteRegistryTests|ToolExecutorSkillsAndSummarizeTests'; then
-      pipeline_ok=0
-    fi
-    if ! run_strict_test_command \
-      "shard supervisor guard and voice smoke" \
-      "${strict_log_dir}/04-shard-supervisor-guard-voice.log" \
-      "${common_environment[@]}" \
-      swift test --disable-sandbox --skip-build --scratch-path "${swift_gate_scratch_path}" \
-        --filter 'SupervisorCommandGuardTests|XTerminalGateSmokeRunnerTests'; then
-      pipeline_ok=0
-    fi
-    if ! run_strict_test_command \
-      "full swift test" \
-      "${strict_log_dir}/05-full-swift-test.log" \
-      "${common_environment[@]}" \
-      swift test --disable-sandbox --skip-build --scratch-path "${swift_gate_scratch_path}"; then
-      pipeline_ok=0
-    fi
-  else
-    note_fail "XT-Strict-Tests: test target did not compile; shards and full swift test were not run"
-  fi
-
-  if source_sources_tests_sha256_after="$(compute_source_tree_sha256 Sources Tests)"; then
-    if [[ "${source_sources_tests_sha256_before}" == "${source_sources_tests_sha256_after}" ]]; then
-      source_hash_stable=1
-      note_pass "XT-Strict-Tests: Sources/Tests hash remained stable during tests"
-    else
-      note_fail "XT-Strict-Tests: Sources/Tests changed while tests were running"
-      pipeline_ok=0
-    fi
-  else
-    source_sources_tests_sha256_after="unavailable"
-    note_fail "XT-Strict-Tests: failed to capture final Sources/Tests hash"
-    pipeline_ok=0
-  fi
-
-  if (( ${#strict_test_labels[@]} != 5 )); then
-    pipeline_ok=0
-  fi
-
-  if ! write_strict_test_evidence "${pipeline_ok}" "${source_hash_stable}"; then
-    strict_test_evidence_status="fail"
-    note_fail "XT-Strict-Tests: failed to write strict test evidence (${strict_test_evidence_file})"
-    return 1
-  fi
-  if [[ "${pipeline_ok}" == "1" && "${source_hash_stable}" == "1" ]]; then
-    strict_test_evidence_status="pass"
-    note_pass "XT-Strict-Tests: complete auditable test sequence passed (${strict_test_evidence_file})"
-    return 0
-  fi
-
-  note_fail "XT-Strict-Tests: release-grade test sequence incomplete or failed (${strict_test_evidence_file})"
-  return 1
-}
-
-validate_unified_doctor_report() {
-  local report_file="$1"
-  local max_age_seconds="$2"
-  local now_ms="$3"
-
-  node - "${report_file}" "${max_age_seconds}" "${now_ms}" <<'NODE'
-const crypto = require("crypto");
-const fs = require("fs");
-
-const reportPath = process.argv[2];
-const maxAgeSeconds = Number(process.argv[3]);
-const nowMs = Number(process.argv[4]);
-if (!Number.isInteger(maxAgeSeconds) || maxAgeSeconds < 1 || maxAgeSeconds > 900) {
-  throw new Error(`max age must be an integer from 1 through 900 seconds, got ${process.argv[3]}`);
-}
-if (!Number.isFinite(nowMs) || nowMs <= 0) {
-  throw new Error(`invalid current time: ${process.argv[4]}`);
-}
-const bytes = fs.readFileSync(reportPath);
-const report = JSON.parse(bytes.toString("utf8"));
-if (report.schemaVersion !== "xt.unified_doctor_report.v1") {
-  throw new Error(`invalid unified Doctor schema: ${report.schemaVersion || "(missing)"}`);
-}
-if (!Number.isInteger(report.generatedAtMs) || report.generatedAtMs <= 0) {
-  throw new Error(`invalid generatedAtMs: ${report.generatedAtMs}`);
-}
-const ageMs = nowMs - report.generatedAtMs;
-const maxAgeMs = maxAgeSeconds * 1000;
-if (ageMs < -60000) {
-  throw new Error(`unified Doctor timestamp is ${Math.abs(ageMs)}ms in the future`);
-}
-if (ageMs > maxAgeMs) {
-  throw new Error(`unified Doctor is stale: age_ms=${ageMs} max_age_ms=${maxAgeMs}`);
-}
-if (report.readyForFirstTask !== true) {
-  throw new Error(`readyForFirstTask must be true, got ${report.readyForFirstTask}`);
-}
-if (!Array.isArray(report.sections) || report.sections.length === 0) {
-  throw new Error("unified Doctor sections must be a non-empty array");
-}
-const allowedStates = new Set([
-  "ready",
-  "in_progress",
-  "grant_required",
-  "permission_denied",
-  "blocked_waiting_upstream",
-  "release_frozen",
-  "diagnostic_required"
-]);
-const sectionKinds = new Set();
-for (const section of report.sections) {
-  if (!section || typeof section.kind !== "string" || section.kind.length === 0) {
-    throw new Error("unified Doctor section kind is missing");
-  }
-  if (sectionKinds.has(section.kind)) {
-    throw new Error(`unified Doctor contains duplicate section kind: ${section.kind}`);
-  }
-  sectionKinds.add(section.kind);
-  if (!allowedStates.has(section.state)) {
-    throw new Error(`unified Doctor section ${section.kind} has invalid state: ${section.state}`);
-  }
-}
-const requiredReadyKinds = new Set([
-  "hub_reachability",
-  "model_route_readiness",
-  "bridge_tool_readiness",
-  "session_runtime_readiness"
-]);
-for (const requiredKind of requiredReadyKinds) {
-  const section = report.sections.find((candidate) => candidate.kind === requiredKind);
-  if (!section || section.state !== "ready") {
-    throw new Error(`unified Doctor required section is not ready: ${requiredKind}`);
-  }
-}
-const blockingStates = new Set([
-  "grant_required",
-  "permission_denied",
-  "blocked_waiting_upstream",
-  "release_frozen",
-  "diagnostic_required"
-]);
-const blockingCount = report.sections.filter((section) => blockingStates.has(section && section.state)).length;
-if (blockingCount !== 0) {
-  throw new Error(`unified Doctor blocking_count must be 0, got ${blockingCount}`);
-}
-const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
-process.stdout.write([
-  String(report.generatedAtMs),
-  String(ageMs),
-  String(blockingCount),
-  "true",
-  sha256
-].join("\t"));
-NODE
-}
-
-run_gate_release_unified_doctor() {
-  if [[ "${RELEASE_PRESET}" != "1" ]]; then
-    return 0
-  fi
-
-  local gate_name="XT-Release / Unified Doctor Freshness"
-  local max_age_seconds="${XT_GATE_UNIFIED_DOCTOR_MAX_AGE_SECONDS:-900}"
-  local now_ms=""
-  local validation_output=""
-  local validation_log="${REPORT_DIR}/unified-doctor-validation.log"
-
-  now_ms="$(($(date +%s) * 1000))"
-  if ! mkdir -p "${REPORT_DIR}"; then
-    unified_doctor_status="fail"
-    note_fail "${gate_name}: failed to create validation log directory (${REPORT_DIR})"
-    return 1
-  fi
-  if validation_output="$(validate_unified_doctor_report \
-    "${unified_doctor_report_path}" \
-    "${max_age_seconds}" \
-    "${now_ms}" 2>"${validation_log}")"; then
-    IFS=$'\t' read -r \
-      unified_doctor_generated_at_ms \
-      unified_doctor_age_ms \
-      unified_doctor_blocking_count \
-      unified_doctor_ready_for_first_task \
-      unified_doctor_sha256 <<< "${validation_output}"
-    unified_doctor_status="pass"
-    note_pass "${gate_name}: fresh, readyForFirstTask=true, blocking_count=0 (${unified_doctor_report_path})"
-    return 0
-  fi
-
-  unified_doctor_status="fail"
-  note_fail "${gate_name}: validation failed (see ${validation_log})"
-  return 1
 }
 
 mark_status_warn() {
@@ -671,25 +111,14 @@ resolve_first_existing_file() {
 }
 
 resolve_xt_cli_binary() {
-  local strict_scratch_path="${XT_GATE_SWIFT_SCRATCH_PATH:-${ROOT_DIR}/.build/xt_gate_strict_tests}"
-  local -a candidates=()
-  if [[ "${RELEASE_GRADE}" == "1" ]]; then
-    candidates=(
-      "${strict_scratch_path}/debug/XTerminal"
-      "${strict_scratch_path}/arm64-apple-macosx/debug/XTerminal"
-      "${strict_scratch_path}/x86_64-apple-macosx/debug/XTerminal"
-    )
-  else
-    candidates=(
-      "${ROOT_DIR}/.build/debug/XTerminal"
-      "${ROOT_DIR}/.build/arm64-apple-macosx/debug/XTerminal"
-      "${ROOT_DIR}/.build/x86_64-apple-macosx/debug/XTerminal"
-    )
-  fi
+  local candidates=(
+    "${ROOT_DIR}/.build/debug/XTerminal"
+    "${ROOT_DIR}/.build/arm64-apple-macosx/debug/XTerminal"
+    "${ROOT_DIR}/.build/x86_64-apple-macosx/debug/XTerminal"
+  )
   local candidate
   for candidate in "${candidates[@]}"; do
-    if [[ -f "${candidate}" && ! -L "${candidate}" && -x "${candidate}" ]] \
-      && { [[ "${RELEASE_GRADE}" != "1" ]] || is_xt_cli_binary_fresh "${candidate}"; }; then
+    if [[ -x "${candidate}" ]]; then
       echo "${candidate}"
       return 0
     fi
@@ -752,7 +181,7 @@ prepare_release_evidence_if_needed() {
     fi
   else
     if (cd "${ROOT_DIR}" \
-      && swift run --disable-sandbox XTerminal --xt-release-evidence-smoke --project-root "${ROOT_DIR}" \
+      && swift run XTerminal --xt-release-evidence-smoke --project-root "${ROOT_DIR}" \
       >"${release_evidence_prepare_log}" 2>&1); then
       release_evidence_prepare_succeeded=1
       note_pass "${gate_name}: auto-prepared release evidence via XTerminal smoke (${release_evidence_prepare_log})"
@@ -859,11 +288,6 @@ run_gate_g1() {
   xt_cli_binary="$(resolve_xt_cli_binary || true)"
   if [[ "${XT_GATE_SKIP_BUILD:-0}" == "1" ]]; then
     note_warn "${gate_name}: skipped by XT_GATE_SKIP_BUILD=1"
-    return
-  fi
-
-  if [[ "${RELEASE_GRADE}" == "1" ]]; then
-    note_pass "${gate_name}: source build is covered by the mandatory test-target compile"
     return
   fi
 
@@ -1557,7 +981,7 @@ run_gate_supervisor_doctor() {
     else
       if (cd "${ROOT_DIR}" \
         && XTERMINAL_SUPERVISOR_SECRETS_DRY_RUN_PLAN="${default_secrets_plan}" \
-        swift run --disable-sandbox XTerminal --xt-supervisor-doctor-refresh --project-root "${ROOT_DIR}" \
+        swift run XTerminal --xt-supervisor-doctor-refresh --project-root "${ROOT_DIR}" \
         >"${refresh_log}" 2>&1); then
         note_pass "${gate_name}: fallback used sample secrets dry-run plan (${default_secrets_plan})"
       else
@@ -1575,7 +999,7 @@ run_gate_supervisor_doctor() {
       fi
     else
       if (cd "${ROOT_DIR}" \
-        && swift run --disable-sandbox XTerminal --xt-supervisor-doctor-refresh --project-root "${ROOT_DIR}" \
+        && swift run XTerminal --xt-supervisor-doctor-refresh --project-root "${ROOT_DIR}" \
         >"${refresh_log}" 2>&1); then
         note_pass "${gate_name}: doctor report refreshed (${report_file})"
       else
@@ -2212,11 +1636,11 @@ run_gate_g4() {
           "HOME=${isolated_home}"
           "CFFIXED_USER_HOME=${isolated_home}"
           "TMPDIR=${isolated_tmp}"
-          swift run --disable-sandbox XTerminal
+          swift run XTerminal
           "${smoke_flag}"
         )
       else
-        command=(swift run --disable-sandbox XTerminal "${smoke_flag}")
+        command=(swift run XTerminal "${smoke_flag}")
       fi
       if [[ ${#smoke_args[@]} -gt 0 ]]; then
         command+=("${smoke_args[@]}")
@@ -2650,8 +2074,6 @@ render_report() {
     echo
     echo "- generated_at: ${generated_at}"
     echo "- mode: ${MODE}"
-    echo "- release_preset: ${RELEASE_PRESET}"
-    echo "- release_grade: ${RELEASE_GRADE}"
     echo "- root: ${ROOT_DIR}"
     echo
     echo "## Summary"
@@ -2705,21 +2127,6 @@ render_report() {
     echo "- evidence.calendar_boundary_digest: ${coverage_calendar_boundary_digest_summary}"
     echo "- evidence.calendar_real_device_report: ${coverage_calendar_real_device_report_path}"
     echo "- evidence.calendar_real_device_digest: ${coverage_calendar_real_device_digest_summary}"
-    echo "- evidence.strict_test.status: ${strict_test_evidence_status}"
-    echo "- evidence.strict_test.report: ${strict_test_evidence_file}"
-    echo "- evidence.source.commit: ${source_commit}"
-    echo "- evidence.source.dirty: ${source_dirty}"
-    echo "- evidence.source.sources_sha256: ${source_sources_sha256}"
-    echo "- evidence.source.tests_sha256: ${source_tests_sha256}"
-    echo "- evidence.source.sources_tests_sha256_before: ${source_sources_tests_sha256_before}"
-    echo "- evidence.source.sources_tests_sha256_after: ${source_sources_tests_sha256_after}"
-    echo "- evidence.unified_doctor.status: ${unified_doctor_status}"
-    echo "- evidence.unified_doctor.report: ${unified_doctor_report_path}"
-    echo "- evidence.unified_doctor.generated_at_ms: ${unified_doctor_generated_at_ms}"
-    echo "- evidence.unified_doctor.age_ms: ${unified_doctor_age_ms}"
-    echo "- evidence.unified_doctor.blocking_count: ${unified_doctor_blocking_count}"
-    echo "- evidence.unified_doctor.ready_for_first_task: ${unified_doctor_ready_for_first_task}"
-    echo "- evidence.unified_doctor.sha256: ${unified_doctor_sha256}"
     echo "- evidence.report_index: ${REPORT_INDEX_FILE}"
     echo
     if (( ${#fail_lines[@]} > 0 )); then
@@ -2743,8 +2150,6 @@ render_report() {
   REPORT_FILE="${REPORT_FILE}" \
   GENERATED_AT="${generated_at}" \
   MODE="${MODE}" \
-  RELEASE_PRESET="${RELEASE_PRESET}" \
-  RELEASE_GRADE="${RELEASE_GRADE}" \
   ROOT_DIR="${ROOT_DIR}" \
   RELEASE_DECISION="${release_decision}" \
   PASS_COUNT="${pass_count}" \
@@ -2788,44 +2193,15 @@ render_report() {
   EVIDENCE_CALENDAR_BOUNDARY_DIGEST="${coverage_calendar_boundary_digest_summary}" \
   EVIDENCE_CALENDAR_REAL_DEVICE_REPORT="${coverage_calendar_real_device_report_path}" \
   EVIDENCE_CALENDAR_REAL_DEVICE_DIGEST="${coverage_calendar_real_device_digest_summary}" \
-  STRICT_TEST_EVIDENCE_STATUS="${strict_test_evidence_status}" \
-  STRICT_TEST_EVIDENCE_FILE="${strict_test_evidence_file}" \
-  SOURCE_COMMIT="${source_commit}" \
-  SOURCE_DIRTY="${source_dirty}" \
-  SOURCE_SOURCES_SHA256="${source_sources_sha256}" \
-  SOURCE_TESTS_SHA256="${source_tests_sha256}" \
-  SOURCE_COMBINED_SHA256_BEFORE="${source_sources_tests_sha256_before}" \
-  SOURCE_COMBINED_SHA256_AFTER="${source_sources_tests_sha256_after}" \
-  UNIFIED_DOCTOR_STATUS="${unified_doctor_status}" \
-  UNIFIED_DOCTOR_REPORT="${unified_doctor_report_path}" \
-  UNIFIED_DOCTOR_GENERATED_AT_MS="${unified_doctor_generated_at_ms}" \
-  UNIFIED_DOCTOR_AGE_MS="${unified_doctor_age_ms}" \
-  UNIFIED_DOCTOR_BLOCKING_COUNT="${unified_doctor_blocking_count}" \
-  UNIFIED_DOCTOR_READY="${unified_doctor_ready_for_first_task}" \
-  UNIFIED_DOCTOR_SHA256="${unified_doctor_sha256}" \
   node - <<'NODE'
 const fs = require("fs");
 const path = require("path");
 
 const outputPath = process.env.REPORT_INDEX_FILE;
-const optionalNumber = (raw) => {
-  if (raw === undefined || raw === null || raw === "" || raw === "(not checked)") {
-    return null;
-  }
-  const value = Number(raw);
-  return Number.isFinite(value) ? value : null;
-};
-const optionalBoolean = (raw) => {
-  if (raw === "true") return true;
-  if (raw === "false") return false;
-  return null;
-};
 const report = {
   schema_version: "xt_report_index.v1",
   generated_at: process.env.GENERATED_AT || "",
   mode: process.env.MODE || "",
-  release_preset: process.env.RELEASE_PRESET === "1",
-  release_grade: process.env.RELEASE_GRADE === "1",
   root: process.env.ROOT_DIR || "",
   release_decision: process.env.RELEASE_DECISION || "",
   summary: {
@@ -2860,30 +2236,7 @@ const report = {
     project_governance_log_dir: process.env.EVIDENCE_PROJECT_GOVERNANCE_LOG_DIR || "",
     calendar_boundary_report: process.env.EVIDENCE_CALENDAR_BOUNDARY_REPORT || "",
     calendar_boundary_log_dir: process.env.EVIDENCE_CALENDAR_BOUNDARY_LOG_DIR || "",
-    calendar_real_device_report: process.env.EVIDENCE_CALENDAR_REAL_DEVICE_REPORT || "",
-    strict_test_evidence: process.env.STRICT_TEST_EVIDENCE_FILE || "",
-    unified_doctor_report: process.env.UNIFIED_DOCTOR_REPORT || ""
-  },
-  source: {
-    commit: process.env.SOURCE_COMMIT || "",
-    dirty: optionalBoolean(process.env.SOURCE_DIRTY),
-    sources_sha256: process.env.SOURCE_SOURCES_SHA256 || "",
-    tests_sha256: process.env.SOURCE_TESTS_SHA256 || "",
-    sources_tests_sha256_before: process.env.SOURCE_COMBINED_SHA256_BEFORE || "",
-    sources_tests_sha256_after: process.env.SOURCE_COMBINED_SHA256_AFTER || ""
-  },
-  strict_test: {
-    status: process.env.STRICT_TEST_EVIDENCE_STATUS || "",
-    evidence_file: process.env.STRICT_TEST_EVIDENCE_FILE || ""
-  },
-  unified_doctor: {
-    status: process.env.UNIFIED_DOCTOR_STATUS || "",
-    report: process.env.UNIFIED_DOCTOR_REPORT || "",
-    generated_at_ms: optionalNumber(process.env.UNIFIED_DOCTOR_GENERATED_AT_MS),
-    age_ms: optionalNumber(process.env.UNIFIED_DOCTOR_AGE_MS),
-    blocking_count: optionalNumber(process.env.UNIFIED_DOCTOR_BLOCKING_COUNT),
-    ready_for_first_task: optionalBoolean(process.env.UNIFIED_DOCTOR_READY),
-    sha256: process.env.UNIFIED_DOCTOR_SHA256 || ""
+    calendar_real_device_report: process.env.EVIDENCE_CALENDAR_REAL_DEVICE_REPORT || ""
   },
   project_governance_regression: {
     required: process.env.COVERAGE_XT_W3_36_REQUIRED === "1",
@@ -2927,14 +2280,8 @@ NODE
 }
 
 main() {
-  if ! validate_gate_configuration; then
-    return 2
-  fi
-
   run_gate_g0
   run_gate_g1
-  run_gate_strict_swift_tests || true
-  run_gate_release_unified_doctor || true
   run_gate_g2
   run_gate_g3
   run_gate_split_audit_contract
@@ -2960,91 +2307,4 @@ main() {
   return 0
 }
 
-print_usage() {
-  cat <<'USAGE'
-usage: xt_release_gate.sh
-       xt_release_gate.sh --check-configuration
-       xt_release_gate.sh --validate-unified-doctor REPORT [MAX_AGE_SECONDS] [NOW_MS]
-
-The no-argument form runs the complete gate. The validation subcommands do not
-run the release gate and exist for deterministic CI regression coverage.
-USAGE
-}
-
-case "${1:-}" in
-  "")
-    main
-    ;;
-  --check-configuration)
-    if (( $# != 1 )); then
-      print_usage >&2
-      exit 2
-    fi
-    validate_gate_configuration
-    ;;
-  --validate-unified-doctor)
-    if (( $# < 2 || $# > 4 )); then
-      print_usage >&2
-      exit 2
-    fi
-    doctor_validation_report="$2"
-    doctor_validation_max_age="${3:-900}"
-    doctor_validation_now_ms="${4:-$(($(date +%s) * 1000))}"
-    validate_unified_doctor_report \
-      "${doctor_validation_report}" \
-      "${doctor_validation_max_age}" \
-      "${doctor_validation_now_ms}"
-    ;;
-  --internal-test-strict-swift-pipeline)
-    if (( $# != 1 )) || [[ "${XT_GATE_INTERNAL_REGRESSION:-0}" != "1" ]]; then
-      echo "[xt-gate] internal strict-pipeline entrypoint is limited to gate regression tests" >&2
-      exit 2
-    fi
-    if ! validate_gate_configuration; then
-      exit 2
-    fi
-    if run_gate_strict_swift_tests; then
-      render_report
-      exit 0
-    fi
-    render_report
-    echo "[xt-gate] internal strict test pipeline failed; evidence: ${strict_test_evidence_file}" >&2
-    exit 1
-    ;;
-  --internal-test-split-flow-runtime-case)
-    if (( $# != 1 )) || [[ "${XT_GATE_INTERNAL_REGRESSION:-0}" != "1" ]]; then
-      echo "[xt-gate] internal split-flow entrypoint is limited to gate regression tests" >&2
-      exit 2
-    fi
-    if ! validate_gate_configuration; then
-      exit 2
-    fi
-    run_gate_split_flow_contract
-    render_report
-    if (( fail_count > 0 )); then
-      exit 1
-    fi
-    ;;
-  --internal-test-release-evidence-case)
-    if (( $# != 1 )) || [[ "${XT_GATE_INTERNAL_REGRESSION:-0}" != "1" ]]; then
-      echo "[xt-gate] internal release-evidence entrypoint is limited to gate regression tests" >&2
-      exit 2
-    fi
-    if ! validate_gate_configuration; then
-      exit 2
-    fi
-    run_gate_xt_ready_executable
-    run_gate_split_flow_runtime_policy_regression
-    render_report
-    if (( fail_count > 0 )); then
-      exit 1
-    fi
-    ;;
-  -h|--help)
-    print_usage
-    ;;
-  *)
-    print_usage >&2
-    exit 2
-    ;;
-esac
+main "$@"

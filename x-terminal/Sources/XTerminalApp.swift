@@ -615,7 +615,8 @@ enum XTerminalGateSmokeRunner {
             finished = true
         }
 
-        let deadline = Date().addingTimeInterval(30)
+        // The six bounded voice phases can legitimately consume more than 30 seconds together.
+        let deadline = Date().addingTimeInterval(75)
         while !finished && Date() < deadline {
             _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
         }
@@ -1106,7 +1107,14 @@ enum XTerminalGateSmokeRunner {
         outputURL: URL
     ) async -> Int {
         let projectRoot = workspaceRoot
-            .appendingPathComponent("voice_supervisor_smoke_project", isDirectory: true)
+            .appendingPathComponent(".axcoder/tmp", isDirectory: true)
+            .appendingPathComponent(
+                "supervisor_voice_smoke_\(UUID().uuidString.lowercased())",
+                isDirectory: true
+            )
+        defer {
+            try? FileManager.default.removeItem(at: projectRoot)
+        }
         var spoken: [String] = []
         var checks: [[String: Any]] = []
 

@@ -194,6 +194,7 @@ struct SupervisorCommandGuardTests {
 
         manager.setSupervisorToolExecutorOverrideForTesting { call, root in
             await observedCalls.record(call)
+            #expect(root.standardizedFileURL == fixture.hubBaseDir.standardizedFileURL)
             switch call.tool {
             case .skills_search:
                 #expect(call.args["query"]?.stringValue == "browser automation")

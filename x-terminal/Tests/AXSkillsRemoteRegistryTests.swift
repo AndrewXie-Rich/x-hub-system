@@ -10,6 +10,70 @@ import Glibc
 @Suite(.serialized)
 struct AXSkillsRemoteRegistryTests {
     @Test
+    func skillOverridesFollowRequestIdentityAcrossChildTasks() async {
+        let projectA = "override-project-a"
+        let projectB = "override-project-b"
+        let packageA = String(repeating: "a", count: 64)
+        let packageB = String(repeating: "b", count: 64)
+
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: projectA) { projectId in
+            #expect(projectId == projectA)
+            return HubIPCClient.ResolvedSkillsResult(
+                ok: true,
+                source: "test_project_a",
+                skills: [],
+                reasonCode: nil
+            )
+        }
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: projectB) { projectId in
+            #expect(projectId == projectB)
+            return HubIPCClient.ResolvedSkillsResult(
+                ok: true,
+                source: "test_project_b",
+                skills: [],
+                reasonCode: nil
+            )
+        }
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: packageA) { packageSHA256 in
+            #expect(packageSHA256 == packageA)
+            return HubIPCClient.SkillManifestResult(
+                ok: true,
+                source: "test_package_a",
+                packageSHA256: packageSHA256,
+                manifestJSON: "{}",
+                reasonCode: nil
+            )
+        }
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: packageB) { packageSHA256 in
+            #expect(packageSHA256 == packageB)
+            return HubIPCClient.SkillManifestResult(
+                ok: true,
+                source: "test_package_b",
+                packageSHA256: packageSHA256,
+                manifestJSON: "{}",
+                reasonCode: nil
+            )
+        }
+        defer {
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: projectA)
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: projectB)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: packageA)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: packageB)
+        }
+
+        async let resolvedA = HubIPCClient.listResolvedSkills(projectId: "  \(projectA)  ")
+        async let resolvedB = HubIPCClient.listResolvedSkills(projectId: projectB)
+        async let manifestA = HubIPCClient.getSkillManifest(packageSHA256: packageA.uppercased())
+        async let manifestB = HubIPCClient.getSkillManifest(packageSHA256: "  \(packageB)  ")
+        let results = await (resolvedA, resolvedB, manifestA, manifestB)
+
+        #expect(results.0.source == "test_project_a")
+        #expect(results.1.source == "test_project_b")
+        #expect(results.2.source == "test_package_a")
+        #expect(results.3.source == "test_package_b")
+    }
+
+    @Test
     func remoteResolvedSkillsCacheBuildsPreferredRegistryAndRouterMapping() async throws {
         let fixture = try RemoteSkillFixture(skillID: "summarize")
         defer { fixture.cleanup() }
@@ -20,7 +84,7 @@ struct AXSkillsRemoteRegistryTests {
         let manifestJSON = try fixture.officialSkillManifestJSON()
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
 
-        HubIPCClient.installResolvedSkillsOverrideForTesting { projectId in
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: fixture.projectID) { projectId in
             #expect(projectId == fixture.projectID)
             return HubIPCClient.ResolvedSkillsResult(
                 ok: true,
@@ -29,7 +93,7 @@ struct AXSkillsRemoteRegistryTests {
                 reasonCode: nil
             )
         }
-        HubIPCClient.installSkillManifestOverrideForTesting { packageSHA256 in
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256) { packageSHA256 in
             #expect(packageSHA256 == fixture.packageSHA256)
             return HubIPCClient.SkillManifestResult(
                 ok: true,
@@ -40,8 +104,8 @@ struct AXSkillsRemoteRegistryTests {
             )
         }
         defer {
-            HubIPCClient.resetResolvedSkillsOverrideForTesting()
-            HubIPCClient.resetSkillManifestOverrideForTesting()
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: fixture.projectID)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256)
         }
 
         let snapshot = try #require(
@@ -128,7 +192,7 @@ struct AXSkillsRemoteRegistryTests {
         defer { HubPaths.clearPinnedBaseDirOverride() }
         let manifestJSON = try fixture.officialSkillManifestJSON()
 
-        HubIPCClient.installResolvedSkillsOverrideForTesting { projectId in
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: fixture.projectID) { projectId in
             #expect(projectId == fixture.projectID)
             return HubIPCClient.ResolvedSkillsResult(
                 ok: true,
@@ -137,7 +201,7 @@ struct AXSkillsRemoteRegistryTests {
                 reasonCode: nil
             )
         }
-        HubIPCClient.installSkillManifestOverrideForTesting { packageSHA256 in
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256) { packageSHA256 in
             #expect(packageSHA256 == fixture.packageSHA256)
             return HubIPCClient.SkillManifestResult(
                 ok: true,
@@ -148,8 +212,8 @@ struct AXSkillsRemoteRegistryTests {
             )
         }
         defer {
-            HubIPCClient.resetResolvedSkillsOverrideForTesting()
-            HubIPCClient.resetSkillManifestOverrideForTesting()
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: fixture.projectID)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256)
         }
 
         let expiredSnapshot = try #require(
@@ -241,7 +305,7 @@ struct AXSkillsRemoteRegistryTests {
         defer { HubPaths.clearPinnedBaseDirOverride() }
 
         let remoteOnlySHA256 = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
-        HubIPCClient.installResolvedSkillsOverrideForTesting { projectId in
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: fixture.projectID) { projectId in
             #expect(projectId == fixture.projectID)
             return HubIPCClient.ResolvedSkillsResult(
                 ok: true,
@@ -259,7 +323,7 @@ struct AXSkillsRemoteRegistryTests {
                 reasonCode: nil
             )
         }
-        HubIPCClient.installSkillManifestOverrideForTesting { packageSHA256 in
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: remoteOnlySHA256) { packageSHA256 in
             #expect(packageSHA256 == remoteOnlySHA256)
             return HubIPCClient.SkillManifestResult(
                 ok: true,
@@ -287,8 +351,8 @@ struct AXSkillsRemoteRegistryTests {
             )
         }
         defer {
-            HubIPCClient.resetResolvedSkillsOverrideForTesting()
-            HubIPCClient.resetSkillManifestOverrideForTesting()
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: fixture.projectID)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: remoteOnlySHA256)
         }
 
         let snapshot = try #require(
@@ -362,7 +426,7 @@ struct AXSkillsRemoteRegistryTests {
                 reasonCode: nil
             )
         }
-        HubIPCClient.installResolvedSkillsOverrideForTesting { projectId in
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: fixture.projectID) { projectId in
             #expect(projectId == fixture.projectID)
             return HubIPCClient.ResolvedSkillsResult(
                 ok: true,
@@ -371,7 +435,7 @@ struct AXSkillsRemoteRegistryTests {
                 reasonCode: nil
             )
         }
-        HubIPCClient.installSkillManifestOverrideForTesting { packageSHA256 in
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256) { packageSHA256 in
             #expect(packageSHA256 == fixture.packageSHA256)
             return HubIPCClient.SkillManifestResult(
                 ok: true,
@@ -383,8 +447,8 @@ struct AXSkillsRemoteRegistryTests {
         }
         defer {
             HubIPCClient.resetSkillPinOverrideForTesting()
-            HubIPCClient.resetResolvedSkillsOverrideForTesting()
-            HubIPCClient.resetSkillManifestOverrideForTesting()
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: fixture.projectID)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256)
         }
 
         XTResolvedSkillsCacheStore.clear(for: fixture.context)
@@ -463,7 +527,7 @@ struct AXSkillsRemoteRegistryTests {
         let manifestJSON = try fixture.officialSkillManifestJSON()
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
 
-        HubIPCClient.installResolvedSkillsOverrideForTesting { projectId in
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: fixture.projectID) { projectId in
             #expect(projectId == fixture.projectID)
             return HubIPCClient.ResolvedSkillsResult(
                 ok: true,
@@ -472,7 +536,7 @@ struct AXSkillsRemoteRegistryTests {
                 reasonCode: nil
             )
         }
-        HubIPCClient.installSkillManifestOverrideForTesting { packageSHA256 in
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256) { packageSHA256 in
             #expect(packageSHA256 == fixture.packageSHA256)
             return HubIPCClient.SkillManifestResult(
                 ok: true,
@@ -483,8 +547,8 @@ struct AXSkillsRemoteRegistryTests {
             )
         }
         defer {
-            HubIPCClient.resetResolvedSkillsOverrideForTesting()
-            HubIPCClient.resetSkillManifestOverrideForTesting()
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: fixture.projectID)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256)
         }
 
         let snapshot = try #require(
@@ -572,7 +636,7 @@ struct AXSkillsRemoteRegistryTests {
         defer { HubPaths.clearPinnedBaseDirOverride() }
         let manifestJSON = try fixture.officialSkillManifestJSON()
 
-        HubIPCClient.installResolvedSkillsOverrideForTesting { projectId in
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: fixture.projectID) { projectId in
             #expect(projectId == fixture.projectID)
             return HubIPCClient.ResolvedSkillsResult(
                 ok: true,
@@ -581,7 +645,7 @@ struct AXSkillsRemoteRegistryTests {
                 reasonCode: nil
             )
         }
-        HubIPCClient.installSkillManifestOverrideForTesting { packageSHA256 in
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256) { packageSHA256 in
             #expect(packageSHA256 == fixture.packageSHA256)
             return HubIPCClient.SkillManifestResult(
                 ok: true,
@@ -592,8 +656,8 @@ struct AXSkillsRemoteRegistryTests {
             )
         }
         defer {
-            HubIPCClient.resetResolvedSkillsOverrideForTesting()
-            HubIPCClient.resetSkillManifestOverrideForTesting()
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: fixture.projectID)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256)
         }
 
         let expiredSnapshot = try #require(
@@ -686,7 +750,7 @@ struct AXSkillsRemoteRegistryTests {
         let packageSHA256 = fixture.packageSHA256
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
 
-        HubIPCClient.installResolvedSkillsOverrideForTesting { projectId in
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: fixture.projectID) { projectId in
             #expect(projectId == fixture.projectID)
             return HubIPCClient.ResolvedSkillsResult(
                 ok: true,
@@ -704,7 +768,7 @@ struct AXSkillsRemoteRegistryTests {
                 reasonCode: nil
             )
         }
-        HubIPCClient.installSkillManifestOverrideForTesting { requestedPackageSHA256 in
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: packageSHA256) { requestedPackageSHA256 in
             #expect(requestedPackageSHA256 == packageSHA256)
             return HubIPCClient.SkillManifestResult(
                 ok: true,
@@ -715,8 +779,8 @@ struct AXSkillsRemoteRegistryTests {
             )
         }
         defer {
-            HubIPCClient.resetResolvedSkillsOverrideForTesting()
-            HubIPCClient.resetSkillManifestOverrideForTesting()
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: fixture.projectID)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: packageSHA256)
         }
 
         let snapshot = try #require(
@@ -814,7 +878,7 @@ struct AXSkillsRemoteRegistryTests {
         defer { HubPaths.clearPinnedBaseDirOverride() }
         let manifestJSON = try fixture.officialSkillManifestJSON()
 
-        HubIPCClient.installResolvedSkillsOverrideForTesting { projectId in
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: fixture.projectID) { projectId in
             #expect(projectId == fixture.projectID)
             return HubIPCClient.ResolvedSkillsResult(
                 ok: true,
@@ -823,7 +887,7 @@ struct AXSkillsRemoteRegistryTests {
                 reasonCode: nil
             )
         }
-        HubIPCClient.installSkillManifestOverrideForTesting { packageSHA256 in
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256) { packageSHA256 in
             #expect(packageSHA256 == fixture.packageSHA256)
             return HubIPCClient.SkillManifestResult(
                 ok: true,
@@ -834,8 +898,8 @@ struct AXSkillsRemoteRegistryTests {
             )
         }
         defer {
-            HubIPCClient.resetResolvedSkillsOverrideForTesting()
-            HubIPCClient.resetSkillManifestOverrideForTesting()
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: fixture.projectID)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256)
         }
 
         _ = try #require(
@@ -895,7 +959,7 @@ struct AXSkillsRemoteRegistryTests {
         defer { HubPaths.clearPinnedBaseDirOverride() }
         let manifestJSON = try fixture.officialSkillManifestJSON()
 
-        HubIPCClient.installResolvedSkillsOverrideForTesting { projectId in
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: fixture.projectID) { projectId in
             #expect(projectId == fixture.projectID)
             return HubIPCClient.ResolvedSkillsResult(
                 ok: true,
@@ -904,7 +968,7 @@ struct AXSkillsRemoteRegistryTests {
                 reasonCode: nil
             )
         }
-        HubIPCClient.installSkillManifestOverrideForTesting { packageSHA256 in
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256) { packageSHA256 in
             #expect(packageSHA256 == fixture.packageSHA256)
             return HubIPCClient.SkillManifestResult(
                 ok: true,
@@ -915,8 +979,8 @@ struct AXSkillsRemoteRegistryTests {
             )
         }
         defer {
-            HubIPCClient.resetResolvedSkillsOverrideForTesting()
-            HubIPCClient.resetSkillManifestOverrideForTesting()
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: fixture.projectID)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256)
         }
 
         _ = try #require(
@@ -970,7 +1034,7 @@ struct AXSkillsRemoteRegistryTests {
         let manifestJSON = try fixture.officialSkillManifestJSON()
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
 
-        HubIPCClient.installResolvedSkillsOverrideForTesting { projectId in
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: fixture.projectID) { projectId in
             #expect(projectId == fixture.projectID)
             return HubIPCClient.ResolvedSkillsResult(
                 ok: true,
@@ -979,7 +1043,7 @@ struct AXSkillsRemoteRegistryTests {
                 reasonCode: nil
             )
         }
-        HubIPCClient.installSkillManifestOverrideForTesting { packageSHA256 in
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256) { packageSHA256 in
             #expect(packageSHA256 == fixture.packageSHA256)
             return HubIPCClient.SkillManifestResult(
                 ok: true,
@@ -990,8 +1054,8 @@ struct AXSkillsRemoteRegistryTests {
             )
         }
         defer {
-            HubIPCClient.resetResolvedSkillsOverrideForTesting()
-            HubIPCClient.resetSkillManifestOverrideForTesting()
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: fixture.projectID)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256)
         }
 
         let snapshot = try #require(
@@ -1123,7 +1187,7 @@ struct AXSkillsRemoteRegistryTests {
         """#
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
 
-        HubIPCClient.installResolvedSkillsOverrideForTesting { projectId in
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: fixture.projectID) { projectId in
             #expect(projectId == fixture.projectID)
             return HubIPCClient.ResolvedSkillsResult(
                 ok: true,
@@ -1140,7 +1204,7 @@ struct AXSkillsRemoteRegistryTests {
                 reasonCode: nil
             )
         }
-        HubIPCClient.installSkillManifestOverrideForTesting { packageSHA256 in
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256) { packageSHA256 in
             #expect(packageSHA256 == fixture.packageSHA256)
             return HubIPCClient.SkillManifestResult(
                 ok: true,
@@ -1151,8 +1215,8 @@ struct AXSkillsRemoteRegistryTests {
             )
         }
         defer {
-            HubIPCClient.resetResolvedSkillsOverrideForTesting()
-            HubIPCClient.resetSkillManifestOverrideForTesting()
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: fixture.projectID)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256)
         }
 
         let snapshot = try #require(
@@ -1317,7 +1381,7 @@ struct AXSkillsRemoteRegistryTests {
         """#
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
 
-        HubIPCClient.installResolvedSkillsOverrideForTesting { projectId in
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: fixture.projectID) { projectId in
             #expect(projectId == fixture.projectID)
             return HubIPCClient.ResolvedSkillsResult(
                 ok: true,
@@ -1334,7 +1398,7 @@ struct AXSkillsRemoteRegistryTests {
                 reasonCode: nil
             )
         }
-        HubIPCClient.installSkillManifestOverrideForTesting { packageSHA256 in
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256) { packageSHA256 in
             #expect(packageSHA256 == fixture.packageSHA256)
             return HubIPCClient.SkillManifestResult(
                 ok: true,
@@ -1345,8 +1409,8 @@ struct AXSkillsRemoteRegistryTests {
             )
         }
         defer {
-            HubIPCClient.resetResolvedSkillsOverrideForTesting()
-            HubIPCClient.resetSkillManifestOverrideForTesting()
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: fixture.projectID)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256)
         }
 
         let snapshot = try #require(
@@ -1493,7 +1557,7 @@ struct AXSkillsRemoteRegistryTests {
         """#
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
 
-        HubIPCClient.installResolvedSkillsOverrideForTesting { projectId in
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: fixture.projectID) { projectId in
             #expect(projectId == fixture.projectID)
             return HubIPCClient.ResolvedSkillsResult(
                 ok: true,
@@ -1510,7 +1574,7 @@ struct AXSkillsRemoteRegistryTests {
                 reasonCode: nil
             )
         }
-        HubIPCClient.installSkillManifestOverrideForTesting { packageSHA256 in
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256) { packageSHA256 in
             #expect(packageSHA256 == fixture.packageSHA256)
             return HubIPCClient.SkillManifestResult(
                 ok: true,
@@ -1521,8 +1585,8 @@ struct AXSkillsRemoteRegistryTests {
             )
         }
         defer {
-            HubIPCClient.resetResolvedSkillsOverrideForTesting()
-            HubIPCClient.resetSkillManifestOverrideForTesting()
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: fixture.projectID)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256)
         }
 
         let manager = SupervisorManager.makeForTesting()
@@ -1648,7 +1712,7 @@ struct AXSkillsRemoteRegistryTests {
         """#
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
 
-        HubIPCClient.installResolvedSkillsOverrideForTesting { projectId in
+        HubIPCClient.installResolvedSkillsOverrideForTesting(projectId: fixture.projectID) { projectId in
             #expect(projectId == fixture.projectID)
             return HubIPCClient.ResolvedSkillsResult(
                 ok: true,
@@ -1665,7 +1729,7 @@ struct AXSkillsRemoteRegistryTests {
                 reasonCode: nil
             )
         }
-        HubIPCClient.installSkillManifestOverrideForTesting { packageSHA256 in
+        HubIPCClient.installSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256) { packageSHA256 in
             #expect(packageSHA256 == fixture.packageSHA256)
             return HubIPCClient.SkillManifestResult(
                 ok: true,
@@ -1676,8 +1740,8 @@ struct AXSkillsRemoteRegistryTests {
             )
         }
         defer {
-            HubIPCClient.resetResolvedSkillsOverrideForTesting()
-            HubIPCClient.resetSkillManifestOverrideForTesting()
+            HubIPCClient.resetResolvedSkillsOverrideForTesting(projectId: fixture.projectID)
+            HubIPCClient.resetSkillManifestOverrideForTesting(packageSHA256: fixture.packageSHA256)
         }
 
         final class DispatchFlag: @unchecked Sendable {

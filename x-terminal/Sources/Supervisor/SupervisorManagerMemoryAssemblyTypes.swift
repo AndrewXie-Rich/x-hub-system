@@ -147,6 +147,20 @@ extension SupervisorManager {
         var workingSet: String
     }
 
+    struct SupervisorMemoryFocusedProjectFragments {
+        var workflowSlice: SupervisorWorkflowMemorySlice?
+        var focusedProjectRetrieval: String
+        var includeLongtermOutline: Bool
+        var executionBrief: SupervisorFocusedProjectExecutionBrief?
+        var portfolioBrief: String
+        var focusedProjectAnchorPack: String
+        var longtermOutline: String
+        var canonicalLayer: String
+        var observationsLayer: String
+        var deltaFeed: String
+        var servingContext: SupervisorFocusedProjectServingContext?
+    }
+
     struct SupervisorFocusedProjectSelection {
         var project: AXProjectEntry
         var source: String
