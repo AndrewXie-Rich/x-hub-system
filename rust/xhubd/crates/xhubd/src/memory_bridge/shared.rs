@@ -23,8 +23,6 @@ pub(crate) const MEMORY_GATEWAY_PREPARE_SCHEMA: &str = "xhub.memory.gateway_prep
 pub(crate) const MEMORY_WRITEBACK_CANDIDATE_SCHEMA: &str = "xhub.memory.writeback_candidate.v1";
 pub(crate) const MEMORY_WRITEBACK_CANDIDATE_EXTRACT_SCHEMA: &str =
     "xhub.memory.writeback_candidate_extract.v1";
-pub(crate) const MEMORY_WRITEBACK_CANDIDATE_DIAGNOSTICS_SCHEMA: &str =
-    "xhub.memory.writeback_candidate_diagnostics.v1";
 pub(crate) const MEMORY_OBJECT_RETRIEVAL_SOURCE: &str = "rust_memory_objects_hybrid_v1";
 pub(crate) const MEMORY_RETRIEVAL_TRACE_LIMIT: usize = 32;
 pub(crate) static MEMORY_OBJECT_COUNTER: AtomicU64 = AtomicU64::new(1);

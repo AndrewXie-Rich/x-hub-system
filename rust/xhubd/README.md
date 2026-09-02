@@ -863,13 +863,14 @@ review counts, queue pressure, noise score, bounded IDs, and
 `production_authority_change=false`. The Swift shell consumes this as read-only
 evidence in the candidate queue and Unified Doctor; Rust still enforces conflict
 approval reasons and remains the memory authority.
-The current modular kernel exposes candidate diagnostics as read-only evidence,
-but does not expose candidate maintenance mutation. `/memory/readiness` reports
-`candidate_maintenance_http=false`, `candidate_maintenance_cli=false`, and
-`maintenance_ready=false` until the archived maintenance implementation is
-migrated and independently release-gated. Do not infer maintenance authority
-from older plans or the legacy `tools/memory_writeback_candidate_smoke.command`.
-That smoke remains a migration fixture and is not part of the packaged release.
+`POST /memory/writeback/candidates/maintenance` is the Rust stale queue hygiene
+surface. It is dry-run by default; `apply=1` is required to mutate. Low-risk
+stale working-set/observation candidates are archived with memory events, while
+canonical/high-value candidates stay pending and get `stale_review_required`
+metadata for explicit review. CLI access is available through `xhubd memory
+candidate-maintenance --project-id ... --max-age-ms ... --apply`.
+`tools/memory_writeback_candidate_smoke.command` runs an isolated temp daemon and
+verifies the full candidate lifecycle without touching the live Hub database.
 XT now calls this extractor from `AXMemoryPipeline` after model/fallback
 `AXMemoryDelta` creation through `HubIPCClient.extractMemoryWritebackCandidatesViaRust`.
 That caller is short-timeout, candidate-only, skips removal-only deltas, and logs

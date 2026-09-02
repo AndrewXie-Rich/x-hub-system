@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use xhub_core::{json_escape, now_ms, HubConfig};
-use xhub_db::{apply_baseline_migrations, write_shadow_compare_report, ShadowCompareReport};
+use xhub_db::apply_baseline_migrations;
 
 fn test_config(access_key: Option<&str>, require_access_key: bool) -> HubConfig {
     let root = PathBuf::from("/tmp/xhubd-test");
@@ -295,7 +295,7 @@ fn compare_evidence_readiness_is_read_only_and_exposes_zero_of_ten() {
     ));
     assert!(!db_path.exists());
 
-    let evidence = compare_evidence_readiness(&db_path, "provider_route", 10, 0, 3_600_000);
+    let evidence = compare_evidence_readiness(&db_path, "provider_route", 10, 0);
     let value = evidence.to_value();
 
     assert!(
@@ -311,58 +311,6 @@ fn compare_evidence_readiness_is_read_only_and_exposes_zero_of_ten() {
         value["blocker_codes"][0],
         "provider_route_compare_evidence_insufficient"
     );
-    assert_eq!(value["evidence"]["fresh"], false);
-    assert_eq!(value["evidence"]["age_ms"], Value::Null);
-}
-
-#[test]
-fn compare_evidence_freshness_fails_closed_for_stale_and_future_timestamps() {
-    let db_path = std::env::temp_dir().join(format!(
-        "xhub_layered_readiness_freshness_{}_{}.sqlite3",
-        std::process::id(),
-        now_ms()
-    ));
-    apply_baseline_migrations(&db_path).expect("migrate evidence db");
-    write_shadow_compare_report(
-        &db_path,
-        &ShadowCompareReport {
-            report_id: "provider-freshness-1".to_string(),
-            component: "provider_route".to_string(),
-            compared_at_ms: 1_000,
-            match_result: "match".to_string(),
-            rust_status_json: "{}".to_string(),
-            node_status_json: "{}".to_string(),
-            mismatch_json: "[]".to_string(),
-        },
-    )
-    .expect("write evidence");
-
-    let fresh = compare_evidence_readiness_at(&db_path, "provider_route", 1, 0, 500, 1_400);
-    let fresh_value = fresh.to_value();
-    assert_eq!(fresh_value["ready"], true);
-    assert_eq!(fresh_value["evidence"]["age_ms"], 400);
-    assert_eq!(fresh_value["evidence"]["fresh"], true);
-
-    let stale = compare_evidence_readiness_at(&db_path, "provider_route", 1, 0, 500, 1_501);
-    let stale_value = stale.to_value();
-    assert_eq!(stale_value["ready"], false);
-    assert_eq!(stale_value["evidence"]["age_ms"], 501);
-    assert!(stale_value["blocker_codes"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("provider_route_compare_evidence_stale")));
-
-    let future = compare_evidence_readiness_at(&db_path, "provider_route", 1, 0, 500, 999);
-    let future_value = future.to_value();
-    assert_eq!(future_value["ready"], false);
-    assert_eq!(future_value["evidence"]["timestamp_valid"], false);
-    assert_eq!(future_value["evidence"]["age_ms"], Value::Null);
-    assert!(future_value["blocker_codes"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("provider_route_compare_evidence_timestamp_invalid")));
-
-    let _ = std::fs::remove_file(&db_path);
 }
 
 #[test]
@@ -372,10 +320,10 @@ fn layered_readiness_distinguishes_serving_candidate_partial_and_applied_cutover
         std::process::id(),
         now_ms()
     ));
-    let provider_blocked = compare_evidence_readiness(&db_path, "provider_route", 10, 0, 3_600_000);
-    let model_blocked = compare_evidence_readiness(&db_path, "model_inventory", 10, 0, 3_600_000);
-    let provider = compare_evidence_readiness(&db_path, "provider_route", 0, 0, 3_600_000);
-    let model = compare_evidence_readiness(&db_path, "model_inventory", 0, 0, 3_600_000);
+    let provider_blocked = compare_evidence_readiness(&db_path, "provider_route", 10, 0);
+    let model_blocked = compare_evidence_readiness(&db_path, "model_inventory", 10, 0);
+    let provider = compare_evidence_readiness(&db_path, "provider_route", 0, 0);
+    let model = compare_evidence_readiness(&db_path, "model_inventory", 0, 0);
     let base_authority = ProductionAuthorityReadiness {
         provider_route_in_rust: false,
         model_route_in_rust: false,

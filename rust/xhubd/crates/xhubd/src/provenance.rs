@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use crate::sha256;
 
 const RUNTIME_SCHEMA_VERSION: &str = "xhub.rust_hub.provenance.v1";
-const PACKAGE_SCHEMA_VERSION: &str = "xhub.rust_hub.package_provenance.v2";
+const PACKAGE_SCHEMA_VERSION: &str = "xhub.rust_hub.package_provenance.v1";
 const EMBEDDED_BUILD_PROVENANCE: &str = include_str!(env!("XHUB_BUILD_PROVENANCE_PATH"));
 
 pub(crate) fn run(args: &[String]) -> Result<(), String> {
@@ -434,24 +434,13 @@ fn verify_discovered_package(
             "issues": []
         });
     };
-    let manifest_metadata = fs::symlink_metadata(&manifest_path);
-    if manifest_metadata.is_err() {
+    if !manifest_path.is_file() {
         return json!({
             "required": required,
             "status": "missing",
             "verified": false,
             "path": manifest_path.display().to_string(),
             "issues": ["package_manifest_missing"]
-        });
-    }
-    let manifest_metadata = manifest_metadata.expect("checked above");
-    if manifest_metadata.file_type().is_symlink() || !manifest_metadata.is_file() {
-        return json!({
-            "required": required,
-            "status": "invalid",
-            "verified": false,
-            "path": manifest_path.display().to_string(),
-            "issues": ["package_manifest_not_regular_file"]
         });
     }
 
@@ -572,7 +561,6 @@ struct ContentVerification {
     migrations_expected: usize,
     migrations_verified: usize,
     capability_manifest_verified: bool,
-    package_files: Vec<Value>,
     issues: Vec<String>,
 }
 
@@ -582,8 +570,6 @@ impl ContentVerification {
             "migrations_expected": self.migrations_expected,
             "migrations_verified": self.migrations_verified,
             "capability_manifest_verified": self.capability_manifest_verified,
-            "package_file_count": self.package_files.len(),
-            "package_files": self.package_files,
             "issues": self.issues
         })
     }
@@ -591,7 +577,6 @@ impl ContentVerification {
 
 fn verify_packaged_contents(package_root: &Path, build_provenance: &Value) -> ContentVerification {
     let mut issues = Vec::new();
-    let package_files = package_file_inventory(package_root, &mut issues);
     let migrations = build_provenance
         .get("migrations")
         .and_then(Value::as_array)
@@ -656,95 +641,7 @@ fn verify_packaged_contents(package_root: &Path, build_provenance: &Value) -> Co
         migrations_expected: migrations.len(),
         migrations_verified,
         capability_manifest_verified,
-        package_files,
         issues,
-    }
-}
-
-fn package_file_inventory(package_root: &Path, issues: &mut Vec<String>) -> Vec<Value> {
-    let mut files = Vec::<Value>::new();
-    collect_package_files(package_root, package_root, &mut files, issues);
-    files.sort_by(|left, right| {
-        left.get("relative_path")
-            .and_then(Value::as_str)
-            .cmp(&right.get("relative_path").and_then(Value::as_str))
-    });
-    files
-}
-
-fn collect_package_files(
-    package_root: &Path,
-    directory: &Path,
-    files: &mut Vec<Value>,
-    issues: &mut Vec<String>,
-) {
-    let entries = match fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(error) => {
-            issues.push(format!(
-                "package_inventory_directory_unavailable:{}:{error}",
-                directory.display()
-            ));
-            return;
-        }
-    };
-    let mut paths = Vec::new();
-    for entry in entries {
-        match entry {
-            Ok(entry) => paths.push(entry.path()),
-            Err(error) => issues.push(format!("package_inventory_entry_unavailable:{error}")),
-        }
-    }
-    paths.sort();
-
-    for path in paths {
-        let relative = match path.strip_prefix(package_root) {
-            Ok(relative) => relative,
-            Err(_) => {
-                issues.push(format!("package_inventory_path_escaped:{}", path.display()));
-                continue;
-            }
-        };
-        let Some(relative_path) = relative.to_str() else {
-            issues.push("package_inventory_non_utf8_path".to_string());
-            continue;
-        };
-        let relative_path = relative_path.replace(std::path::MAIN_SEPARATOR, "/");
-        if matches!(relative_path.as_str(), "provenance.json" | "bin/xhubd") {
-            continue;
-        }
-
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                issues.push(format!(
-                    "package_inventory_metadata_unavailable:{relative_path}:{error}"
-                ));
-                continue;
-            }
-        };
-        if metadata.file_type().is_symlink() {
-            issues.push(format!(
-                "package_inventory_symlink_forbidden:{relative_path}"
-            ));
-        } else if metadata.is_dir() {
-            collect_package_files(package_root, &path, files, issues);
-        } else if metadata.is_file() {
-            match sha256::file_digest_hex(&path) {
-                Ok((sha256, bytes)) => files.push(json!({
-                    "relative_path": relative_path,
-                    "sha256": sha256,
-                    "bytes": bytes,
-                })),
-                Err(error) => issues.push(format!(
-                    "package_inventory_hash_unavailable:{relative_path}:{error}"
-                )),
-            }
-        } else {
-            issues.push(format!(
-                "package_inventory_unsupported_file_type:{relative_path}"
-            ));
-        }
     }
 }
 
@@ -843,7 +740,7 @@ mod tests {
         assert!(!is_safe_relative_path("/tmp/capabilities.json"));
         assert_eq!(
             PACKAGE_SCHEMA_VERSION,
-            "xhub.rust_hub.package_provenance.v2"
+            "xhub.rust_hub.package_provenance.v1"
         );
     }
 
@@ -872,18 +769,6 @@ mod tests {
         assert!(verified.issues.is_empty());
         assert_eq!(verified.migrations_verified, 1);
         assert!(verified.capability_manifest_verified);
-        assert_eq!(verified.package_files.len(), 2);
-        assert!(verified.package_files.iter().any(|file| {
-            file["relative_path"] == "migrations/0001_test.sql"
-                && file["sha256"] == sha256::digest_hex(migration)
-        }));
-
-        let original_inventory = verified.value()["package_files"].clone();
-        fs::write(root.join("docs.txt"), b"unexpected package addition\n")
-            .expect("write additional package file");
-        let with_extra = verify_packaged_contents(&root, &build);
-        assert_ne!(with_extra.value()["package_files"], original_inventory);
-        fs::remove_file(root.join("docs.txt")).expect("remove additional package file");
 
         fs::write(root.join("migrations/0001_test.sql"), b"tampered\n").expect("tamper migration");
         let tampered = verify_packaged_contents(&root, &build);
@@ -892,18 +777,6 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue == "package_migration_sha256_mismatch:0001_test.sql"));
-
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(
-                root.join("provenance/capabilities.json"),
-                root.join("provenance/forbidden-link.json"),
-            )
-            .expect("write forbidden symlink");
-            let symlinked = verify_packaged_contents(&root, &build);
-            assert!(symlinked.issues.iter().any(|issue| issue
-                == "package_inventory_symlink_forbidden:provenance/forbidden-link.json"));
-        }
 
         fs::remove_dir_all(root).expect("remove provenance test directory");
     }

@@ -55,7 +55,6 @@
       "write",
       "object_store",
       "candidate_review",
-      "candidate_diagnostics",
       "derived_index",
       "policy_evaluation",
       "gateway_context",

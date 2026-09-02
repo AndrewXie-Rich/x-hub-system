@@ -9,7 +9,6 @@ const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const STATE_DIR = path.join(ROOT_DIR, 'reports', 'route_authority_prep');
 const STATE_FILE = path.join(STATE_DIR, 'launchctl_session_env_state.json');
 const MIN_LIVE_COMPARE_REPORTS = 10;
-const DEFAULT_COMPARE_EVIDENCE_MAX_AGE_MS = 15 * 60 * 1000;
 
 const KEYS = [
   'XHUB_RUST_HUB_ROOT',
@@ -25,7 +24,6 @@ const KEYS = [
   'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_FALLBACK_ON_ERROR',
   'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MIN_COMPARE_REPORTS',
   'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MAX_MISMATCHES',
-  'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MAX_EVIDENCE_AGE_MS',
   'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_CANDIDATE',
   'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_CANDIDATE_CACHE_MS',
   'XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_CANDIDATE_CACHE_MAX_ENTRIES',
@@ -42,7 +40,6 @@ const KEYS = [
   'XHUB_RUST_MODEL_ROUTE_AUTHORITY_FALLBACK_ON_ERROR',
   'XHUB_RUST_MODEL_ROUTE_AUTHORITY_MIN_COMPARE_REPORTS',
   'XHUB_RUST_MODEL_ROUTE_AUTHORITY_MAX_MISMATCHES',
-  'XHUB_RUST_MODEL_ROUTE_AUTHORITY_MAX_EVIDENCE_AGE_MS',
   'XHUB_RUST_MODEL_ROUTE_AUTHORITY_CANDIDATE_CACHE_MS',
   'XHUB_RUST_MODEL_ROUTE_AUTHORITY_CANDIDATE_CACHE_MAX_ENTRIES',
 ];
@@ -67,7 +64,6 @@ function parseArgs(argv) {
     providerMaxMismatches: 0,
     modelMinCompareReports: MIN_LIVE_COMPARE_REPORTS,
     modelMaxMismatches: 0,
-    compareEvidenceMaxAgeMs: DEFAULT_COMPARE_EVIDENCE_MAX_AGE_MS,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -111,15 +107,6 @@ function parseArgs(argv) {
         );
         i += 1;
         break;
-      case '--max-evidence-age-ms':
-        out.compareEvidenceMaxAgeMs = parseIntInRange(
-          next,
-          out.compareEvidenceMaxAgeMs,
-          1000,
-          7 * 24 * 60 * 60 * 1000,
-        );
-        i += 1;
-        break;
       case '--self-test':
         out.selfTest = true;
         break;
@@ -153,7 +140,6 @@ function usage() {
     '  --http-base-url <u>              Rust xhubd HTTP base URL',
     '  --provider-min-compare-reports <n> Live provider evidence threshold, default/minimum 10',
     '  --model-min-compare-reports <n>    Live model evidence threshold, default/minimum 10',
-    '  --max-evidence-age-ms <n>           Provider/model latest evidence age limit, default 900000',
     '  --self-test                      Run in-memory self-test',
   ].join('\n');
 }
@@ -173,7 +159,6 @@ function desiredEnv(config) {
     XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_FALLBACK_ON_ERROR: '1',
     XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MIN_COMPARE_REPORTS: String(config.providerMinCompareReports),
     XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MAX_MISMATCHES: String(config.providerMaxMismatches),
-    XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MAX_EVIDENCE_AGE_MS: String(config.compareEvidenceMaxAgeMs),
     XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_CANDIDATE: '1',
     XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_CANDIDATE_CACHE_MS: '250',
     XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_CANDIDATE_CACHE_MAX_ENTRIES: '128',
@@ -190,7 +175,6 @@ function desiredEnv(config) {
     XHUB_RUST_MODEL_ROUTE_AUTHORITY_FALLBACK_ON_ERROR: '1',
     XHUB_RUST_MODEL_ROUTE_AUTHORITY_MIN_COMPARE_REPORTS: String(config.modelMinCompareReports),
     XHUB_RUST_MODEL_ROUTE_AUTHORITY_MAX_MISMATCHES: String(config.modelMaxMismatches),
-    XHUB_RUST_MODEL_ROUTE_AUTHORITY_MAX_EVIDENCE_AGE_MS: String(config.compareEvidenceMaxAgeMs),
     XHUB_RUST_MODEL_ROUTE_AUTHORITY_CANDIDATE_CACHE_MS: '250',
     XHUB_RUST_MODEL_ROUTE_AUTHORITY_CANDIDATE_CACHE_MAX_ENTRIES: '128',
   };
@@ -253,21 +237,17 @@ function runSelfTest() {
   const defaults = parseArgs([]);
   if (defaults.providerMinCompareReports !== MIN_LIVE_COMPARE_REPORTS) throw new Error('provider threshold default failed');
   if (defaults.modelMinCompareReports !== MIN_LIVE_COMPARE_REPORTS) throw new Error('model threshold default failed');
-  if (defaults.compareEvidenceMaxAgeMs !== DEFAULT_COMPARE_EVIDENCE_MAX_AGE_MS) throw new Error('evidence age default failed');
   const config = parseArgs([
     '--apply',
     '--rust-hub-root', '/tmp/rust-hub',
     '--provider-min-compare-reports', '7',
     '--model-min-compare-reports', '3',
-    '--max-evidence-age-ms', '120000',
   ]);
   const env = desiredEnv(config);
   if (env.XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_PREP !== '1') throw new Error('provider prep env missing');
   if (env.XHUB_RUST_MODEL_ROUTE_AUTHORITY_PREP !== '1') throw new Error('model prep env missing');
   if (env.XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MIN_COMPARE_REPORTS !== '10') throw new Error('provider threshold clamp failed');
   if (env.XHUB_RUST_MODEL_ROUTE_AUTHORITY_MIN_COMPARE_REPORTS !== '10') throw new Error('model threshold clamp failed');
-  if (env.XHUB_RUST_PROVIDER_ROUTE_AUTHORITY_MAX_EVIDENCE_AGE_MS !== '120000') throw new Error('provider evidence age missing');
-  if (env.XHUB_RUST_MODEL_ROUTE_AUTHORITY_MAX_EVIDENCE_AGE_MS !== '120000') throw new Error('model evidence age missing');
   if (parseArgs(['--clear-production-env']).mode !== 'clear-production-env') throw new Error('clear production mode failed');
 }
 

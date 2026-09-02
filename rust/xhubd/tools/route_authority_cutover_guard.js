@@ -9,80 +9,6 @@ const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const REPORT_DIR = path.join(ROOT_DIR, 'reports');
 const MIN_PROVIDER_SHADOW_COMPARE_REPORTS = 10;
 const MIN_LIVE_MODEL_COMPARE_REPORTS = 10;
-const INNER_FAILURE_SCHEMA = 'xhub.route_authority.inner_failure.v1';
-
-function safeString(value) {
-  return String(value ?? '').trim();
-}
-
-function redactDiagnosticText(value) {
-  const original = String(value ?? '');
-  const redacted = original
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
-    .replace(/(X-XHub-Access-Key\s*[:=]\s*)[A-Za-z0-9._~+/=-]+/gi, '$1[REDACTED]')
-    .replace(/(XHUB_[A-Z0-9_]*ACCESS_KEY\s*=\s*)[^\s]+/gi, '$1[REDACTED]')
-    .replace(/("?(?:api_key|access_key|token|secret)"?\s*[:=]\s*")([^"\n]+)(")/gi, '$1[REDACTED]$3')
-    .replace(/([?&](?:api_key|access_key|access_token|token|key)=)[^&\s]+/gi, '$1[REDACTED]')
-    .replace(/\bsk-[A-Za-z0-9][A-Za-z0-9_-]{12,}\b/g, 'sk-[REDACTED]')
-    .replace(/\b[a-f0-9]{48,128}\b/gi, '[REDACTED_HEX]');
-  return { text: redacted, redaction_applied: redacted !== original };
-}
-
-function boundedDiagnostic(value, maxChars = 2000, maxLines = 20) {
-  const redacted = redactDiagnosticText(value);
-  const lines = redacted.text.split(/\r?\n/).slice(-maxLines).join('\n');
-  return { text: lines.slice(-maxChars), redaction_applied: redacted.redaction_applied };
-}
-
-function innerFailureKind(exitCode, parsed, decision) {
-  if (exitCode !== 0 && exitCode !== 2) return 'execution_failed';
-  if (!parsed) return 'output_not_parseable';
-  if (exitCode === 2 || decision === 'not_ready') return 'not_ready';
-  return 'contract_failed';
-}
-
-function normalizeInnerFailure(value, defaults = {}) {
-  const parseDiagnostic = boundedDiagnostic(value?.parse_error, 500, 5);
-  const stderrDiagnostic = boundedDiagnostic(value?.stderr_tail || value?.stderr, 2000, 20);
-  const exitCode = Number(value?.exit_code ?? defaults.exit_code ?? -1);
-  const parsed = value?.parsed === true;
-  const decision = safeString(value?.decision || defaults.decision).slice(0, 128);
-  return {
-    schema_version: INNER_FAILURE_SCHEMA,
-    component: safeString(value?.component || defaults.component).slice(0, 64),
-    stage: safeString(value?.stage || defaults.stage).slice(0, 128),
-    parent_stage: safeString(value?.parent_stage || defaults.parent_stage).slice(0, 128),
-    kind: ['execution_failed', 'output_not_parseable', 'not_ready', 'contract_failed']
-      .includes(safeString(value?.kind))
-      ? safeString(value.kind)
-      : innerFailureKind(exitCode, parsed, decision),
-    exit_code: exitCode,
-    parsed,
-    decision,
-    parse_error: parseDiagnostic.text,
-    stderr_tail: stderrDiagnostic.text,
-    failed_checks: Array.isArray(value?.failed_checks)
-      ? value.failed_checks.map((item) => safeString(item).slice(0, 128)).filter(Boolean).slice(0, 32)
-      : [],
-    diagnostic_redaction_applied: value?.diagnostic_redaction_applied === true
-      || parseDiagnostic.redaction_applied
-      || stderrDiagnostic.redaction_applied,
-  };
-}
-
-function immediateInnerFailure({ component, stage, parentStage, result, decision, failedChecks }) {
-  return normalizeInnerFailure({
-    component,
-    stage,
-    parent_stage: parentStage,
-    exit_code: Number(result?.exit_code ?? -1),
-    parsed: result?.parsed === true,
-    decision,
-    parse_error: result?.parse_error,
-    stderr_tail: result?.stderr,
-    failed_checks: failedChecks,
-  });
-}
 
 function parseIntInRange(value, fallback, min, max) {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -267,7 +193,7 @@ function runJson(command, args, timeoutMs) {
     });
   } catch (error) {
     output = String(error.stdout || '');
-    stderr = String(error.stderr || error.message || '');
+    stderr = String(error.stderr || error.message || '').slice(0, 4000);
     exitCode = Number(error.status || 1);
   }
   let payload = null;
@@ -401,77 +327,6 @@ function reduce(collected, config) {
   if (!productionBlockerOk) issues.push('route_authority_production_blocker_not_safe');
   if (providerPayload?.plan?.production_authority_change !== false) issues.push('provider_plan_attempted_production_change');
   if (modelPayload?.plan?.production_authority_change !== false) issues.push('model_plan_attempted_production_change');
-  const innerFailures = [];
-  const providerNestedFailures = Array.isArray(providerPayload?.inner_failures)
-    ? providerPayload.inner_failures
-    : (Array.isArray(providerPayload?.plan?.inner_failures) ? providerPayload.plan.inner_failures : []);
-  for (const failure of providerNestedFailures) {
-    innerFailures.push(normalizeInnerFailure(failure, {
-      component: 'provider_route',
-      parent_stage: 'provider_route_authority_plan_runner',
-    }));
-  }
-  const modelNestedFailures = Array.isArray(modelPayload?.inner_failures)
-    ? modelPayload.inner_failures
-    : (Array.isArray(modelPayload?.plan?.inner_failures) ? modelPayload.plan.inner_failures : []);
-  for (const failure of modelNestedFailures) {
-    innerFailures.push(normalizeInnerFailure(failure, {
-      component: 'model_route',
-      parent_stage: 'model_route_authority_plan_runner',
-    }));
-  }
-  if (!providerReady || collected.providerPlan?.exit_code !== 0 || collected.providerPlan?.parsed !== true) {
-    innerFailures.push(immediateInnerFailure({
-      component: 'provider_route',
-      stage: 'provider_route_authority_plan_runner',
-      parentStage: 'route_authority_cutover_guard',
-      result: collected.providerPlan,
-      decision: String(providerPayload?.plan?.decision || 'not_ready'),
-      failedChecks: issues.filter((issue) => issue.startsWith('provider_')),
-    }));
-  }
-  if (!modelReady || collected.modelPlan?.exit_code !== 0 || collected.modelPlan?.parsed !== true) {
-    innerFailures.push(immediateInnerFailure({
-      component: 'model_route',
-      stage: 'model_route_authority_plan_runner',
-      parentStage: 'route_authority_cutover_guard',
-      result: collected.modelPlan,
-      decision: String(modelPayload?.plan?.decision || 'not_ready'),
-      failedChecks: issues.filter((issue) => issue.startsWith('model_')),
-    }));
-  }
-  if (!schedulerOk && config.schedulerGateMode !== 'skip') {
-    const schedulerResult = config.schedulerGateMode === 'ready' && collected.schedulerPlan
-      ? collected.schedulerPlan
-      : collected.schedulerGuard;
-    innerFailures.push(immediateInnerFailure({
-      component: 'scheduler',
-      stage: config.schedulerGateMode === 'ready'
-        ? 'scheduler_production_authority_plan'
-        : 'scheduler_production_authority_guard',
-      parentStage: 'route_authority_cutover_guard',
-      result: schedulerResult,
-      decision: 'not_ready',
-      failedChecks: issues.filter((issue) => issue.startsWith('scheduler_')),
-    }));
-  }
-  if (!productionBlockerOk) {
-    innerFailures.push(immediateInnerFailure({
-      component: 'route_authority',
-      stage: 'route_authority_production_cutover_blocker',
-      parentStage: 'route_authority_cutover_guard',
-      result: collected.productionBlocker,
-      decision: 'not_safe',
-      failedChecks: issues.filter((issue) => issue.startsWith('route_authority_production_blocker')),
-    }));
-  }
-  const providerParseError = boundedDiagnostic(collected.providerPlan?.parse_error, 500, 5);
-  const modelParseError = boundedDiagnostic(collected.modelPlan?.parse_error, 500, 5);
-  const schedulerGuardParseError = boundedDiagnostic(collected.schedulerGuard?.parse_error, 500, 5);
-  const schedulerPlanParseError = boundedDiagnostic(collected.schedulerPlan?.parse_error, 500, 5);
-  const productionBlockerParseError = boundedDiagnostic(collected.productionBlocker?.parse_error, 500, 5);
-  const providerStderr = boundedDiagnostic(collected.providerPlan?.stderr, 2000, 20);
-  const modelStderr = boundedDiagnostic(collected.modelPlan?.stderr, 2000, 20);
   return {
     ok: issues.length === 0,
     schema_version: 'xhub.route_authority_cutover_guard.v1',
@@ -525,15 +380,11 @@ function reduce(collected, config) {
     production_blocker_schema_version: String(blockerPayload?.schema_version || ''),
     provider_required_env_count: Number(providerPayload?.plan?.required_env_for_manual_prep_trial?.length || 0),
     model_required_env_count: Number(modelPayload?.plan?.required_env_for_manual_prep_trial?.length || 0),
-    provider_parse_error: providerParseError.text,
-    model_parse_error: modelParseError.text,
-    scheduler_guard_parse_error: schedulerGuardParseError.text,
-    scheduler_plan_parse_error: schedulerPlanParseError.text,
-    production_blocker_parse_error: productionBlockerParseError.text,
-    provider_stderr_tail: providerStderr.text,
-    model_stderr_tail: modelStderr.text,
-    inner_failure_count: innerFailures.length,
-    inner_failures: innerFailures,
+    provider_parse_error: String(collected.providerPlan?.parse_error || ''),
+    model_parse_error: String(collected.modelPlan?.parse_error || ''),
+    scheduler_guard_parse_error: String(collected.schedulerGuard?.parse_error || ''),
+    scheduler_plan_parse_error: String(collected.schedulerPlan?.parse_error || ''),
+    production_blocker_parse_error: String(collected.productionBlocker?.parse_error || ''),
     issues,
   };
 }
@@ -619,68 +470,6 @@ function runSelfTest() {
   }, parseArgs([]));
   if (!fallbackResult.ok || fallbackResult.scheduler_production_authority_plan_ready !== true) {
     throw new Error(`expected scheduler ready fallback ok: ${fallbackResult.issues.join(',')}`);
-  }
-  const secret = 'sk-cutover-inner-failure-secret-1234567890';
-  const nestedFailureResult = reduce({
-    schedulerGuard: { parsed: true, exit_code: 0, payload: { ok: true, ui_product_change: false } },
-    schedulerPlan: null,
-    providerPlan: {
-      parsed: true,
-      exit_code: 2,
-      payload: {
-        plan: {
-          ready: false,
-          production_authority_change: false,
-          decision: 'not_ready',
-          required_env_for_manual_prep_trial: [],
-        },
-        inner_failures: [{
-          schema_version: INNER_FAILURE_SCHEMA,
-          component: 'provider_route',
-          stage: 'provider_shadow_runner',
-          parent_stage: 'provider_cutover_readiness_runner',
-          kind: 'execution_failed',
-          exit_code: 1,
-          parsed: false,
-          decision: 'not_ready',
-          parse_error: 'runner output did not contain JSON',
-          stderr_tail: `Error [ERR_MODULE_NOT_FOUND] Bearer ${secret}`,
-          failed_checks: ['provider_shadow_runner_ok'],
-          diagnostic_redaction_applied: false,
-          stdout: secret,
-          environment: { SHOULD_NOT_SURVIVE: secret },
-        }],
-      },
-    },
-    modelPlan: { parsed: true, exit_code: 0, payload: { plan: { ready: true, production_authority_change: false, decision: 'ready_for_manual_prep_trial', required_env_for_manual_prep_trial: [1] } } },
-    productionBlocker: {
-      parsed: true,
-      exit_code: 0,
-      payload: {
-        ok: true,
-        production_apply_allowed: false,
-        production_authority_change: false,
-        production_cutover_implemented: true,
-        provider_route_production_switch_detected: true,
-        model_route_production_switch_detected: true,
-        blockers: ['manual_human_cutover_approval_required_after_long_soak'],
-      },
-    },
-  }, parseArgs([]));
-  const nestedFailure = nestedFailureResult.inner_failures.find((failure) => failure.stage === 'provider_shadow_runner');
-  const nestedFailureJson = JSON.stringify(nestedFailureResult.inner_failures);
-  if (
-    nestedFailureResult.ok !== false
-    || nestedFailureResult.provider_plan_exit_code !== 2
-    || !nestedFailureResult.issues.includes('provider_route_authority_plan_not_ready')
-    || nestedFailureResult.inner_failure_count !== 2
-    || nestedFailure?.kind !== 'execution_failed'
-    || !nestedFailure?.stderr_tail.includes('ERR_MODULE_NOT_FOUND')
-    || nestedFailureJson.includes(secret)
-    || nestedFailureJson.includes('SHOULD_NOT_SURVIVE')
-    || nestedFailure?.diagnostic_redaction_applied !== true
-  ) {
-    throw new Error('expected redacted provider inner failure chain without changing legacy verdict');
   }
 }
 

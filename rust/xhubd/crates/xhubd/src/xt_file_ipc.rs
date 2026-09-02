@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
@@ -37,7 +36,6 @@ const LIVE_STATUS_CACHE_TTL_MS: u128 = 2_000;
 const LIVE_STATUS_STALE_CACHE_MAX_MS: u128 = 30_000;
 const RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS: u128 = 5_000;
 const RUNTIME_AUTHORITY_SYNC_STALE_CACHE_MAX_MS: u128 = 30_000;
-const PROJECTION_CACHE_MAX_ENTRIES: usize = 64;
 const RUNTIME_AUTHORITY_FILE_NAMES: &[&str] = &["models_state.json", "hub_provider_keys.json"];
 
 #[derive(Clone, Debug)]
@@ -72,39 +70,29 @@ struct BackgroundWatcherRuntime {
     stop_flag: Option<Arc<AtomicBool>>,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct LiveStatusCacheKey {
+#[derive(Clone, Debug)]
+struct LiveStatusCacheEntry {
     root_dir: String,
     base_dir: String,
     status_path: String,
-}
-
-#[derive(Clone, Debug)]
-struct LiveStatusCacheEntry {
     checked_at_ms: u128,
     value: Value,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct RuntimeAuthoritySyncCacheKey {
+#[derive(Clone, Debug)]
+struct RuntimeAuthoritySyncCacheEntry {
     root_dir: String,
     source_base_dir: String,
     requested_live_base_dir: String,
     live_base_dir: String,
-}
-
-#[derive(Clone, Debug)]
-struct RuntimeAuthoritySyncCacheEntry {
     checked_at_ms: u128,
     value: Value,
 }
 
 static BACKGROUND_WATCHER: OnceLock<Mutex<BackgroundWatcherRuntime>> = OnceLock::new();
-static LIVE_STATUS_CACHE: OnceLock<Mutex<HashMap<LiveStatusCacheKey, LiveStatusCacheEntry>>> =
+static LIVE_STATUS_CACHE: OnceLock<Mutex<Option<LiveStatusCacheEntry>>> = OnceLock::new();
+static RUNTIME_AUTHORITY_SYNC_CACHE: OnceLock<Mutex<Option<RuntimeAuthoritySyncCacheEntry>>> =
     OnceLock::new();
-static RUNTIME_AUTHORITY_SYNC_CACHE: OnceLock<
-    Mutex<HashMap<RuntimeAuthoritySyncCacheKey, RuntimeAuthoritySyncCacheEntry>>,
-> = OnceLock::new();
 static LIVE_STATUS_CACHE_REFRESHING: AtomicBool = AtomicBool::new(false);
 static RUNTIME_AUTHORITY_SYNC_CACHE_REFRESHING: AtomicBool = AtomicBool::new(false);
 
@@ -112,13 +100,12 @@ fn background_watcher_runtime() -> &'static Mutex<BackgroundWatcherRuntime> {
     BACKGROUND_WATCHER.get_or_init(|| Mutex::new(BackgroundWatcherRuntime::default()))
 }
 
-fn live_status_cache() -> &'static Mutex<HashMap<LiveStatusCacheKey, LiveStatusCacheEntry>> {
-    LIVE_STATUS_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+fn live_status_cache() -> &'static Mutex<Option<LiveStatusCacheEntry>> {
+    LIVE_STATUS_CACHE.get_or_init(|| Mutex::new(None))
 }
 
-fn runtime_authority_sync_cache(
-) -> &'static Mutex<HashMap<RuntimeAuthoritySyncCacheKey, RuntimeAuthoritySyncCacheEntry>> {
-    RUNTIME_AUTHORITY_SYNC_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+fn runtime_authority_sync_cache() -> &'static Mutex<Option<RuntimeAuthoritySyncCacheEntry>> {
+    RUNTIME_AUTHORITY_SYNC_CACHE.get_or_init(|| Mutex::new(None))
 }
 
 impl XtFileIpcShadowInput {
@@ -646,15 +633,18 @@ fn cached_live_status_value(
     status_path: &Path,
     generated_at_ms: u128,
 ) -> Option<Value> {
-    let key = LiveStatusCacheKey {
-        root_dir: config.root_dir.display().to_string(),
-        base_dir: base_dir.display().to_string(),
-        status_path: status_path.display().to_string(),
-    };
+    let root_dir = config.root_dir.display().to_string();
+    let base_dir = base_dir.display().to_string();
+    let status_path = status_path.display().to_string();
     let guard = live_status_cache().lock().ok()?;
-    let entry = guard.get(&key)?;
+    let entry = guard.as_ref()?;
     let cache_age_ms = generated_at_ms.saturating_sub(entry.checked_at_ms);
-    if generated_at_ms >= entry.checked_at_ms && cache_age_ms <= LIVE_STATUS_CACHE_TTL_MS {
+    if entry.root_dir == root_dir
+        && entry.base_dir == base_dir
+        && entry.status_path == status_path
+        && generated_at_ms >= entry.checked_at_ms
+        && cache_age_ms <= LIVE_STATUS_CACHE_TTL_MS
+    {
         return Some(live_status_value_with_cache_metadata(
             entry.value.clone(),
             generated_at_ms,
@@ -676,15 +666,16 @@ fn cached_stale_live_status_value(
     if stale_max_ms == 0 {
         return None;
     }
-    let key = LiveStatusCacheKey {
-        root_dir: config.root_dir.display().to_string(),
-        base_dir: base_dir.display().to_string(),
-        status_path: status_path.display().to_string(),
-    };
+    let root_dir = config.root_dir.display().to_string();
+    let base_dir = base_dir.display().to_string();
+    let status_path = status_path.display().to_string();
     let guard = live_status_cache().lock().ok()?;
-    let entry = guard.get(&key)?;
+    let entry = guard.as_ref()?;
     let cache_age_ms = generated_at_ms.saturating_sub(entry.checked_at_ms);
-    if generated_at_ms >= entry.checked_at_ms
+    if entry.root_dir == root_dir
+        && entry.base_dir == base_dir
+        && entry.status_path == status_path
+        && generated_at_ms >= entry.checked_at_ms
         && cache_age_ms <= LIVE_STATUS_CACHE_TTL_MS.saturating_add(stale_max_ms)
     {
         return Some(live_status_value_with_cache_metadata(
@@ -705,26 +696,15 @@ fn cache_live_status_value(
     generated_at_ms: u128,
     value: &Value,
 ) {
-    let key = LiveStatusCacheKey {
+    let entry = LiveStatusCacheEntry {
         root_dir: config.root_dir.display().to_string(),
         base_dir: base_dir.display().to_string(),
         status_path: status_path.display().to_string(),
-    };
-    let entry = LiveStatusCacheEntry {
         checked_at_ms: generated_at_ms,
         value: value.clone(),
     };
     if let Ok(mut guard) = live_status_cache().lock() {
-        if guard.len() >= PROJECTION_CACHE_MAX_ENTRIES && !guard.contains_key(&key) {
-            if let Some(oldest_key) = guard
-                .iter()
-                .min_by_key(|(_, cached)| cached.checked_at_ms)
-                .map(|(cached_key, _)| cached_key.clone())
-            {
-                guard.remove(&oldest_key);
-            }
-        }
-        guard.insert(key, entry);
+        *guard = Some(entry);
     }
 }
 
@@ -1021,16 +1001,19 @@ fn cached_runtime_authority_sync_value(
     live_base_dir: Option<&Path>,
     generated_at_ms: u128,
 ) -> Option<Value> {
-    let key = RuntimeAuthoritySyncCacheKey {
-        root_dir: config.root_dir.display().to_string(),
-        source_base_dir: path_display_or_empty(source_base_dir),
-        requested_live_base_dir: path_display_or_empty(requested_live_base_dir),
-        live_base_dir: path_display_or_empty(live_base_dir),
-    };
+    let root_dir = config.root_dir.display().to_string();
+    let source_base_dir = path_display_or_empty(source_base_dir);
+    let requested_live_base_dir = path_display_or_empty(requested_live_base_dir);
+    let live_base_dir = path_display_or_empty(live_base_dir);
     let guard = runtime_authority_sync_cache().lock().ok()?;
-    let entry = guard.get(&key)?;
+    let entry = guard.as_ref()?;
     let cache_age_ms = generated_at_ms.saturating_sub(entry.checked_at_ms);
-    if generated_at_ms >= entry.checked_at_ms && cache_age_ms <= RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS
+    if entry.root_dir == root_dir
+        && entry.source_base_dir == source_base_dir
+        && entry.requested_live_base_dir == requested_live_base_dir
+        && entry.live_base_dir == live_base_dir
+        && generated_at_ms >= entry.checked_at_ms
+        && cache_age_ms <= RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS
     {
         return Some(runtime_authority_sync_value_with_generated_at(
             entry.value.clone(),
@@ -1054,16 +1037,18 @@ fn cached_stale_runtime_authority_sync_value(
     if stale_max_ms == 0 {
         return None;
     }
-    let key = RuntimeAuthoritySyncCacheKey {
-        root_dir: config.root_dir.display().to_string(),
-        source_base_dir: path_display_or_empty(source_base_dir),
-        requested_live_base_dir: path_display_or_empty(requested_live_base_dir),
-        live_base_dir: path_display_or_empty(live_base_dir),
-    };
+    let root_dir = config.root_dir.display().to_string();
+    let source_base_dir = path_display_or_empty(source_base_dir);
+    let requested_live_base_dir = path_display_or_empty(requested_live_base_dir);
+    let live_base_dir = path_display_or_empty(live_base_dir);
     let guard = runtime_authority_sync_cache().lock().ok()?;
-    let entry = guard.get(&key)?;
+    let entry = guard.as_ref()?;
     let cache_age_ms = generated_at_ms.saturating_sub(entry.checked_at_ms);
-    if generated_at_ms >= entry.checked_at_ms
+    if entry.root_dir == root_dir
+        && entry.source_base_dir == source_base_dir
+        && entry.requested_live_base_dir == requested_live_base_dir
+        && entry.live_base_dir == live_base_dir
+        && generated_at_ms >= entry.checked_at_ms
         && cache_age_ms <= RUNTIME_AUTHORITY_SYNC_CACHE_TTL_MS.saturating_add(stale_max_ms)
     {
         return Some(runtime_authority_sync_value_with_generated_at(
@@ -1085,27 +1070,16 @@ fn cache_runtime_authority_sync_value(
     generated_at_ms: u128,
     value: &Value,
 ) {
-    let key = RuntimeAuthoritySyncCacheKey {
+    let entry = RuntimeAuthoritySyncCacheEntry {
         root_dir: config.root_dir.display().to_string(),
         source_base_dir: path_display_or_empty(source_base_dir),
         requested_live_base_dir: path_display_or_empty(requested_live_base_dir),
         live_base_dir: path_display_or_empty(live_base_dir),
-    };
-    let entry = RuntimeAuthoritySyncCacheEntry {
         checked_at_ms: generated_at_ms,
         value: value.clone(),
     };
     if let Ok(mut guard) = runtime_authority_sync_cache().lock() {
-        if guard.len() >= PROJECTION_CACHE_MAX_ENTRIES && !guard.contains_key(&key) {
-            if let Some(oldest_key) = guard
-                .iter()
-                .min_by_key(|(_, cached)| cached.checked_at_ms)
-                .map(|(cached_key, _)| cached_key.clone())
-            {
-                guard.remove(&oldest_key);
-            }
-        }
-        guard.insert(key, entry);
+        *guard = Some(entry);
     }
 }
 
@@ -4614,10 +4588,10 @@ mod tests {
 
     fn clear_projection_caches_for_test() {
         if let Ok(mut guard) = live_status_cache().lock() {
-            guard.clear();
+            *guard = None;
         }
         if let Ok(mut guard) = runtime_authority_sync_cache().lock() {
-            guard.clear();
+            *guard = None;
         }
     }
 
@@ -4805,43 +4779,6 @@ mod tests {
     }
 
     #[test]
-    fn live_status_cache_keeps_independent_runtime_paths() {
-        let _cache_guard = cache_test_lock();
-        clear_projection_caches_for_test();
-        let first_root = unique_temp_dir("xhub-xt-file-ipc-live-status-cache-first");
-        let second_root = unique_temp_dir("xhub-xt-file-ipc-live-status-cache-second");
-        for (root, marker) in [(&first_root, "first"), (&second_root, "second")] {
-            fs::create_dir_all(root.join("ipc_events")).unwrap();
-            fs::write(
-                root.join("hub_status.json"),
-                format!(
-                    r#"{{"updatedAt":1,"baseDir":"/old","ipcPath":"/old/ipc_events","protocolVersion":1,"marker":"{marker}"}}"#
-                ),
-            )
-            .unwrap();
-        }
-        let first_config = config_for_runtime_dir(first_root.clone());
-        let second_config = config_for_runtime_dir(second_root.clone());
-
-        let first = live_status_value(&first_config, 400_000);
-        let second = live_status_value(&second_config, 400_010);
-        fs::write(
-            first_root.join("hub_status.json"),
-            r#"{"updatedAt":2,"baseDir":"/changed","ipcPath":"/changed/ipc_events","protocolVersion":1,"marker":"changed"}"#,
-        )
-        .unwrap();
-        let first_cached = live_status_value(&first_config, 400_100);
-
-        assert_eq!(first["status"]["marker"], "first");
-        assert_eq!(second["status"]["marker"], "second");
-        assert_eq!(first_cached["cache_hit"], true);
-        assert_eq!(first_cached["status"]["marker"], "first");
-
-        let _ = fs::remove_dir_all(first_root);
-        let _ = fs::remove_dir_all(second_root);
-    }
-
-    #[test]
     fn runtime_authority_sync_dry_run_reports_would_copy_without_writing() {
         let temp = unique_temp_dir("xhub-xt-runtime-authority-dry");
         let source = temp.join("app");
@@ -4926,53 +4863,6 @@ mod tests {
         assert_eq!(third["cache_hit"], false);
         assert_eq!(third["would_copy_count"], 0);
         assert_eq!(third["skipped_count"], 2);
-
-        let _ = fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn runtime_authority_sync_cache_keeps_independent_runtime_paths() {
-        let _cache_guard = cache_test_lock();
-        clear_projection_caches_for_test();
-        let temp = unique_temp_dir("xhub-xt-runtime-authority-keyed-cache");
-        let first_source = temp.join("first-app");
-        let first_live = temp.join("first-live");
-        let second_source = temp.join("second-app");
-        let second_live = temp.join("second-live");
-        for directory in [&first_source, &first_live, &second_source, &second_live] {
-            fs::create_dir_all(directory).unwrap();
-        }
-        fs::write(
-            first_source.join("models_state.json"),
-            r#"{"schema_version":"xhub.models_state.v1","models":[{"id":"first"}]}"#,
-        )
-        .unwrap();
-        fs::write(
-            second_source.join("models_state.json"),
-            r#"{"schema_version":"xhub.models_state.v1","models":[{"id":"second"}]}"#,
-        )
-        .unwrap();
-        let first_config = config_for_runtime_dir(first_live.clone());
-        let second_config = config_for_runtime_dir(second_live.clone());
-        let first_body = json!({
-            "source_base_dir": first_source.display().to_string(),
-            "live_base_dir": first_live.display().to_string(),
-        });
-        let second_body = json!({
-            "source_base_dir": second_source.display().to_string(),
-            "live_base_dir": second_live.display().to_string(),
-        });
-
-        let first = runtime_authority_sync_value(&first_config, &first_body, false, 600_000);
-        let second = runtime_authority_sync_value(&second_config, &second_body, false, 600_010);
-        fs::remove_file(first_source.join("models_state.json")).unwrap();
-        let first_cached = runtime_authority_sync_value(&first_config, &first_body, false, 600_100);
-
-        assert_eq!(first["cache_hit"], false);
-        assert_eq!(second["cache_hit"], false);
-        assert_eq!(first_cached["cache_hit"], true);
-        assert_eq!(first_cached["would_copy_count"], 1);
-        assert_eq!(first_cached["files"][0]["source_exists"], true);
 
         let _ = fs::remove_dir_all(temp);
     }

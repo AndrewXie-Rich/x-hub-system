@@ -8,7 +8,6 @@ use super::shared::*;
 use super::snapshot::*;
 use super::write::candidate::*;
 use super::write::canonical::*;
-use super::write::diagnostics::*;
 use super::write::object::*;
 use super::write::*;
 use super::*;
@@ -62,125 +61,6 @@ fn test_config(label: &str) -> HubConfig {
 
 fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| value.to_string()).collect()
-}
-
-fn diagnostics_test_object(
-    memory_id: &str,
-    status: &str,
-    layer: &str,
-    source_kind: &str,
-    now: i64,
-    ttl_ms: Option<i64>,
-    policy: Value,
-    provenance: Value,
-) -> MemoryObjectRecord {
-    MemoryObjectRecord {
-        memory_id: memory_id.to_string(),
-        schema_version: MEMORY_OBJECT_SCHEMA.to_string(),
-        scope: "project".to_string(),
-        owner_id: "project-diagnostics".to_string(),
-        run_id: None,
-        project_id: Some("project-diagnostics".to_string()),
-        agent_id: None,
-        source_kind: source_kind.to_string(),
-        layer: layer.to_string(),
-        title: "DIAGNOSTICS_CONTENT_SENTINEL_TITLE".to_string(),
-        text: "DIAGNOSTICS_CONTENT_SENTINEL_TEXT".to_string(),
-        summary: "DIAGNOSTICS_CONTENT_SENTINEL_SUMMARY".to_string(),
-        tags_json: json!(["diagnostics_content_sentinel_tag"]).to_string(),
-        sensitivity: "internal".to_string(),
-        visibility: "local_only".to_string(),
-        status: status.to_string(),
-        pinned: false,
-        immutable: false,
-        ttl_ms,
-        created_at_ms: now,
-        updated_at_ms: now,
-        last_accessed_at_ms: now,
-        version: 1,
-        provenance_json: provenance.to_string(),
-        policy_json: policy.to_string(),
-    }
-}
-
-fn seed_diagnostics_test_object(config: &HubConfig, object: &MemoryObjectRecord) {
-    let event = MemoryEventRecord {
-        event_id: format!("mev_seed_{}", object.memory_id),
-        memory_id: object.memory_id.clone(),
-        operation: "seed_candidate_diagnostics".to_string(),
-        actor: "memory_bridge_test".to_string(),
-        reason: "candidate diagnostics regression fixture".to_string(),
-        before_version: None,
-        after_version: Some(object.version),
-        before_json: None,
-        after_json: None,
-        policy_decision: "allow".to_string(),
-        deny_code: String::new(),
-        audit_ref: "candidate-diagnostics-test".to_string(),
-        created_at_ms: object.created_at_ms,
-    };
-    create_memory_object_with_event(&config.db_path, object, &event)
-        .expect("seed diagnostics object");
-}
-
-#[test]
-fn memory_readiness_fails_closed_until_object_index_is_current() {
-    let config = test_config("index_readiness");
-    apply_baseline_migrations(&config.db_path).expect("migrate memory db");
-    let body = json!({
-        "memory_id": "mem_index_readiness",
-        "requester_role": "chat",
-        "use_mode": "project_chat",
-        "scope": "project",
-        "owner_id": "project-index-readiness",
-        "project_id": "project-index-readiness",
-        "source_kind": "decision_track",
-        "layer": "l1_canonical",
-        "title": "Index readiness decision",
-        "text": "Decision: stale derived memory indexes must fail readiness closed.",
-        "audit_ref": "index-readiness-test",
-    })
-    .to_string();
-    create_memory_object_json_from_body(&config, &body).expect("create canonical memory object");
-    let snapshot = scan_memory_snapshot(&config.root_dir.join("memory"));
-
-    let stale_raw = readiness_json_from_snapshot_with_config(&config, &snapshot)
-        .expect("stale memory readiness");
-    let stale: Value = serde_json::from_str(&stale_raw).expect("stale readiness json");
-    assert_eq!(stale["object_store"]["memory_index_ready"], false);
-    assert_eq!(
-        stale["object_store"]["memory_index_generation"]["coverage_complete"],
-        false
-    );
-    assert!(
-        stale["object_store"]["memory_index_generation"]["blocker_codes"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("memory_object_index_stale"))
-    );
-
-    rebuild_memory_object_index(&config.db_path).expect("rebuild memory index");
-    let ready_raw = readiness_json_from_snapshot_with_config(&config, &snapshot)
-        .expect("current memory readiness");
-    let ready: Value = serde_json::from_str(&ready_raw).expect("ready json");
-    assert_eq!(ready["object_store"]["memory_index_ready"], true);
-    assert_eq!(
-        ready["object_store"]["memory_index_generation"]["coverage_complete"],
-        true
-    );
-    assert_eq!(
-        ready["object_store"]["memory_index_generation"]["timestamp_current"],
-        true
-    );
-    assert_eq!(
-        ready["object_store"]["memory_index_generation"]["blocker_codes"]
-            .as_array()
-            .unwrap()
-            .len(),
-        0
-    );
-
-    let _ = fs::remove_dir_all(config.root_dir);
 }
 
 #[test]
@@ -735,16 +615,6 @@ fn memory_writeback_candidate_create_list_approve_roundtrip() {
     assert_eq!(status, "200 OK");
     let listed: Value = serde_json::from_str(&raw).expect("list json");
     assert_eq!(listed["candidate_count"], 1);
-    assert_eq!(
-        listed["candidate_diagnostics"]["schema_version"],
-        MEMORY_WRITEBACK_CANDIDATE_DIAGNOSTICS_SCHEMA
-    );
-    assert_eq!(listed["candidate_diagnostics"]["ready"], true);
-    assert_eq!(listed["candidate_diagnostics"]["candidate_count"], 1);
-    assert_eq!(
-        listed["candidate_diagnostics"]["production_authority_change"],
-        false
-    );
 
     let readiness_raw =
         readiness_json_from_dir(&config, config.root_dir.join("memory")).expect("readiness");
@@ -756,18 +626,6 @@ fn memory_writeback_candidate_create_list_approve_roundtrip() {
     assert_eq!(
         readiness["object_store"]["writeback_candidates"]["candidate_approve_reject_http"],
         true
-    );
-    assert_eq!(
-        readiness["object_store"]["writeback_candidates"]["candidate_maintenance_http"],
-        false
-    );
-    assert_eq!(
-        readiness["object_store"]["writeback_candidates"]["diagnostics"]["schema_version"],
-        MEMORY_WRITEBACK_CANDIDATE_DIAGNOSTICS_SCHEMA
-    );
-    assert_eq!(
-        readiness["object_store"]["writeback_candidates"]["diagnostics"]["candidate_count"],
-        1
     );
 
     let approve_body = json!({
@@ -822,164 +680,6 @@ fn memory_writeback_candidate_create_list_approve_roundtrip() {
     assert_eq!(value["results"][0]["memory_id"], "mem_candidate_approve");
 
     let _ = fs::remove_dir_all(config.root_dir);
-}
-
-#[test]
-fn memory_writeback_candidate_diagnostics_projects_content_free_queue_truth() {
-    let config = test_config("writeback_candidate_diagnostics");
-    apply_baseline_migrations(&config.db_path).expect("apply migrations");
-    let now = now_ms_i64();
-    let recent_conflict = diagnostics_test_object(
-        "mem_diagnostics_conflict",
-        "candidate",
-        "l2_observations",
-        "recommendation",
-        now,
-        None,
-        json!({
-            "conflict_with": ["mem_active_authority"],
-            "stale_review_required": true,
-            "supersedes": ["mem_diagnostics_archived"],
-            "active_review_lock": true,
-        }),
-        json!({}),
-    );
-    let stale_working = diagnostics_test_object(
-        "mem_diagnostics_stale_working",
-        "candidate",
-        "l3_working_set",
-        "next_step",
-        now.saturating_sub(10_000),
-        Some(1),
-        json!({}),
-        json!({}),
-    );
-    let stale_canonical = diagnostics_test_object(
-        "mem_diagnostics_stale_canonical",
-        "candidate",
-        "l1_canonical",
-        "decision_track",
-        now.saturating_sub(10_000),
-        Some(1),
-        json!({}),
-        json!({}),
-    );
-    let archived = diagnostics_test_object(
-        "mem_diagnostics_archived",
-        "archived",
-        "l3_working_set",
-        "next_step",
-        now,
-        None,
-        json!({ "superseded_by": "mem_diagnostics_conflict" }),
-        json!({}),
-    );
-    for object in [recent_conflict, stale_working, stale_canonical, archived] {
-        seed_diagnostics_test_object(&config, &object);
-    }
-
-    let listed_raw =
-        list_writeback_candidates_json(&config, "project_id=project-diagnostics&limit=2")
-            .expect("list diagnostics candidates");
-    let listed: Value = serde_json::from_str(&listed_raw).expect("list diagnostics json");
-    assert_eq!(listed["candidate_count"], 2);
-    let diagnostics = &listed["candidate_diagnostics"];
-    assert_eq!(
-        diagnostics["schema_version"],
-        MEMORY_WRITEBACK_CANDIDATE_DIAGNOSTICS_SCHEMA
-    );
-    assert_eq!(diagnostics["ready"], true);
-    assert_eq!(diagnostics["candidate_count"], 3);
-    assert_eq!(diagnostics["conflict_candidate_count"], 1);
-    assert_eq!(diagnostics["stale_review_required_count"], 1);
-    assert_eq!(diagnostics["stale_candidate_count"], 2);
-    assert_eq!(diagnostics["planned_archive_count"], 1);
-    assert_eq!(diagnostics["planned_stale_review_required_count"], 1);
-    assert_eq!(diagnostics["active_review_lock_count"], 1);
-    assert_eq!(diagnostics["superseding_candidate_count"], 1);
-    assert_eq!(diagnostics["archived_superseded_count"], 1);
-    assert_eq!(diagnostics["superseded_candidate_count"], 1);
-    assert_eq!(diagnostics["queue_pressure"], "high");
-    assert_eq!(diagnostics["noise_score"], 15);
-    assert_eq!(diagnostics["production_authority_change"], false);
-    let diagnostics_json = diagnostics.to_string();
-    for forbidden in [
-        "title",
-        "text",
-        "summary",
-        "tags",
-        "DIAGNOSTICS_CONTENT_SENTINEL",
-    ] {
-        assert!(
-            !diagnostics_json.contains(forbidden),
-            "diagnostics leaked content field: {forbidden}"
-        );
-    }
-
-    let readiness_raw =
-        readiness_json_from_dir(&config, config.root_dir.join("memory")).expect("readiness");
-    let readiness: Value = serde_json::from_str(&readiness_raw).expect("readiness json");
-    let readiness_writeback = &readiness["object_store"]["writeback_candidates"];
-    assert_eq!(readiness_writeback["candidate_diagnostics_http"], true);
-    assert_eq!(readiness_writeback["candidate_maintenance_http"], false);
-    assert_eq!(
-        readiness_writeback["maintenance"]["maintenance_ready"],
-        false
-    );
-    assert_eq!(
-        readiness_writeback["maintenance"]["reason_code"],
-        "memory_writeback_candidate_maintenance_not_implemented"
-    );
-    assert_eq!(
-        readiness_writeback["diagnostics"]["conflict_candidate_count"],
-        diagnostics["conflict_candidate_count"]
-    );
-    assert_eq!(
-        readiness_writeback["diagnostics"]["stale_candidate_count"],
-        diagnostics["stale_candidate_count"]
-    );
-    assert_eq!(
-        readiness_writeback["diagnostics"]["archived_superseded_count"],
-        diagnostics["archived_superseded_count"]
-    );
-
-    let _ = fs::remove_dir_all(config.root_dir);
-}
-
-#[test]
-fn memory_writeback_candidate_diagnostics_bounds_ids_and_marks_bounded_scans() {
-    let now = now_ms_i64();
-    let candidates = (0..40)
-        .map(|index| {
-            diagnostics_test_object(
-                &format!("mem_diagnostics_bounded_{index:02}"),
-                "candidate",
-                "l2_observations",
-                "recommendation",
-                now,
-                None,
-                json!({ "conflict_with": ["mem_active_authority"] }),
-                json!({}),
-            )
-        })
-        .collect::<Vec<_>>();
-    let diagnostics =
-        writeback_candidate_diagnostics_from_objects(&candidates, &[], now, candidates.len());
-    assert_eq!(diagnostics["candidate_count"], 40);
-    assert_eq!(diagnostics["sample_limit"], 40);
-    assert_eq!(diagnostics["bounded"], true);
-    assert_eq!(diagnostics["candidate_scan_bounded"], true);
-    assert_eq!(diagnostics["conflict_candidate_count"], 40);
-    assert_eq!(
-        diagnostics["conflict_candidate_ids"]
-            .as_array()
-            .expect("bounded ids")
-            .len(),
-        MEMORY_RETRIEVAL_TRACE_LIMIT
-    );
-    assert!(!diagnostics
-        .to_string()
-        .contains("DIAGNOSTICS_CONTENT_SENTINEL"));
 }
 
 #[test]

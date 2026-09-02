@@ -17,7 +17,6 @@ use super::super::shared::{
     HttpJsonError, MEMORY_OBJECT_SCHEMA, MEMORY_WRITEBACK_CANDIDATE_EXTRACT_SCHEMA,
     MEMORY_WRITEBACK_CANDIDATE_SCHEMA,
 };
-use super::diagnostics::writeback_candidate_diagnostics_value;
 use super::object::create_memory_object_json_from_body;
 
 pub(crate) fn create_writeback_candidate_json_from_body(
@@ -570,14 +569,12 @@ pub(crate) fn list_writeback_candidates_json(
         .iter()
         .map(memory_object_to_json)
         .collect::<Vec<_>>();
-    let candidate_diagnostics = writeback_candidate_diagnostics_value(config, &filter)?;
     Ok(json!({
         "schema_version": MEMORY_WRITEBACK_CANDIDATE_SCHEMA,
         "ok": true,
         "status": "ok",
         "candidate_count": items.len(),
         "objects": items,
-        "candidate_diagnostics": candidate_diagnostics,
         "filter": {
             "scope": filter.scope,
             "owner_id": filter.owner_id,
