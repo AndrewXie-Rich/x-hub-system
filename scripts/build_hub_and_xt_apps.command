@@ -10,13 +10,8 @@ ACTIVE_XT_ROOT="$ROOT_DIR/x-terminal"
 # shellcheck source=../x-terminal/scripts/lib/canonical_root_guard.sh
 source "$ACTIVE_XT_ROOT/scripts/lib/canonical_root_guard.sh"
 xterminal_assert_canonical_root "$ROOT_DIR" "$ACTIVE_XT_ROOT"
-if [ -n "${XHUB_ACTIVE_XT_BUILD_COMMAND:-}" ] || [ -n "${XHUB_ACTIVE_XT_APP_DIR:-}" ]; then
-  echo "[XT ROOT] XHUB_ACTIVE_XT_BUILD_COMMAND and XHUB_ACTIVE_XT_APP_DIR are forbidden." >&2
-  echo "[XT ROOT] Combined builds always use the canonical in-repository X-Terminal." >&2
-  exit 1
-fi
-ACTIVE_XT_BUILD_COMMAND="$ACTIVE_XT_ROOT/tools/build_xt_with_rust_sidecar.command"
-ACTIVE_XT_APP_DIR="$OUT_DIR/X-Terminal.app"
+ACTIVE_XT_BUILD_COMMAND="${XHUB_ACTIVE_XT_BUILD_COMMAND:-$ACTIVE_XT_ROOT/tools/build_xt_with_rust_sidecar.command}"
+ACTIVE_XT_APP_DIR="${XHUB_ACTIVE_XT_APP_DIR:-$OUT_DIR/X-Terminal.app}"
 
 BUILD_HUB=1
 BUILD_XT=1
