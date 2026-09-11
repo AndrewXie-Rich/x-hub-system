@@ -5,11 +5,13 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { resolveDefaultXHubAppPath } from './xhub_system_paths.js';
+
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const STATE_DIR = path.join(ROOT_DIR, 'reports', 'scheduler_production_authority');
 const STATE_FILE = path.join(STATE_DIR, 'launchctl_session_env_state.json');
-const DEFAULT_APP = '/Users/andrew.xie/Documents/AX/x-hub-system/build/X-Hub.app';
+const DEFAULT_APP = resolveDefaultXHubAppPath({ startDir: SCRIPT_DIR });
 const NODE_PROCESS_MARKERS = [
   'hub_grpc_server/src/server.js',
   'relflowhub_node',
@@ -32,7 +34,7 @@ function isXHubNodeBridgeProcessLine(line) {
   return NODE_PROCESS_MARKERS.every((marker) => text.includes(marker))
     && !isExternalRelFlowHubProcessLine(text)
     && (text.includes('/X-Hub.app/')
-      || /\/x-hub-system(?:-github-clean)?\/x-hub\//.test(text));
+      || /\/x-hub\/grpc-server\/hub_grpc_server\/src\/server\.js/.test(text));
 }
 
 function parsePidCommand(line) {
@@ -382,6 +384,8 @@ function runSelfTest() {
   if (env.XHUB_RUST_HUB_ROOT !== '/tmp/rust-hub') throw new Error('root override failed');
   const external = '999 /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/relflowhub_node /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/hub_grpc_server/src/server.js';
   if (isXHubNodeBridgeProcessLine(external)) throw new Error('standalone RELFlowHub must not classify as X-Hub node bridge');
+  const relocatedSource = '998 /tmp/renamed-system/x-hub/grpc-server/hub_grpc_server/relflowhub_node /tmp/renamed-system/x-hub/grpc-server/hub_grpc_server/src/server.js';
+  if (!isXHubNodeBridgeProcessLine(relocatedSource)) throw new Error('relocated X-Hub source must classify as X-Hub node bridge');
   const shell = '123 /Applications/X-Hub.app/Contents/MacOS/XHub';
   if (!isXHubShellProcessLine(shell)) throw new Error('X-Hub Swift shell must classify as product shell');
 }

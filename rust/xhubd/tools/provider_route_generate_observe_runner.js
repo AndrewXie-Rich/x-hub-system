@@ -5,6 +5,8 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { resolveNodeHubSourceDir } from './xhub_system_paths.js';
+
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const CANDIDATE_AUDIT_EVENT_TYPE = 'ai.generate.provider_route_candidate';
@@ -195,36 +197,6 @@ function publicConfig(config) {
     expect_zero_warnings: config.expectZeroWarnings,
     rust_hub_root: ROOT_DIR,
   };
-}
-
-function resolveXHubSystemRoot() {
-  const explicit = safeString(process.env.XHUB_SYSTEM_ROOT);
-  if (explicit) return explicit;
-  const candidates = [
-    path.resolve(ROOT_DIR, '..', '..', 'x-hub-system'),
-    path.resolve(ROOT_DIR, '..', '..', '..', '..', 'x-hub-system'),
-    '/Users/andrew.xie/Documents/AX/x-hub-system',
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(path.join(candidate, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src', 'services.js'))) {
-      return candidate;
-    }
-  }
-  return candidates[0];
-}
-
-function resolveNodeHubSourceDir(sourceRoot = resolveXHubSystemRoot()) {
-  const explicit = safeString(process.env.XHUB_NODE_HUB_SRC_DIR || process.env.XHUB_HUB_GRPC_SERVER_SRC_DIR);
-  const candidates = [
-    explicit,
-    path.join(sourceRoot, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src'),
-    path.join(sourceRoot, 'hub_grpc_server', 'src'),
-    path.resolve(ROOT_DIR, '..', 'hub_grpc_server', 'src'),
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    if (fs.existsSync(path.join(candidate, 'services.js'))) return candidate;
-  }
-  return candidates[0];
 }
 
 async function importFromSource(srcDir, fileName) {
@@ -673,11 +645,7 @@ async function main() {
     return;
   }
 
-  const sourceRoot = resolveXHubSystemRoot();
-  const srcDir = resolveNodeHubSourceDir(sourceRoot);
-  if (!fs.existsSync(path.join(srcDir, 'services.js'))) {
-    throw new Error(`Node Hub source not found: ${srcDir}`);
-  }
+  const srcDir = resolveNodeHubSourceDir({ startDir: SCRIPT_DIR });
 
   const [
     { HubDB },

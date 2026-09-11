@@ -24,6 +24,7 @@ build/
 *.sqlite3-wal
 x-terminal/.ax-test-cache/
 x-terminal/skills/_projects/
+x-terminal/skills/_migration_report.json
 x-terminal/voice_supervisor_smoke_project/
 x-hub-system/
 

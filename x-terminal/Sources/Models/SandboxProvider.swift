@@ -218,6 +218,12 @@ struct FileInfo: Identifiable, Codable, Equatable {
 
 /// 资源使用情况
 struct ResourceUsage: Codable {
+    enum MeasurementKind: String, Codable {
+        case measured
+        case estimated
+    }
+
+    var measurementKind: MeasurementKind?
     /// CPU 使用率（百分比）
     let cpuUsage: Double
 
@@ -254,13 +260,15 @@ struct ResourceUsage: Codable {
         memoryUsage: Int64 = 0,
         diskUsage: Int64 = 0,
         processCount: Int = 0,
-        timestamp: Date = Date()
+        timestamp: Date = Date(),
+        measurementKind: MeasurementKind? = nil
     ) {
         self.cpuUsage = cpuUsage
         self.memoryUsage = memoryUsage
         self.diskUsage = diskUsage
         self.processCount = processCount
         self.timestamp = timestamp
+        self.measurementKind = measurementKind
     }
 }
 
@@ -340,7 +348,7 @@ struct SandboxConfiguration: Codable {
     var maxProcesses: Int = 10
 
     /// 是否允许网络访问
-    var allowNetworkAccess: Bool = true
+    var allowNetworkAccess: Bool = false
 
     /// 是否允许文件系统访问
     var allowFileSystemAccess: Bool = true

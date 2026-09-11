@@ -172,8 +172,7 @@
       "priority": "P0",
       "title": "真实修改、diagnostics、build/test 闭环",
       "depends_on": [
-        "XT-R1-04",
-        "XT-R1-08"
+        "XT-R1-04"
       ],
       "owner": "Project Coder / Tool Runtime",
       "evidence_path": "build/reports/xt-v1-product-readiness/r1/mutation_diagnostics.v1.json",

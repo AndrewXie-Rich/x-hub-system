@@ -75,6 +75,13 @@ extension HubPairingCoordinator {
 
         exported["HUB_HOST"] = resolvedHost
         exported["HUB_PORT"] = "\(max(1, min(65_535, opts.grpcPort)))"
+        let tlsMode = nonEmpty(exported["HUB_GRPC_TLS_MODE"]) ?? nonEmpty(exported["HUB_TLS_MODE"]) ?? "tls"
+        do {
+            try HubGRPCClientSupport.validateTransport(host: resolvedHost, mode: tlsMode)
+        } catch {
+            return StepOutput(exitCode: 78, output: error.localizedDescription, command: commandDisplay)
+        }
+        exported["HUB_GRPC_TLS_MODE"] = tlsMode
         let merged = mergedAxhubEnv(options: opts, extra: exported)
 
         var nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)

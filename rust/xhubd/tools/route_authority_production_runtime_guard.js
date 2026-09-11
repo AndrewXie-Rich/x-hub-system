@@ -27,7 +27,7 @@ function isXHubNodeBridgeProcessLine(line) {
   return NODE_PROCESS_MARKERS.every((marker) => text.includes(marker))
     && !isExternalRelFlowHubProcessLine(text)
     && (text.includes('/X-Hub.app/')
-      || /\/x-hub-system(?:-github-clean)?\/x-hub\//.test(text));
+      || /\/x-hub\/grpc-server\/hub_grpc_server\/src\/server\.js/.test(text));
 }
 
 function parsePidCommand(line) {
@@ -450,6 +450,8 @@ function reportPath() {
 function runSelfTest() {
   const external = '999 /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/relflowhub_node /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/hub_grpc_server/src/server.js';
   if (isXHubNodeBridgeProcessLine(external)) throw new Error('standalone RELFlowHub must not classify as X-Hub node bridge');
+  const relocatedSource = '998 /tmp/renamed-system/x-hub/grpc-server/hub_grpc_server/relflowhub_node /tmp/renamed-system/x-hub/grpc-server/hub_grpc_server/src/server.js';
+  if (!isXHubNodeBridgeProcessLine(relocatedSource)) throw new Error('relocated X-Hub source must classify as X-Hub node bridge');
   const config = {
     rustHubRoot: '/tmp/rust-hub',
     httpBaseUrl: 'http://127.0.0.1:50151',

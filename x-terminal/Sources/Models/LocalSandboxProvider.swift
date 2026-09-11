@@ -11,7 +11,7 @@ class LocalSandboxProvider: SandboxProvider {
     private let pathMapper: VirtualPathMapper
     private let configuration: SandboxConfiguration
     private var status: SandboxStatus = .uninitialized
-    private var activeProcesses: [Process] = []
+    private var activeExecutions: [UUID: ProcessCancellation] = [:]
 
     // MARK: - SandboxProvider Protocol Properties
 
@@ -33,10 +33,10 @@ class LocalSandboxProvider: SandboxProvider {
 
     // MARK: - Initialization
 
-    init(projectId: UUID, configuration: SandboxConfiguration = .default) throws {
+    init(projectId: UUID, configuration: SandboxConfiguration = .default, baseDirectory: URL? = nil) throws {
         self.projectId = projectId
         self.configuration = configuration
-        self.pathMapper = try VirtualPathMapper(projectId: projectId)
+        self.pathMapper = try VirtualPathMapper(projectId: projectId, baseDirectory: baseDirectory)
     }
 
     // MARK: - Environment Management
@@ -82,12 +82,10 @@ class LocalSandboxProvider: SandboxProvider {
         status = .cleaning
 
         // 终止所有活动进程
-        for process in activeProcesses {
-            if process.isRunning {
-                process.terminate()
-            }
+        for cancellation in activeExecutions.values { cancellation.cancel() }
+        while !activeExecutions.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
         }
-        activeProcesses.removeAll()
 
         // 清理临时文件（可选）
         // try pathMapper.clearDirectory(pathMapper.workspaceVirtualPath)
@@ -98,75 +96,78 @@ class LocalSandboxProvider: SandboxProvider {
     // MARK: - Command Execution
 
     func execute(command: String, timeout: TimeInterval) async throws -> ExecutionResult {
+        try await executeInternal(command: command, timeout: timeout, outputHandler: nil)
+    }
+
+    private func executeInternal(
+        command: String,
+        timeout: TimeInterval,
+        outputHandler: (@Sendable (String) -> Void)?
+    ) async throws -> ExecutionResult {
         guard isInitialized else {
             throw SandboxError.notInitialized
         }
 
         // 验证超时时间
+        guard timeout.isFinite, timeout > 0, configuration.maxTimeout.isFinite, configuration.maxTimeout > 0 else {
+            throw SandboxError.commandExecutionFailed("invalid_timeout")
+        }
+        guard activeExecutions.count < configuration.maxProcesses else {
+            throw SandboxError.resourceLimitExceeded("maxProcesses")
+        }
         let actualTimeout = min(timeout, configuration.maxTimeout)
 
         // 检查命令是否被禁止
         try validateCommand(command)
 
         // 设置状态为忙碌
-        let previousStatus = status
+        let executionID = UUID()
+        let cancellation = ProcessCancellation()
+        activeExecutions[executionID] = cancellation
         status = .busy
-        defer { status = previousStatus }
+        defer {
+            activeExecutions.removeValue(forKey: executionID)
+            if status == .busy { status = activeExecutions.isEmpty ? .ready : .busy }
+        }
 
         let startTime = Date()
 
         do {
-            // 创建进程
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = ["-c", command]
-
-            // 设置工作目录
-            process.currentDirectoryURL = URL(fileURLWithPath: pathMapper.workspaceRealPath)
-
-            // 设置环境变量
-            var environment = ProcessInfo.processInfo.environment
-            environment.merge(configuration.environmentVariables) { _, new in new }
-            process.environment = environment
-
-            // 创建管道
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
-            // 启动进程
-            try process.run()
-            activeProcesses.append(process)
-
-            // 等待进程完成或超时
-            let completed = await waitForProcess(process, timeout: actualTimeout)
-
-            // 读取输出
-            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-
-            let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-            let stderr = String(data: stderrData, encoding: .utf8) ?? ""
-
-            // 移除进程
-            activeProcesses.removeAll { $0 === process }
-
-            // 检查是否超时
-            if !completed {
-                process.terminate()
-                throw SandboxError.commandTimeout
+            let workspace = URL(fileURLWithPath: pathMapper.workspaceRealPath, isDirectory: true)
+            let roots = [workspace, URL(fileURLWithPath: pathMapper.uploadsRealPath), URL(fileURLWithPath: pathMapper.outputsRealPath)]
+            guard roots.allSatisfy({ pathMapper.isWithinSandbox($0.path) }) else {
+                throw SandboxError.pathOutsideSandbox("sandbox_root_changed")
             }
+            let policy = LocalExecutionPolicy(workspace: workspace,
+                                              readableRoots: configuration.allowFileSystemAccess ? roots : [],
+                                              writableRoots: configuration.allowFileSystemAccess ? roots : [],
+                                              allowNetwork: configuration.allowNetworkAccess)
+            if configuration.allowFileSystemAccess {
+                let temporaryPath = try pathMapper.validateAndConvert(".tmp")
+                try FileManager.default.createDirectory(atPath: temporaryPath, withIntermediateDirectories: true)
+            }
+            let monitor = outputHandler.map { ProcessOutputMonitor(handler: $0) }
+            defer { monitor?.finish() }
+            let result = try await ProcessCapture.runAsync(
+                "/usr/bin/sandbox-exec", try policy.shellArguments(command: command), cwd: workspace,
+                timeoutSec: actualTimeout, env: policy.environment(overrides: configuration.environmentVariables),
+                inheritEnvironment: false, outputLimitBehavior: .truncate, cancellation: cancellation,
+                onOutput: { data, stream in monitor?.append(data, stream: stream) }
+            )
 
             let duration = Date().timeIntervalSince(startTime)
 
             return ExecutionResult(
-                stdout: stdout,
-                stderr: stderr,
-                exitCode: Int(process.terminationStatus),
+                stdout: result.stdout,
+                stderr: result.stderr + (result.outputTruncated ? "\n[output truncated at \(ProcessCapture.defaultMaxOutputBytes) bytes]" : ""),
+                exitCode: Int(result.exitCode),
                 duration: duration
             )
 
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as NSError where error.domain == "xterminal" && error.code == 408 {
+            throw SandboxError.commandTimeout
         } catch let error as SandboxError {
             throw error
         } catch {
@@ -198,7 +199,7 @@ class LocalSandboxProvider: SandboxProvider {
         }
 
         do {
-            let realPath = try pathMapper.validateAndConvert(path)
+            let realPath = try validatedFilePath(path)
 
             guard FileManager.default.fileExists(atPath: realPath) else {
                 throw SandboxError.fileNotFound(path)
@@ -220,7 +221,7 @@ class LocalSandboxProvider: SandboxProvider {
         }
 
         do {
-            let realPath = try pathMapper.validateAndConvert(path)
+            let realPath = try validatedFilePath(path)
 
             // 确保父目录存在
             let parentDir = (realPath as NSString).deletingLastPathComponent
@@ -245,7 +246,7 @@ class LocalSandboxProvider: SandboxProvider {
         }
 
         do {
-            let realPath = try pathMapper.validateAndConvert(path)
+            let realPath = try validatedFilePath(path)
             let fileManager = FileManager.default
 
             guard fileManager.fileExists(atPath: realPath) else {
@@ -288,7 +289,7 @@ class LocalSandboxProvider: SandboxProvider {
         }
 
         do {
-            let realPath = try pathMapper.validateAndConvert(path)
+            let realPath = try validatedFilePath(path)
 
             guard FileManager.default.fileExists(atPath: realPath) else {
                 throw SandboxError.fileNotFound(path)
@@ -309,7 +310,7 @@ class LocalSandboxProvider: SandboxProvider {
         }
 
         do {
-            let realPath = try pathMapper.validateAndConvert(path)
+            let realPath = try validatedFilePath(path)
 
             try FileManager.default.createDirectory(
                 atPath: realPath,
@@ -328,7 +329,7 @@ class LocalSandboxProvider: SandboxProvider {
             throw SandboxError.notInitialized
         }
 
-        let realPath = try pathMapper.validateAndConvert(path)
+        let realPath = try validatedFilePath(path)
         return FileManager.default.fileExists(atPath: realPath)
     }
 
@@ -359,27 +360,24 @@ class LocalSandboxProvider: SandboxProvider {
         let diskUsage = try getDiskUsage()
 
         // 获取进程数量
-        let processCount = activeProcesses.count
+        let processCount = activeExecutions.count
 
         return ResourceUsage(
             cpuUsage: cpuUsage,
             memoryUsage: memoryUsage,
             diskUsage: diskUsage,
-            processCount: processCount
+            processCount: processCount,
+            measurementKind: .estimated
         )
     }
 
     // MARK: - Private Helper Methods
 
-    /// 等待进程完成
-    private func waitForProcess(_ process: Process, timeout: TimeInterval) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-
-        while process.isRunning && Date() < deadline {
-            try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 秒
+    private func validatedFilePath(_ path: String) throws -> String {
+        guard configuration.allowFileSystemAccess else {
+            throw SandboxError.permissionDenied("file_system_access_disabled")
         }
-
-        return !process.isRunning
+        return try pathMapper.validateAndConvert(path)
     }
 
     /// 验证命令
@@ -402,30 +400,12 @@ class LocalSandboxProvider: SandboxProvider {
 
     /// 获取 CPU 使用率
     private func getCPUUsage() -> Double {
-        var usage: Double = 0.0
-
-        for process in activeProcesses {
-            if process.isRunning {
-                // 简单估算：每个运行的进程占用 10% CPU
-                usage += 10.0
-            }
-        }
-
-        return min(usage, 100.0)
+        min(Double(activeExecutions.count) * 10, 100)
     }
 
     /// 获取内存使用量
     private func getMemoryUsage() -> Int64 {
-        var usage: Int64 = 0
-
-        for process in activeProcesses {
-            if process.isRunning {
-                // 简单估算：每个进程占用 50MB
-                usage += 50 * 1024 * 1024
-            }
-        }
-
-        return usage
+        Int64(activeExecutions.count) * 50 * 1024 * 1024
     }
 
     /// 获取磁盘使用量
@@ -455,7 +435,7 @@ extension LocalSandboxProvider {
         try await writeFile(path: scriptPath, content: script)
 
         // 执行脚本
-        let result = try await execute(command: "bash \(scriptPath)", timeout: timeout)
+        let result = try await execute(command: "bash \(shellQuote(pathMapper.toReal(scriptPath)))", timeout: timeout)
 
         // 删除临时文件
         try? await deleteFile(path: scriptPath)
@@ -468,7 +448,7 @@ extension LocalSandboxProvider {
         let scriptPath = pathMapper.workspaceVirtualPath + "/temp_script.py"
         try await writeFile(path: scriptPath, content: script)
 
-        let result = try await execute(command: "python3 \(scriptPath)", timeout: timeout)
+        let result = try await execute(command: "python3 \(shellQuote(pathMapper.toReal(scriptPath)))", timeout: timeout)
 
         try? await deleteFile(path: scriptPath)
 
@@ -480,7 +460,7 @@ extension LocalSandboxProvider {
         let scriptPath = pathMapper.workspaceVirtualPath + "/temp_script.js"
         try await writeFile(path: scriptPath, content: script)
 
-        let result = try await execute(command: "node \(scriptPath)", timeout: timeout)
+        let result = try await execute(command: "node \(shellQuote(pathMapper.toReal(scriptPath)))", timeout: timeout)
 
         try? await deleteFile(path: scriptPath)
 
@@ -563,13 +543,9 @@ extension LocalSandboxProvider {
     func executeWithMonitoring(
         command: String,
         timeout: TimeInterval,
-        onOutput: @escaping (String) -> Void
+        onOutput: @escaping @Sendable (String) -> Void
     ) async throws -> ExecutionResult {
-        // 简化版本：直接执行命令
-        // TODO: 实现实时输出监控
-        let result = try await execute(command: command, timeout: timeout)
-        onOutput(result.stdout)
-        return result
+        try await executeInternal(command: command, timeout: timeout, outputHandler: onOutput)
     }
 
     /// 获取沙箱统计信息
@@ -585,9 +561,13 @@ extension LocalSandboxProvider {
             workspaceSize: workspaceSize,
             uploadsSize: uploadsSize,
             outputsSize: outputsSize,
-            activeProcessCount: activeProcesses.count
+            activeProcessCount: activeExecutions.count
         )
     }
+}
+
+private func shellQuote(_ value: String) -> String {
+    "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
 
 // MARK: - Sandbox Statistics

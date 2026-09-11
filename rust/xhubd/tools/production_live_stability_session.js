@@ -98,7 +98,7 @@ function isExternalRelFlowHubProcess(command) {
 function isXHubScopedProcess(command) {
   const text = String(command || '');
   return text.includes('/X-Hub.app/')
-    || /\/x-hub-system(?:-github-clean)?\/x-hub\//.test(text);
+    || /\/x-hub\/(?:grpc-server\/hub_grpc_server|python-runtime\/python_service)\//.test(text);
 }
 
 function isXHubNodeBridgeProcess(command) {

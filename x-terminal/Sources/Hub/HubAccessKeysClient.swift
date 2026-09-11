@@ -148,6 +148,7 @@ enum HubAccessKeysClient {
         var deviceID: String
         var userID: String
         var appID: String
+        var stateDir: URL? = nil
     }
 
     private struct ListEnvelope: Decodable {
@@ -376,18 +377,17 @@ enum HubAccessKeysClient {
             ?? normalizePort(hubEnv["HUB_PORT"]).map { min(65_535, $0 + 1) }
             ?? 50_052
 
-        var components = URLComponents()
-        components.scheme = "http"
-        components.host = host
-        components.port = pairingPort
-        guard let baseURL = components.url else { return nil }
+        guard let baseURL = HubPairingTransport.url(
+            host: host, port: pairingPort, path: "", stateDir: base
+        ) else { return nil }
 
         return SessionContext(
             baseURL: baseURL,
             clientToken: clientToken,
             deviceID: stringValue(hubEnv["HUB_DEVICE_ID"]),
             userID: stringValue(hubEnv["HUB_USER_ID"]),
-            appID: stringValue(hubEnv["HUB_APP_ID"])
+            appID: stringValue(hubEnv["HUB_APP_ID"]),
+            stateDir: base
         )
     }
 
@@ -459,7 +459,7 @@ enum HubAccessKeysClient {
             request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await HubPairingTransport.data(for: request, stateDir: context.stateDir)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
         return (data, statusCode)
     }

@@ -469,7 +469,7 @@ function isExternalRelFlowHubProcessLine(line) {
 function isXHubScopedProcessLine(line) {
   const text = String(line || '');
   return /\/X-Hub\.app\//.test(text)
-    || /\/x-hub-system(?:-github-clean)?\/x-hub\//.test(text);
+    || /\/x-hub\/(?:grpc-server\/hub_grpc_server|python-runtime\/python_service)\//.test(text);
 }
 
 function isXHubNodeBridgeProcessLine(line) {

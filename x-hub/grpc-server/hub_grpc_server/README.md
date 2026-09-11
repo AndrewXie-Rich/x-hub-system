@@ -21,6 +21,37 @@ This README is implementation-facing. For repository entrypoints and product fra
 - `x-hub/README.md`
 - `x-hub/grpc-server/README.md`
 
+## Security Hardening And Migration
+
+Generic connector signatures use HMAC-SHA256 (not an unkeyed digest); timestamps are Unix seconds within ±5 minutes and replay keys match `[A-Za-z0-9._:-]{1,200}`. Delegated reservations use `UTF-8 prompt bytes + max_tokens + 64`, are retained for the UTC day without refunds, and remain separate from actual `device:<device_id>` usage accounting. The accepted manager scopes are `hub_access_keys.manage`, `hub.access_keys.manage`, and `access_keys.manage`; child expiry defaults to the lesser of 24 hours and the parent expiry, and child CIDRs must exactly match parent rules. During replay-hash migration, pause ingress for at least the maximum old/new replay TTL, do not mix an old unsigned writer with the new service, and never restore the former public exposure as a rollback shortcut.
+
+Provider state mutations (`ReportKeyUsage`, `ReportKeyError`) and OAuth start/callback/status now require the local admin credential, just like provider account management. Ordinary client tokens retain existing read APIs but cannot change shared quota/health or create OAuth sessions. Hub-owned execution telemetry continues through the internal runtime event path. Do not distribute the admin token to terminals to restore old behavior.
+
+`HubAI.Cancel` now requires an active request owned by the authenticated access key/device/user. Request body identity does not override authentication. Unknown, completed, and foreign requests are denied without writing runtime cancellation files. Duplicate active generation IDs are rejected before changing execution state. Legacy shared-token deployments are one principal; use per-device credentials for isolation. A cancellation audit must be recorded before dispatch.
+
+Transport changes are intentionally incompatible with LAN plaintext:
+
+- gRPC defaults to TLS; invalid modes fail startup. Explicit `insecure` is restricted to numeric loopback addresses on server and Node clients.
+- Pairing HTTP defaults to `127.0.0.1` independently of the gRPC bind address. Binding plaintext pairing to a LAN/wildcard address is rejected, including when `HUB_PAIRING_PUBLIC_SCHEME=https` is set.
+- For source-run network pairing, set `HUB_PAIRING_TLS_MODE=tls` to reuse Hub TLS material, or set both `HUB_PAIRING_TLS_CERT_PATH` and `HUB_PAIRING_TLS_KEY_PATH` for a separately issued HTTPS certificate. Set `HUB_PAIRING_HOST` explicitly. HTTPS still enforces pairing approval, source restrictions, and admin authentication.
+- The embedded macOS app keeps its HTTP admin/health/pairing listener on loopback. Its generated bootstrap command uses SSH forwarding for both ports. Enable SSH on the Hub yourself, fill in the Hub login user, and independently verify the SSH host key before accepting it. No SSH settings are changed automatically.
+- The loopback restriction applies to every route on the pairing port, including `/v1/*`, `/clients/presence`, and `/xt/hub-contract`, not only first pairing. Remote callers must use HTTPS or the authenticated tunnel for these routes. The separate TLS/mTLS gRPC port can remain network-accessible.
+- Native XT now uses verified HTTPS for network discovery, heartbeat, access-key management, and contract reads. Its private CA setting is independent of gRPC TLS, and redirects/downgrades are refused. See `x-terminal/README.md` → Secure Hub Pairing Transport for the per-profile `pairing-transport.env` configuration. Legacy direct-LAN HTTP invites remain incompatible; the embedded Hub requires the authenticated two-port tunnel unless an HTTPS control endpoint is separately configured. Native certificate import UI and two-device GUI acceptance are not claimed here.
+- The generic `POST /webhook/connectors/<connector>/<target>` ingress requires an internal HMAC envelope. Configure `HUB_CONNECTOR_WEBHOOK_KEYS_JSON` as a JSON object keyed by the exact `connector:target` source, with independent secrets of at least 32 bytes. Sign the raw request bytes with `v1\n<unix_timestamp>\nPOST\n<pathname>\n<replay_key>\n<body>` and send `x-hub-timestamp`, `x-replay-key`, and `x-hub-signature: v1=<sha256_hex>`. Unsigned or legacy `x-signature` requests are rejected, including on loopback. Platform-specific Slack/Meta adapters keep their own native verification contracts.
+- XT access-key management is never inherited from pairing. A manager must have an explicit `hub_access_keys.manage` (or documented alias) scope. Delegated keys are external-terminal AI-only keys, remain owned by the manager's authenticated user/device, cannot manage further keys, cannot enable web fetch or project/workspace/trusted-automation authority, and cannot exceed the parent's expiry, capabilities, CIDRs, single-request limit, or shared daily budget. Revoking, expiring, disabling, deleting, or changing the parent's scope/policy blocks children on both HTTP and gRPC. The manager can list or mutate only its own children; legacy paired credentials remain admin-managed.
+- Delegated generation reserves an atomic shared daily budget before execution under `delegation:<parent_access_key_id>` and `delegation-key:<access_key_id>`. The reservation is conservative (prompt bytes + requested output allowance) and is retained for the UTC day, so concurrent calls, failed calls, and credential rotation cannot reset the parent/child aggregate budget. Existing `device:<device_id>` usage is included when the reservation is first introduced.
+- Caller-controlled source headers are not identity. `X-Forwarded-For` is ignored unless the socket peer is explicitly trusted by `HUB_PAIRING_TRUSTED_PROXY_CIDRS` (or the narrowly scoped loopback compatibility switch); malformed or overlong chains fail closed. Pairing/webhook pre-auth limits use the effective peer bucket plus an aggregate window cap. Tune `HUB_PREAUTH_GLOBAL_PER_MIN` (default `1200`), `HUB_PREAUTH_WINDOW_MS`, and `HUB_PREAUTH_MAX_STATE_KEYS` only after measuring the deployment.
+- `axhubctl` uses HTTPS for network hosts. For private CAs, export `HUB_PAIRING_CA_CERT_PATH` pointing to a certificate obtained over an independently trusted channel. The HTTPS certificate must match the host; do not use `curl -k`, download the initial CA over untrusted HTTP, or treat same-Wi-Fi membership as proof of identity.
+- Before upgrading an existing plaintext deployment, distribute the CA securely, update client TLS configuration, and verify connectivity. Stop new requests and let active requests finish before switching binaries. Keep the previous artifact/configuration for rollback; if rolled back, isolate it with loopback/SSH or a trusted TLS front end instead of reopening LAN plaintext.
+
+Focused regression tests:
+
+```bash
+node --test src/ai_cancel_ownership.test.js src/provider_keys_service_auth.test.js src/transport_security.test.js src/auth_require_client_auth.test.js src/tls_support.test.js
+```
+
+On macOS, `node --test src/xt_pairing_transport.test.js` additionally compiles the actual XT native clients and runs HTTPS pairing/approval, certificate rejection, authenticated heartbeat, fixture-model gRPC generation, and listener restart/reconnection in temporary state. It does not install apps or call real model providers.
+
 ## Operator-Channel Boundary
 
 Slack, Telegram, Feishu, WhatsApp Cloud, and similar adapters should be read as Hub ingress workers, not independent trust anchors.
@@ -38,14 +69,17 @@ That means:
 npm install
 ```
 
-2) Start server (recommended with tokens):
+2) Start server for explicit loopback-only development:
 ```bash
-HUB_HOST=0.0.0.0 \
+HUB_HOST=127.0.0.1 \
+HUB_GRPC_TLS_MODE=insecure \
 HUB_PORT=50051 \
 HUB_CLIENT_TOKEN='replace-client-token' \
 HUB_ADMIN_TOKEN='replace-admin-token' \
 npm run start
 ```
+
+For network gRPC, use `HUB_GRPC_TLS_MODE=tls` or `mtls` and provision client trust before connecting. Pairing remains loopback-only unless HTTPS is configured as described above.
 
 Dedicated Slack operator ingress worker (local-only by default):
 ```bash
@@ -233,7 +267,7 @@ Scheduler runtime snapshot (for dashboards/Supervisor):
 The gRPC server now supports TLS and mutual TLS (mTLS).
 
 Server env:
-- `HUB_GRPC_TLS_MODE`: `insecure|tls|mtls` (default: `insecure`)
+- `HUB_GRPC_TLS_MODE`: `insecure|tls|mtls` (default: `tls`; invalid values fail closed; `insecure` requires loopback)
 - `HUB_GRPC_TLS_SERVER_NAME`: stable DNS name used in the server cert CN/SAN (default: `axhub`)
 - `HUB_GRPC_TLS_SERVER_SAN_IPS`: optional comma-separated IPs to include in the server cert SAN (e.g. `192.168.1.10,10.7.0.2`)
 - `HUB_GRPC_TLS_DIR`: optional override for TLS material dir (default: `<runtime_base_dir>/hub_grpc_tls`)
@@ -278,7 +312,7 @@ This starts a temporary local Hub gRPC server with a temporary SQLite DB and ver
 ## Environment variables
 
 - `HUB_PORT` (default: `50051`)
-- `HUB_HOST` (default: `0.0.0.0`)
+- `HUB_HOST` (default: `::` for TLS/mTLS; `127.0.0.1` for explicit `insecure`)
 - `HUB_DB_PATH` (default: `./data/hub.sqlite3`)
 - `HUB_CLIENT_TOKEN` (legacy fallback; if set, clients must send `authorization: Bearer <token>`)
 - `HUB_ADMIN_TOKEN` (if set, admin RPCs require `authorization: Bearer <token>`)
@@ -338,10 +372,17 @@ This starts a temporary local Hub gRPC server with a temporary SQLite DB and ver
 - `HUB_AUTO_APPROVE_TTL_SEC` (default: `1800`)
 - `HUB_AUTO_APPROVE_TOKEN_CAP` (default: `5000`)
 - `HUB_RUNTIME_BASE_DIR` (optional override for runtime/bridge shared base dir)
+- `HUB_CONNECTOR_WEBHOOK_KEYS_JSON` (required for generic connector webhooks; exact `connector:target` → independent 32+ byte HMAC secret map)
+- `HUB_PAIRING_TRUSTED_PROXY_CIDRS` (optional; numeric proxy CIDRs or `loopback` that are allowed to supply a forwarding chain)
+- `HUB_PAIRING_TRUST_LOOPBACK_FORWARDED_FOR` (default: unset; compatibility opt-in for a loopback reverse proxy; malformed forwarding chains fail closed)
+- `HUB_PREAUTH_GLOBAL_PER_MIN` (default: `1200`; aggregate pairing/webhook pre-auth attempts per window)
+- `HUB_PREAUTH_WINDOW_MS` (default: `60000`; bounded aggregate/per-source pre-auth window)
+- `HUB_PREAUTH_MAX_STATE_KEYS` (default: `2048`; bounded source/connection state cardinality)
+- `HUB_WEBHOOK_REPLAY_TTL_MS` (default: `600000`; replay identity TTL; replay identity is connector + target + replay key, independent of signature)
 - `HUB_AI_AUTO_LOAD` (default: `1`; auto-load local models in the MLX runtime)
 - `HUB_MLX_RESPONSE_TIMEOUT_MS` (default: `180000`; wait for runtime response when runtime is alive)
 - `HUB_MLX_RESPONSE_TIMEOUT_NO_RUNTIME_MS` (default: `8000`; fail fast when runtime seems down)
-- `HUB_GRPC_TLS_MODE` (default: `insecure`; set to `tls` or `mtls` for encrypted transport)
+- `HUB_GRPC_TLS_MODE` (default: `tls`; explicit `insecure` is loopback-only)
 - `HUB_GRPC_TLS_DIR` (optional; defaults to `<runtime_base_dir>/hub_grpc_tls`)
 - `HUB_GRPC_TLS_AUTO_GEN` (default: `1`; auto-generate CA/server certs with `openssl`)
 - `HUB_GRPC_TLS_SERVER_NAME` (default: `axhub`)
@@ -422,7 +463,7 @@ Notes:
 
 ## Pairing (MVP)
 
-This repo now includes a minimal HTTP pairing control plane (Option B in `protocol/hub_protocol_v1.md`):
+This repo includes an HTTP(S) pairing control plane (Option B in `protocol/hub_protocol_v1.md`):
 
 - Terminal device "knocks" (unauthenticated) -> Hub records a pending request.
 - Hub operator approves/denies locally (Hub UI or local admin call).
@@ -430,18 +471,22 @@ This repo now includes a minimal HTTP pairing control plane (Option B in `protoc
 
 Defaults:
 - Pairing server listens on `HUB_PAIRING_PORT` (default: `HUB_PORT + 1`, e.g. `50052`).
+- Without HTTPS configuration, pairing binds only to `127.0.0.1`; use authenticated SSH forwarding for remote bootstrap.
 - Pairing server only accepts `private,loopback` source IPs by default (override with `HUB_PAIRING_ALLOWED_CIDRS`).
 - Admin endpoints are local-only by default and require `HUB_ADMIN_TOKEN`.
 - Operator-channel governance RPCs are also local-only by default, but require a separate `HUB_OPERATOR_CHANNEL_CONNECTOR_TOKEN` instead of the admin token.
 
-Bootstrap install (new machine, LAN):
+Bootstrap install through an authenticated SSH tunnel (new machine):
 ```bash
-HUB_HOST='<hub_lan_ip>'
 PAIRING_PORT=50052
+ssh -fN -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:50052:127.0.0.1:50052 \
+  -L 127.0.0.1:50051:127.0.0.1:50051 '<hub_user>@<hub_host>'
+HUB_HOST=127.0.0.1
 
 # Download axhubctl (single-file shell tool) from the Hub pairing server.
-curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o /tmp/axhubctl
-curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl.sha256" -o /tmp/axhubctl.sha256
+curl -q --noproxy '*' --proto '=http' -fsS "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o /tmp/axhubctl
+curl -q --noproxy '*' --proto '=http' -fsS "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl.sha256" -o /tmp/axhubctl.sha256
 # Verify sha256 (note the file name in the .sha256 manifest is "axhubctl").
 AXHUBCTL_SHA256="$(awk '{print $1}' /tmp/axhubctl.sha256)"
 echo "${AXHUBCTL_SHA256}  /tmp/axhubctl" | shasum -a 256 -c -
@@ -455,7 +500,7 @@ chmod +x ~/.local/bin/axhubctl
 
 One-shot bootstrap (discover + pair + wait + download client kit):
 ```bash
-axhubctl bootstrap --hub auto --pairing-port "$PAIRING_PORT" \
+axhubctl bootstrap --hub 127.0.0.1 --pairing-port "$PAIRING_PORT" \
   --device-name "Frank-Mac" \
   --requested-scopes "models,events,memory,ai.generate.local,web.fetch"
 ```
@@ -476,15 +521,15 @@ Auto reconnect loop (with exponential backoff):
 axhubctl connect --hub auto --auto-reconnect --max-backoff-sec 30
 ```
 
-Example (Terminal device, LAN):
+Example (Terminal device, through the verified loopback tunnel):
 ```bash
 PAIRING_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
 
-curl -sS -X POST "http://<hub_lan_ip>:50052/pairing/requests" \
+curl -sS -X POST "http://127.0.0.1:50052/pairing/requests" \
   -H 'Content-Type: application/json' \
   -d "{\"app_id\":\"ax_terminal\",\"device_name\":\"Frank-Mac\",\"pairing_secret\":\"$PAIRING_SECRET\"}" | jq
 
 # Poll for approval:
-curl -sS "http://<hub_lan_ip>:50052/pairing/requests/<pairing_request_id>" \
+curl -sS "http://127.0.0.1:50052/pairing/requests/<pairing_request_id>" \
   -H "X-Pairing-Secret: $PAIRING_SECRET" | jq
 ```

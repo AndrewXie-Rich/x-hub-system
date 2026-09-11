@@ -32,14 +32,6 @@ actor HubPairingCoordinator {
         "stf",
         "vmnet"
     ]
-    static let lanDiscoveryURLSession: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.waitsForConnectivity = false
-        configuration.connectionProxyDictionary = [:]
-        return URLSession(configuration: configuration)
-    }()
-
     static func normalizedRemoteGenerateTimeoutSec(_ raw: Double) -> Double {
         guard raw.isFinite, raw > 0 else { return remoteGenerateDefaultTimeoutSec }
         return max(remoteGenerateMinTimeoutSec, min(remoteGenerateMaxTimeoutSec, raw))
@@ -94,12 +86,9 @@ actor HubPairingCoordinator {
             ?? Host.current().localizedName
             ?? "X-Terminal"
 
-        var components = URLComponents()
-        components.scheme = "http"
-        components.host = host
-        components.port = pairingPort
-        components.path = "/clients/presence"
-        guard let url = components.url else { return false }
+        guard let url = HubPairingTransport.url(
+            host: host, port: pairingPort, path: "/clients/presence", stateDir: base
+        ) else { return false }
 
         let payload: [String: String] = [
             "app_id": appID,
@@ -119,7 +108,7 @@ actor HubPairingCoordinator {
         request.httpBody = body
 
         do {
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await HubPairingTransport.data(for: request, stateDir: base)
             guard let http = response as? HTTPURLResponse else { return false }
             return (200..<300).contains(http.statusCode)
         } catch {
@@ -403,6 +392,7 @@ actor HubPairingCoordinator {
 
         let pathsToDelete: [URL] = [
             base.appendingPathComponent("pairing.env"),
+            base.appendingPathComponent(HubPairingTransport.configurationFileName),
             base.appendingPathComponent("hub.env"),
             base.appendingPathComponent("connection.json"),
             base.appendingPathComponent("client_kit", isDirectory: true),

@@ -4,11 +4,12 @@
 const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const http = require('node:http');
+const https = require('node:https');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 
-const DEFAULT_GRPC_PORT = 50058;
+const DEFAULT_GRPC_PORT = 50051;
 const DEFAULT_TIMEOUT_MS = 5000;
 const TAILSCALE_APP = '/Applications/Tailscale.app';
 const HOMEBREW_LAUNCH_AGENT = path.join(os.homedir(), 'Library/LaunchAgents/homebrew.mxcl.tailscale.plist');
@@ -203,7 +204,26 @@ function connectTcp(host, port, timeoutMs) {
 function httpJson(url, timeoutMs) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const req = http.get(url, { timeout: timeoutMs, headers: { accept: 'application/json' } }, (res) => {
+    const client = url.startsWith('https://') ? https : http;
+    const requestOptions = {
+      timeout: timeoutMs,
+      headers: { accept: 'application/json' },
+    };
+    if (url.startsWith('https://') && safeString(process.env.XHUB_PAIRING_CA_CERT_PATH)) {
+      try {
+        requestOptions.ca = fs.readFileSync(safeString(process.env.XHUB_PAIRING_CA_CERT_PATH));
+      } catch (error) {
+        resolve({
+          ok: false,
+          status_code: 0,
+          duration_ms: Date.now() - started,
+          json: null,
+          error: `pairing_ca_unreadable:${safeString(error.code || error.message || error)}`,
+        });
+        return;
+      }
+    }
+    const req = client.get(url, requestOptions, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (chunk) => {
@@ -247,7 +267,7 @@ async function buildReport(args) {
   const remote = targetHost ? {
     pairing: await connectTcp(targetHost, args.pairingPort, args.timeoutMs),
     grpc: await connectTcp(targetHost, args.grpcPort, args.timeoutMs),
-    discovery: await httpJson(`http://${urlHost(targetHost)}:${args.pairingPort}/pairing/discovery`, args.timeoutMs),
+    discovery: await httpJson(`https://${urlHost(targetHost)}:${args.pairingPort}/pairing/discovery`, args.timeoutMs),
   } : {
     pairing: { ok: false, port: args.pairingPort, duration_ms: 0, error: 'host_missing' },
     grpc: { ok: false, port: args.grpcPort, duration_ms: 0, error: 'host_missing' },

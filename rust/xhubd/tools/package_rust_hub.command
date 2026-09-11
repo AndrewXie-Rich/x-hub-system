@@ -26,6 +26,7 @@ cp "$ROOT_DIR/provenance/capabilities.json" "$DIST_DIR/provenance/capabilities.j
 cp "$ROOT_DIR"/docs/*.md "$DIST_DIR/docs/"
 cp -R "$ROOT_DIR"/skills/. "$DIST_DIR/skills/"
 cp "$ROOT_DIR/tools/run_packaged_rust_hub.command" "$DIST_DIR/tools/run_rust_hub.command"
+cp "$ROOT_DIR/tools/xhub_system_paths.js" "$DIST_DIR/tools/xhub_system_paths.js"
 cp "$ROOT_DIR/tools/xhubd_daemon.js" "$DIST_DIR/tools/xhubd_daemon.js"
 cp "$ROOT_DIR/tools/xhubd_daemon.command" "$DIST_DIR/tools/xhubd_daemon.command"
 cp "$ROOT_DIR/tools/daemon_ops_report.command" "$DIST_DIR/tools/daemon_ops_report.command"

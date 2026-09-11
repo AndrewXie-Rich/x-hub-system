@@ -6,6 +6,7 @@ import path from 'node:path';
 import { HubDB } from './db.js';
 import { HubEventBus } from './event_bus.js';
 import { makeServices } from './services.js';
+import { writeClientsSnapshot } from './clients.js';
 import {
   addProviderKey,
   getKeyUsage,
@@ -111,7 +112,7 @@ function makeJWT(payload) {
   return `${header}.${body}.`;
 }
 
-await run('HubProviderKeys list/summary/usage telemetry allow paired client auth but mutations stay admin-only', async () => {
+await run('HubProviderKeys allows client reads but reserves provider truth and OAuth for admins', async () => {
   const runtimeBaseDir = makeTempDir('xhub-provider-keys-runtime-');
   const dbPath = path.join(makeTempDir('xhub-provider-keys-db-'), 'hub.sqlite3');
   invalidateProviderKeyCache();
@@ -119,6 +120,8 @@ await run('HubProviderKeys list/summary/usage telemetry allow paired client auth
   await withEnv(
     {
       HUB_RUNTIME_BASE_DIR: runtimeBaseDir,
+      HUB_AUTH_BASE_DIR: runtimeBaseDir,
+      HUB_CLIENTS_BASE_DIR: runtimeBaseDir,
       HUB_CLIENT_TOKEN: 'client-secret',
       HUB_ADMIN_TOKEN: 'admin-secret',
       HUB_GRPC_TLS_MODE: '',
@@ -130,6 +133,9 @@ await run('HubProviderKeys list/summary/usage telemetry allow paired client auth
       const db = new HubDB({ dbPath });
       const impl = makeServices({ db, bus: new HubEventBus() });
       try {
+        writeClientsSnapshot(runtimeBaseDir, {
+          clients: [{ device_id: 'read-only-device', token: 'client-secret', capabilities: ['models'] }],
+        });
         const addResult = addProviderKey(runtimeBaseDir, {
           provider: 'openai',
           email: 'pool@test.local',
@@ -214,9 +220,32 @@ await run('HubProviderKeys list/summary/usage telemetry allow paired client auth
         assert.equal(Number(routeDecision.res.decision?.candidates?.length || 0), 1);
         assert.equal(String(routeDecision.res.decision?.candidates?.[0]?.account_key || ''), addResult.account_key);
 
+        const usageBefore = getKeyUsage(runtimeBaseDir, addResult.account_key);
+        const protectedRequests = [
+          ['ReportKeyUsage', { account_key: addResult.account_key, tokens_used: 999999, occurred_at_ms: 1 }],
+          ['ReportKeyError', { account_key: addResult.account_key, error_code: '401', http_status: 401 }],
+          ['StartProviderOAuthLogin', { provider: 'openai' }],
+          ['SubmitProviderOAuthCallback', { provider: 'openai', state: 'forged', code: 'forged' }],
+          ['GetProviderOAuthLoginStatus', { state: 'forged' }],
+        ];
+        for (const token of ['client-secret', '', 'invalid-secret']) {
+          for (const [method, request] of protectedRequests) {
+            const denied = await invokeUnary(impl.HubProviderKeys[method], makeTransportCall(request, token));
+            assert.ok(denied.err, `${method} must reject non-admin callers`);
+            assert.match(denied.err.message, /admin token/i);
+          }
+        }
+        assert.deepEqual(getKeyUsage(runtimeBaseDir, addResult.account_key), usageBefore);
+        writeClientsSnapshot(runtimeBaseDir, { clients: [] });
+        for (const [method, request] of protectedRequests) {
+          const denied = await invokeUnary(impl.HubProviderKeys[method], makeTransportCall(request, 'client-secret'));
+          assert.ok(denied.err, `${method} must also reject the legacy shared client token`);
+        }
+        assert.deepEqual(getKeyUsage(runtimeBaseDir, addResult.account_key), usageBefore);
+
         const usageReport = await invokeUnary(
           impl.HubProviderKeys.ReportKeyUsage,
-          makeTransportCall({ account_key: addResult.account_key, tokens_used: 321 }, 'client-secret')
+          makeTransportCall({ account_key: addResult.account_key, tokens_used: 321 }, 'admin-secret')
         );
         assert.equal(usageReport.err, null);
         assert.equal(usageReport.res.ok, true);
@@ -248,6 +277,13 @@ await run('HubProviderKeys list/summary/usage telemetry allow paired client auth
         );
         assert.ok(batchMutateDenied.err);
         assert.match(String(batchMutateDenied.err.message || batchMutateDenied.err), /admin token/i);
+
+        const errorReport = await invokeUnary(
+          impl.HubProviderKeys.ReportKeyError,
+          makeTransportCall({ account_key: addResult.account_key, http_status: 401, error_code: '401' }, 'admin-secret')
+        );
+        assert.equal(errorReport.err, null);
+        assert.equal(errorReport.res.auto_disabled, true);
       } finally {
         db.close();
       }
@@ -369,7 +405,7 @@ await run('HubProviderKeys import surfaces hard failures instead of always retur
   try { fs.rmSync(path.dirname(dbPath), { recursive: true, force: true }); } catch {}
 });
 
-await run('HubProviderKeys OAuth start/status/callback allow paired client auth and fail closed on provider mismatch', async () => {
+await run('HubProviderKeys OAuth start/status/callback require admin auth and reject provider mismatch', async () => {
   const runtimeBaseDir = makeTempDir('xhub-provider-keys-runtime-');
   const dbPath = path.join(makeTempDir('xhub-provider-keys-db-'), 'hub.sqlite3');
   invalidateProviderKeyCache();
@@ -390,7 +426,7 @@ await run('HubProviderKeys OAuth start/status/callback allow paired client auth 
       try {
         const start = await invokeUnary(
           impl.HubProviderKeys.StartProviderOAuthLogin,
-          makeTransportCall({ provider: 'openai' }, 'client-secret')
+          makeTransportCall({ provider: 'openai' }, 'admin-secret')
         );
         assert.equal(start.err, null);
         assert.equal(start.res.ok, true);
@@ -402,7 +438,7 @@ await run('HubProviderKeys OAuth start/status/callback allow paired client auth 
 
         const statusPending = await invokeUnary(
           impl.HubProviderKeys.GetProviderOAuthLoginStatus,
-          makeTransportCall({ state: start.res.state }, 'client-secret')
+          makeTransportCall({ state: start.res.state }, 'admin-secret')
         );
         assert.equal(statusPending.err, null);
         assert.equal(String(statusPending.res.status || ''), 'pending');
@@ -415,7 +451,7 @@ await run('HubProviderKeys OAuth start/status/callback allow paired client auth 
               state: start.res.state,
               code: 'code-should-not-apply',
             },
-            'client-secret'
+            'admin-secret'
           )
         );
         assert.equal(mismatch.err, null);
@@ -431,7 +467,7 @@ await run('HubProviderKeys OAuth start/status/callback allow paired client auth 
               redirect_url: 'http://localhost:1455/auth/callback?state=' + encodeURIComponent(String(start.res.state || ''))
                 + '&error=access_denied',
             },
-            'client-secret'
+            'admin-secret'
           )
         );
         assert.equal(callbackError.err, null);
@@ -440,7 +476,7 @@ await run('HubProviderKeys OAuth start/status/callback allow paired client auth 
 
         const statusError = await invokeUnary(
           impl.HubProviderKeys.GetProviderOAuthLoginStatus,
-          makeTransportCall({ state: start.res.state }, 'client-secret')
+          makeTransportCall({ state: start.res.state }, 'admin-secret')
         );
         assert.equal(statusError.err, null);
         assert.equal(String(statusError.res.status || ''), 'error');
@@ -500,7 +536,7 @@ await run('HubProviderKeys OAuth success exchanges code, writes managed auth fil
       try {
         const start = await invokeUnary(
           impl.HubProviderKeys.StartProviderOAuthLogin,
-          makeTransportCall({ provider: 'codex' }, 'client-secret')
+          makeTransportCall({ provider: 'codex' }, 'admin-secret')
         );
         assert.equal(start.err, null);
         assert.equal(start.res.ok, true);
@@ -513,7 +549,7 @@ await run('HubProviderKeys OAuth success exchanges code, writes managed auth fil
               state: start.res.state,
               code: 'codex-auth-code-1',
             },
-            'client-secret'
+            'admin-secret'
           )
         );
         assert.equal(submit.err, null);
@@ -523,7 +559,7 @@ await run('HubProviderKeys OAuth success exchanges code, writes managed auth fil
         const finalStatus = await waitFor(async () => {
           const status = await invokeUnary(
             impl.HubProviderKeys.GetProviderOAuthLoginStatus,
-            makeTransportCall({ state: start.res.state }, 'client-secret')
+            makeTransportCall({ state: start.res.state }, 'admin-secret')
           );
           if (status.err) throw status.err;
           return String(status.res.status || '') === 'ok' ? status.res : null;

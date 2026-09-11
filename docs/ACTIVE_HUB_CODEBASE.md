@@ -4,20 +4,22 @@ This file is the handoff marker for AIs and humans updating Hub.
 
 ## Source Of Truth
 
-- Canonical Hub system repository: `/Users/andrew.xie/Documents/AX/x-hub-system`
+- Canonical Hub system repository: `<repository-root>` (resolve with `git rev-parse --show-toplevel`)
 - Active Hub app and Swift shell source: `x-hub/`
 - Canonical Rust kernel source: `rust/xhubd/`
 - Canonical X-Terminal source: `x-terminal/`
 - Active installed app: `/Applications/X-Hub.app`
 - Required app executable: `Contents/MacOS/XHub`
 
-Do not use `/Users/andrew.xie/Documents/AX/x-hub-system-github-clean` as the source of truth. It is a clean/old preview copy and previously produced the slow old UI path.
+Here `<AX-root>` means the parent directory of `<repository-root>`.
+
+Do not use `<AX-root>/x-hub-system-github-clean` as the source of truth. It is a clean/old preview copy and previously produced the slow old UI path.
 
 The Swift package directory is still named `x-hub/macos/RELFlowHub/` for historical compatibility. That directory name does not mean the old app is active.
 
 ## Build And Install
 
-From `/Users/andrew.xie/Documents/AX/x-hub-system`:
+From `<repository-root>`:
 
 ```bash
 ./x-hub/tools/build_hub_app.command
@@ -40,11 +42,11 @@ Keep these endpoints current when changing Hub behavior that XT consumes:
 
 ## Before Editing
 
-1. Confirm the working directory is `/Users/andrew.xie/Documents/AX/x-hub-system`.
+1. Confirm the working directory matches `git rev-parse --show-toplevel`.
 2. Do not copy old UI code or package outputs from `x-hub-system-github-clean`.
 3. If touching Rust kernel behavior, edit `rust/xhubd/` and rebuild/package it before rebuilding Hub.
 4. Preserve unrelated dirty work. This repo often has concurrent AI/user edits.
 
-The sibling `rust/rust hub` and `rust/rust xt/swift-xterminal` trees outside
-this repository are migration/reference copies only, not build or release
-sources.
+The sibling `<AX-root>/rust/rust hub` and
+`<AX-root>/rust/rust xt/swift-xterminal` trees are migration/reference copies
+only, not build or release sources.

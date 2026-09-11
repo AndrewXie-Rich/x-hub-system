@@ -127,7 +127,7 @@ fn pairing_contract(config: &HubConfig) -> Value {
         "authority": "swift_shell_pairing_service",
         "xt_role": "pair_once_then_use_route_pack",
         "grpc_port": config.grpc_port,
-        "pairing_port": 50059,
+        "pairing_port": config.grpc_port.saturating_add(1),
         "requires_auth": true,
         "requires_mtls": true,
         "cache_policy": "cache_pairing_profile_and_route_pack_until_epoch_change",
@@ -462,6 +462,8 @@ mod tests {
     fn xt_contract_lists_hub_owned_capabilities() {
         let value = contract_value(&test_config());
         assert_eq!(value["schema_version"], XT_HUB_CONTRACT_SCHEMA);
+        assert_eq!(value["capabilities"]["pairing"]["grpc_port"], 50152);
+        assert_eq!(value["capabilities"]["pairing"]["pairing_port"], 50153);
         assert_eq!(
             value["capabilities"]["memory"]["canonical_writer"],
             "hub_only"

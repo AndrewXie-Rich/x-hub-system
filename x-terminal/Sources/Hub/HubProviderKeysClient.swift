@@ -948,20 +948,7 @@ function loadProto(protoPath) {
   return loaded?.ax?.hub?.v1;
 }
 
-async function makeClientCreds() {
-  const srcDir = path.resolve(process.cwd(), 'src');
-  const helper = path.join(srcDir, 'client_credentials.js');
-  if (fs.existsSync(helper)) {
-    try {
-      const mod = await import(pathToFileURL(helper).href);
-      if (typeof mod.makeClientCredentials === 'function') {
-        const built = mod.makeClientCredentials(process.env);
-        if (built?.creds) return { creds: built.creds, options: built.options || {} };
-      }
-    } catch {}
-  }
-  return { creds: grpc.credentials.createInsecure(), options: {} };
-}
+\(HubGRPCClientSupport.makeClientCredentialsScript)
 
 async function main() {
   const method = safe(process.env.XTERMINAL_PROVIDER_KEYS_METHOD || '');

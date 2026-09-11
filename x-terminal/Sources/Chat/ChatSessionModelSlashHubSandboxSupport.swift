@@ -97,9 +97,9 @@ Hub 传输模式：
         let behavior: String
         switch mode {
         case .host:
-            behavior = "默认走宿主环境；传 `sandbox=true` 时临时改走沙箱。"
+            behavior = "默认走宿主环境，不提供 OS 隔离；传 `sandbox=true` 时临时改走沙箱。"
         case .sandbox:
-            behavior = "默认走沙箱环境；传 `sandbox=false` 时临时改走宿主。"
+            behavior = "本地命令受 macOS 沙箱限制，默认禁止网络；模型不能用 `sandbox=false` 降级到宿主。当前支持 read_file、write_file、list_dir、search、run_command，其他工具直接拒绝。"
         }
         return """
 工具执行路径：

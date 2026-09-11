@@ -73,6 +73,14 @@ extension HubPairingCoordinator {
     nonisolated static func inferFailureCodeFromText(_ output: String, fallback: String) -> String {
         let text = output.lowercased()
         if text.isEmpty { return fallback }
+        for code in [
+            "pairing_transport_tool_upgrade_required", "pairing_transport_invalid",
+            "pairing_ca_unreadable", "pairing_ca_invalid", "grpc_tls_mode_invalid",
+            "grpc_plaintext_remote_denied", "grpc_credentials_helper_missing",
+            "grpc_credentials_helper_invalid", "grpc_credentials_mode_mismatch"
+        ] where text.contains(code) {
+            return code
+        }
         let looksLikeHTMLPayload = text.contains("<!doctype html")
             || text.contains("<html")
             || text.contains("</html>")

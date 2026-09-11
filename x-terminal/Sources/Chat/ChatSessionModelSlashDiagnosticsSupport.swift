@@ -30,6 +30,9 @@ extension ChatSessionModel {
                     throw NSError(domain: "xterminal", code: 1, userInfo: [NSLocalizedDescriptionKey: "selftest content encode failed"])
                 }
                 try data.write(to: file, options: .atomic)
+                let sandbox = try await SandboxManager.shared.createSandbox(forProjectRoot: tempRoot)
+                try await sandbox.createDirectory(path: "src")
+                try await sandbox.writeFile(path: "src/selftest.txt", content: content)
 
                 let explicitSandboxCall = ToolCall(
                     id: "sandbox_selftest_explicit",
@@ -66,9 +69,8 @@ extension ChatSessionModel {
                     ]
                 )
                 let hostOverride = try await ToolExecutor.execute(call: hostOverrideCall, projectRoot: tempRoot)
-                let hostOverrideOK = hostOverride.ok &&
-                    !hostOverride.output.contains("sandbox: true") &&
-                    hostOverride.output.contains(token)
+                let hostOverrideOK = !hostOverride.ok &&
+                    hostOverride.output.contains("sandbox_downgrade_denied")
 
                 try? await SandboxManager.shared.destroySandbox(forProjectRoot: tempRoot)
 
@@ -77,10 +79,11 @@ extension ChatSessionModel {
 工具执行路径自检：\(localizedPassFail(overall))
 - 明确指定 `sandbox=true`：\(localizedPassFail(explicitSandboxOK))
 - 默认模式为 sandbox：\(localizedPassFail(defaultSandboxOK))
-- 明确指定 `sandbox=false` 覆盖：\(localizedPassFail(hostOverrideOK))
+- 拒绝模型用 `sandbox=false` 降级：\(localizedPassFail(hostOverrideOK))
 """
                 finalizeTurn(ctx: ctx, userText: userText, assistantText: summary, assistantIndex: assistantIndex)
             } catch {
+                try? await SandboxManager.shared.destroySandbox(forProjectRoot: tempRoot)
                 let msg = String(describing: error)
                 let out = "工具执行路径自检：失败\n- 错误：\(msg)"
                 finalizeTurn(ctx: ctx, userText: userText, assistantText: out, assistantIndex: assistantIndex)

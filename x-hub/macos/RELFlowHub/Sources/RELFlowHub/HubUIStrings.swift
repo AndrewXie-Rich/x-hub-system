@@ -5758,7 +5758,7 @@ enum HubUIStrings {
             static let insecure = "不加密"
             static let tls = "TLS"
             static let mtls = "mTLS"
-            static let transportHint = "建议在同网、Tailscale、relay 或 Spectrum 入口下使用 mTLS。不加密只适合开发或兼容场景。启用 mTLS 后，请重新配对设备，让 Hub 下发客户端证书。"
+            static let transportHint = "默认 TLS；不加密仅监听本机回环地址。当前内置配对服务也仅限本机，跨设备首次配对请使用已验证 SSH 主机身份的隧道（引导命令需填写 Hub 登录用户），或配置独立 HTTPS 配对入口。旧版同 Wi-Fi 明文直连首配已停用。启用 mTLS 后需重新配对下发客户端证书。"
             static let port = "端口"
             static let openLog = "打开日志"
             static let rotateDeviceToken = "轮换设备令牌"
@@ -5962,7 +5962,7 @@ enum HubUIStrings {
 连接方式与安全等级
 
 1) 同 Wi-Fi / 局域网
-   怎么连：XT 与 Hub 在同一网络，打开邀请链接/扫码，或填局域网地址和 50059/50058。
+   怎么连：XT 与 Hub 在同一网络，打开邀请链接/扫码，或填局域网地址和 50052/50051。
    当前状态：已支持。只适合首次配对或固定同网。
    安全等级：高；便利：同网高，异网不可用。
 
@@ -5973,31 +5973,31 @@ enum HubUIStrings {
 
 3) Tailscale 子网路由
    怎么连：在固定网络部署 Tailscale subnet router，把 Hub 所在 LAN 暴露到 tailnet；Hub 外部地址填已验证可达的 Hub LAN IP 或域名。
-   当前状态：手工可用，必须先用 doctor 验证 50059/50058。
+   当前状态：手工可用，必须先用 doctor 验证 50052/50051。
    安全等级：高；便利：中，适合固定网络互通，不等同于路上设备免安装。
 
 4) 公网 IP 直连
-   怎么连：路由器/NAT 把 TCP 50059 和 50058 转发到 Hub；XT 填公网 IP；仍使用 invite token + mTLS。
+   怎么连：路由器/NAT 把 TCP 50052 和 50051 转发到 Hub；XT 填公网 IP；仍使用 invite token + mTLS。
    当前状态：已支持作为临时验证。
    安全等级：中低；便利：高但 IP 易变，并且端口暴露在公网。
 
 5) DNS-only 域名直连
-   怎么连：A/AAAA 记录指向 Hub 公网 IP 或可达入口，Cloudflare 记录必须 DNS-only；路由器转发 50059/50058。
+   怎么连：A/AAAA 记录指向 Hub 公网 IP 或可达入口，Cloudflare 记录必须 DNS-only；路由器转发 50052/50051。
    当前状态：已支持。
    安全等级：中；便利：高，需要处理公网 IP 变化和防火墙。
 
 6) Cloudflare Spectrum raw TCP
-   怎么连：用 Spectrum 把域名的 TCP 50059/50058 转到 Hub 或 origin relay；XT 仍填这个域名和原端口。
+   怎么连：用 Spectrum 把域名的 TCP 50052/50051 转到 Hub 或 origin relay；XT 仍填这个域名和原端口。
    当前状态：Hub/XT 侧兼容，需外部 Cloudflare Spectrum 配置。
    安全等级：中高；便利：高，不要求 XT 安装 Tailscale。
 
 7) VPS raw TCP relay / reverse proxy
-   怎么连：VPS 公网地址或域名监听 50059/50058，并把 raw TCP 转发到 Hub 可达入口。
+   怎么连：VPS 公网地址或域名监听 50052/50051，并把 raw TCP 转发到 Hub 可达入口。
    当前状态：Hub/XT 侧兼容，需自建 VPS 和守护进程。
    安全等级：中高，取决于 VPS 加固；便利：高，不要求 XT 安装 Tailscale。
 
 8) Tailscale Funnel raw TCP
-   怎么连：用 Funnel 暴露 Hub 入口，再把外部端口映射到 50059/50058。
+   怎么连：用 Funnel 暴露 Hub 入口，再把外部端口映射到 50052/50051。
    当前状态：待端口/协议适配，作为后续方案。
    安全等级：中；便利：高，但入口会公开。
 

@@ -8,11 +8,13 @@ X Hub system. Keep all production changes and release inputs under this root:
 - Rust Hub kernel: `rust/xhubd/`
 - X-Terminal: `x-terminal/`
 
-The sibling trees `/Users/andrew.xie/Documents/AX/rust/rust hub` and
-`/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal` are
+The sibling trees `<AX-root>/rust/rust hub` and
+`<AX-root>/rust/rust xt/swift-xterminal` are
 migration/reference copies only. Do not build, package, install, or land new
 work from them. If they contain useful work, migrate it into this repository
 and validate it here before treating it as current.
+Here `<repository-root>` is `git rev-parse --show-toplevel`, and `<AX-root>` is
+its parent directory.
 
 When updating Hub, build and install from this repository root only:
 
@@ -20,7 +22,7 @@ When updating Hub, build and install from this repository root only:
 - `./x-hub/tools/install_hub_app.command`
 
 The active app bundle is `/Applications/X-Hub.app` and its executable must be `Contents/MacOS/XHub`.
-The internal Swift package directory is still named `x-hub/macos/RELFlowHub/` for historical reasons; do not use that name as proof that the old product is active. Do not treat `/Users/andrew.xie/Documents/AX/x-hub-system-github-clean` or any `/Applications/X-Hub.app.*RELFlowHub*` backup as the source of truth.
+The internal Swift package directory is still named `x-hub/macos/RELFlowHub/` for historical reasons; do not use that name as proof that the old product is active. Do not treat `<AX-root>/x-hub-system-github-clean` or any `/Applications/X-Hub.app.*RELFlowHub*` backup as the source of truth.
 
 The canonical Rust kernel source is `rust/xhubd/`.
 `x-hub/tools/build_hub_app.command` embeds packages from

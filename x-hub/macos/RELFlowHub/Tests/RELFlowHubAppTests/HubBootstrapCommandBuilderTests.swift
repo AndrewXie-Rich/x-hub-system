@@ -17,6 +17,11 @@ final class HubBootstrapCommandBuilderTests: XCTestCase {
         XCTAssertTrue(text.contains("INVITE_TOKEN='axhub_invite_test_123'"))
         XCTAssertTrue(text.contains("--require-client-kit"))
         XCTAssertTrue(text.contains("\"$AXHUBCTL\" list-models"))
+        XCTAssertTrue(text.contains("ssh -fN -o ExitOnForwardFailure=yes"))
+        XCTAssertTrue(text.contains("HUB_HOST='127.0.0.1'"))
+        XCTAssertTrue(text.contains("curl -q --noproxy '*' --proto '=http' -fsS"))
+        XCTAssertFalse(text.contains("StrictHostKeyChecking=no"))
+        XCTAssertFalse(text.contains("curl -k"))
     }
 
     func testBootstrapCommandOmitsInviteTokenWhenMissing() {

@@ -35,13 +35,14 @@ final class HubGRPCServerSupport: ObservableObject {
         }
     }
 
-    @Published var tlsMode: String = (UserDefaults.standard.string(forKey: HubGRPCServerSupport.tlsModeKey) ?? "insecure") {
+    @Published var tlsMode: String = (UserDefaults.standard.string(forKey: HubGRPCServerSupport.tlsModeKey) ?? "tls") {
         didSet {
             let cleaned = tlsMode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             let v: String = {
                 if cleaned == "tls" { return "tls" }
                 if cleaned == "mtls" { return "mtls" }
-                return "insecure"
+                if cleaned == "insecure" { return "insecure" }
+                return "tls"
             }()
             if v != tlsMode {
                 tlsMode = v
@@ -434,7 +435,7 @@ final class HubGRPCServerSupport: ObservableObject {
         p.currentDirectoryURL = serverJS.deletingLastPathComponent().deletingLastPathComponent()
 
         var env = RustHubRuntimeSupport.nodeSidecarBaseEnvironment(ProcessInfo.processInfo.environment)
-        let serviceBindHost = "::"
+        let serviceBindHost = tlsMode == "insecure" ? "127.0.0.1" : "::"
         env["HUB_HOST"] = serviceBindHost
         env["HUB_PORT"] = String(port)
         env["HUB_DB_PATH"] = dbURL.path
@@ -514,7 +515,10 @@ final class HubGRPCServerSupport: ObservableObject {
 
         // Pairing control plane (HTTP/JSON, unauthenticated request + admin approval).
         // Listens on gRPC port + 1 by default.
-        env["HUB_PAIRING_HOST"] = serviceBindHost
+        env["HUB_PAIRING_HOST"] = "127.0.0.1"
+        env.removeValue(forKey: "HUB_PAIRING_TLS_MODE")
+        env.removeValue(forKey: "HUB_PAIRING_TLS_CERT_PATH")
+        env.removeValue(forKey: "HUB_PAIRING_TLS_KEY_PATH")
         env["HUB_PAIRING_PORT"] = String(max(1, min(65535, port + 1)))
         env["HUB_PAIRING_ALLOWED_CIDRS"] = lanAllowed.joined(separator: ",")
         env["HUB_PAIRING_FIRST_PAIR_ALLOWED_CIDRS"] = firstPairLANAllowed.joined(separator: ",")
@@ -687,11 +691,16 @@ HUB_HOST='\(host)'
 GRPC_PORT=\(grpcPort)
 PAIRING_PORT=\(pairingPort)
 
+ssh -fN -o ExitOnForwardFailure=yes \\
+  -L "127.0.0.1:${PAIRING_PORT}:127.0.0.1:${PAIRING_PORT}" \\
+  -L "127.0.0.1:${GRPC_PORT}:127.0.0.1:${GRPC_PORT}" "<hub_user>@${HUB_HOST}" || exit 1
+HUB_HOST='127.0.0.1'
+
 \(inviteTokenLines)AXHUBCTL="$HOME/.local/bin/axhubctl"
 mkdir -p "$(dirname "$AXHUBCTL")"
 
-curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" && \\
-  curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl.sha256" -o "$AXHUBCTL.sha256" && \\
+curl -q --noproxy '*' --proto '=http' -fsS "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" && \\
+  curl -q --noproxy '*' --proto '=http' -fsS "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl.sha256" -o "$AXHUBCTL.sha256" && \\
   expected="$(awk '{print $1}' "$AXHUBCTL.sha256")" && \\
   actual="$(shasum -a 256 "$AXHUBCTL" | awk '{print $1}')" && \\
   [ "$expected" = "$actual" ] && \\
@@ -701,7 +710,7 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
     --requested-scopes \"models,events,memory,skills,ai.generate.local\" \\
     --require-client-kit\(inviteTokenArg)
 
-# Verify (LAN):
+# Verify (authenticated SSH tunnel):
 "$AXHUBCTL" list-models
 
 # Remote (domain/relay/public entry) example:
@@ -896,7 +905,7 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
             if mode == "mtls" {
                 return "\nHUB_GRPC_TLS_MODE=mtls\nHUB_GRPC_TLS_SERVER_NAME='axhub'\nHUB_GRPC_TLS_CA_CERT_PATH=$HOME/.axhub/tls/ca.cert.pem\nHUB_GRPC_TLS_CLIENT_CERT_PATH=$HOME/.axhub/tls/client.cert.pem\nHUB_GRPC_TLS_CLIENT_KEY_PATH=$HOME/.axhub/tls/client.key.pem\n"
             }
-            return ""
+            return "\nHUB_GRPC_TLS_MODE=insecure\n"
         }()
 
         return """

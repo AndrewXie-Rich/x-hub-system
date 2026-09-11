@@ -4,10 +4,12 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { resolveDefaultXHubAppPath } from './xhub_system_paths.js';
+
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const REPORT_DIR = path.join(ROOT_DIR, 'reports');
-const DEFAULT_APP = '/Users/andrew.xie/Documents/AX/x-hub-system/build/X-Hub.app';
+const DEFAULT_APP = resolveDefaultXHubAppPath({ startDir: SCRIPT_DIR });
 const NODE_PROCESS_MARKERS = ['hub_grpc_server/src/server.js', 'relflowhub_node'];
 const ROOT_KEY = 'XHUB_RUST_HUB_ROOT';
 const PROVIDER_MODEL_PRODUCTION_KEYS = [
@@ -54,7 +56,7 @@ function isXHubNodeBridgeProcessLine(line) {
   return NODE_PROCESS_MARKERS.every((marker) => text.includes(marker))
     && !isExternalRelFlowHubProcessLine(text)
     && (text.includes('/X-Hub.app/')
-      || /\/x-hub-system(?:-github-clean)?\/x-hub\//.test(text));
+      || /\/x-hub\/grpc-server\/hub_grpc_server\/src\/server\.js/.test(text));
 }
 
 function parsePidCommand(line) {
@@ -552,6 +554,8 @@ function reportPath() {
 function runSelfTest() {
   const external = '999 /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/relflowhub_node /Volumes/RELFlowHub v1.2.22/RELFlowHub.app/Contents/Resources/hub_grpc_server/src/server.js';
   if (isXHubNodeBridgeProcessLine(external)) throw new Error('standalone RELFlowHub must not classify as X-Hub node bridge');
+  const relocatedSource = '998 /tmp/renamed-system/x-hub/grpc-server/hub_grpc_server/relflowhub_node /tmp/renamed-system/x-hub/grpc-server/hub_grpc_server/src/server.js';
+  if (!isXHubNodeBridgeProcessLine(relocatedSource)) throw new Error('relocated X-Hub source must classify as X-Hub node bridge');
   const config = parseArgs(['--target-root', '/tmp/rust-hub-target']);
   const steps = buildSteps(config, {});
   if (steps.applySteps.length !== 4) throw new Error('expected four apply steps');

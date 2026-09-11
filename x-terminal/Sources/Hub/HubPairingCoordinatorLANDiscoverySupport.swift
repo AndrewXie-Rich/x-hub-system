@@ -167,7 +167,8 @@ extension HubPairingCoordinator {
             let priorityResult = await Self.collectLANDiscoveryMatches(
                 hosts: priorityHosts,
                 pairingPort: pairingPort,
-                timeoutSec: Self.lanDiscoveryFallbackProbeTimeoutSec
+                timeoutSec: Self.lanDiscoveryFallbackProbeTimeoutSec,
+                stateDir: options.stateDir ?? defaultStateDir()
             )
             if priorityResult.localNetworkAccessDenied {
                 localNetworkAccessDenied = true
@@ -180,7 +181,8 @@ extension HubPairingCoordinator {
             let deferredResult = await Self.collectLANDiscoveryMatches(
                 hosts: deferredHosts,
                 pairingPort: pairingPort,
-                timeoutSec: Self.lanDiscoveryFallbackProbeTimeoutSec
+                timeoutSec: Self.lanDiscoveryFallbackProbeTimeoutSec,
+                stateDir: options.stateDir ?? defaultStateDir()
             )
             if deferredResult.localNetworkAccessDenied {
                 localNetworkAccessDenied = true
@@ -240,7 +242,8 @@ extension HubPairingCoordinator {
                 let probe = await Self.probeLANPairingEndpoint(
                     host: host,
                     pairingPort: pairingPort,
-                    timeoutSec: Self.pairingDiscoveryProbeTimeoutSec
+                    timeoutSec: Self.pairingDiscoveryProbeTimeoutSec,
+                    stateDir: options.stateDir ?? defaultStateDir()
                 )
                 if probe.localNetworkAccessDenied {
                     localNetworkAccessDenied = true
@@ -783,6 +786,7 @@ extension HubPairingCoordinator {
     ) throws {
         let base = options.stateDir ?? defaultStateDir()
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        try HubPairingTransport.preserveConfiguration(stateDir: base)
 
         let pairingEnv = base.appendingPathComponent("pairing.env")
         let appID = canonicalHubAppID(readEnvValue(from: pairingEnv, key: "AXHUB_APP_ID")) ?? "x_terminal"
@@ -884,6 +888,11 @@ extension HubPairingCoordinator {
 
         do {
             try FileManager.default.createDirectory(at: probeStateDir, withIntermediateDirectories: true)
+            try HubPairingTransport.preserveConfiguration(stateDir: sourceBase)
+            _ = copyStateArtifactIfPresent(
+                from: sourceBase.appendingPathComponent(HubPairingTransport.configurationFileName),
+                to: probeStateDir.appendingPathComponent(HubPairingTransport.configurationFileName)
+            )
             if copyStateArtifactIfPresent(from: sourceHubEnv, to: targetHubEnv) {
                 logLines.append("[state-sync] seeded probe hub.env.")
             }
@@ -939,6 +948,7 @@ extension HubPairingCoordinator {
 
         let existingContents = try? String(contentsOf: targetPairingEnv, encoding: .utf8)
         guard existingContents != contents else { return false }
+        try HubPairingTransport.preserveConfiguration(stateDir: sourcePairingEnv.deletingLastPathComponent())
 
         try FileManager.default.createDirectory(
             at: targetPairingEnv.deletingLastPathComponent(),
@@ -1185,7 +1195,8 @@ extension HubPairingCoordinator {
     nonisolated static func collectLANDiscoveryMatches(
         hosts: [String],
         pairingPort: Int,
-        timeoutSec: TimeInterval
+        timeoutSec: TimeInterval,
+        stateDir: URL? = nil
     ) async -> HubLANDiscoveryProbeCollection {
         guard !hosts.isEmpty else {
             return HubLANDiscoveryProbeCollection(matches: [], localNetworkAccessDenied: false)
@@ -1201,7 +1212,8 @@ extension HubPairingCoordinator {
                     await probeLANPairingEndpoint(
                         host: host,
                         pairingPort: pairingPort,
-                        timeoutSec: timeoutSec
+                        timeoutSec: timeoutSec,
+                        stateDir: stateDir
                     )
                 }
             }
@@ -1220,7 +1232,8 @@ extension HubPairingCoordinator {
                         await probeLANPairingEndpoint(
                             host: nextHost,
                             pairingPort: pairingPort,
-                            timeoutSec: timeoutSec
+                            timeoutSec: timeoutSec,
+                            stateDir: stateDir
                         )
                     }
                 }
@@ -1235,7 +1248,8 @@ extension HubPairingCoordinator {
     nonisolated static func collectLANDiscoveryMatchesByPort(
         hosts: [String],
         pairingPorts: [Int],
-        timeoutSec: TimeInterval
+        timeoutSec: TimeInterval,
+        stateDir: URL? = nil
     ) async -> HubLANDiscoveryMultiPortProbeCollection {
         guard !hosts.isEmpty, !pairingPorts.isEmpty else {
             return HubLANDiscoveryMultiPortProbeCollection(
@@ -1250,7 +1264,8 @@ extension HubPairingCoordinator {
                     let matches = await collectLANDiscoveryMatches(
                         hosts: hosts,
                         pairingPort: pairingPort,
-                        timeoutSec: timeoutSec
+                        timeoutSec: timeoutSec,
+                        stateDir: stateDir
                     )
                     return (pairingPort, matches)
                 }
@@ -1274,9 +1289,12 @@ extension HubPairingCoordinator {
     nonisolated static func probeLANPairingEndpoint(
         host: String,
         pairingPort: Int,
-        timeoutSec: TimeInterval
+        timeoutSec: TimeInterval,
+        stateDir: URL? = nil
     ) async -> HubLANDiscoveryProbeOutcome {
-        guard let url = URL(string: "http://\(host):\(pairingPort)/pairing/discovery") else {
+        guard let url = HubPairingTransport.url(
+            host: host, port: pairingPort, path: "/pairing/discovery", stateDir: stateDir
+        ) else {
             return HubLANDiscoveryProbeOutcome(match: nil, localNetworkAccessDenied: false)
         }
 
@@ -1285,7 +1303,7 @@ extension HubPairingCoordinator {
         request.cachePolicy = .reloadIgnoringLocalCacheData
 
         do {
-            let (data, response) = try await performLANDiscoveryRequest(request)
+            let (data, response) = try await HubPairingTransport.data(for: request, stateDir: stateDir)
             guard let http = response as? HTTPURLResponse,
                   (200...299).contains(http.statusCode) else {
                 return HubLANDiscoveryProbeOutcome(match: nil, localNetworkAccessDenied: false)
@@ -1295,7 +1313,7 @@ extension HubPairingCoordinator {
                 return HubLANDiscoveryProbeOutcome(match: nil, localNetworkAccessDenied: false)
             }
 
-            let matchedHost = normalizedTrimmed(payload.hubHostHint) ?? host
+            let matchedHost = host
             return HubLANDiscoveryProbeOutcome(
                 match: HubLANDiscoveryProbeMatch(
                     host: matchedHost,
@@ -1334,27 +1352,6 @@ extension HubPairingCoordinator {
             return nil
         }
         return host
-    }
-
-    nonisolated static func performLANDiscoveryRequest(
-        _ request: URLRequest
-    ) async throws -> (Data, URLResponse) {
-        try await withCheckedThrowingContinuation { continuation in
-            let task = lanDiscoveryURLSession.dataTask(with: request) { data, response, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                guard let data, let response else {
-                    continuation.resume(
-                        throwing: URLError(.badServerResponse)
-                    )
-                    return
-                }
-                continuation.resume(returning: (data, response))
-            }
-            task.resume()
-        }
     }
 
     nonisolated static func shouldIncludeLANDiscoveryInterface(

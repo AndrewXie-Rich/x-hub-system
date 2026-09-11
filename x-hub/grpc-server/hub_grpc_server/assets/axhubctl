@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-AXHUBCTL_VERSION="0.3.0"
+AXHUBCTL_VERSION="0.4.0"
 PROBE_LAST_ERROR=""
 
 die() {
@@ -15,6 +15,62 @@ need_cmd() {
 
 have_cmd() {
   command -v "$1" >/dev/null 2>&1
+}
+
+pairing_url() {
+  case "$1" in
+    *'@'*|*'/'*|*'?'*|*'#'*|*' '*|*'	'*) die "invalid pairing host authority" ;;
+  esac
+  pairing_host="$1"
+  case "$pairing_host" in
+    *:*)
+      case "$pairing_host" in
+        \[*\]) ;;
+        *) pairing_host="[$pairing_host]" ;;
+      esac
+      ;;
+  esac
+  case "${HUB_PAIRING_SCHEME:-}" in
+    https) echo "https://$pairing_host:$2$3"; return ;;
+    ''|http) ;;
+    *) die "HUB_PAIRING_SCHEME must be https or loopback-only http" ;;
+  esac
+  case "$1" in
+    127.0.0.1|localhost|::1|\[::1\]) echo "http://$pairing_host:$2$3" ;;
+    *)
+      [ "${HUB_PAIRING_SCHEME:-}" != "http" ] || die "refusing plaintext network pairing"
+      echo "https://$pairing_host:$2$3"
+      ;;
+  esac
+}
+
+pairing_curl() {
+  for pairing_arg in "$@"; do
+    case "$pairing_arg" in
+      http://*)
+        pairing_authority="${pairing_arg#http://}"
+        pairing_authority="${pairing_authority%%/*}"
+        case "$pairing_authority" in
+          127.0.0.1:*) pairing_local_port="${pairing_authority#127.0.0.1:}" ;;
+          localhost:*) pairing_local_port="${pairing_authority#localhost:}" ;;
+          \[::1\]:*) pairing_local_port="${pairing_authority#\[::1\]:}" ;;
+          *) die "refusing plaintext network pairing; use HTTPS or a trusted loopback tunnel" ;;
+        esac
+        case "$pairing_local_port" in
+          ''|*[!0-9]*) die "refusing plaintext URL with invalid loopback authority" ;;
+        esac
+        ;;
+    esac
+  done
+  if [ -n "${HUB_PAIRING_CA_CERT_PATH:-}" ]; then
+    case "$HUB_PAIRING_CA_CERT_PATH" in
+      /*) ;;
+      *) die "HUB_PAIRING_CA_CERT_PATH must be an absolute path to an independently trusted CA" ;;
+    esac
+    curl -q --noproxy '127.0.0.1,localhost,::1' --proto '=http,https' --proto-redir '=https' --cacert "$HUB_PAIRING_CA_CERT_PATH" "$@"
+  else
+    curl -q --noproxy '127.0.0.1,localhost,::1' --proto '=http,https' --proto-redir '=https' "$@"
+  fi
 }
 
 run_self() {
@@ -183,6 +239,9 @@ Usage:
   axhubctl env
 
 Notes:
+  - Network pairing requires HTTPS; loopback HTTP is supported for local use and trusted SSH tunnels.
+  - For a private CA, export HUB_PAIRING_CA_CERT_PATH from a trusted out-of-band copy; never disable certificate verification.
+  - Set HUB_PAIRING_SCHEME=https when testing a local HTTPS listener.
   - Pairing state is stored in ~/.axhub/pairing.env
   - After approval, it writes ~/.axhub/hub.env (exports HUB_HOST/HUB_PORT/HUB_CLIENT_TOKEN/HUB_DEVICE_ID) and ~/.axhub/connection.json
   - Chat state is stored in ~/.axhub/chat.env (exports HUB_PROJECT_ID/HUB_THREAD_KEY)
@@ -215,7 +274,20 @@ case "$cmd" in
     echo "$AXHUBCTL_VERSION"
     exit 0
     ;;
+  transport-policy)
+    echo 'pairing_https_required_v1'
+    exit 0
+    ;;
 esac
+
+if [ -f "$STATE_DIR/pairing-transport.env" ]; then
+  pairing_override_scheme="${HUB_PAIRING_SCHEME:-}"
+  pairing_override_ca="${HUB_PAIRING_CA_CERT_PATH:-}"
+  . "$STATE_DIR/pairing-transport.env"
+  HUB_PAIRING_SCHEME="${pairing_override_scheme:-${HUB_PAIRING_SCHEME:-}}"
+  HUB_PAIRING_CA_CERT_PATH="${pairing_override_ca:-${HUB_PAIRING_CA_CERT_PATH:-}}"
+  export HUB_PAIRING_SCHEME HUB_PAIRING_CA_CERT_PATH
+fi
 
 need_cmd curl
 
@@ -458,12 +530,28 @@ sign_binary_if_possible() {
   fi
 }
 
+validate_grpc_transport() {
+  case "$2" in
+    tls|mtls) ;;
+    insecure)
+      case "$1" in
+        127.0.0.1|::1) ;;
+        *) die "grpc_plaintext_remote_denied: use TLS or a numeric loopback tunnel" ;;
+      esac
+      ;;
+    *) die "grpc_tls_mode_invalid: expected tls, mtls, or explicit loopback-only insecure" ;;
+  esac
+}
+
 run_node_script() {
   n_bin="$(trim "${1:-}")"
   n_script="$(trim "${2:-}")"
   shift 2 || true
   [ -n "$n_bin" ] || die "missing node binary"
   [ -n "$n_script" ] || die "missing node script"
+  HUB_GRPC_TLS_MODE="${HUB_GRPC_TLS_MODE:-${HUB_TLS_MODE:-tls}}"
+  export HUB_GRPC_TLS_MODE
+  validate_grpc_transport "${HUB_HOST:-127.0.0.1}" "$HUB_GRPC_TLS_MODE"
 
   n_rc=0
   "$n_bin" "$n_script" "$@" || n_rc=$?
@@ -736,8 +824,8 @@ client_kit_info() {
   [ -n "$pairing_port" ] || pairing_port="50052"
 
   # Preferred: JSON manifest (stable fields, URL can reflect reverse proxies).
-  json_url="http://${hub}:${pairing_port}/install/axhub_client_kit.json"
-  json="$(curl -fsS "$json_url" 2>/dev/null || true)"
+  json_url="$(pairing_url "$hub" "$pairing_port" /install/axhub_client_kit.json)"
+  json="$(pairing_curl -fsS "$json_url" 2>/dev/null || true)"
   if [ -n "$json" ]; then
     kit_url="$(json_get_string url "$json")"
     kit_sha="$(json_get_string sha256 "$json")"
@@ -748,8 +836,8 @@ client_kit_info() {
   fi
 
   # Fallback: well-known paths.
-  kit_url="http://${hub}:${pairing_port}/install/axhub_client_kit.tgz"
-  sha_txt="$(curl -fsS "http://${hub}:${pairing_port}/install/axhub_client_kit.tgz.sha256" 2>/dev/null || true)"
+  kit_url="$(pairing_url "$hub" "$pairing_port" /install/axhub_client_kit.tgz)"
+  sha_txt="$(pairing_curl -fsS "$(pairing_url "$hub" "$pairing_port" /install/axhub_client_kit.tgz.sha256)" 2>/dev/null || true)"
   kit_sha="$(echo "$sha_txt" | awk '{print $1}' | head -n 1)"
   if [ -n "$(trim "$kit_sha")" ]; then
     echo "$kit_url|$(trim "$kit_sha")"
@@ -825,6 +913,16 @@ write_pairing_env_state() {
   w_pairing_profile_epoch_esc="$(sh_escape_single_quotes "$w_pairing_profile_epoch")"
   w_route_pack_version_esc="$(sh_escape_single_quotes "$w_route_pack_version")"
 
+  if [ -n "${HUB_PAIRING_SCHEME:-}${HUB_PAIRING_CA_CERT_PATH:-}" ]; then
+    w_pairing_scheme_esc="$(sh_escape_single_quotes "${HUB_PAIRING_SCHEME:-}")"
+    w_pairing_ca_esc="$(sh_escape_single_quotes "${HUB_PAIRING_CA_CERT_PATH:-}")"
+    cat >"$STATE_DIR/pairing-transport.env" <<EOF
+export HUB_PAIRING_SCHEME='$w_pairing_scheme_esc'
+export HUB_PAIRING_CA_CERT_PATH='$w_pairing_ca_esc'
+EOF
+    chmod 600 "$STATE_DIR/pairing-transport.env"
+  fi
+
   cat >"$PAIRING_ENV" <<EOF
 AXHUB_HUB_HOST='$w_hub_host_esc'
 AXHUB_PAIRING_PORT='$w_pairing_port_esc'
@@ -849,7 +947,8 @@ write_hub_env_state() {
   w_device_id="$(trim "${4:-}")"
   w_user_id="$(trim "${5:-}")"
   w_app_id="$(trim "${6:-}")"
-  w_tls_mode="$(trim "${7:-}")"
+  w_tls_mode="$(trim "${7:-tls}")"
+  [ -n "$w_tls_mode" ] || w_tls_mode=tls
   w_tls_server_name="$(trim "${8:-}")"
   w_tls_ca_path="$(trim "${9:-}")"
   w_tls_client_cert_path="$(trim "${10:-}")"
@@ -857,6 +956,7 @@ write_hub_env_state() {
 
   [ -n "$w_host" ] || die "write_hub_env_state: missing hub host"
   [ -n "$w_token" ] || die "write_hub_env_state: missing client token"
+  validate_grpc_transport "$w_host" "$w_tls_mode"
 
   mkdir -p "$STATE_DIR"
   umask 077
@@ -882,6 +982,9 @@ EOF
     echo "export HUB_APP_ID='$w_app_id_esc'" >>"$HUB_ENV"
   fi
 
+  if [ "$w_tls_mode" = "insecure" ]; then
+    echo "export HUB_GRPC_TLS_MODE='insecure'" >>"$HUB_ENV"
+  fi
   if [ "$w_tls_mode" = "tls" ] || [ "$w_tls_mode" = "mtls" ]; then
     w_tls_mode_esc="$(sh_escape_single_quotes "$w_tls_mode")"
     w_tls_server_name_esc="$(sh_escape_single_quotes "${w_tls_server_name:-axhub}")"
@@ -1045,7 +1148,7 @@ probe_pairing_discovery_endpoint() {
   AXHUB_DISCOVERY_LAST_PAIRING_PROFILE_EPOCH=""
   AXHUB_DISCOVERY_LAST_ROUTE_PACK_VERSION=""
 
-  p_resp="$(curl -fsS --connect-timeout "$p_timeout_sec" --max-time "$p_timeout_sec" "http://${p_host}:${p_pairing_port}/pairing/discovery" 2>/dev/null || true)"
+  p_resp="$(pairing_curl -fsS --connect-timeout "$p_timeout_sec" --max-time "$p_timeout_sec" "$(pairing_url "$p_host" "$p_pairing_port" /pairing/discovery)" 2>/dev/null || true)"
   if [ -n "$p_resp" ]; then
     p_ok="$(json_get_bool ok "$p_resp")"
     p_service="$(json_get_string service "$p_resp")"
@@ -1057,8 +1160,7 @@ probe_pairing_discovery_endpoint() {
       p_match="1"
     fi
     if [ "$p_match" = "1" ]; then
-      p_hint="$(trim "$(json_get_string hub_host_hint "$p_resp")")"
-      [ -n "$p_hint" ] || p_hint="$p_host"
+      p_hint="$p_host"
       p_pairing_port2="$(uint_or_default "$(json_get_number pairing_port "$p_resp")" "$p_pairing_port")"
       p_grpc_port2="$(uint_or_default "$(json_get_number grpc_port "$p_resp")" "50051")"
       p_tls_mode="$(trim "$(json_get_string tls_mode "$p_resp")")"
@@ -1074,7 +1176,7 @@ probe_pairing_discovery_endpoint() {
   fi
 
   # Backward compatibility for old hubs without /pairing/discovery.
-  p_health="$(curl -fsS --connect-timeout "$p_timeout_sec" --max-time "$p_timeout_sec" "http://${p_host}:${p_pairing_port}/health" 2>/dev/null || true)"
+  p_health="$(pairing_curl -fsS --connect-timeout "$p_timeout_sec" --max-time "$p_timeout_sec" "$(pairing_url "$p_host" "$p_pairing_port" /health)" 2>/dev/null || true)"
   if [ -n "$p_health" ]; then
     p_ok2="$(json_get_bool ok "$p_health")"
     p_service2="$(json_get_string service "$p_health")"
@@ -1203,7 +1305,7 @@ probe_pairing_health() {
   h_pairing_port="$(uint_or_default "${2:-50052}" "50052")"
   h_timeout_sec="$(uint_or_default "${3:-2}" "2")"
   [ -n "$h_host" ] || return 1
-  h_resp="$(curl -fsS --connect-timeout "$h_timeout_sec" --max-time "$h_timeout_sec" "http://${h_host}:${h_pairing_port}/health" 2>/dev/null || true)"
+  h_resp="$(pairing_curl -fsS --connect-timeout "$h_timeout_sec" --max-time "$h_timeout_sec" "$(pairing_url "$h_host" "$h_pairing_port" /health)" 2>/dev/null || true)"
   [ -n "$h_resp" ] || return 1
   h_ok="$(json_get_bool ok "$h_resp")"
   h_service="$(json_get_string service "$h_resp")"
@@ -1217,12 +1319,14 @@ probe_list_models_once() {
   l_device_id="$(trim "${4:-}")"
   l_user_id="$(trim "${5:-}")"
   l_app_id="$(trim "${6:-}")"
-  l_tls_mode="$(trim "${7:-}")"
+  l_tls_mode="$(trim "${7:-tls}")"
+  [ -n "$l_tls_mode" ] || l_tls_mode=tls
   l_tls_server_name="$(trim "${8:-}")"
   l_tls_ca_cert_path="$(trim "${9:-}")"
   l_tls_client_cert_path="$(trim "${10:-}")"
   l_tls_client_key_path="$(trim "${11:-}")"
   [ -n "$l_host" ] || return 1
+  validate_grpc_transport "$l_host" "$l_tls_mode"
 
   l_kit_dir="${AXHUBCTL_CLIENT_KIT_DIR:-$STATE_DIR/client_kit}"
   [ -f "$l_kit_dir/hub_grpc_server/src/list_models_client.js" ] || return 2
@@ -1580,11 +1684,11 @@ case "$cmd" in
     fi
     payload="${payload}}"
 
-    url="http://${HUB_HOST}:${PAIRING_PORT}/pairing/requests"
+    url="$(pairing_url "$HUB_HOST" "$PAIRING_PORT" /pairing/requests)"
     req_tmpdir="$(mktemp_dir)"
     req_body="$req_tmpdir/pairing_request.json"
     req_err="$req_tmpdir/pairing_request.err"
-    http_code="$(curl -sS -o "$req_body" -w '%{http_code}' -X POST "$url" -H 'Content-Type: application/json' -d "$payload" 2>"$req_err")" || {
+    http_code="$(pairing_curl -sS -o "$req_body" -w '%{http_code}' -X POST "$url" -H 'Content-Type: application/json' -d "$payload" 2>"$req_err")" || {
       err="$(cat "$req_err" 2>/dev/null || true)"
       rm -rf "$req_tmpdir" 2>/dev/null || true
       if echo "$err" | grep -q "HTTP/0\\.9"; then
@@ -1689,12 +1793,12 @@ case "$cmd" in
     [ -n "$rid" ] || die "--id is required (or run from a previous knock)"
     [ -n "$secret" ] || die "--secret is required (or run from a previous knock)"
 
-    url="http://${HUB_HOST}:${PAIRING_PORT}/pairing/requests/${rid}"
+    url="$(pairing_url "$HUB_HOST" "$PAIRING_PORT" "/pairing/requests/${rid}")"
     start_ts="$(date +%s)"
 
     echo "Waiting for approval… (request_id=$rid)"
     while :; do
-      resp="$(curl -fsS "$url" -H "X-Pairing-Secret: $secret" 2>/dev/null || true)"
+      resp="$(pairing_curl -fsS "$url" -H "X-Pairing-Secret: $secret" 2>/dev/null || true)"
       if [ -n "$resp" ]; then
         status="$(json_get_string status "$resp")"
         if [ "$status" = "approved" ]; then
@@ -1708,11 +1812,15 @@ case "$cmd" in
           # Optional TLS bootstrap (Hub may be configured for TLS/mTLS).
           tls_mode="$(trim "$(json_get_string mode "$resp")")"
           case "$tls_mode" in
-            ""|insecure) tls_mode="insecure" ;;
+            insecure)
+              case "$HUB_HOST" in
+                127.0.0.1|localhost|\[::1\]) ;;
+                *) die "refusing insecure network gRPC configuration" ;;
+              esac
+              ;;
             tls|mtls) ;;
             *)
-              echo "warning: unknown tls mode from hub ('$tls_mode'); fallback to insecure" >&2
-              tls_mode="insecure"
+              die "missing or invalid TLS mode from Hub; refusing transport downgrade"
               ;;
           esac
           tls_server_name="$(trim "$(json_get_string server_name "$resp")")"
@@ -1934,7 +2042,7 @@ case "$cmd" in
           if [ "$probe_mode" = "grpc" ] && [ -n "$hub_token" ]; then
             write_hub_env_state "$target_host" "$target_grpc_port" "$hub_token" "$hub_device_id" "$hub_user_id" "$hub_app_id" "$hub_tls_mode" "$hub_tls_server_name" "$hub_tls_ca_path" "$hub_tls_client_cert_path" "$hub_tls_client_key_path"
           fi
-          write_connection_profile "$target_host" "$target_grpc_port" "$target_pairing_port" "$hub_device_id" "${hub_tls_mode:-insecure}" "$hub_tls_server_name" "$hub_tls_ca_path" "$hub_tls_client_cert_path" "$hub_tls_client_key_path"
+          write_connection_profile "$target_host" "$target_grpc_port" "$target_pairing_port" "$hub_device_id" "${hub_tls_mode:-tls}" "$hub_tls_server_name" "$hub_tls_ca_path" "$hub_tls_client_cert_path" "$hub_tls_client_key_path"
           if [ "$quiet" != "1" ]; then
             echo "Connected (${probe_mode}): ${target_host}:${target_grpc_port}"
             if [ "$probe_mode" = "pairing" ]; then
@@ -2024,7 +2132,7 @@ case "$cmd" in
     echo "Downloading client kit…"
     echo "  $kit_url"
     dl_err="$tmpdir/axhub_client_kit.err"
-    http_code="$(curl -sS -L -o "$tmp_tgz" -w '%{http_code}' "$kit_url" 2>"$dl_err")" || {
+    http_code="$(pairing_curl -sS -L -o "$tmp_tgz" -w '%{http_code}' "$kit_url" 2>"$dl_err")" || {
       err="$(cat "$dl_err" 2>/dev/null || true)"
       die "download failed: $err"
     }

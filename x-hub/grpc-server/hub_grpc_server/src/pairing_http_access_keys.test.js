@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { startPairingHTTPServer } from './pairing_http.js';
+import { requireClientAuth } from './auth.js';
+import { invalidateClientsCache } from './clients.js';
 
 function run(name, fn) {
   try {
@@ -1026,7 +1028,7 @@ await run('Hub access key rotate fails closed for paired client credentials', as
   }
 });
 
-await run('Paired XT client can self-manage Hub access keys and export connect env', async () => {
+await run('Explicitly scoped XT manages only bounded delegated keys', async () => {
   const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub_access_keys_xt_runtime_'));
   try {
     writeClientsSnapshot(runtimeBaseDir, [{
@@ -1039,8 +1041,10 @@ await run('Paired XT client can self-manage Hub access keys and export connect e
       token: 'tok_xt_alpha',
       enabled: true,
       created_at_ms: 1,
-      capabilities: ['models', 'events'],
-      scopes: ['models'],
+      capabilities: ['models', 'events', 'ai.generate.local'],
+      scopes: ['models', 'ai.generate.local', 'hub_access_keys.manage'],
+      daily_token_limit: 500000,
+      single_request_token_limit: 12000,
       allowed_cidrs: ['any'],
     }]);
 
@@ -1060,7 +1064,7 @@ await run('Paired XT client can self-manage Hub access keys and export connect e
         headers: xtHeaders,
         body: {
           name: 'Ops Shell',
-          user_id: 'ops_shell',
+          user_id: 'xt_alpha',
           app_id: 'external_terminal',
           note: 'issued from xt',
           ttl_sec: 1800,
@@ -1072,7 +1076,7 @@ await run('Paired XT client can self-manage Hub access keys and export connect e
       assert.ok(accessKeyId);
       assert.equal(String(issued.json?.access_key?.created_by_user_id || ''), 'xt_alpha');
       assert.equal(String(issued.json?.access_key?.created_by_app_id || ''), 'x_terminal');
-      assert.equal(String(issued.json?.access_key?.created_via || ''), 'xt_settings_access_keys');
+      assert.equal(String(issued.json?.access_key?.created_via || ''), 'xt_scoped_access_keys');
       assert.match(String(issued.json?.access_key?.connect_env || ''), /HUB_CLIENT_TOKEN=/);
 
       const listed = await requestJson({
@@ -1141,7 +1145,7 @@ await run('Paired XT client can self-manage Hub access keys and export connect e
       assert.equal(revoke.status, 200);
       assert.equal(String(revoke.json?.access_key?.status || ''), 'revoked');
       assert.equal(String(revoke.json?.access_key?.revoked_by_user_id || ''), 'xt_alpha');
-      assert.equal(String(revoke.json?.access_key?.revoked_via || ''), 'xt_settings_access_keys');
+      assert.equal(String(revoke.json?.access_key?.revoked_via || ''), 'xt_scoped_access_keys');
 
       const pairedClientDetail = await requestJson({
         url: `${baseUrl}/xt/clients/access-keys/dev_xt_alpha`,
@@ -1201,5 +1205,163 @@ await run('Non-XT client is denied from XT access key management routes', async 
     } catch {
       // ignore
     }
+  }
+});
+
+await run('Delegated XT access keys cannot escalate capability, identity, ownership, or parent visibility', async () => {
+  const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub_access_keys_xt_negative_runtime_'));
+  try {
+    writeClientsSnapshot(runtimeBaseDir, [{
+      access_key_id: 'hak_parent_negative',
+      auth_kind: 'hub_access_key',
+      device_id: 'parent-device-negative',
+      user_id: 'owner-negative',
+      app_id: 'x_terminal',
+      name: 'Scoped XT',
+      token: 'tok_parent_negative',
+      enabled: true,
+      created_at_ms: 1,
+      expires_at_ms: Date.now() + 86_400_000,
+      capabilities: ['models', 'ai.generate.local'],
+      scopes: ['models', 'ai.generate.local', 'hub_access_keys.manage'],
+      allowed_cidrs: ['any'],
+      daily_token_limit: 1000,
+      single_request_token_limit: 100,
+    }, {
+      access_key_id: 'hak_foreign_negative',
+      auth_kind: 'hub_access_key',
+      device_id: 'foreign-device-negative',
+      user_id: 'owner-negative',
+      app_id: 'external_terminal',
+      name: 'Foreign child',
+      token: 'tok_foreign_negative',
+      enabled: true,
+      created_at_ms: 1,
+      expires_at_ms: Date.now() + 86_400_000,
+      capabilities: ['models', 'ai.generate.local'],
+      scopes: ['models', 'ai.generate.local'],
+      allowed_cidrs: ['any'],
+    }]);
+
+    await withPairingServer({ env: { HUB_RUNTIME_BASE_DIR: runtimeBaseDir } }, async ({ baseUrl }) => {
+      const headers = { authorization: 'Bearer tok_parent_negative' };
+      const escalation = await requestJson({
+        method: 'POST',
+        url: `${baseUrl}/xt/clients/access-keys`,
+        headers,
+        body: {
+          name: 'Escalation',
+          app_id: 'external_terminal',
+          user_id: 'owner-negative',
+          capabilities: ['events'],
+          scopes: ['events'],
+        },
+      });
+      assert.equal(escalation.status, 403);
+      assert.equal(String(escalation.json?.error?.code || ''), 'delegation_capability_denied');
+
+      const wrongUser = await requestJson({
+        method: 'POST',
+        url: `${baseUrl}/xt/clients/access-keys`,
+        headers,
+        body: { name: 'Wrong user', user_id: 'another-user' },
+      });
+      assert.equal(wrongUser.status, 403);
+      assert.equal(String(wrongUser.json?.error?.code || ''), 'delegation_identity_denied');
+
+      const foreignDetail = await requestJson({
+        url: `${baseUrl}/xt/clients/access-keys/hak_foreign_negative`,
+        headers,
+      });
+      assert.equal(foreignDetail.status, 404);
+      assert.equal(String(foreignDetail.json?.error?.code || ''), 'access_key_not_found');
+
+      const listed = await requestJson({ url: `${baseUrl}/xt/clients/access-keys`, headers });
+      assert.equal(listed.status, 200);
+      assert.equal((listed.json?.access_keys || []).some((item) => item.access_key_id === 'hak_foreign_negative'), false);
+
+      for (const body of [
+        { app_id: 'x_terminal' },
+        { policy_mode: 'legacy_grant' },
+        { scopes: ['hub_access_keys.manage'] },
+        { paid_model_selection_mode: 'all_paid_models' },
+        { daily_token_limit: 1001 },
+        { expires_at_ms: 0 },
+        { expires_at_ms: Date.now() + 2 * 86_400_000 },
+        { allowed_cidrs: ['loopback'] },
+        { default_web_fetch_enabled: true },
+      ]) {
+        const denied = await requestJson({ method: 'POST', url: `${baseUrl}/xt/clients/access-keys`, headers, body });
+        assert.equal(denied.status, 403, JSON.stringify(body));
+      }
+      for (const action of ['revoke', 'rotate', 'update']) {
+        const denied = await requestJson({ method: 'POST', url: `${baseUrl}/xt/clients/access-keys/hak_foreign_negative/${action}`, headers, body: {} });
+        assert.equal(denied.status, 404);
+      }
+
+      const issued = await requestJson({ method: 'POST', url: `${baseUrl}/xt/clients/access-keys`, headers, body: { daily_token_limit: 600 } });
+      assert.equal(issued.status, 200);
+      const childId = issued.json.access_key.access_key_id;
+      const childToken = issued.json.client_token;
+      const childHeaders = { authorization: `Bearer ${childToken}` };
+      const initialSnapshot = JSON.parse(fs.readFileSync(path.join(runtimeBaseDir, 'hub_grpc_clients.json'), 'utf8'));
+      const parent = initialSnapshot.clients[0];
+      const grpcCall = {
+        metadata: { get: (name) => name === 'authorization' ? [`Bearer ${childToken}`] : [] },
+        getPeer: () => 'ipv4:127.0.0.1:12345',
+        sendMetadata() {},
+      };
+      await withEnvAsync({ HUB_GRPC_TLS_MODE: 'tls' }, async () => {
+        assert.equal(requireClientAuth(grpcCall).ok, true);
+        for (const change of [
+          { enabled: false }, { revoked_at_ms: Date.now() }, { expires_at_ms: Date.now() - 1 },
+          { scopes: ['models', 'ai.generate.local'] }, { capabilities: ['models'] },
+          { daily_token_limit: 500 }, { allowed_cidrs: ['loopback'] },
+        ]) {
+          writeClientsSnapshot(runtimeBaseDir, [{ ...parent, ...change }, ...initialSnapshot.clients.slice(1)]);
+          invalidateClientsCache();
+          assert.equal(requireClientAuth(grpcCall).ok, false, JSON.stringify(change));
+          const denied = await requestJson({ method: 'POST', url: `${baseUrl}/clients/presence`, headers: childHeaders, body: {} });
+          assert.equal(denied.status, 401, JSON.stringify(change));
+        }
+        writeClientsSnapshot(runtimeBaseDir, initialSnapshot.clients.slice(1));
+        invalidateClientsCache();
+        assert.equal(requireClientAuth(grpcCall).ok, false);
+      });
+      writeClientsSnapshot(runtimeBaseDir, initialSnapshot.clients);
+      invalidateClientsCache();
+      const recurse = await requestJson({ method: 'POST', url: `${baseUrl}/xt/clients/access-keys`, headers: childHeaders, body: {} });
+      assert.equal(recurse.status, 403);
+      for (const [route, body] of [
+        ['/xt/clients/access-keys', { daily_token_limit: 401 }],
+        [`/xt/clients/access-keys/${childId}/update`, { daily_token_limit: 1001 }],
+        [`/xt/clients/access-keys/${childId}/rotate`, { expires_at_ms: 0 }],
+      ]) {
+        const denied = await requestJson({ method: 'POST', url: `${baseUrl}${route}`, headers, body });
+        assert.equal(denied.status, 403);
+      }
+      const otherManager = { ...parent, access_key_id: 'other-manager', device_id: 'other-device', token: 'other-token' };
+      writeClientsSnapshot(runtimeBaseDir, [...initialSnapshot.clients, otherManager]);
+      invalidateClientsCache();
+      const crossDevice = await requestJson({ url: `${baseUrl}/xt/clients/access-keys/${childId}`, headers: { authorization: 'Bearer other-token' } });
+      assert.equal(crossDevice.status, 404);
+      const revoked = await requestJson({ method: 'POST', url: `${baseUrl}/xt/clients/access-keys/${childId}/revoke`, headers, body: {} });
+      assert.equal(revoked.status, 200);
+      const cycled = await requestJson({ method: 'POST', url: `${baseUrl}/xt/clients/access-keys`, headers, body: { daily_token_limit: 401 } });
+      assert.equal(cycled.status, 403);
+
+      writeClientsSnapshot(runtimeBaseDir, [{ ...parent, auth_kind: 'paired_client', capabilities: ['models'], scopes: ['models'] }, ...initialSnapshot.clients.slice(1)]);
+      invalidateClientsCache();
+      for (const [method, route] of [
+        ['GET', ''], ['POST', ''], ['GET', `/${childId}`],
+        ['POST', `/${childId}/update`], ['POST', `/${childId}/rotate`], ['POST', `/${childId}/revoke`],
+      ]) {
+        const denied = await requestJson({ method, url: `${baseUrl}/xt/clients/access-keys${route}`, headers, body: method === 'POST' ? {} : undefined });
+        assert.equal(denied.status, 403);
+        assert.equal(denied.json.error.code, 'permission_denied');
+      }
+    });
+  } finally {
+    try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch {}
   }
 });

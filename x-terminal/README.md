@@ -34,6 +34,61 @@ X-Terminal is intentionally powerful but not sovereign.
 
 It can present rich runtime state, guide the user through pairing and readiness, and execute governed flows, but trust, grants, and final policy authority remain in `x-hub/`.
 
+## Secure Hub Pairing Transport
+
+Active implementation context, not an expansion of the validated release slice:
+
+- Native discovery, remote device presence, access-key management, and Hub contract reads use verified HTTPS for network hosts. Plain HTTP is restricted to strict loopback endpoints, such as an operator-established SSH tunnel. HTTPS never falls back to HTTP after a certificate or connection failure.
+- Native requests disable redirects, shared cookies, cached credentials, and proxies. Certificate chain, validity, and hostname checks remain mandatory. Discovery keeps the endpoint that was actually verified rather than replacing it with `hub_host_hint`.
+- `axhubctl` must support `transport-policy` and return `pairing_https_required_v1`. Rebuild/repackage XT with the current bundled tool or explicitly select the current canonical tool; older tools fail with `pairing_transport_tool_upgrade_required`. Reinstall the current client kit when its credentials helper is absent or incompatible.
+- The shared gRPC credentials builder no longer catches TLS errors and falls back to `createInsecure()`. Missing mode defaults to TLS; invalid modes and network plaintext fail closed. gRPC and pairing HTTPS have separate trust settings.
+
+For a public/system-trusted HTTPS certificate, no pairing CA setting is required. For a private CA, obtain and verify its certificate through an independent trusted channel, then put the following in the selected Hub profile's state directory as `pairing-transport.env` before pairing:
+
+```sh
+export HUB_PAIRING_SCHEME='https'
+export HUB_PAIRING_CA_CERT_PATH='/absolute/path/to/independently-verified-ca.pem'
+```
+
+The native client accepts PEM bundles or DER certificates; use PEM for interoperability with `axhubctl`/curl. The certificate must cover the actual IP address or hostname entered in XT. Do not use `HUB_GRPC_TLS_SERVER_NAME` as an HTTPS hostname override or reuse a CA obtained over unauthenticated HTTP. Configuration is local to the selected profile, preserved across route-state rewrites and discovery probes, and removed by reset-pairing. Process environment overrides use the same names and take priority; ordinary Finder launches should use the profile file. Existing values in `hub.env`/`pairing.env` migrate into the dedicated file before those files are rewritten.
+
+The embedded macOS Hub still binds the pairing/admin/health port to loopback HTTP. Native HTTPS support does not automatically expose that listener, enable SSH, provision certificates, or make legacy same-Wi-Fi invite links a secure direct-LAN path. For that Hub, establish the generated SSH forward for **both** gRPC and pairing ports, verify the SSH host key independently, keep it running, and select `127.0.0.1` with the forwarded ports in XT. Use a separate profile with pairing scheme unset (or `http`) for that path. A gRPC-only TCP tunnel does not carry pairing/control traffic; it needs a separate verified HTTPS control endpoint. Direct network pairing requires an explicitly configured HTTPS Hub and still obeys Hub approval, first-pair source restrictions, and invite policy.
+
+Focused regression from the repository root (macOS, Node dependencies, Swift compiler, OpenSSL):
+
+```bash
+cd x-hub/grpc-server/hub_grpc_server
+node --test src/xt_pairing_transport.test.js src/transport_security.test.js
+```
+
+The regression compiles the actual native transport, access-key and contract clients, and gRPC generation script source without requiring the Swift `Testing` module. It uses temporary HTTPS Hub state, real local sockets, independent test certificates, actual Hub pairing approval and heartbeat authorization, and a fixture-only gRPC model. It checks persisted trust, loopback HTTP compatibility, remote plaintext denial, malformed/untrusted/wrong-host certificates, redirect/downgrade refusal, missing or incompatible credential helpers, and reconnection after listener restart. This is not two-device GUI acceptance, real model inference, mTLS roaming qualification, or production release evidence. No installed apps or production Hub state are changed.
+
+## Local Execution Safety
+
+Active implementation context, not an expansion of the validated release slice:
+
+- `/sandbox mode host` retains the existing host environment and shell session state. It is not OS-isolated; command results report `isolation: host_none`. The default remains host for compatibility.
+- `/sandbox mode sandbox` uses the private per-project workspace, uploads, and outputs directories. It currently supports `read_file`, `write_file`, `list_dir`, `search`, and `run_command`. Other tools fail closed rather than silently using a host implementation. A model-supplied `sandbox=false` cannot downgrade this mode; the user must select host mode explicitly.
+- Local sandbox commands run through macOS Seatbelt (`sandbox-exec`) with a deny-by-default profile. The profile allows system runtime reads and configured project roots, and denies network access by default. Additional readable roots do not silently switch sandbox file tools to the host. Missing or rejected sandbox support fails execution without a host fallback.
+- The local runner uses an allowlisted environment instead of inheriting host tokens, credential-agent sockets, and startup configuration. The default executable search path contains only macOS system binary directories; Homebrew, language managers, and arbitrary user configuration are not automatically exposed. Explicit network opt-in is a broad network permission, not a destination-scoped Hub grant.
+- One-shot capture multiplexes stdin, stdout, and stderr, limits combined captured output to 8 MiB by default, and bounds timeout/cancellation cleanup. Internal callers fail on output overflow unless they explicitly select truncation; sandbox and skill results label truncation. Cancellation terminates the original process group, escalating from TERM to KILL. Deliberately detached process groups are not covered by that lifecycle guarantee.
+- Persistent host shell sessions preserve working directory and environment across successful commands. Timeout, cancellation, and output overflow discard the old shell before another command starts. Output is bounded and UTF-8 is decoded after byte-level capture.
+- Managed background processes share the process-group capture engine without accumulating lifetime output in memory. Logs retain two segments of at most 1 MiB each; reads seek to the tail and are capped at 256 KiB. A rotation/truncation flag discloses limited retention. Stop waits for cancellation cleanup, and cancelled restart tasks cannot launch replacement generations.
+- Managed processes use `zsh -f -c` and an allowlisted environment. The host `PATH` is retained, but shell startup files, ambient API keys, and credential-agent variables are not inherited; tools that relied on login-shell configuration need explicit executable/environment configuration. This remains host execution, not OS isolation or a credential broker. Explicit `env` values remain caller configuration, not secret-vault references.
+- Persisted PIDs are treated as unowned after XT relaunch. Stop and same-ID restart fail with an ownership error rather than signalling or replacing a possibly unrelated process. Existing background services may still be running and need independent operator verification; PID alone is not recovery proof.
+- `LocalSandboxProvider.executeWithMonitoring` now delivers incremental, byte-budgeted stdout/stderr text with separate UTF-8 fragment buffers. Its `@Sendable` callback executes synchronously on the capture worker (final fragments may be flushed by the caller), must return promptly, and must not directly mutate UI state. This API does not by itself add a new UI streaming surface.
+- `ResourceUsage.measurementKind=estimated` identifies local CPU/memory estimates. The concurrent-execution limit is enforced; it is not a descendant-process quota, and configured memory/disk values are not OS-enforced quotas.
+
+This is a local execution hardening layer, not a complete capability broker. The desktop app, interactive terminal, managed host processes, and host-mode skill execution are not made OS-isolated by this change. In-process file tools validate canonical path containment, but they are not descriptor-relative race-proof filesystem brokers. Binding Hub-signed action manifests, grants, actual execution, and unified receipts remains separate work. `sandbox-exec` is a deprecated macOS backend and needs replacement/qualification before broader platform or production-isolation claims.
+
+Run the focused executable regression from the repository root:
+
+```bash
+bash x-terminal/scripts/ci/xt_execution_safety_regression.sh
+```
+
+It compiles the actual owning sources and shared test fixture without requiring the Swift `Testing` module. It checks large dual-stream output, stdin backpressure, output limits, cancellation, descendant cleanup, shell recovery, path escapes, and real OS file/network denial. It requires a host that permits creating a Seatbelt sandbox; nested sandbox restrictions are failures, not skipped isolation evidence. The same fixture is invoked by `ProcessCaptureTests` in `swift test` when the full test toolchain is available.
+
 ## Voice As A Paired Surface
 
 Active implementation context:

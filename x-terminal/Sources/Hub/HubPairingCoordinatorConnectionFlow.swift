@@ -696,6 +696,7 @@ extension HubPairingCoordinator {
         cooldownApplied: Bool
     ) -> HubRemoteConnectReport {
         let preferredHub = preferredConnectHub(primaryHubHost: primaryHubHost, options: opts)
+        let preferredLANHub = preferredLANConnectHub(primaryHubHost: primaryHubHost, options: opts)
         let useAutoDiscovery = normalizeHost(preferredHub) == "auto"
         let orderedCandidates = Self.orderedConnectRouteCandidates(
             requestedCandidates: candidateRoutes,
@@ -708,6 +709,7 @@ extension HubPairingCoordinator {
             autoReconnect: autoReconnect,
             selectedRoute: selectedRoute,
             preferredHub: preferredHub,
+            preferredLANHub: preferredLANHub,
             useAutoDiscovery: useAutoDiscovery,
             internetHost: opts.internetHost
         ))
@@ -737,7 +739,7 @@ extension HubPairingCoordinator {
             case .lanDirect:
                 outcome = attemptLANConnect(
                     options: opts,
-                    preferredHub: preferredHub,
+                    preferredHub: preferredLANHub,
                     env: customEnv,
                     logs: &logs,
                     onProgress: onProgress,
@@ -763,13 +765,13 @@ extension HubPairingCoordinator {
 
             switch outcome {
             case .succeeded(var report):
-                report.selectedRoute = selectedRoute ?? candidate
+                report.selectedRoute = candidate
                 report.attemptedRoutes = attemptedRoutes
                 report.handoffReason = handoffReason
                 report.cooldownApplied = cooldownApplied
                 return report
             case .legacy(var report):
-                report.selectedRoute = selectedRoute ?? candidate
+                report.selectedRoute = candidate
                 report.attemptedRoutes = attemptedRoutes
                 report.handoffReason = handoffReason
                 report.cooldownApplied = cooldownApplied
@@ -804,6 +806,7 @@ extension HubPairingCoordinator {
         autoReconnect: Bool,
         selectedRoute: XTHubRouteCandidate?,
         preferredHub: String,
+        preferredLANHub: String,
         useAutoDiscovery: Bool,
         internetHost: String
     ) -> String {
@@ -819,10 +822,10 @@ extension HubPairingCoordinator {
             let host = nonEmpty(internetHost) ?? preferredHub
             return "\(prefix) (managed tunnel first: \(host)) ..."
         case .some(.lanDirect), .none:
-            if useAutoDiscovery {
+            if normalizeHost(preferredLANHub) == "auto" || useAutoDiscovery {
                 return "\(prefix) (LAN first) ..."
             }
-            return "\(prefix) (preferred host: \(preferredHub)) ..."
+            return "\(prefix) (LAN host: \(preferredLANHub)) ..."
         }
     }
 
@@ -1124,6 +1127,18 @@ extension HubPairingCoordinator {
         )
     }
 
+    private func preferredLANConnectHub(
+        primaryHubHost: String?,
+        options: HubRemoteConnectOptions
+    ) -> String {
+        let cachedPairing = loadCachedPairingInfo(stateDir: options.stateDir)
+        return Self.preferredLANConnectHubValue(
+            primaryHubHost: primaryHubHost,
+            cachedHost: cachedPairing.host,
+            currentMachineHosts: Self.currentMachineIPv4Hosts()
+        )
+    }
+
     nonisolated static func preferredConnectHubValue(
         primaryHubHost: String?,
         configuredInternetHost: String?,
@@ -1144,6 +1159,23 @@ extension HubPairingCoordinator {
         if let cachedHost = normalizedTrimmed(cachedHost),
            shouldReuseFallbackConnectHost(cachedHost, currentMachineHosts: currentMachineHosts) {
             return normalizedConnectHostCandidate(cachedHost, currentMachineHosts: currentMachineHosts)
+        }
+        return "auto"
+    }
+
+    nonisolated static func preferredLANConnectHubValue(
+        primaryHubHost: String?,
+        cachedHost: String?,
+        currentMachineHosts: Set<String>
+    ) -> String {
+        for candidate in [primaryHubHost, cachedHost] {
+            guard let host = normalizedTrimmed(candidate),
+                  HubRemoteHostPolicy.isDirectLocalFallbackHost(host) else {
+                continue
+            }
+            if shouldReuseFallbackConnectHost(host, currentMachineHosts: currentMachineHosts) {
+                return normalizedConnectHostCandidate(host, currentMachineHosts: currentMachineHosts)
+            }
         }
         return "auto"
     }

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { delegatedKeyPolicyError, delegatedBudgetReservation } from './access_key_delegation.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -129,7 +130,7 @@ function writeJsonAtomic(dirPath, fileName, obj) {
   const outPath = path.join(dir, fileName);
   const tmpPath = path.join(dir, `.${fileName}.tmp_${process.pid}_${Math.random().toString(16).slice(2)}`);
   try {
-    fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2) + '\n', 'utf8');
+    fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tmpPath, outPath);
     return true;
   } catch {
@@ -477,6 +478,9 @@ function computeClientAuthStatus(client, nowMs = Date.now()) {
       usable: false,
     };
   }
+  if (client.delegation_error) {
+    return { status: 'blocked', reason_code: client.delegation_error, usable: false };
+  }
   if (safeInt(client.revoked_at_ms, 0) > 0) {
     return {
       status: 'revoked',
@@ -585,6 +589,10 @@ function normalizeClientEntry(raw, fallbackDeviceId = '', nowMs = Date.now()) {
     revoked_by_user_id: safeString(src.revoked_by_user_id || src.revokedByUserId),
     revoked_via: safeString(src.revoked_via || src.revokedVia),
     created_by_user_id: safeString(src.created_by_user_id || src.createdByUserId),
+    managed_by_access_key_id: safeString(src.managed_by_access_key_id),
+    managed_by_device_id: safeString(src.managed_by_device_id),
+    delegation_budget_day: safeString(src.delegation_budget_day),
+    delegation_budget_reserved: safeInt(src.delegation_budget_reserved, 0),
     created_by_app_id: safeString(src.created_by_app_id || src.createdByAppId),
     created_via: safeString(src.created_via || src.createdVia),
     last_rotated_at_ms: safeInt(src.last_rotated_at_ms || src.lastRotatedAtMs, 0),
@@ -614,6 +622,21 @@ function normalizeClientEntry(raw, fallbackDeviceId = '', nowMs = Date.now()) {
   };
 }
 
+function applyDelegatedClientStatus(clients, nowMs) {
+  return clients.map((client) => {
+    let delegationError = '';
+    if (client.managed_by_access_key_id) {
+      const parent = clients.find((item) => item.access_key_id === client.managed_by_access_key_id);
+      if (!parent || !computeClientAuthStatus(parent, nowMs).usable) delegationError = 'delegation_parent_unavailable';
+      else delegationError = delegatedKeyPolicyError(parent, client, nowMs)
+        || (delegatedBudgetReservation(parent, client, clients, nowMs) ? '' : 'delegation_budget_denied');
+    }
+    const out = { ...client, delegation_error: delegationError };
+    const status = computeClientAuthStatus(out, nowMs);
+    return { ...out, ...status, status_reason: status.reason_code };
+  });
+}
+
 export function loadClients(runtimeBaseDir, maxAgeMs = 1200) {
   const filePath = clientsConfigPath(runtimeBaseDir);
   if (!filePath) return [];
@@ -633,11 +656,7 @@ export function loadClients(runtimeBaseDir, maxAgeMs = 1200) {
     && cache.mtime_ms === mtimeMs
     && now - cache.loaded_at_ms <= Math.max(200, Number(maxAgeMs || 0))
   ) {
-    return cache.clients.map((item) => ({
-      ...item,
-      ...computeClientAuthStatus(item, Date.now()),
-      status_reason: computeClientAuthStatus(item, Date.now()).reason_code,
-    }));
+    return applyDelegatedClientStatus(cache.clients, now);
   }
 
   const snapshot = readClientsSnapshot(runtimeBaseDir);
@@ -648,7 +667,7 @@ export function loadClients(runtimeBaseDir, maxAgeMs = 1200) {
   }
 
   cache = { loaded_at_ms: now, mtime_ms: mtimeMs, file_path: filePath, clients };
-  return clients;
+  return applyDelegatedClientStatus(clients, now);
 }
 
 export function findClientByToken(runtimeBaseDir, token) {

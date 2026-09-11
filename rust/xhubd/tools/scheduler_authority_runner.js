@@ -20,7 +20,7 @@ async function main(argv) {
     return 0;
   }
 
-  const config = resolveConfig(flags);
+  const config = await resolveConfig(flags);
   if (flags.has('dry-run')) {
     process.stdout.write(JSON.stringify({
       schema_version: 'xhub.scheduler_authority_runner.dry_run.v1',
@@ -102,7 +102,7 @@ async function main(argv) {
     process.env.XHUB_RUST_SCHEDULER_STATUS_READ = '1';
     process.env.XHUB_RUST_SCHEDULER_STATUS_REQUIRE_READY = '1';
 
-    const src = path.join(config.xhubSystemRoot, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src');
+    const src = config.nodeHubSourceDir;
     const [{ HubDB }, { HubEventBus }, { makeServices }] = await Promise.all([
       import(pathToFileURL(path.join(src, 'db.js')).href),
       import(pathToFileURL(path.join(src, 'event_bus.js')).href),
@@ -876,9 +876,18 @@ function batchGenerateOk(item) {
   return item?.generate?.done_ok === true;
 }
 
-function resolveConfig(flags) {
+async function resolveConfig(flags) {
   const rustHubRoot = path.resolve(flags.get('rust-hub-root') || path.join(__dirname, '..'));
-  const xhubSystemRoot = path.resolve(flags.get('xhub-system-root') || findXHubSystemRoot(rustHubRoot));
+  const paths = await loadXHubSystemPaths();
+  const pathEnv = flags.has('xhub-system-root')
+    ? { ...process.env, XHUB_SYSTEM_ROOT: flags.get('xhub-system-root') }
+    : process.env;
+  const xhubSystemRoot = paths.tryResolveXHubSystemRoot({ env: pathEnv, startDir: __dirname });
+  const nodeHubSourceDir = paths.resolveNodeHubSourceDir({
+    env: pathEnv,
+    startDir: __dirname,
+    markers: ['db.js', 'event_bus.js', 'services.js'],
+  });
   const runner = path.resolve(flags.get('runner') || path.join(rustHubRoot, 'tools', 'run_rust_hub.command'));
   const scenario = normalizeScenario(flags.get('scenario') || 'normal');
   const requestPrefix = normalizeSafeId(
@@ -898,6 +907,7 @@ function resolveConfig(flags) {
   return {
     rustHubRoot,
     xhubSystemRoot,
+    nodeHubSourceDir,
     runner,
     scenario,
     rustDbPath: flags.has('rust-db-path') ? path.resolve(flags.get('rust-db-path')) : '',
@@ -940,6 +950,7 @@ function publicConfig(config) {
   return {
     rust_hub_root: config.rustHubRoot,
     xhub_system_root: config.xhubSystemRoot,
+    node_hub_source_dir: config.nodeHubSourceDir,
     runner: config.runner,
     scenario: config.scenario,
     rust_db_path: config.rustDbPath || '(temp)',
@@ -1009,18 +1020,8 @@ function flagEnabled(flags, key) {
   return !['', '0', 'false', 'no', 'off'].includes(value);
 }
 
-function findXHubSystemRoot(startDir) {
-  let current = path.resolve(startDir);
-  for (;;) {
-    const candidate = path.join(current, 'x-hub-system');
-    if (fs.existsSync(path.join(candidate, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src', 'services.js'))) {
-      return candidate;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  throw new Error('Unable to locate x-hub-system. Pass --xhub-system-root <path>.');
+async function loadXHubSystemPaths() {
+  return await import(pathToFileURL(path.join(__dirname, 'xhub_system_paths.js')).href);
 }
 
 function normalizeSafeId(value) {
@@ -1090,7 +1091,7 @@ async function runSelfTest() {
     '--request-prefix',
     'abc 123',
   ]);
-  const config = resolveConfig(flags);
+  const config = await resolveConfig(flags);
   assert.equal(config.scenario, 'queued-cancel');
   assert.equal(config.runs, 2);
   assert.equal(config.concurrency, 3);

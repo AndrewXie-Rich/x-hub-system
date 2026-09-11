@@ -4,6 +4,16 @@ import Testing
 
 struct XTerminalGateSmokeRunnerTests {
     @Test
+    func voiceSmokeBudgetIncludesResumeSchedulingMargin() {
+        for estimate in [0.0, 0.5, 4, 8, 60, Double.infinity, Double.nan] {
+            let delay = SupervisorVoiceTimingPolicy.resumeDelay(estimatedPlaybackDuration: estimate)
+            #expect(delay >= 0.9)
+            #expect(delay <= SupervisorVoiceTimingPolicy.maximumResumeDelay)
+            #expect(SupervisorVoiceTimingPolicy.resumeObservationTimeout - delay >= 2)
+        }
+    }
+
+    @Test
     func routeSmokeReturnsPassExitCode() throws {
         let workspace = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("xt_route_smoke_test_\(UUID().uuidString)", isDirectory: true)

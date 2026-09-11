@@ -438,6 +438,10 @@ struct XTStaleProfileRepairEvidenceTests {
             script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
             log_file="$script_dir/axhubctl_calls.log"
             cmd="${1:-}"
+            if [ "$cmd" = "transport-policy" ]; then
+              echo 'pairing_https_required_v1'
+              exit 0
+            fi
             printf '%s\\n' "$cmd" >> "$log_file"
             case "$cmd" in
               discover)

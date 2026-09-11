@@ -148,15 +148,15 @@ struct AXProjectContext: Equatable, Sendable {
     }
 
     var managedProcessesDir: URL {
-        xterminalDir.appendingPathComponent("managed_processes", isDirectory: true)
+        XTManagedProcessPaths(root: root).managedProcessesDir
     }
 
     var managedProcessesLogsDir: URL {
-        managedProcessesDir.appendingPathComponent("logs", isDirectory: true)
+        XTManagedProcessPaths(root: root).managedProcessesLogsDir
     }
 
     var managedProcessesSnapshotURL: URL {
-        managedProcessesDir.appendingPathComponent("processes.json")
+        XTManagedProcessPaths(root: root).managedProcessesSnapshotURL
     }
 
     var diagnosticsDir: URL {
@@ -214,12 +214,7 @@ struct AXProjectContext: Equatable, Sendable {
     }
 
     func managedProcessLogURL(processId: String) -> URL {
-        let base = processId
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: ":", with: "_")
-        let safe = base.isEmpty ? UUID().uuidString.lowercased() : base
-        return managedProcessesLogsDir.appendingPathComponent("\(safe).log")
+        XTManagedProcessPaths(root: root).managedProcessLogURL(processId: processId)
     }
 
     func uiObservationBundleURL(bundleID: String) -> URL {

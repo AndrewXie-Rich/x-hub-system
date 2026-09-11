@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import grpc from '@grpc/grpc-js';
 
 import { tlsModeFromEnv, tlsServerNameFromEnv } from './tls_support.js';
+import { grpcTransportFromEnv } from './transport_security.js';
 
 function safeString(v) {
   return String(v ?? '').trim();
@@ -27,6 +28,7 @@ export function makeClientCredentials(env = process.env) {
     'grpc.max_send_message_length': maxMsg,
   };
   if (mode === 'insecure') {
+    grpcTransportFromEnv(env);
     return { mode, creds: grpc.credentials.createInsecure(), options: sizeOpts };
   }
 

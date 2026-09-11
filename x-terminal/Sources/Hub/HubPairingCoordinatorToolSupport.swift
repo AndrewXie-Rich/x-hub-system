@@ -193,40 +193,42 @@ extension HubPairingCoordinator {
         timeoutSec: Double
     ) -> StepOutput {
         let resolved = resolveAxhubctlExecutable(override: options.axhubctlPath)
-        var commandDisplay = ""
-        var result: ProcessResult
         let redactedArgs = Self.redactedAxhubctlArgs(args)
+        let executable: String
+        let prefixArgs: [String]
+        switch resolved {
+        case .direct(let path):
+            executable = path
+            prefixArgs = []
+        case .bashScript(let path):
+            executable = "/bin/bash"
+            prefixArgs = [path]
+        case .viaEnv:
+            executable = "/usr/bin/env"
+            prefixArgs = ["axhubctl"]
+        }
+        let commandDisplay = ([executable] + prefixArgs + redactedArgs).joined(separator: " ")
 
         do {
-            switch resolved {
-            case .direct(let path):
-                commandDisplay = ([path] + redactedArgs).joined(separator: " ")
-                result = try ProcessCapture.run(
-                    path,
-                    args,
-                    cwd: nil,
-                    timeoutSec: timeoutSec,
-                    env: mergedAxhubEnv(options: options, extra: env)
-                )
-            case .bashScript(let path):
-                commandDisplay = (["/bin/bash", path] + redactedArgs).joined(separator: " ")
-                result = try ProcessCapture.run(
-                    "/bin/bash",
-                    [path] + args,
-                    cwd: nil,
-                    timeoutSec: timeoutSec,
-                    env: mergedAxhubEnv(options: options, extra: env)
-                )
-            case .viaEnv:
-                commandDisplay = (["axhubctl"] + redactedArgs).joined(separator: " ")
-                result = try ProcessCapture.run(
-                    "/usr/bin/env",
-                    ["axhubctl"] + args,
-                    cwd: nil,
-                    timeoutSec: timeoutSec,
-                    env: mergedAxhubEnv(options: options, extra: env)
+            try HubPairingTransport.preserveConfiguration(stateDir: options.stateDir ?? defaultStateDir())
+            let mergedEnv = mergedAxhubEnv(options: options, extra: env)
+            let policy = try ProcessCapture.run(
+                executable, prefixArgs + ["transport-policy"], cwd: nil,
+                timeoutSec: min(5, timeoutSec), env: mergedEnv
+            )
+            guard policy.exitCode == 0,
+                  policy.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "pairing_https_required_v1" else {
+                return StepOutput(
+                    exitCode: 78,
+                    output: "pairing_transport_tool_upgrade_required: use the current bundled axhubctl; legacy plaintext bootstrap is disabled",
+                    command: commandDisplay
                 )
             }
+            let result = try ProcessCapture.run(
+                executable, prefixArgs + args, cwd: nil,
+                timeoutSec: timeoutSec, env: mergedEnv
+            )
+            return StepOutput(exitCode: result.exitCode, output: result.combined, command: commandDisplay)
         } catch {
             return StepOutput(
                 exitCode: 127,
@@ -234,8 +236,6 @@ extension HubPairingCoordinator {
                 command: commandDisplay.isEmpty ? ("axhubctl " + redactedArgs.joined(separator: " ")) : commandDisplay
             )
         }
-
-        return StepOutput(exitCode: result.exitCode, output: result.combined, command: commandDisplay)
     }
 
     nonisolated static func redactedAxhubctlArgs(_ args: [String]) -> [String] {
@@ -341,6 +341,13 @@ extension HubPairingCoordinator {
 
         exported["HUB_HOST"] = host
         exported["HUB_PORT"] = "\(max(1, min(65_535, port)))"
+        let tlsMode = nonEmpty(exported["HUB_GRPC_TLS_MODE"]) ?? nonEmpty(exported["HUB_TLS_MODE"]) ?? "tls"
+        do {
+            try HubGRPCClientSupport.validateTransport(host: host, mode: tlsMode)
+        } catch {
+            return StepOutput(exitCode: 78, output: error.localizedDescription, command: commandDisplay)
+        }
+        exported["HUB_GRPC_TLS_MODE"] = tlsMode
         let merged = mergedAxhubEnv(options: opts, extra: exported)
 
         var nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
@@ -484,7 +491,9 @@ extension HubPairingCoordinator {
             ?? canonicalHubAppID(readEnvValue(from: pairingEnv, key: "AXHUB_APP_ID"))
             ?? "x_terminal"
         let cachedProfile = HubAIClient.cachedRemoteProfile(stateDir: base)
-        let tlsMode = nonEmpty(existingHubExports["HUB_GRPC_TLS_MODE"]) ?? "insecure"
+        let tlsMode = nonEmpty(existingHubExports["HUB_GRPC_TLS_MODE"]) ?? nonEmpty(existingHubExports["HUB_TLS_MODE"]) ?? "tls"
+        try HubGRPCClientSupport.validateTransport(host: host, mode: tlsMode)
+        try HubPairingTransport.preserveConfiguration(stateDir: base)
         let tlsServerName = nonEmpty(existingHubExports["HUB_GRPC_TLS_SERVER_NAME"])
         let tlsCAPath = nonEmpty(existingHubExports["HUB_GRPC_TLS_CA_CERT_PATH"])
         let tlsClientCertPath = nonEmpty(existingHubExports["HUB_GRPC_TLS_CLIENT_CERT_PATH"])
@@ -671,8 +680,8 @@ extension HubPairingCoordinator {
         }
 
         let normalizedTLSMode = tlsMode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        lines.append("export HUB_GRPC_TLS_MODE=\(shellSingleQuoted(normalizedTLSMode))")
         if normalizedTLSMode == "tls" || normalizedTLSMode == "mtls" {
-            lines.append("export HUB_GRPC_TLS_MODE=\(shellSingleQuoted(normalizedTLSMode))")
             lines.append("export HUB_GRPC_TLS_SERVER_NAME=\(shellSingleQuoted(tlsServerName ?? "axhub"))")
             if let tlsCAPath {
                 lines.append("export HUB_GRPC_TLS_CA_CERT_PATH=\(shellSingleQuoted(tlsCAPath))")
@@ -1077,7 +1086,7 @@ extension HubPairingCoordinator {
             return true
         }
         let lower = text.lowercased()
-        return lower.contains("  discover)") && lower.contains("  connect)")
+        return lower.contains("  discover)") && lower.contains("  connect)") && lower.contains("pairing_https_required_v1")
     }
 
     func repoRelativeAxhubctlCandidate() -> String? {
@@ -1109,7 +1118,8 @@ extension HubPairingCoordinator {
         options: HubRemoteConnectOptions,
         extra: [String: String]
     ) -> [String: String] {
-        var out = extra
+        var out = HubPairingTransport.environmentOverrides(stateDir: options.stateDir ?? defaultStateDir())
+        out.merge(extra) { _, supplied in supplied }
         if let d = options.stateDir {
             out["AXHUBCTL_STATE_DIR"] = d.path
         }

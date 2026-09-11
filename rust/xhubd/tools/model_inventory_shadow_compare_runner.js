@@ -6,6 +6,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { resolveNodeHubSourceDir } from './xhub_system_paths.js';
+
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const FUTURE_RETRY_AT_MS = 4102444800000;
@@ -251,23 +253,6 @@ function cleanupPath(target) {
   } catch {
     // ignore cleanup failures
   }
-}
-
-function resolveXHubSystemRoot() {
-  const explicit = safeString(process.env.XHUB_SYSTEM_ROOT);
-  if (explicit) return explicit;
-  const candidates = [
-    path.resolve(ROOT_DIR, '..', '..', 'x-hub-system'),
-    path.resolve(ROOT_DIR, '..', '..', '..', 'x-hub-system'),
-    path.resolve(ROOT_DIR, '..', '..', '..', '..', 'x-hub-system'),
-    '/Users/andrew.xie/Documents/AX/x-hub-system',
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(path.join(candidate, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src', 'services.js'))) {
-      return candidate;
-    }
-  }
-  return candidates[0];
 }
 
 async function importFromSource(srcDir, fileName) {
@@ -548,11 +533,10 @@ function buildNodeXtInventory(inventory, evidence) {
 }
 
 async function loadNodeHelpers() {
-  const sourceRoot = resolveXHubSystemRoot();
-  const srcDir = path.join(sourceRoot, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src');
-  if (!fs.existsSync(path.join(srcDir, 'mlx_runtime_ipc.js'))) {
-    throw new Error(`Node Hub source not found: ${srcDir}`);
-  }
+  const srcDir = resolveNodeHubSourceDir({
+    startDir: SCRIPT_DIR,
+    markers: ['mlx_runtime_ipc.js', 'provider_key_store.js'],
+  });
   const [{ runtimeModelsSnapshot }, { listProviderKeyPools, providerKeyStoreSummary }] = await Promise.all([
     importFromSource(srcDir, 'mlx_runtime_ipc.js'),
     importFromSource(srcDir, 'provider_key_store.js'),

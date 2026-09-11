@@ -1290,7 +1290,7 @@ enum XTerminalGateSmokeRunner {
                 wakePromptSpoken ? "wake follow-up prompt delivered" : "spoken_count=\(spoken.count)"
             )
 
-            let talkLoopAfterWakePrompt = await waitForSupervisorVoiceSmoke(timeoutSec: 8) {
+            let talkLoopAfterWakePrompt = await waitForSupervisorVoiceSmoke(timeoutSec: SupervisorVoiceTimingPolicy.resumeObservationTimeout) {
                 voiceCoordinator.isRecording &&
                     voiceCoordinator.currentCaptureSource == .talkLoop &&
                     voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed"
@@ -1315,7 +1315,7 @@ enum XTerminalGateSmokeRunner {
                 "state=\(manager.voiceAuthorizationResolution?.state.rawValue ?? "none")"
             )
 
-            let talkLoopAfterGrantPrompt = await waitForSupervisorVoiceSmoke(timeoutSec: 8) {
+            let talkLoopAfterGrantPrompt = await waitForSupervisorVoiceSmoke(timeoutSec: SupervisorVoiceTimingPolicy.resumeObservationTimeout) {
                 voiceCoordinator.isRecording &&
                     voiceCoordinator.currentCaptureSource == .talkLoop &&
                     manager.recentEventsForTesting().contains(where: {
@@ -1345,7 +1345,7 @@ enum XTerminalGateSmokeRunner {
                 "pending_grants=\(manager.pendingHubGrants.count) challenge_active=\(manager.activeVoiceChallenge != nil)"
             )
 
-            let talkLoopAfterBrief = await waitForSupervisorVoiceSmoke(timeoutSec: 8) {
+            let talkLoopAfterBrief = await waitForSupervisorVoiceSmoke(timeoutSec: SupervisorVoiceTimingPolicy.resumeObservationTimeout) {
                 voiceCoordinator.isRecording &&
                     voiceCoordinator.currentCaptureSource == .talkLoop &&
                     manager.recentEventsForTesting().contains(where: {
@@ -1460,8 +1460,8 @@ enum XTerminalGateSmokeRunner {
         pollMs: UInt64 = 50,
         condition: @escaping @MainActor () -> Bool
     ) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeoutSec)
-        while Date() < deadline {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeoutSec
+        while ProcessInfo.processInfo.systemUptime < deadline {
             if condition() {
                 return true
             }

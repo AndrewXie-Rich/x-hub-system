@@ -4,10 +4,18 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import {
+  resolveNodeHubSourceDir,
+  validateNodeHubSourceDir,
+} from './xhub_system_paths.js';
+
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const REPORT_DIR = path.join(ROOT_DIR, 'reports');
-const DEFAULT_XHUB_SRC = '/Users/andrew.xie/Documents/AX/x-hub-system/x-hub/grpc-server/hub_grpc_server/src';
+const NODE_HUB_SOURCE_MARKERS = [
+  'rust_provider_route_authority_bridge.js',
+  'rust_model_route_authority_bridge.js',
+];
 const PRODUCTION_SWITCH_CONTRACT_VERSION = 'xhub.route_authority.production_switch_contract.v1';
 const PROVIDER_PRODUCTION_SWITCH_KEYS = [
   'XHUB_RUST_PROVIDER_ROUTE_PRODUCTION_AUTHORITY',
@@ -34,7 +42,7 @@ const MODEL_PREP_SWITCH_KEYS = [
 function parseArgs(argv) {
   const out = {
     rustHubRoot: ROOT_DIR,
-    xhubSrc: DEFAULT_XHUB_SRC,
+    xhubSrc: '',
     runPrepSustained: true,
     writeReport: true,
   };
@@ -67,6 +75,9 @@ function parseArgs(argv) {
         throw new Error(`unknown argument: ${arg}`);
     }
   }
+  out.xhubSrc = out.xhubSrc
+    ? validateNodeHubSourceDir(out.xhubSrc, { markers: NODE_HUB_SOURCE_MARKERS })
+    : resolveNodeHubSourceDir({ startDir: SCRIPT_DIR, markers: NODE_HUB_SOURCE_MARKERS });
   return out;
 }
 

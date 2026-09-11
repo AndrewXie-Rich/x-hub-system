@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 
 async function main(argv) {
   const flags = parseFlags(argv);
@@ -13,12 +14,12 @@ async function main(argv) {
     return 0;
   }
   if (flags.has('self-test')) {
-    runSelfTest();
+    await runSelfTest();
     process.stdout.write('node_hub_shadow_compare_runner self-test ok\n');
     return 0;
   }
 
-  const config = resolveConfig(flags);
+  const config = await resolveConfig(flags);
   if (flags.has('dry-run')) {
     process.stdout.write(JSON.stringify({
       schema_version: 'xhub.node_hub_shadow_compare_runner.dry_run.v1',
@@ -149,13 +150,17 @@ function pipePrefixed(stream, event) {
   });
 }
 
-function resolveConfig(flags) {
+async function resolveConfig(flags) {
   const rustHubRoot = path.resolve(flags.get('rust-hub-root') || path.join(__dirname, '..'));
-  const xhubSystemRoot = path.resolve(flags.get('xhub-system-root') || findXHubSystemRoot(rustHubRoot));
-  const nodeHubDir = path.resolve(
-    flags.get('node-hub-dir')
-      || path.join(xhubSystemRoot, 'x-hub', 'grpc-server', 'hub_grpc_server')
-  );
+  const paths = await loadXHubSystemPaths();
+  const pathEnv = flags.has('xhub-system-root')
+    ? { ...process.env, XHUB_SYSTEM_ROOT: flags.get('xhub-system-root') }
+    : process.env;
+  const xhubSystemRoot = paths.tryResolveXHubSystemRoot({ env: pathEnv, startDir: __dirname });
+  const nodeHubSourceDir = flags.has('node-hub-dir')
+    ? paths.validateNodeHubSourceDir(path.join(flags.get('node-hub-dir'), 'src'), { markers: ['server.js'] })
+    : paths.resolveNodeHubSourceDir({ env: pathEnv, startDir: __dirname, markers: ['server.js'] });
+  const nodeHubDir = path.dirname(nodeHubSourceDir);
   const runner = path.resolve(flags.get('runner') || path.join(rustHubRoot, 'tools', 'run_rust_hub.command'));
   const nodeBin = path.resolve(flags.get('node-bin') || process.execPath);
   const noStart = flagEnabled(flags, 'no-start');
@@ -256,18 +261,8 @@ function emitEvent(event, payload = {}) {
   }) + '\n');
 }
 
-function findXHubSystemRoot(startDir) {
-  let current = path.resolve(startDir);
-  for (;;) {
-    const candidate = path.join(current, 'x-hub-system');
-    if (fs.existsSync(path.join(candidate, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src', 'server.js'))) {
-      return candidate;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  throw new Error('Unable to locate x-hub-system. Pass --xhub-system-root <path>.');
+async function loadXHubSystemPaths() {
+  return await import(pathToFileURL(path.join(__dirname, 'xhub_system_paths.js')).href);
 }
 
 function parseFlags(argv) {
@@ -318,7 +313,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function runSelfTest() {
+async function runSelfTest() {
   const flags = parseFlags([
     '--no-start',
     '--duration-ms',

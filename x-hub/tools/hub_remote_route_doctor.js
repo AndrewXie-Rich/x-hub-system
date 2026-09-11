@@ -9,7 +9,7 @@ const https = require('node:https');
 const net = require('node:net');
 const os = require('node:os');
 
-const DEFAULT_GRPC_PORT = 50058;
+const DEFAULT_GRPC_PORT = 50051;
 const DEFAULT_TIMEOUT_MS = 5000;
 
 const ROUTE_OPTIONS = Object.freeze([
@@ -359,7 +359,29 @@ function httpJson(url, timeoutMs) {
   return new Promise((resolve) => {
     const started = Date.now();
     const client = url.startsWith('https://') ? https : http;
-    const req = client.get(url, { timeout: timeoutMs, headers: { accept: 'application/json' } }, (res) => {
+    const requestOptions = {
+      timeout: timeoutMs,
+      headers: { accept: 'application/json' },
+    };
+    if (url.startsWith('https://')) {
+      const caPath = safeString(process.env.XHUB_PAIRING_CA_CERT_PATH);
+      if (caPath) {
+        try {
+          requestOptions.ca = fs.readFileSync(caPath);
+        } catch (error) {
+          resolve({
+            ok: false,
+            status_code: 0,
+            duration_ms: Date.now() - started,
+            json: null,
+            parse_error: '',
+            error: `pairing_ca_unreadable:${safeString(error.code || error.message || error)}`,
+          });
+          return;
+        }
+      }
+    }
+    const req = client.get(url, requestOptions, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (chunk) => {
@@ -507,7 +529,7 @@ async function buildReport(args) {
   const remote = host && !args.noNetwork ? {
     grpc: await connectTcp(host, grpcPort, args.timeoutMs),
     pairing: await connectTcp(host, pairingPort, args.timeoutMs),
-    discovery: await httpJson(`http://${urlHost(host)}:${pairingPort}/pairing/discovery`, args.timeoutMs),
+    discovery: await httpJson(`https://${urlHost(host)}:${pairingPort}/pairing/discovery`, args.timeoutMs),
   } : {
     grpc: { ok: false, port: grpcPort, duration_ms: 0, error: host ? 'network_skipped' : 'host_missing' },
     pairing: { ok: false, port: pairingPort, duration_ms: 0, error: host ? 'network_skipped' : 'host_missing' },
@@ -729,7 +751,7 @@ function renderText(report) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage: hub_remote_route_doctor.command [--host <host>] [--grpc-port <n>] [--pairing-port <n>] [--json]\n\nChecks a Hub remote route for XT across DNS, IP direct routes, local ports, remote ports, pairing discovery, and Tailscale state.\n\nExamples:\n  tools/hub_remote_route_doctor.command --host hub.your-domain.example --grpc-port 50058 --pairing-port 50059\n  tools/hub_remote_route_doctor.command --host 100.96.10.8 --grpc-port 50058 --pairing-port 50059\n`);
+  process.stdout.write(`Usage: hub_remote_route_doctor.command [--host <host>] [--grpc-port <n>] [--pairing-port <n>] [--json]\n\nChecks a Hub remote route for XT across DNS, IP direct routes, local ports, remote ports, pairing discovery, and Tailscale state.\n\nExamples:\n  tools/hub_remote_route_doctor.command --host hub.your-domain.example --grpc-port 50051 --pairing-port 50052\n  tools/hub_remote_route_doctor.command --host 100.96.10.8 --grpc-port 50051 --pairing-port 50052\n`);
 }
 
 async function selfTest() {

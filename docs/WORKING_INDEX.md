@@ -13,14 +13,17 @@ Each document should appear here under one primary track whenever possible; if a
 
 ## Canonical Root Guard
 
-For this local workspace, all canonical implementation roots are versioned in
-the same repository:
+All canonical implementation roots are versioned in the repository returned by
+`git rev-parse --show-toplevel`:
 
-- Hub app / control plane: `/Users/andrew.xie/Documents/AX/x-hub-system/x-hub/`
-- Hub Rust kernel: `/Users/andrew.xie/Documents/AX/x-hub-system/rust/xhubd`
-- X-Terminal: `/Users/andrew.xie/Documents/AX/x-hub-system/x-terminal`
+- Hub app / control plane: `x-hub/`
+- Hub Rust kernel: `rust/xhubd/`
+- X-Terminal: `x-terminal/`
 
-The sibling `rust/rust hub` and `rust/rust xt/swift-xterminal` trees are
+Here `<AX-root>` means the parent directory of that repository root.
+
+The sibling `<AX-root>/rust/rust hub` and
+`<AX-root>/rust/rust xt/swift-xterminal` trees are
 migration/reference copies only. Work found there must be migrated into this
 repository and validated here. `x-hub/macos/RELFlowHub/` is the current Hub
 Swift shell's historical package name, not proof of a separate old Hub product.

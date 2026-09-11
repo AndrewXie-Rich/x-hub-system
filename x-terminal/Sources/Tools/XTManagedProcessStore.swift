@@ -46,6 +46,7 @@ enum XTManagedProcessStoreError: LocalizedError {
     case processNotFound(String)
     case processAlreadyRunning(String)
     case pathOutsideProjectRoot(String)
+    case processOwnershipUnverified(String)
 
     var errorDescription: String? {
         switch self {
@@ -59,6 +60,8 @@ enum XTManagedProcessStoreError: LocalizedError {
             return "Managed process is already running: \(id)"
         case .pathOutsideProjectRoot(let path):
             return "Managed process cwd is outside the project root: \(path)"
+        case .processOwnershipUnverified(let id):
+            return "Managed process ownership is unverified: \(id); no signal was sent"
         }
     }
 }
@@ -67,13 +70,11 @@ actor XTManagedProcessStore {
     static let shared = XTManagedProcessStore()
 
     private final class ProcessHandle {
-        let process: Process
-        let pipe: Pipe
+        let generation = UUID()
+        let cancellation = ProcessCancellation()
+        var task: Task<Void, Never>?
 
-        init(process: Process, pipe: Pipe) {
-            self.process = process
-            self.pipe = pipe
-        }
+        deinit { cancellation.cancel() }
     }
 
     private struct ProjectRuntime {
@@ -83,6 +84,7 @@ actor XTManagedProcessStore {
     }
 
     private var runtimes: [String: ProjectRuntime] = [:]
+    private var logStores: [String: XTManagedProcessLog] = [:]
 
     func start(
         projectRoot: URL,
@@ -92,7 +94,8 @@ actor XTManagedProcessStore {
         cwd rawCWD: String?,
         env: [String: String],
         restartOnExit: Bool
-    ) throws -> XTManagedProcessRecord {
+    ) async throws -> XTManagedProcessRecord {
+        try Task.checkCancellation()
         let command = rawCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty else {
             throw XTManagedProcessStoreError.commandMissing
@@ -115,8 +118,11 @@ actor XTManagedProcessStore {
            managedProcessIsActive(existing) {
             throw XTManagedProcessStoreError.processAlreadyRunning(processId)
         }
+        if runtime.records[processId]?.terminationReason == "ownership_unverified" {
+            throw XTManagedProcessStoreError.processOwnershipUnverified(processId)
+        }
 
-        let ctx = AXProjectContext(root: projectRoot)
+        let ctx = XTManagedProcessPaths(root: projectRoot)
         try ensureManagedProcessDirectories(ctx: ctx)
         let logURL = ctx.managedProcessLogURL(processId: processId)
         try appendLogLine(
@@ -149,9 +155,10 @@ actor XTManagedProcessStore {
         persistSnapshot(projectRoot: projectRoot)
 
         do {
-            record = try launch(record: record, projectRoot: projectRoot)
+            record = try await launch(record: record, projectRoot: projectRoot)
             return record
         } catch {
+            guard runtimes[projectKey]?.records[processId] == record else { throw error }
             var failedRecord = record
             failedRecord.status = .failed
             failedRecord.updatedAtMs = currentTimeMs()
@@ -210,24 +217,14 @@ actor XTManagedProcessStore {
             throw XTManagedProcessStoreError.processNotFound(processId)
         }
 
-        let logURL = URL(fileURLWithPath: record.logPath)
-        let data = (try? Data(contentsOf: logURL)) ?? Data()
-        let truncatedData: Data
-        let truncated: Bool
-        if data.count > maxBytes {
-            truncatedData = data.suffix(maxBytes)
-            truncated = true
-        } else {
-            truncatedData = data
-            truncated = false
-        }
-        let text = String(decoding: truncatedData, as: UTF8.self)
+        let tail = try logStore(URL(fileURLWithPath: record.logPath)).tail(maxBytes: maxBytes)
+        let text = String(decoding: tail.data, as: UTF8.self)
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let tailCount = max(1, tailLines)
         return (
             record,
             lines.suffix(tailCount).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines),
-            truncated
+            tail.truncated || lines.count > tailCount
         )
     }
 
@@ -245,6 +242,11 @@ actor XTManagedProcessStore {
             throw XTManagedProcessStoreError.processNotFound(processId)
         }
 
+        guard record.terminationReason != "ownership_unverified" else {
+            throw XTManagedProcessStoreError.processOwnershipUnverified(processId)
+        }
+        guard managedProcessIsActive(record) else { return record }
+
         runtime.restartTasks[processId]?.cancel()
         runtime.restartTasks[processId] = nil
 
@@ -255,49 +257,16 @@ actor XTManagedProcessStore {
         runtimes[projectKey] = runtime
         persistSnapshot(projectRoot: projectRoot)
 
-        if let handle = runtime.handles[processId], handle.process.isRunning {
-            handle.process.terminate()
-        } else if let pid = record.pid, xtManagedProcessIsAlive(pid) {
-            _ = Darwin.kill(pid, SIGTERM)
-        }
-
-        var didForceKill = false
-        for _ in 0..<20 {
-            if let pid = record.pid, xtManagedProcessIsAlive(pid) {
-                try? await Task.sleep(nanoseconds: 100_000_000)
-                continue
-            }
-            break
-        }
-
-        if let pid = record.pid, xtManagedProcessIsAlive(pid) {
-            didForceKill = true
-            _ = Darwin.kill(pid, SIGKILL)
-            for _ in 0..<10 {
-                if !xtManagedProcessIsAlive(pid) { break }
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
-        }
-
-        refreshLiveness(projectRoot: projectRoot)
-        runtime = runtimes[projectKey] ?? ProjectRuntime()
-        record = runtime.records[processId] ?? record
-        if !managedProcessIsActive(record) {
-            var finalizedRecord = runtime.records[processId] ?? record
-            finalizedRecord.stopRequested = false
-            finalizedRecord.status = .exited
-            if (finalizedRecord.terminationReason ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                finalizedRecord.terminationReason = "terminated"
-            }
-            finalizedRecord.updatedAtMs = currentTimeMs()
-            runtime.records[processId] = finalizedRecord
+        if let handle = runtime.handles[processId] {
+            handle.cancellation.cancel(force: force)
+            await handle.task?.value
+        } else {
+            record.status = .exited
+            record.pid = nil
+            record.terminationReason = "stopped_before_restart"
+            runtime.records[processId] = record
             runtimes[projectKey] = runtime
             persistSnapshot(projectRoot: projectRoot)
-            record = finalizedRecord
-        }
-        if didForceKill {
-            let logURL = URL(fileURLWithPath: record.logPath)
-            try? appendLogLine(logURL: logURL, line: "forced_kill: yes")
         }
         return runtimes[projectKey]?.records[processId] ?? record
     }
@@ -305,68 +274,67 @@ actor XTManagedProcessStore {
     private func launch(
         record: XTManagedProcessRecord,
         projectRoot: URL
-    ) throws -> XTManagedProcessRecord {
+    ) async throws -> XTManagedProcessRecord {
         let projectKey = projectRoot.standardizedFileURL.path
         var runtime = runtimes[projectKey] ?? ProjectRuntime()
-
-        let pipe = Pipe()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", record.command]
-        process.currentDirectoryURL = try normalizedCWD(record.cwd, projectRoot: projectRoot)
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        var environment = ProcessInfo.processInfo.environment
-        environment["TERM"] = "dumb"
-        for (key, value) in record.env {
-            environment[key] = value
-        }
-        process.environment = environment
-
+        let cwd = try normalizedCWD(record.cwd, projectRoot: projectRoot)
+        let environment = XTManagedProcessEnvironment.make(overrides: record.env)
         let processId = record.processId
         let logURL = URL(fileURLWithPath: record.logPath)
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            Task {
-                await XTManagedProcessStore.shared.appendLogData(
-                    projectRootPath: projectKey,
-                    processId: processId,
-                    data: data
-                )
+        let log = logStore(logURL)
+        let handle = ProcessHandle()
+        let generation = handle.generation
+        let cancellation = handle.cancellation
+        runtime.handles[processId] = handle
+        runtimes[projectKey] = runtime
+
+        let processID = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int32, Error>) in
+                let launch = XTManagedProcessLaunch(continuation)
+                handle.task = Task { [weak self] in
+                    let result: Result<ProcessResult, Error>
+                    do {
+                        let captured = try await ProcessCapture.runAsync(
+                            "/bin/zsh", ["-f", "-c", record.command], cwd: cwd,
+                            timeoutSec: nil, env: environment, inheritEnvironment: false,
+                            outputLimitBehavior: .truncate, cancellation: cancellation, captureOutput: false,
+                            onStart: { launch.resolve(.success($0)) },
+                            onOutput: { data, _ in try log.append(data) }
+                        )
+                        result = .success(captured)
+                    } catch {
+                        launch.resolve(.failure(error))
+                        result = .failure(error)
+                    }
+                    await self?.handleTermination(
+                        projectRootPath: projectKey, processId: processId,
+                        generation: generation, result: result
+                    )
+                }
             }
-        }
-        process.terminationHandler = { process in
-            Task {
-                await XTManagedProcessStore.shared.handleTermination(
-                    projectRootPath: projectKey,
-                    processId: processId,
-                    exitCode: process.terminationStatus,
-                    reason: process.terminationReason
-                )
-            }
+        } onCancel: {
+            cancellation.cancel()
         }
 
-        try process.run()
-
-        var updated = record
-        updated.status = .running
-        updated.pid = process.processIdentifier
+        runtime = runtimes[projectKey] ?? ProjectRuntime()
+        guard runtime.handles[processId]?.generation == generation else {
+            return runtime.records[processId] ?? record
+        }
+        var updated = runtime.records[processId] ?? record
+        updated.status = updated.stopRequested ? .stopping : .running
+        updated.pid = processID
         updated.startedAtMs = currentTimeMs()
         updated.updatedAtMs = updated.startedAtMs ?? currentTimeMs()
         updated.exitCode = nil
         updated.terminationReason = nil
         updated.lastError = nil
-        updated.stopRequested = false
 
         runtime.records[processId] = updated
-        runtime.handles[processId] = ProcessHandle(process: process, pipe: pipe)
         runtimes[projectKey] = runtime
         persistSnapshot(projectRoot: projectRoot)
-        try appendLogLine(
+        try? appendLogLine(
             logURL: logURL,
-            line: "pid=\(process.processIdentifier) status=running started_at_ms=\(updated.startedAtMs ?? 0)"
+            line: "pid=\(processID) status=\(updated.status.rawValue) started_at_ms=\(updated.startedAtMs ?? 0)"
         )
         return updated
     }
@@ -374,29 +342,38 @@ actor XTManagedProcessStore {
     private func handleTermination(
         projectRootPath: String,
         processId: String,
-        exitCode: Int32,
-        reason: Process.TerminationReason
+        generation: UUID,
+        result: Result<ProcessResult, Error>
     ) {
         let projectRoot = URL(fileURLWithPath: projectRootPath)
         ensureLoaded(projectRoot: projectRoot)
         var runtime = runtimes[projectRootPath] ?? ProjectRuntime()
-        guard var record = runtime.records[processId] else { return }
-
-        runtime.handles[processId]?.pipe.fileHandleForReading.readabilityHandler = nil
+        guard var record = runtime.records[processId],
+              runtime.handles[processId]?.generation == generation else { return }
         runtime.handles[processId] = nil
 
         let now = currentTimeMs()
-        let terminationReason = xtManagedTerminationReason(reason)
-        let shouldRestart = record.restartOnExit && !record.stopRequested
+        let exitCode: Int32?
+        let terminationReason: String
+        let completed: Bool
+        switch result {
+        case .success(let captured):
+            exitCode = captured.exitCode
+            terminationReason = captured.terminationSignal == nil ? "exit" : "uncaught_signal"
+            completed = true
+        case .failure(let error):
+            exitCode = nil
+            terminationReason = error is CancellationError ? "cancelled" : "execution_failed"
+            if !(error is CancellationError) { record.lastError = error.localizedDescription }
+            completed = false
+        }
+        let shouldRestart = completed && record.restartOnExit && !record.stopRequested
 
         record.pid = nil
         record.exitCode = exitCode
         record.terminationReason = terminationReason
         record.updatedAtMs = now
-        record.status = shouldRestart ? .restarting : (exitCode == 0 ? .exited : .failed)
-        if !shouldRestart {
-            record.stopRequested = false
-        }
+        record.status = shouldRestart ? .restarting : (record.stopRequested || exitCode == 0 ? .exited : .failed)
         runtime.records[processId] = record
         runtimes[projectRootPath] = runtime
         persistSnapshot(projectRoot: projectRoot)
@@ -404,7 +381,7 @@ actor XTManagedProcessStore {
         let logURL = URL(fileURLWithPath: record.logPath)
         try? appendLogLine(
             logURL: logURL,
-            line: "exit_code=\(exitCode) reason=\(terminationReason) restart=\(shouldRestart ? "scheduled" : "no")"
+            line: "exit_code=\(exitCode.map(String.init) ?? "unknown") reason=\(terminationReason) restart=\(shouldRestart ? "scheduled" : "no")"
         )
 
         guard shouldRestart else { return }
@@ -415,9 +392,10 @@ actor XTManagedProcessStore {
         let projectKey = projectRoot.standardizedFileURL.path
         var runtime = runtimes[projectKey] ?? ProjectRuntime()
         runtime.restartTasks[processId]?.cancel()
-        runtime.restartTasks[processId] = Task {
+        runtime.restartTasks[processId] = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 500_000_000)
-            await XTManagedProcessStore.shared.performScheduledRestart(
+            guard !Task.isCancelled else { return }
+            await self?.performScheduledRestart(
                 projectRootPath: projectKey,
                 processId: processId
             )
@@ -425,13 +403,14 @@ actor XTManagedProcessStore {
         runtimes[projectKey] = runtime
     }
 
-    private func performScheduledRestart(projectRootPath: String, processId: String) {
+    private func performScheduledRestart(projectRootPath: String, processId: String) async {
         let projectRoot = URL(fileURLWithPath: projectRootPath)
         ensureLoaded(projectRoot: projectRoot)
         var runtime = runtimes[projectRootPath] ?? ProjectRuntime()
         runtime.restartTasks[processId] = nil
         guard var record = runtime.records[processId],
               record.restartOnExit,
+              record.status == .restarting,
               !record.stopRequested else {
             runtimes[projectRootPath] = runtime
             return
@@ -445,8 +424,9 @@ actor XTManagedProcessStore {
         persistSnapshot(projectRoot: projectRoot)
 
         do {
-            _ = try launch(record: record, projectRoot: projectRoot)
+            _ = try await launch(record: record, projectRoot: projectRoot)
         } catch {
+            guard runtimes[projectRootPath]?.records[processId] == record else { return }
             var failedRecord = record
             failedRecord.status = .failed
             failedRecord.updatedAtMs = currentTimeMs()
@@ -462,35 +442,25 @@ actor XTManagedProcessStore {
         }
     }
 
-    private func appendLogData(
-        projectRootPath: String,
-        processId: String,
-        data: Data
-    ) {
-        guard let runtime = runtimes[projectRootPath],
-              let record = runtime.records[processId] else { return }
-        let logURL = URL(fileURLWithPath: record.logPath)
-        try? ensureFileExists(logURL)
-        guard let handle = try? FileHandle(forWritingTo: logURL) else { return }
-        do {
-            try handle.seekToEnd()
-            try handle.write(contentsOf: data)
-            try handle.close()
-        } catch {
-            try? handle.close()
-        }
-    }
-
     private func ensureLoaded(projectRoot: URL) {
         let projectKey = projectRoot.standardizedFileURL.path
         guard runtimes[projectKey] == nil else { return }
 
-        let ctx = AXProjectContext(root: projectRoot)
+        let ctx = XTManagedProcessPaths(root: projectRoot)
         let decoder = JSONDecoder()
         let snapshot = (try? Data(contentsOf: ctx.managedProcessesSnapshotURL))
             .flatMap { try? decoder.decode(XTManagedProcessSnapshot.self, from: $0) }
         var runtime = ProjectRuntime()
-        for record in snapshot?.processes ?? [] {
+        for var record in snapshot?.processes ?? [] {
+            guard !record.processId.isEmpty,
+                  (try? normalizedProcessID(record.processId)) == record.processId else { continue }
+            record.logPath = ctx.managedProcessLogURL(processId: record.processId).path
+            if managedProcessIsActive(record) {
+                record.status = .failed
+                record.terminationReason = "ownership_unverified"
+                record.lastError = "Persisted PID is not proof of process ownership; automatic adoption and signalling are disabled"
+                record.stopRequested = true
+            }
             runtime.records[record.processId] = record
         }
         runtimes[projectKey] = runtime
@@ -502,18 +472,16 @@ actor XTManagedProcessStore {
         var changed = false
         for (processId, record) in runtime.records {
             guard managedProcessIsActive(record) else { continue }
-            guard let pid = record.pid else { continue }
-            let hasLiveHandle = runtime.handles[processId]?.process.isRunning == true
-            if hasLiveHandle || xtManagedProcessIsAlive(pid) {
+            if runtime.handles[processId] != nil || runtime.restartTasks[processId] != nil {
                 continue
             }
 
             var updated = record
             updated.pid = nil
-            updated.status = .exited
-            updated.stopRequested = false
+            updated.status = .failed
+            updated.stopRequested = true
             updated.updatedAtMs = currentTimeMs()
-            updated.terminationReason = updated.terminationReason ?? "stale_pid_reaped"
+            updated.terminationReason = "ownership_unverified"
             runtime.records[processId] = updated
             changed = true
         }
@@ -525,7 +493,7 @@ actor XTManagedProcessStore {
 
     private func persistSnapshot(projectRoot: URL) {
         let projectKey = projectRoot.standardizedFileURL.path
-        let ctx = AXProjectContext(root: projectRoot)
+        let ctx = XTManagedProcessPaths(root: projectRoot)
         guard let runtime = runtimes[projectKey] else { return }
         try? ensureManagedProcessDirectories(ctx: ctx)
         let snapshot = XTManagedProcessSnapshot(
@@ -558,7 +526,9 @@ actor XTManagedProcessStore {
 
     private func normalizedCWD(_ raw: String?, projectRoot: URL) throws -> URL {
         let cwd = (raw ?? ".").trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolved = FileTool.resolvePath(cwd.isEmpty ? "." : cwd, projectRoot: projectRoot)
+        let resolved = cwd.hasPrefix("/")
+            ? URL(fileURLWithPath: cwd)
+            : projectRoot.appendingPathComponent(cwd.isEmpty ? "." : cwd)
         do {
             try PathGuard.requireInsideAny(
                 roots: [projectRoot],
@@ -595,27 +565,20 @@ actor XTManagedProcessStore {
         }
     }
 
-    private func ensureManagedProcessDirectories(ctx: AXProjectContext) throws {
+    private func ensureManagedProcessDirectories(ctx: XTManagedProcessPaths) throws {
         try FileManager.default.createDirectory(at: ctx.managedProcessesDir, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: ctx.managedProcessesLogsDir, withIntermediateDirectories: true)
     }
 
-    private func ensureFileExists(_ url: URL) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if !FileManager.default.fileExists(atPath: url.path) {
-            _ = FileManager.default.createFile(atPath: url.path, contents: Data())
-        }
+    private func logStore(_ url: URL) -> XTManagedProcessLog {
+        if let existing = logStores[url.path] { return existing }
+        let log = XTManagedProcessLog(url: url)
+        logStores[url.path] = log
+        return log
     }
 
     private func appendLogLine(logURL: URL, line: String) throws {
-        try ensureFileExists(logURL)
-        guard let data = (line + "\n").data(using: .utf8),
-              let handle = try? FileHandle(forWritingTo: logURL) else {
-            return
-        }
-        try handle.seekToEnd()
-        try handle.write(contentsOf: data)
-        try handle.close()
+        try logStore(logURL).append(Data((line + "\n").utf8))
     }
 
     private func currentTimeMs() -> Int64 {
@@ -625,23 +588,4 @@ actor XTManagedProcessStore {
     private func iso8601Now() -> String {
         ISO8601DateFormatter().string(from: Date())
     }
-}
-
-private func xtManagedTerminationReason(_ reason: Process.TerminationReason) -> String {
-    switch reason {
-    case .exit:
-        return "exit"
-    case .uncaughtSignal:
-        return "uncaught_signal"
-    @unknown default:
-        return "unknown"
-    }
-}
-
-private func xtManagedProcessIsAlive(_ pid: Int32) -> Bool {
-    guard pid > 0 else { return false }
-    if Darwin.kill(pid, 0) == 0 {
-        return true
-    }
-    return errno == EPERM
 }

@@ -2,6 +2,11 @@
 
 This directory contains machine-readable samples for split proposal audit payloads.
 
+`xt_v1_golden_project/` is a disposable R1 coding task, not live product evidence.
+It retains the standard Swift Testing target and an explicit standalone
+diagnostic executable for toolchains without the test framework. See
+`../README.md` for the preparation runner, evidence limits, and exit codes.
+
 - `split_audit_payload_events.sample.json`
   - schema: `xterminal.split_audit_fixture.v1`
   - payload schema: `xterminal.split_audit_payload`

@@ -18,12 +18,12 @@ function safeLower(v) {
 
 export function tlsModeFromEnv(env = process.env) {
   const raw = safeLower(env.HUB_GRPC_TLS_MODE || env.HUB_TLS_MODE || '');
-  if (!raw) return 'insecure';
+  if (!raw) return 'tls';
   if (raw === '0' || raw === 'false' || raw === 'off' || raw === 'disabled') return 'insecure';
   if (raw === 'insecure' || raw === 'plaintext') return 'insecure';
   if (raw === 'tls' || raw === 'ssl') return 'tls';
   if (raw === 'mtls' || raw === 'm_tls' || raw === 'mutual_tls') return 'mtls';
-  return 'insecure';
+  throw new Error('Invalid HUB_GRPC_TLS_MODE/HUB_TLS_MODE: expected tls, mtls, or explicit loopback-only insecure');
 }
 
 export function tlsServerNameFromEnv(env = process.env) {

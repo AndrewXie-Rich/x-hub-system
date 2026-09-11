@@ -1,19 +1,22 @@
 # X-Hub Remote Route Setup
 
 Use `tools/hub_remote_route_doctor.command` before giving a remote address to
-X-Terminal. XT needs two TCP paths to the Hub:
+X-Terminal. XT needs two TCP paths to the Hub. The embedded Hub defaults are:
 
-- pairing: `host:50059`
-- gRPC: `host:50058`
+- pairing/control: `host:50052`
+- gRPC/AI: `host:50051`
 
-`/pairing/discovery` on the pairing port should return JSON with
+For a network route, the pairing/control endpoint must be HTTPS. The embedded
+macOS Hub currently keeps its pairing/control listener on loopback HTTP; use an
+operator-managed HTTPS endpoint or the documented encrypted tunnel for that
+control path. `/pairing/discovery` on a verified HTTPS pairing endpoint should return JSON with
 `internet_host_hint`, `grpc_port`, `pairing_port`, and `tls_mode`.
 
 ```bash
 tools/hub_remote_route_doctor.command \
   --host hub.your-domain.example \
-  --grpc-port 50058 \
-  --pairing-port 50059
+  --grpc-port 50051 \
+  --pairing-port 50052
 ```
 
 ## Product Default
@@ -168,15 +171,15 @@ good long-term default because the IP can change and both raw TCP ports are
 exposed to the internet.
 
 1. Find the Hub network's public IP.
-2. On the router/NAT, forward TCP `50059` and `50058` to the Hub Mac.
+2. On the router/NAT, forward TCP `50052` and `50051` to the Hub Mac.
 3. In Hub Settings, set External Address to the public IP.
 4. Use the invite link on XT.
 5. Verify from outside the Hub network:
 
 ```bash
-nc -vz <public-ip> 50059
-nc -vz <public-ip> 50058
-curl -fsS http://<public-ip>:50059/pairing/discovery
+nc -vz <public-ip> 50052
+nc -vz <public-ip> 50051
+curl --proto '=https' --proto-redir '=https' -fsS https://<public-ip>:50052/pairing/discovery
 ```
 
 Keep mTLS and invite-token validation enabled. Restrict allowed source IPs if
@@ -184,14 +187,14 @@ the XT networks are predictable.
 
 ## DNS-Only Domain Direct
 
-Use this when the user owns a domain and can expose TCP `50059/50058` directly.
+Use this when the user owns a domain and can expose TCP `50052/50051` directly.
 
 1. Create `A`/`AAAA` records such as `hub.your-domain.example`.
 2. Point them to the Hub public IP or to a raw TCP endpoint that forwards to the
    Hub.
 3. If DNS is hosted on Cloudflare, keep the record DNS-only. The normal
    orange-cloud HTTP proxy does not forward these raw TCP ports.
-4. Forward TCP `50059/50058` to the Hub Mac.
+4. Forward TCP `50052/50051` to the Hub Mac.
 5. Set External Address to the DNS name.
 6. Copy the secure remote setup pack or invite link.
 
@@ -205,8 +208,8 @@ router exposure. It requires Spectrum support on the Cloudflare account.
 
 1. Put a hostname such as `hub.your-domain.example` in Cloudflare.
 2. Create raw TCP Spectrum apps for:
-   - external TCP `50059` -> origin `Hub-or-relay:50059`
-   - external TCP `50058` -> origin `Hub-or-relay:50058`
+   - external TCP `50052` -> origin `Hub-or-relay:50052`
+   - external TCP `50051` -> origin `Hub-or-relay:50051`
 3. Set Hub External Address to the Spectrum hostname.
 4. Verify the same doctor command against the Spectrum hostname.
 
@@ -221,7 +224,7 @@ XT and do not have Spectrum.
 1. Provision a VPS with a stable public IP and DNS name.
 2. Run a raw TCP forwarder such as HAProxy, nginx `stream`, systemd socket
    forwarding, or a small relay service.
-3. Forward VPS TCP `50059/50058` to the Hub reachable path.
+3. Forward VPS TCP `50052/50051` to the Hub reachable path.
 4. Secure the VPS with a firewall, automatic restarts, logs, and source IP
    restrictions where possible.
 5. Set Hub External Address to the VPS DNS name.

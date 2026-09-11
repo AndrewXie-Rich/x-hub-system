@@ -29,7 +29,7 @@ struct HubAccessKeysClientTests {
         )
 
         let context = try #require(HubAccessKeysClient.resolveSessionContext(stateDir: tempDir))
-        #expect(context.baseURL.absoluteString == "http://17.81.11.116:50054")
+        #expect(context.baseURL.absoluteString == "https://17.81.11.116:50054")
         #expect(context.clientToken == "tok_current")
         #expect(context.deviceID == "dev_xt_alpha")
         #expect(context.userID == "xt_alpha")
@@ -56,7 +56,7 @@ struct HubAccessKeysClientTests {
         )
 
         let context = try #require(HubAccessKeysClient.resolveSessionContext(stateDir: tempDir))
-        #expect(context.baseURL.absoluteString == "http://hub.tailnet.example:50052")
+        #expect(context.baseURL.absoluteString == "https://hub.tailnet.example:50052")
     }
 
     @Test

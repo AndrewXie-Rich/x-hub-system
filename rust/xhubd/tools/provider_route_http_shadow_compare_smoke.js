@@ -6,27 +6,13 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { resolveNodeHubSourceDir } from './xhub_system_paths.js';
+
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 
 function safeString(value) {
   return String(value ?? '').trim();
-}
-
-function resolveXHubSystemRoot() {
-  const explicit = safeString(process.env.XHUB_SYSTEM_ROOT);
-  if (explicit) return explicit;
-  const candidates = [
-    path.resolve(ROOT_DIR, '..', '..', 'x-hub-system'),
-    path.resolve(ROOT_DIR, '..', '..', '..', '..', 'x-hub-system'),
-    '/Users/andrew.xie/Documents/AX/x-hub-system',
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(path.join(candidate, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src', 'rust_provider_route_shadow_compare.js'))) {
-      return candidate;
-    }
-  }
-  return candidates[0];
 }
 
 function makeTempDir(prefix) {
@@ -169,7 +155,10 @@ async function main() {
     await waitForHealth(baseUrl, child);
     await httpGetJson(`${baseUrl}/provider/readiness?min_compare_reports=0&max_mismatches=0&limit=3`);
 
-    const srcDir = path.join(resolveXHubSystemRoot(), 'x-hub', 'grpc-server', 'hub_grpc_server', 'src');
+    const srcDir = resolveNodeHubSourceDir({
+      startDir: SCRIPT_DIR,
+      markers: ['rust_provider_route_shadow_compare.js'],
+    });
     const { createProviderRouteShadowComparer } = await import(pathToFileURL(path.join(srcDir, 'rust_provider_route_shadow_compare.js')).href);
     const warnings = [];
     const logs = [];

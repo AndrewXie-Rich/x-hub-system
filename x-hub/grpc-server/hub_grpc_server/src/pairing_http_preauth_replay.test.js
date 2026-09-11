@@ -3,17 +3,21 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 import {
   createPreauthSurfaceGuard,
   createWebhookReplayGuard,
   evaluateFirstPairSameLanRequirement,
+  effectivePeerIpForPairingSourcePolicy,
   resolveFirstPairSameLanAllowedCidrs,
   shouldRequireInviteTokenForPairingRequest,
   startPairingHTTPServer,
 } from './pairing_http.js';
 import { createConnectorDeliveryReceiptCompensator } from './connector_delivery_receipt_compensator.js';
 import { HubDB } from './db.js';
+
+const webhookTestSecret = 'fixture-only-webhook-secret-32-bytes-minimum';
 
 function run(name, fn) {
   try {
@@ -70,10 +74,18 @@ function requestJson({
   body,
   agent,
   timeout_ms = 2_000,
+  signWebhook = true,
 } = {}) {
   const target = new URL(String(url || ''));
   const payload = body == null ? '' : (typeof body === 'string' ? body : JSON.stringify(body));
   const reqHeaders = { ...headers };
+  if (signWebhook && target.pathname.startsWith('/webhook/connectors/')) {
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    reqHeaders['x-hub-timestamp'] = timestamp;
+    reqHeaders['x-hub-signature'] = 'v1=' + crypto.createHmac('sha256', webhookTestSecret)
+      .update(`v1\n${timestamp}\nPOST\n${target.pathname}\n${reqHeaders['x-replay-key']}\n${payload}`)
+      .digest('hex');
+  }
   if (payload) {
     if (!reqHeaders['content-type']) reqHeaders['content-type'] = 'application/json; charset=utf-8';
     reqHeaders['content-length'] = String(Buffer.byteLength(payload, 'utf8'));
@@ -152,7 +164,14 @@ async function withPairingServer({
 } = {}, fn) {
   const port = 56000 + Math.floor(Math.random() * 6000);
   const baseUrl = `http://127.0.0.1:${port}`;
+  const ownsRuntimeBaseDir = !env.HUB_RUNTIME_BASE_DIR && !env.REL_FLOW_HUB_BASE_DIR;
+  const runtimeBaseDir = env.HUB_RUNTIME_BASE_DIR || env.REL_FLOW_HUB_BASE_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'pairing-security-test-'));
+  const sourceIds = new Set([
+    'slack:channel_1', 'slack:channel_2', 'slack:channel_3', 'slack:channel_4', 'slack:channel_denied',
+    ...String(env.HUB_CONNECTOR_WEBHOOK_ALLOW_FROM || '').split(','),
+  ]);
   await withEnvAsync({
+    HUB_RUNTIME_BASE_DIR: runtimeBaseDir,
     HUB_PAIRING_ENABLE: '1',
     HUB_PAIRING_HOST: '127.0.0.1',
     HUB_PAIRING_PORT: String(port),
@@ -161,6 +180,7 @@ async function withPairingServer({
     HUB_PAIRING_ALLOWED_CIDRS: 'any',
     HUB_CONNECTOR_WEBHOOK_ALLOW_FROM: 'slack:channel_1,slack:channel_2,slack:channel_3,slack:channel_4',
     HUB_CONNECTOR_INGRESS_POLICY_JSON: '',
+    HUB_CONNECTOR_WEBHOOK_KEYS_JSON: JSON.stringify(Object.fromEntries([...sourceIds].map((sourceId) => [sourceId, webhookTestSecret]))),
     ...env,
   }, async () => {
     const stop = startPairingHTTPServer({
@@ -182,6 +202,7 @@ async function withPairingServer({
         // ignore
       }
       await sleep(40);
+      if (ownsRuntimeBaseDir) fs.rmSync(runtimeBaseDir, { recursive: true, force: true });
     }
   });
 }
@@ -361,6 +382,7 @@ run('CRK-W1-20/invite token policy treats forwarded public peers as external', (
   assert.equal(shouldRequireInviteTokenForPairingRequest({
     peer_ip: '127.0.0.1',
     forwarded_for: '203.0.113.8',
+    env: { HUB_PAIRING_TRUST_LOOPBACK_FORWARDED_FOR: '1' },
   }), true);
   assert.equal(shouldRequireInviteTokenForPairingRequest({
     peer_ip: '127.0.0.1',
@@ -430,6 +452,46 @@ run('XPF-02-C/first pair same-lan policy strips broad private rules and keeps ex
   });
   assert.equal(spoofed.ok, false);
   assert.equal(String(spoofed.effective_peer_ip || ''), '10.1.2.3');
+});
+
+await runAsync('Webhook HTTP rejects missing and forged signatures before replay state changes', async () => {
+  await withPairingServer({}, async ({ baseUrl, db }) => {
+    const unsigned = {
+      method: 'POST', url: `${baseUrl}/webhook/connectors/slack/channel_1`, signWebhook: false,
+      headers: { 'x-replay-key': 'security-event' }, body: { event_id: 'security-event', signature_valid: true },
+    };
+    assert.equal((await requestJson(unsigned)).status, 401);
+    const forged = await requestJson({ ...unsigned, headers: {
+      ...unsigned.headers, 'x-hub-timestamp': String(Math.floor(Date.now() / 1000)), 'x-hub-signature': `v1=${'0'.repeat(64)}`,
+    } });
+    assert.equal(forged.status, 401);
+    assert.equal(forged.json.error.code, 'webhook_signature_invalid');
+    const accepted = await requestJson({ ...unsigned, signWebhook: true });
+    assert.equal(accepted.status, 202);
+    assert.equal((await requestJson({ ...unsigned, signWebhook: true })).status, 409);
+    assert.equal(db.rows.filter((row) => row.event_type === 'connector.webhook.received').length, 1);
+  });
+});
+
+await runAsync('Pairing request limits ignore client-controlled source headers and query', async () => {
+  await withPairingServer({ env: { HUB_PAIRING_RL_PER_MIN: '2' } }, async ({ baseUrl }) => {
+    for (let index = 0; index < 4; index += 1) {
+      const response = await requestJson({
+        method: 'POST', url: `${baseUrl}/pairing/requests?source_key=source-${index}`,
+        headers: { 'x-source-key': `source-${index}`, 'x-forwarded-for': `192.0.2.${index + 1}` }, body: {},
+      });
+      assert.equal(response.status, index < 2 ? 400 : 429);
+      if (index >= 2) assert.equal(response.json.error.code, 'rate_limited');
+    }
+  });
+});
+
+await runAsync('Webhook signing configuration is mandatory even on loopback', async () => {
+  await withPairingServer({ env: { HUB_CONNECTOR_WEBHOOK_KEYS_JSON: '' } }, async ({ baseUrl }) => {
+    const result = await requestJson({ method: 'POST', url: `${baseUrl}/webhook/connectors/slack/channel_1`, body: {}, headers: { 'x-replay-key': 'event-1' } });
+    assert.equal(result.status, 503);
+    assert.equal(result.json.error.code, 'webhook_auth_not_configured');
+  });
 });
 
 await runAsync('CRK-W1-07/webhook replay duplicate signature second send is rejected', async () => {
@@ -804,6 +866,27 @@ await runAsync('XPF-02-C/approved pairing status exposes pairing profile epoch a
             String(statusOut.json?.route_pack_version || ''),
             String(approved.json?.route_pack_version || '')
           );
+          await withEnvAsync({
+            HUB_GRPC_TLS_AUTO_GEN: '0',
+            HUB_GRPC_TLS_DIR: path.join(runtimeBaseDir, 'missing-tls-material'),
+          }, async () => {
+            const missingTLS = await requestJson({
+              url: `${baseUrl}/pairing/requests/${pairingRequestId}`,
+              headers: { 'x-pairing-secret': 'secret_secret_1234' },
+            });
+            assert.equal(missingTLS.status, 503);
+            assert.equal(missingTLS.json?.error?.code, 'tls_material_missing');
+            assert.equal(missingTLS.text.includes('client_token'), false);
+          });
+          await withEnvAsync({ HUB_GRPC_TLS_MODE: 'insecure' }, async () => {
+            const localDevelopment = await requestJson({
+              url: `${baseUrl}/pairing/requests/${pairingRequestId}`,
+              headers: { 'x-pairing-secret': 'secret_secret_1234' },
+            });
+            assert.equal(localDevelopment.status, 200);
+            assert.equal(localDevelopment.json?.tls?.mode, 'insecure');
+            assert.match(localDevelopment.json?.connect_env || '', /HUB_GRPC_TLS_MODE=insecure/);
+          });
         });
       } finally {
         db.close();
@@ -1965,32 +2048,29 @@ run('CRK-W1-07/replay guard direct claim exposes block-rate metric', () => {
   assert.ok(Number(snap.webhook_replay_block_rate || 0) > 0);
 });
 
-await runAsync('CM-W3-18/pre-auth state cap rejects rotating source-key flood', async () => {
+await runAsync('Preauth rotating caller headers cannot reset the peer bucket', async () => {
   const guarded = createPreauthSurfaceGuard({
     window_ms: 60_000,
-    max_per_window: 100,
+    max_per_window: 3,
     max_state_keys: 16,
     stale_window_ms: 60_000,
   });
   await withPairingServer({ preauthGuard: guarded }, async ({ baseUrl }) => {
-    let overflowSeen = false;
-    for (let i = 0; i < 64; i += 1) {
+    for (let index = 0; index < 8; index += 1) {
       const out = await requestJson({
         method: 'POST',
-        url: `${baseUrl}/webhook/connectors/slack/channel_4`,
+        url: `${baseUrl}/webhook/connectors/slack/channel_4?source_key=query-${index}`,
         headers: {
-          'x-source-key': `source-rotate-${i}`,
-          'x-replay-key': `event-${i}`,
-          'x-signature': `sig-${i}`,
+          'x-source-key': `source-rotate-${index}`,
+          'x-forwarded-for': `192.0.2.${index + 1}`,
+          'x-replay-key': `event-${index}`,
         },
-        body: { event_id: `event-${i}` },
+        body: { event_id: `event-${index}` },
       });
-      if (out.status === 429 && String(out.json?.error?.code || '') === 'preauth_state_overflow') {
-        overflowSeen = true;
-        break;
-      }
+      assert.equal(out.status, index < 3 ? 202 : 429);
+      if (index >= 3) assert.equal(out.json.error.code, 'rate_limited');
     }
-    assert.equal(overflowSeen, true, 'expected preauth_state_overflow under rotating source-key flood');
+    assert.equal(guarded.snapshot().state_keys, 1);
   });
 });
 

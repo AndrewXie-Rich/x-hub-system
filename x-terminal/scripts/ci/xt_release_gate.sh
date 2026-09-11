@@ -111,14 +111,18 @@ resolve_first_existing_file() {
 }
 
 resolve_xt_cli_binary() {
+  local scratch_path="${XT_GATE_SWIFT_SCRATCH_PATH:-${ROOT_DIR}/.build/xt_gate_swift_build}"
   local candidates=(
+    "${scratch_path}/debug/XTerminal"
+    "${scratch_path}/arm64-apple-macosx/debug/XTerminal"
+    "${scratch_path}/x86_64-apple-macosx/debug/XTerminal"
     "${ROOT_DIR}/.build/debug/XTerminal"
     "${ROOT_DIR}/.build/arm64-apple-macosx/debug/XTerminal"
     "${ROOT_DIR}/.build/x86_64-apple-macosx/debug/XTerminal"
   )
   local candidate
   for candidate in "${candidates[@]}"; do
-    if [[ -x "${candidate}" ]]; then
+    if is_xt_cli_binary_fresh "${candidate}"; then
       echo "${candidate}"
       return 0
     fi
@@ -276,6 +280,24 @@ run_gate_g0() {
     note_fail "${gate_name}: work-orders/README.md missing index entries: ${missing_index[*]}"
   else
     note_pass "${gate_name}: work-orders/README.md indexes all xt-w docs"
+  fi
+
+  local backlog_log="/tmp/xt_gate_product_readiness_backlog.log"
+  if (node "${ROOT_DIR}/scripts/check_product_readiness_backlog.mjs" &&
+      node --test "${ROOT_DIR}/Tests/ProductReadinessBacklogTests.mjs" "${ROOT_DIR}/Tests/ReleaseGateBinarySelectionTests.mjs" "${ROOT_DIR}/Tests/R1FirstRealTaskTests.mjs" "${ROOT_DIR}/Tests/R1RuntimePreflightTests.mjs") >"${backlog_log}" 2>&1; then
+    note_pass "${gate_name}: product readiness dependencies are acyclic and match Markdown (${backlog_log})"
+  else
+    note_fail "${gate_name}: product readiness backlog validation failed (see ${backlog_log})"
+  fi
+}
+
+run_gate_execution_safety() {
+  local gate_name="XT-G2 / Execution Safety"
+  local log_file="/tmp/xt_gate_execution_safety.log"
+  if bash "${ROOT_DIR}/scripts/ci/xt_execution_safety_regression.sh" >"${log_file}" 2>&1; then
+    note_pass "${gate_name}: real OS isolation and execution regression passed (${log_file})"
+  else
+    note_fail "${gate_name}: execution regression failed; sandbox restrictions are not skipped (see ${log_file})"
   fi
 }
 
@@ -2283,6 +2305,7 @@ main() {
   run_gate_g0
   run_gate_g1
   run_gate_g2
+  run_gate_execution_safety
   run_gate_g3
   run_gate_split_audit_contract
   run_gate_split_flow_contract
@@ -2307,4 +2330,6 @@ main() {
   return 0
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

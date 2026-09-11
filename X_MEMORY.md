@@ -2,7 +2,7 @@
 
 - project: X-Hub Distributed Secure Interaction System (X-Hub + X-Terminal)
 - root: `.`
-- updatedAt: 2026-08-01
+- updatedAt: 2026-08-12
 
 ## Naming Map（旧名 -> 白皮书新名）
 - `RELFlowHub` / `REL Flow Hub` / `AX Flow Hub` -> **X-Hub**（产品名；当前构建产物已是 `build/X-Hub.app`，但二进制/BundleId 仍多为 `RELFlowHub*` / `com.rel.flowhub*`）
@@ -10,12 +10,13 @@
 - `axhubctl`（CLI）-> 保持 `axhubctl`（已决定先不改名；未来可再迁移到 `xhubctl`）
 - `.axcoder/` -> `.xterminal/`（白皮书目标路径；目前代码仍使用 `.axcoder/`）
 
-## Canonical Root Guard（2026-08-01）
-- 唯一 canonical、受版本控制的系统根：`/Users/andrew.xie/Documents/AX/x-hub-system`
+## Canonical Root Guard（2026-08-12）
+- 唯一 canonical、受版本控制的系统根：`<repository-root>`（用 `git rev-parse --show-toplevel` 在当前机器解析）
+- `<AX-root>` 表示 `<repository-root>` 的父目录。
 - Hub app / control plane：`x-hub/`
 - Hub Rust kernel：`rust/xhubd/`
 - X-Terminal：`x-terminal/`
-- `/Users/andrew.xie/Documents/AX/rust/rust hub` 与 `/Users/andrew.xie/Documents/AX/rust/rust xt/swift-xterminal` 仅作 migration/reference；不得作为构建、发布或运行制品的源码真相。
+- `<AX-root>/rust/rust hub` 与 `<AX-root>/rust/rust xt/swift-xterminal` 仅作 migration/reference；不得作为构建、发布或运行制品的源码真相。
 - 外部树中的有用改动必须迁入本仓库，在对应 canonical root 中验证后才算落地。
 - `x-hub/macos/RELFlowHub/` 是当前 Hub Swift 壳的历史 package 名，不是另一个旧 Hub 产品。
 

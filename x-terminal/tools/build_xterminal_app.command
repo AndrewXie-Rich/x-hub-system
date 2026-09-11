@@ -180,8 +180,16 @@ if [ -n "$NODE_BIN" ] && [ -x "$NODE_BIN" ]; then
   echo "[2a/4] Bundling node runtime from: $NODE_BIN"
   cp -f "$NODE_BIN" "$APP_DIR/Contents/Resources/relflowhub_node"
   chmod +x "$APP_DIR/Contents/Resources/relflowhub_node"
+  echo "[2d/4] Writing source-to-binary provenance"
+  "$NODE_BIN" "$XT_DIR/tools/build_provenance.mjs" \
+    --source-root "$BUILD_SRC_DIR" \
+    --git-root "$WORKSPACE_ROOT" \
+    --binary "$APP_DIR/Contents/MacOS/XTerminal" \
+    --output "$APP_DIR/Contents/Resources/xterminal-build-provenance.v1.json" \
+    --configuration "$BUILD_CONFIG"
 else
   echo "[2a/4] Warning: node not found on this machine; bundled app will still rely on system/client-kit node." >&2
+  echo "[2d/4] Warning: node unavailable; source-to-binary provenance was not written." >&2
 fi
 
 AXHUBCTL_SRC=""

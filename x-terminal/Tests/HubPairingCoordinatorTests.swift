@@ -9,6 +9,13 @@ import Testing
 
 struct HubPairingCoordinatorTests {
     @Test
+    func securePairingFailuresRemainActionable() {
+        for code in ["pairing_transport_tool_upgrade_required", "pairing_ca_invalid", "grpc_credentials_mode_mismatch"] {
+            #expect(HubPairingCoordinator.inferFailureCodeForTesting(from: "\(code): repair required", fallback: "connect_failed") == code)
+        }
+    }
+
+    @Test
     func normalizedRemoteReasonCodeCollapsesRawGRPCUnavailable() {
         let reason = HubPairingCoordinator.normalizedRemoteReasonCodeForTesting(
             "14_UNAVAILABLE:_No_connection_established._Last_error:_null._Resolution_note:"
@@ -664,6 +671,26 @@ struct HubPairingCoordinatorTests {
     @Test
     func preferredConnectHubSkipsCachedRawPublicIPWithoutNamedEntry() {
         let host = HubPairingCoordinator.preferredConnectHubForTesting(
+            cachedHost: "17.81.11.116"
+        )
+
+        #expect(host == "auto")
+    }
+
+    @Test
+    func preferredLANConnectHubDoesNotReuseConfiguredRemoteEntry() {
+        let host = HubPairingCoordinator.preferredLANConnectHubForTesting(
+            primaryHubHost: "hub.tailnet.example",
+            cachedHost: "192.168.0.12"
+        )
+
+        #expect(host == "192.168.0.12")
+    }
+
+    @Test
+    func preferredLANConnectHubFallsBackToDiscoveryOnlyForLocalAddress() {
+        let host = HubPairingCoordinator.preferredLANConnectHubForTesting(
+            primaryHubHost: "hub.tailnet.example",
             cachedHost: "17.81.11.116"
         )
 
@@ -1618,6 +1645,10 @@ struct HubPairingCoordinatorTests {
             script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
             log_file="$script_dir/axhubctl_calls.log"
             cmd="${1:-}"
+            if [ "$cmd" = "transport-policy" ]; then
+              echo 'pairing_https_required_v1'
+              exit 0
+            fi
             printf '%s\n' "$cmd" >> "$log_file"
             case "$cmd" in
               discover)

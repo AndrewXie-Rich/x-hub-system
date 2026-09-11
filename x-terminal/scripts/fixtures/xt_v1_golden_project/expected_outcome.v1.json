@@ -1,0 +1,11 @@
+{
+  "schema_version": "xt.r1_golden_project_expected_outcome.v1",
+  "task_id": "XT-R1-GOLDEN-GREETING",
+  "required_source_path": "Sources/GoldenProject/Greeting.swift",
+  "required_test_id": "testTaskGreeting",
+  "expected_message": "Hello from X-Terminal",
+  "test_command": ["swift", "test"],
+  "diagnostic_command": ["swift", "run", "GoldenProjectTests"],
+  "network_access": false,
+  "allowed_changed_paths": ["Sources/GoldenProject/Greeting.swift"]
+}

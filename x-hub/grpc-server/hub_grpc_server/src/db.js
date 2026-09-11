@@ -3872,6 +3872,52 @@ export class HubDB {
     }
   }
 
+  tryReserveDelegatedQuotaDaily({ day, group_scope, group_cap, key_scope, key_cap, amount, baseline_scopes = [], key_baseline_scope = '' } = {}) {
+    const dayKey = String(day || '').trim();
+    const group = String(group_scope || '').trim();
+    const key = String(key_scope || '').trim();
+    const groupCap = Number(group_cap);
+    const keyCap = Number(key_cap);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey) || !group || !key || group === key
+      || [amount, groupCap, keyCap].some((value) => !Number.isSafeInteger(value) || value <= 0)) return { ok: false, code: 'delegation_quota_exceeded' };
+    let transactionStarted = false;
+    try {
+      this.db.exec('BEGIN IMMEDIATE;');
+      transactionStarted = true;
+      const readUsed = (scope) => {
+        const used = Number(this.db.prepare(
+          `SELECT token_used AS token_used FROM quota_usage_daily WHERE scope = ? AND day = ?`
+        ).get(scope, dayKey)?.token_used || 0);
+        if (!Number.isSafeInteger(used) || used < 0) throw new Error('invalid_quota_state');
+        return used;
+      };
+      const groupBaseline = baseline_scopes.reduce((sum, scope) => sum + readUsed(String(scope || '').trim()), 0);
+      const keyBaseline = key_baseline_scope ? readUsed(String(key_baseline_scope).trim()) : 0;
+      const existingGroup = readUsed(group);
+      const existingKey = readUsed(key);
+      const groupUsed = Math.max(existingGroup, groupBaseline);
+      const keyUsed = Math.max(existingKey, keyBaseline);
+      if (!Number.isSafeInteger(groupUsed) || !Number.isSafeInteger(keyUsed) || groupUsed + amount > groupCap || keyUsed + amount > keyCap) {
+        this.db.exec('ROLLBACK;');
+        return { ok: false, code: 'delegation_quota_exceeded' };
+      }
+      const now = nowMs();
+      const write = (scope, value) => this.db.prepare(
+        `INSERT INTO quota_usage_daily(scope, day, token_used, updated_at_ms) VALUES(?,?,?,?)
+         ON CONFLICT(scope, day) DO UPDATE SET token_used = ?, updated_at_ms = ?`
+      ).run(scope, dayKey, value, now, value, now);
+      write(group, groupUsed + amount);
+      write(key, keyUsed + amount);
+      this.db.exec('COMMIT;');
+      return { ok: true, reserved: amount, group_scope: group, key_scope: key };
+    } catch {
+      if (transactionStarted) {
+        try { this.db.exec('ROLLBACK;'); } catch {}
+      }
+      return { ok: false, code: 'delegation_budget_unavailable' };
+    }
+  }
+
   recordTerminalModelUsageDaily(fields) {
     const deviceId = String(fields?.device_id || '').trim();
     const deviceName = String(fields?.device_name || '').trim() || deviceId;

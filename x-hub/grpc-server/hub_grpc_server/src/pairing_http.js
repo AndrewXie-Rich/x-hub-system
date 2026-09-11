@@ -1,10 +1,15 @@
 import http from 'node:http';
+import https from 'node:https';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 
 import { nowMs, uuid } from './util.js';
+import { pairingTransportFromEnv } from './transport_security.js';
+import { verifyConnectorWebhook } from './connector_webhook_auth.js';
+import { hasAccessKeyManagementScope, ownsDelegatedAccessKey, delegatedKeyPolicyError, delegatedBudgetReservation } from './access_key_delegation.js';
 import { resolveRuntimeBaseDir } from './local_runtime_ipc.js';
 import { pushHubNotification } from './hub_ipc.js';
 import {
@@ -72,13 +77,6 @@ const HUB_PRODUCT_BOUNDARY = 'swift_shell_rust_kernel';
 
 function safeString(v) {
   return String(v ?? '').trim();
-}
-
-function serviceBindHostFromEnv(rawHost, env = process.env) {
-  const host = safeString(rawHost) || '0.0.0.0';
-  const dualStack = safeString(env.HUB_IPV6_DUALSTACK || '1') !== '0';
-  if (dualStack && host === '0.0.0.0') return '::';
-  return host;
 }
 
 function hostForUrlBase(host) {
@@ -683,8 +681,7 @@ function writeJsonAtomic(dirPath, fileName, obj) {
 
 function firstForwardedForIp(req) {
   const raw = safeString(req?.headers?.['x-forwarded-for']);
-  if (!raw) return '';
-  return safeString(raw.split(',')[0]);
+  return raw;
 }
 
 function inviteTokenConfigPath(runtimeBaseDir) {
@@ -771,29 +768,37 @@ export function shouldRequireInviteTokenForPairingRequest({
   if (firstPairForce === '1' || firstPairForce.toLowerCase() === 'true') {
     return true;
   }
-  const peerIp = safeString(peer_ip);
-  const forwarded = safeString(forwarded_for);
-  const policyPeerIp = forwarded && (isLoopbackIp(peerIp) || isPrivateIPv4(peerIp))
-    ? forwarded
-    : peerIp;
+  const policyPeerIp = effectivePeerIpForPairingSourcePolicy({ peer_ip, forwarded_for, env });
   return !(isLoopbackIp(policyPeerIp) || isPrivateIPv4(policyPeerIp));
 }
 
-function effectivePeerIpForPairingSourcePolicy({
+export function effectivePeerIpForPairingSourcePolicy({
   peer_ip = '',
   forwarded_for = '',
   env = process.env,
 } = {}) {
-  const peerIp = safeString(peer_ip);
-  const forwarded = safeString(forwarded_for);
+  const normalizeIp = (value) => {
+    const text = safeString(value).toLowerCase();
+    const ip = text.startsWith('::ffff:') ? text.slice(7) : text;
+    if (!net.isIP(ip)) return '';
+    return net.isIP(ip) === 6 ? new URL(`http://[${ip}]`).hostname.slice(1, -1) : ip;
+  };
+  const peerIp = normalizeIp(peer_ip);
+  if (!peerIp) return '';
   const trustLoopbackForwardedFor = safeString(env?.HUB_PAIRING_TRUST_LOOPBACK_FORWARDED_FOR);
-  const forwardedForTrusted = (trustLoopbackForwardedFor === '1'
-    || trustLoopbackForwardedFor.toLowerCase() === 'true')
-    && isLoopbackIp(peerIp);
-  if (forwarded && forwardedForTrusted) {
-    return forwarded;
+  const trustedRules = safeStringArray(env?.HUB_PAIRING_TRUSTED_PROXY_CIDRS)
+    .filter((rule) => rule === 'loopback' || !!net.isIP(rule.split('/')[0]));
+  const trustsLoopback = trustLoopbackForwardedFor === '1' || trustLoopbackForwardedFor.toLowerCase() === 'true';
+  const isTrusted = (ip) => (trustsLoopback && isLoopbackIp(ip))
+    || (trustedRules.length > 0 && peerAllowedByRules(ip, trustedRules));
+  if (!isTrusted(peerIp) || !safeString(forwarded_for)) return peerIp;
+  const forwarded = safeString(forwarded_for).split(',').map(normalizeIp);
+  if (forwarded.length > 16 || forwarded.some((ip) => !ip)) return '';
+  let effective = peerIp;
+  for (let index = forwarded.length - 1; index >= 0 && isTrusted(effective); index -= 1) {
+    effective = forwarded[index];
   }
-  return peerIp;
+  return effective;
 }
 
 export function resolveFirstPairSameLanAllowedCidrs(env = process.env) {
@@ -950,12 +955,6 @@ const PAID_MODEL_SELECTION_MODES = new Set(['off', 'all_paid_models', 'custom_se
 const POLICY_MODES = new Set(['new_profile', 'legacy_grant']);
 const DEFAULT_PAIRING_DAILY_TOKEN_LIMIT = 500000;
 const DEFAULT_PAIRING_SINGLE_REQUEST_TOKEN_LIMIT = 12000;
-const XT_ACCESS_KEY_MANAGER_APP_IDS = new Set(['x_terminal', 'xterminal']);
-const XT_ACCESS_KEY_MANAGER_SCOPES = new Set([
-  'hub_access_keys.manage',
-  'hub.access_keys.manage',
-  'access_keys.manage',
-]);
 
 function uniqueStrings(values) {
   const out = [];
@@ -1259,7 +1258,7 @@ function buildClientConnectExport({
   const serverName = tlsMode !== 'insecure' ? safeString(tlsServerName) : '';
   const tlsEnv =
     tlsMode === 'insecure'
-      ? ''
+      ? 'HUB_GRPC_TLS_MODE=insecure\n'
       : `HUB_GRPC_TLS_MODE=${shellQuoteSingle(tlsMode)}\nHUB_GRPC_TLS_SERVER_NAME=${shellQuoteSingle(serverName)}\nHUB_GRPC_TLS_CA_CERT_PATH=$HOME/.axhub/tls/ca.cert.pem\n`
         + (tlsMode === 'mtls'
           ? `HUB_GRPC_TLS_CLIENT_CERT_PATH=$HOME/.axhub/tls/client.cert.pem\nHUB_GRPC_TLS_CLIENT_KEY_PATH=$HOME/.axhub/tls/client.key.pem\n`
@@ -1461,7 +1460,7 @@ function buildClientAccessKeyResponseContext(req, {
     internetHostHint,
     grpcPort,
     pairingPort,
-    schemeFallback: safeString(process.env.HUB_PAIRING_PUBLIC_SCHEME || '') || 'http',
+    schemeFallback: safeString(process.env.HUB_PAIRING_PUBLIC_SCHEME || '') || (req.socket?.encrypted ? 'https' : 'http'),
     tlsMode,
     tlsServerName: tlsMode === 'insecure' ? '' : tlsServerNameFromEnv(process.env),
   };
@@ -2565,6 +2564,7 @@ function buildClientAccessKeyActor(rawActor = {}) {
     app_id,
     created_via,
     allow_override: actor.allow_override === true,
+    manager: actor.manager || null,
   };
 }
 
@@ -2582,15 +2582,8 @@ function requireXtAccessKeyManager(req) {
   if (!auth.ok) return auth;
 
   const client = auth.client && typeof auth.client === 'object' ? auth.client : {};
-  const authKind = safeString(auth.auth_kind || client.auth_kind).toLowerCase();
-  const appId = safeString(client.app_id || auth.app_id).toLowerCase();
-  const scopes = uniqueStrings(
-    safeStringArray(auth.scopes || client.scopes).map((item) => safeString(item).toLowerCase())
-  );
-  const hasManageScope = scopes.some((item) => XT_ACCESS_KEY_MANAGER_SCOPES.has(item));
-  const trustedXt = authKind === 'paired_client' && XT_ACCESS_KEY_MANAGER_APP_IDS.has(appId);
-  if (!trustedXt && !hasManageScope) {
-    return manageAccessKeyDenied();
+  if (!hasAccessKeyManagementScope(client)) {
+    return manageAccessKeyDenied('Explicit hub access-key management scope is required');
   }
 
   return {
@@ -2598,8 +2591,9 @@ function requireXtAccessKeyManager(req) {
     access_key_actor: buildClientAccessKeyActor({
       user_id: safeString(auth.user_id || client.user_id),
       app_id: safeString(client.app_id || auth.app_id || 'x_terminal') || 'x_terminal',
-      created_via: trustedXt ? 'xt_settings_access_keys' : 'xt_scoped_access_keys',
+      created_via: 'xt_scoped_access_keys',
       allow_override: false,
+      manager: client,
     }),
   };
 }
@@ -2612,6 +2606,7 @@ function buildListClientAccessKeysResponse({
   grpcPort,
   wantedAuthKind = '',
   wantedStatus = '',
+  actor = null,
 } = {}) {
   const responseContext = buildClientAccessKeyResponseContext(req, {
     hostFallback,
@@ -2621,6 +2616,7 @@ function buildListClientAccessKeysResponse({
   const snapshot = readClientsSnapshot(runtimeBaseDir);
   const accessKeys = loadClients(runtimeBaseDir)
     .filter((item) => {
+      if (actor?.manager && !ownsDelegatedAccessKey(actor.manager, item)) return false;
       if (wantedAuthKind && safeString(item.auth_kind).toLowerCase() !== wantedAuthKind) return false;
       if (wantedStatus && safeString(item.status).toLowerCase() !== wantedStatus) return false;
       return true;
@@ -2667,6 +2663,13 @@ function issueClientAccessKey({
 } = {}) {
   const obj = body && typeof body === 'object' ? body : {};
   const resolvedActor = buildClientAccessKeyActor(actor);
+  const manager = resolvedActor.manager;
+  if (manager) {
+    const allowed = new Set(['models', 'ai.generate.local', 'ai.generate.paid']);
+    const requested = [...safeStringArray(obj.capabilities), ...safeStringArray(obj.scopes)];
+    if (requested.some((scope) => !allowed.has(scope) || !manager.capabilities.includes(scope) || !manager.scopes.includes(scope))
+      || obj.default_web_fetch_enabled === true) return accessKeyPolicyFailure('delegation_capability_denied');
+  }
 
   const raw_policy_mode = obj.policy_mode == null ? '' : safeString(obj.policy_mode).toLowerCase();
   if (raw_policy_mode && !POLICY_MODES.has(raw_policy_mode)) {
@@ -2688,7 +2691,7 @@ function issueClientAccessKey({
   const requested_default_web_fetch_enabled = externalTerminalAiOnly
     ? false
     : (obj.default_web_fetch_enabled == null ? true : obj.default_web_fetch_enabled === true);
-  const requested_daily_token_limit = parseDailyTokenLimit(obj.daily_token_limit, DEFAULT_PAIRING_DAILY_TOKEN_LIMIT);
+  const requested_daily_token_limit = parseDailyTokenLimit(obj.daily_token_limit, manager ? Math.min(DEFAULT_PAIRING_DAILY_TOKEN_LIMIT, manager.daily_token_limit) : DEFAULT_PAIRING_DAILY_TOKEN_LIMIT);
   if (requested_policy_mode === 'new_profile') {
     if (raw_paid_model_selection_mode && !PAID_MODEL_SELECTION_MODES.has(raw_paid_model_selection_mode)) {
       return {
@@ -2726,8 +2729,9 @@ function issueClientAccessKey({
   const ttlSec = Number(obj.ttl_sec || obj.ttlSec || 0);
   const requestedExpiresAtMs = obj.expires_at_ms != null
     ? Number(obj.expires_at_ms)
-    : (Number.isFinite(ttlSec) && ttlSec > 0 ? (createdAtMs + (Math.floor(ttlSec) * 1000)) : 0);
-  if (requestedExpiresAtMs && (!Number.isFinite(requestedExpiresAtMs) || requestedExpiresAtMs <= createdAtMs)) {
+    : (Number.isFinite(ttlSec) && ttlSec > 0 ? (createdAtMs + (Math.floor(ttlSec) * 1000))
+      : manager ? Math.min(createdAtMs + 86_400_000, manager.expires_at_ms || Infinity) : 0);
+  if (!Number.isSafeInteger(requestedExpiresAtMs) || requestedExpiresAtMs < 0 || (requestedExpiresAtMs > 0 && requestedExpiresAtMs <= createdAtMs)) {
     return {
       ok: false,
       status: 400,
@@ -2746,7 +2750,7 @@ function issueClientAccessKey({
   ])[0] || 'Hub Access Key';
   const requestedAccessKeyId = safeString(obj.access_key_id || obj.accessKeyId) || generateAccessKeyId();
   const requestedDeviceId = safeString(obj.device_id || obj.deviceId) || `client_${requestedAccessKeyId.slice(-12)}`;
-  const requestedUserId = safeString(obj.user_id || obj.userId) || requestedDeviceId;
+  const requestedUserId = safeString(obj.user_id || obj.userId) || manager?.user_id || requestedDeviceId;
   const capabilities = safeStringArray(obj.capabilities);
   const scopes = safeStringArray(obj.scopes);
   const allowedCidrs = safeStringArray(obj.allowed_cidrs);
@@ -2773,7 +2777,7 @@ function issueClientAccessKey({
   const scopeList = externalTerminalAiOnly
     ? externalTerminalAiScopes(scopes, capList)
     : (scopes.length ? uniqueStrings(scopes) : uniqueStrings(capList));
-  const cidrList = allowedCidrs.length ? uniqueStrings(allowedCidrs) : defaultAllowedCidrs();
+  const cidrList = allowedCidrs.length ? uniqueStrings(allowedCidrs) : manager ? [...manager.allowed_cidrs] : defaultAllowedCidrs();
   const clientToken = generateClientToken();
   const snapshotBeforeIssue = readClientsSnapshot(runtimeBaseDir);
   const duplicate = (Array.isArray(snapshotBeforeIssue.clients) ? snapshotBeforeIssue.clients : []).some((item) => {
@@ -2831,8 +2835,17 @@ function issueClientAccessKey({
     created_by_user_id: createdByUserId,
     created_by_app_id: createdByAppId,
     created_via: createdVia,
+    ...(manager ? { managed_by_access_key_id: manager.access_key_id, managed_by_device_id: manager.device_id } : {}),
     ...(approvedTrustProfile ? { approved_trust_profile: approvedTrustProfile } : {}),
   };
+
+  if (manager) {
+    if (approvedTrustProfile) approvedTrustProfile.budget_policy.single_request_token_limit = Math.min(DEFAULT_PAIRING_SINGLE_REQUEST_TOKEN_LIMIT, manager.single_request_token_limit);
+    const error = delegatedKeyPolicyError(manager, entry, createdAtMs);
+    const reservation = delegatedBudgetReservation(manager, entry, snapshotBeforeIssue.clients, createdAtMs);
+    if (error || !reservation) return accessKeyPolicyFailure(error || 'delegation_budget_denied');
+    Object.assign(entry, reservation);
+  }
 
   const snapshot = upsertClientInSnapshot(snapshotBeforeIssue, entry);
   if (!writeClientsSnapshot(runtimeBaseDir, snapshot)) {
@@ -2874,9 +2887,10 @@ function buildClientAccessKeyDetailResponse({
   grpcPort,
   accessKeyId,
   requireHubAccessKeyOnly = false,
+  actor = null,
 } = {}) {
   const client = findClientByAccessKeyId(runtimeBaseDir, accessKeyId);
-  if (!client) {
+  if (!client || (actor?.manager && !ownsDelegatedAccessKey(actor.manager, client))) {
     return {
       ok: false,
       status: 404,
@@ -2941,7 +2955,7 @@ function mutateClientAccessKey({
 
   const rows = Array.isArray(snapshot.clients) ? snapshot.clients : [];
   const current = rows[index] && typeof rows[index] === 'object' ? { ...rows[index] } : null;
-  if (!current) {
+  if (!current || (resolvedActor.manager && !ownsDelegatedAccessKey(resolvedActor.manager, current))) {
     return {
       ok: false,
       status: 404,
@@ -2972,6 +2986,14 @@ function mutateClientAccessKey({
   });
 
   if (action === 'revoke') {
+    if (current.managed_by_access_key_id && current.enabled !== false && !current.revoked_at_ms && Number(current.expires_at_ms) > touchedAtMs) {
+      const day = new Date(touchedAtMs).toISOString().slice(0, 10);
+      current.delegation_budget_reserved = Math.max(
+        current.delegation_budget_day === day ? Number(current.delegation_budget_reserved || 0) : 0,
+        Number(current.approved_trust_profile?.budget_policy?.daily_token_limit || 0)
+      );
+      current.delegation_budget_day = day;
+    }
     const alreadyRevoked = Math.max(0, Number(current.revoked_at_ms || 0)) > 0;
     current.enabled = false;
     current.revoked_at_ms = alreadyRevoked ? Number(current.revoked_at_ms || 0) : touchedAtMs;
@@ -3113,6 +3135,8 @@ function mutateClientAccessKey({
     current.daily_token_limit = requestedDailyTokenLimit;
     current.updated_at_ms = touchedAtMs;
     current.note = obj.note != null ? safeString(obj.note) : safeString(current.note);
+    const policyFailure = validateManagedMutation(resolvedActor.manager, current, snapshot.clients, touchedAtMs);
+    if (policyFailure) return policyFailure;
     snapshot.clients[index] = current;
     snapshot.updated_at_ms = touchedAtMs;
 
@@ -3139,7 +3163,7 @@ function mutateClientAccessKey({
   }
 
   const requestedExpiresAtMs = obj.expires_at_ms != null ? Number(obj.expires_at_ms) : Number(current.expires_at_ms || 0);
-  if (requestedExpiresAtMs && (!Number.isFinite(requestedExpiresAtMs) || requestedExpiresAtMs <= touchedAtMs)) {
+  if (!Number.isSafeInteger(requestedExpiresAtMs) || requestedExpiresAtMs < 0 || (requestedExpiresAtMs > 0 && requestedExpiresAtMs <= touchedAtMs)) {
     return {
       ok: false,
       status: 400,
@@ -3162,6 +3186,8 @@ function mutateClientAccessKey({
   current.rotation_count = Math.max(0, Number(current.rotation_count || 0)) + 1;
   current.expires_at_ms = requestedExpiresAtMs > 0 ? requestedExpiresAtMs : 0;
   current.note = obj.note != null ? safeString(obj.note) : safeString(current.note);
+  const policyFailure = validateManagedMutation(resolvedActor.manager, current, snapshot.clients, touchedAtMs);
+  if (policyFailure) return policyFailure;
   snapshot.clients[index] = current;
   snapshot.updated_at_ms = touchedAtMs;
 
@@ -3191,6 +3217,19 @@ function mutateClientAccessKey({
   };
 }
 
+function accessKeyPolicyFailure(code) {
+  return { ok: false, status: 403, json: { ok: false, error: { code, message: code, retryable: false } } };
+}
+
+function validateManagedMutation(manager, current, siblings, timestamp) {
+  if (!manager) return null;
+  const error = delegatedKeyPolicyError(manager, current, timestamp);
+  const reservation = delegatedBudgetReservation(manager, current, siblings, timestamp);
+  if (error || !reservation) return accessKeyPolicyFailure(error || 'delegation_budget_denied');
+  Object.assign(current, reservation);
+  return null;
+}
+
 function parseQuery(urlObj) {
   const out = {};
   try {
@@ -3203,12 +3242,12 @@ function parseQuery(urlObj) {
   return out;
 }
 
-function readBodyJson(req, { maxBytes }) {
+function readBodyJson(req, { maxBytes, includeRaw = false }) {
   const lim = Math.max(256, Math.min(1024 * 256, Number(maxBytes || 0) || 1024 * 64)); // default 64KB
   return new Promise((resolve) => {
     let settled = false;
     let size = 0;
-    let body = '';
+    const chunks = [];
     let overflowed = false;
     const finish = (out) => {
       if (settled) return;
@@ -3218,14 +3257,14 @@ function readBodyJson(req, { maxBytes }) {
     req.on('data', (chunk) => {
       if (settled) return;
       try {
-        const s = chunk.toString('utf8');
-        size += Buffer.byteLength(s, 'utf8');
+        const bytes = Buffer.from(chunk);
+        size += bytes.length;
         if (size > lim) {
           // Mark overflow and keep draining stream without buffering.
           overflowed = true;
           return;
         }
-        if (!overflowed) body += s;
+        if (!overflowed) chunks.push(bytes);
       } catch {
         finish({ ok: false, error: 'bad_body' });
       }
@@ -3233,10 +3272,11 @@ function readBodyJson(req, { maxBytes }) {
     req.on('end', () => {
       if (settled) return;
       if (overflowed) return finish({ ok: false, error: 'body_too_large' });
-      if (!body) return finish({ ok: true, json: {} });
+      const rawBody = Buffer.concat(chunks);
+      const body = rawBody.toString('utf8');
       try {
-        const obj = JSON.parse(body);
-        finish({ ok: true, json: obj && typeof obj === 'object' ? obj : {} });
+        const obj = body ? JSON.parse(body) : {};
+        finish({ ok: true, json: obj && typeof obj === 'object' ? obj : {}, ...(includeRaw ? { rawBody } : {}) });
       } catch {
         finish({ ok: false, error: 'bad_json' });
       }
@@ -3271,13 +3311,10 @@ function rateLimitFromRetryMs(retryAfterMs) {
 }
 
 function sourceKeyFromReq(req, queryObj, peerIp) {
-  const q = queryObj && typeof queryObj === 'object' ? queryObj : {};
-  const headerKey =
-    safeString(req?.headers?.['x-source-key'])
-    || safeString(req?.headers?.['x-webhook-source-key'])
-    || safeString(req?.headers?.['x-source'])
-    || safeString(req?.headers?.['x-forwarded-for']);
-  return safeString(headerKey || q.source_key || peerIp || 'unknown');
+  return effectivePeerIpForPairingSourcePolicy({
+    peer_ip: peerIp,
+    forwarded_for: firstForwardedForIp(req),
+  }) || 'unknown';
 }
 
 function connectionKeyFromReq(req, peerIp, sourceKey) {
@@ -3439,6 +3476,9 @@ export function createPreauthSurfaceGuard(options = {}) {
 
   const windowMs = boundedInt(opts.window_ms, { fallback: 60_000, min: 1_000, max: 10 * 60_000 });
   const maxPerWindow = boundedInt(opts.max_per_window, { fallback: 12, min: 1, max: 1_000 });
+  const maxTotalPerWindow = boundedInt(opts.max_total_per_window, { fallback: 1_200, min: 1, max: 100_000 });
+  let totalCount = 0;
+  let totalResetAtMs = 0;
   const maxStateKeys = boundedInt(opts.max_state_keys, { fallback: 2_048, min: 16, max: 100_000 });
   const staleWindowMs = boundedInt(
     opts.stale_window_ms,
@@ -3469,6 +3509,7 @@ export function createPreauthSurfaceGuard(options = {}) {
       stale_window_ms: staleWindowMs,
       window_ms: windowMs,
       max_per_window: maxPerWindow,
+      max_total_per_window: maxTotalPerWindow,
     };
   }
 
@@ -3478,6 +3519,15 @@ export function createPreauthSurfaceGuard(options = {}) {
       const now = Math.max(0, Number(now_ms || clock()) || 0);
       prune(now);
       const key = safeString(source_key) || 'unknown';
+      if (!totalResetAtMs || now >= totalResetAtMs) {
+        totalCount = 0;
+        totalResetAtMs = now + windowMs;
+      }
+      if (totalCount >= maxTotalPerWindow) {
+        stats.rejected += 1;
+        return { ok: false, deny_code: 'preauth_global_rate_limited', retry_after_ms: totalResetAtMs - now, source_key: key };
+      }
+      totalCount += 1;
       let cur = state.get(key);
       if (!cur) {
         if (state.size >= maxStateKeys) {
@@ -3802,7 +3852,6 @@ export function createWebhookReplayGuard(options = {}) {
     const c = safeString(connector).toLowerCase();
     const t = safeString(target_id);
     const replayKey = safeString(replay_key);
-    const sig = safeString(signature);
 
     try {
       const now = Math.max(0, Number(now_ms || clock()) || 0);
@@ -3816,7 +3865,7 @@ export function createWebhookReplayGuard(options = {}) {
       }
 
       prune(now);
-      const replayKeyHash = sha256Hex(`${c}:${t}:${replayKey}:${sig}`);
+      const replayKeyHash = sha256Hex(JSON.stringify([c, t, replayKey]));
       if (hasPersistentStore) {
         const persisted = db.claimConnectorWebhookReplay({
           connector: c,
@@ -4000,12 +4049,12 @@ export function startPairingHTTPServer({
     return () => {};
   }
 
-  const host = serviceBindHostFromEnv(
-    safeString(process.env.HUB_PAIRING_HOST) || safeString(process.env.HUB_HOST) || '0.0.0.0'
-  );
+  const pairingTransport = pairingTransportFromEnv(process.env);
+  const { host } = pairingTransport;
+  tlsModeFromEnv(process.env);
   const grpcPort = Number(process.env.HUB_PORT || 50051);
   const port = Number(process.env.HUB_PAIRING_PORT || (Number.isFinite(grpcPort) ? grpcPort + 1 : 50052));
-  const schemeFallback = safeString(process.env.HUB_PAIRING_PUBLIC_SCHEME || '') || 'http';
+  const schemeFallback = safeString(process.env.HUB_PAIRING_PUBLIC_SCHEME || '') || pairingTransport.scheme;
   const hostFallback = safeString(process.env.HUB_PAIRING_PUBLIC_HOST || '') || safeString(process.env.HUB_HOST || '');
   const runtimeBaseDir = resolveRuntimeBaseDir();
   const hubIdentity = resolveHubIdentity({
@@ -4028,6 +4077,7 @@ export function startPairingHTTPServer({
     : createPreauthSurfaceGuard({
       window_ms: boundedInt(process.env.HUB_PREAUTH_WINDOW_MS, { fallback: 60_000, min: 1_000, max: 10 * 60_000 }),
       max_per_window: boundedInt(process.env.HUB_PAIRING_RL_PER_MIN, { fallback: 12, min: 1, max: 1_000 }),
+      max_total_per_window: boundedInt(process.env.HUB_PREAUTH_GLOBAL_PER_MIN, { fallback: 1_200, min: 1, max: 100_000 }),
       max_state_keys: boundedInt(process.env.HUB_PREAUTH_MAX_STATE_KEYS, { fallback: 2_048, min: 16, max: 100_000 }),
       stale_window_ms: boundedInt(process.env.HUB_PREAUTH_STALE_WINDOW_MS, { fallback: 180_000, min: 60_000, max: 24 * 60 * 60 * 1000 }),
     });
@@ -4620,7 +4670,7 @@ export function startPairingHTTPServer({
     }
   }
 
-  const server = http.createServer(async (req, res) => {
+  const requestHandler = async (req, res) => {
     const method = safeString(req?.method || 'GET').toUpperCase();
     const rawUrl = safeString(req?.url || '/');
     let urlObj;
@@ -5252,7 +5302,7 @@ export function startPairingHTTPServer({
         return;
       }
 
-      const body = await readBodyJson(req, { maxBytes: preauthBodyMaxBytes });
+      const body = await readBodyJson(req, { maxBytes: preauthBodyMaxBytes, includeRaw: true });
       if (!body.ok) {
         jsonResponse(res, 400, {
           ok: false,
@@ -5261,12 +5311,28 @@ export function startPairingHTTPServer({
         return;
       }
       const obj = body.json || {};
-      const replay_key = safeString(req?.headers?.['x-replay-key'])
-        || safeString(req?.headers?.['x-idempotency-key'])
-        || safeString(obj.replay_key || obj.event_id || obj.idempotency_key);
-      const signature = safeString(req?.headers?.['x-signature'])
-        || safeString(req?.headers?.['x-hub-signature'])
-        || safeString(obj.signature);
+      const webhookAuth = verifyConnectorWebhook({
+        headers: req.headers,
+        pathname,
+        connector,
+        targetId: target_id,
+        rawBody: body.rawBody,
+        body: obj,
+      });
+      if (!webhookAuth.ok) {
+        noteUnauthorizedDeny(connectionKey, webhookAuth.code, webhookAuth.status);
+        appendIngressAudit({
+          event_type: 'connector.webhook.rejected', severity: 'warn', ok: false,
+          deny_code: webhookAuth.code, error_message: webhookAuth.code,
+          ext: { connector, target_id, peer_ip: peerIp, source_key: sourceKey },
+        });
+        jsonResponse(res, webhookAuth.status, {
+          ok: false, error: { code: webhookAuth.code, message: webhookAuth.code, retryable: false },
+        });
+        return;
+      }
+      const replay_key = webhookAuth.replay_key;
+      const signature = safeString(req.headers['x-hub-signature']);
 
       let replayClaim;
       try {
@@ -5310,7 +5376,7 @@ export function startPairingHTTPServer({
       }
 
       const ingressRequestId = safeString(obj.request_id || replay_key || obj.event_id) || `connector_ingress_${uuid()}`;
-      const webhookSourceId = safeString(obj.source_id || obj.webhook_source_id || `${connector}:${target_id}`);
+      const webhookSourceId = webhookAuth.source_id;
       const authzClient = {
         device_id: 'pairing-http',
         app_id: `connector:${connector}`,
@@ -5344,7 +5410,7 @@ export function startPairingHTTPServer({
           channel_scope: 'group',
           source_id: webhookSourceId,
           message_id: ingressRequestId,
-          signature_valid: obj.signature_valid !== false,
+          signature_valid: webhookAuth.ok,
           replay_detected: false,
         },
         policy: connectorIngressPolicy,
@@ -5448,7 +5514,7 @@ export function startPairingHTTPServer({
         event: {
           ...ingressEvent,
           source_id: safeString(ingressEvent.source_id || webhookSourceId),
-          signature_valid: obj.signature_valid !== false,
+          signature_valid: webhookAuth.ok,
           replay_detected: false,
         },
         policy: connectorIngressPolicy,
@@ -6182,6 +6248,8 @@ export function startPairingHTTPServer({
           approved_trust_profile: approvedTrustProfile,
         };
 
+        out.tls = { mode: tlsMode };
+
         // TLS bootstrap material (optional):
         // - Provide the Hub CA cert so clients can verify the server cert.
         // - Provide the issued client cert (mTLS mode only).
@@ -6190,12 +6258,17 @@ export function startPairingHTTPServer({
           try {
             ensureHubTlsMaterial(runtimeBaseDir, { env: process.env });
           } catch {
-            // ignore; still allow pairing to complete (client may connect in insecure mode).
+            jsonResponse(res, 503, { ok: false, error: { code: 'tls_init_failed', message: 'tls_init_failed', retryable: true } });
+            return;
           }
           const caPem = readHubCaCertPem(runtimeBaseDir, { env: process.env });
           const serverName = tlsServerNameFromEnv(process.env);
           const did = safeString(row.approved_device_id);
           const clientPem = tlsMode === 'mtls' ? readIssuedClientCertPem(runtimeBaseDir, did, { env: process.env }) : '';
+          if (!caPem || (tlsMode === 'mtls' && !clientPem)) {
+            jsonResponse(res, 503, { ok: false, error: { code: 'tls_material_missing', message: 'tls_material_missing', retryable: true } });
+            return;
+          }
 
           out.tls = {
             mode: tlsMode,
@@ -6216,7 +6289,7 @@ export function startPairingHTTPServer({
           const serverName = tlsMode !== 'insecure' ? tlsServerName : '';
           const tlsEnv =
             tlsMode === 'insecure'
-              ? ''
+              ? 'HUB_GRPC_TLS_MODE=insecure\n'
               : `HUB_GRPC_TLS_MODE=${shellQuoteSingle(tlsMode)}\nHUB_GRPC_TLS_SERVER_NAME=${shellQuoteSingle(serverName)}\nHUB_GRPC_TLS_CA_CERT_PATH=$HOME/.axhub/tls/ca.cert.pem\n` +
                 (tlsMode === 'mtls'
                   ? `HUB_GRPC_TLS_CLIENT_CERT_PATH=$HOME/.axhub/tls/client.cert.pem\nHUB_GRPC_TLS_CLIENT_KEY_PATH=$HOME/.axhub/tls/client.key.pem\n`
@@ -7416,6 +7489,7 @@ export function startPairingHTTPServer({
         grpcPort,
         wantedAuthKind: 'hub_access_key',
         wantedStatus,
+        actor: xt.access_key_actor,
       });
       jsonResponse(res, listed.status, listed.json);
       return;
@@ -7485,6 +7559,7 @@ export function startPairingHTTPServer({
         grpcPort,
         accessKeyId,
         requireHubAccessKeyOnly: true,
+        actor: xt.access_key_actor,
       });
       jsonResponse(res, detail.status, detail.json);
       return;
@@ -7977,8 +8052,11 @@ export function startPairingHTTPServer({
     }
 
     jsonResponse(res, 404, { ok: false, error: { code: 'not_found', message: 'not_found', retryable: false } });
-  });
+  };
 
+  const server = pairingTransport.tlsOptions
+    ? https.createServer(pairingTransport.tlsOptions, requestHandler)
+    : http.createServer(requestHandler);
   server.on('clientError', (_err, socket) => {
     try {
       socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
@@ -7995,7 +8073,7 @@ export function startPairingHTTPServer({
 
   server.listen(port, host);
   // eslint-disable-next-line no-console
-  console.log(`[hub_pairing] listening on ${host}:${port} allowed=${allowedCidrs.join(',') || '(any)'}`);
+    console.log(`[hub_pairing] listening on ${pairingTransport.scheme}://${host}:${port} allowed=${allowedCidrs.join(',') || '(any)'}`);
 
   return () => {
     try {

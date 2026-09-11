@@ -2685,6 +2685,8 @@ DoD：
 
 - owner: Product / Docs / Release
 - depends_on: XT-R1-08, XT-R2-08, XT-R3-06
+- conditional_depends_on: governed_remote_preview requires XT-R4-07
+- conditional_depends_on: local_governed_preview_when_voice_or_remote_claimed requires XT-R4-07
 
 Profile 条件：只有声明 voice/remote 能力时才额外要求 XT-R4-07；
 `local_governed_preview` 可以明确排除这些 claims，而不是被 R4 无条件阻塞。
@@ -2811,6 +2813,7 @@ DoD：
 
 - owner: Product Demo / QA
 - depends_on: XT-R6-02
+- conditional_depends_on: governed_remote_preview requires XT-R4-07
 
 Profile 条件：governed project execution 与 governed starter skill 属于 local
 demo；voice/remote approval demo 只有在 XT-R4-07 为 `pass` 且目标 profile 为
@@ -2879,6 +2882,8 @@ DoD：
 
 - owner: Doctor / Product Support
 - depends_on: XT-R1-08, XT-R3-06
+- conditional_depends_on: governed_remote_preview requires XT-R4-07
+- conditional_depends_on: local_governed_preview_when_voice_or_remote_claimed requires XT-R4-07
 
 Profile 条件：voice/remote reason coverage 只有在目标 profile 声明相应能力时要求
 XT-R4-07；否则这些 reason 明确为 `excluded_by_profile`，不阻塞 local public package。

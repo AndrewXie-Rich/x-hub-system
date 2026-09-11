@@ -16,7 +16,16 @@ async function main(argv) {
 
   const root = path.resolve(flags.get('rust-hub-root') || path.join(__dirname, '..'));
   const runner = path.resolve(flags.get('runner') || path.join(root, 'tools', 'run_rust_hub.command'));
-  const xhubSystemRoot = path.resolve(flags.get('xhub-system-root') || findXHubSystemRoot(root));
+  const paths = await loadXHubSystemPaths();
+  const pathEnv = flags.has('xhub-system-root')
+    ? { ...process.env, XHUB_SYSTEM_ROOT: flags.get('xhub-system-root') }
+    : process.env;
+  const xhubSystemRoot = paths.tryResolveXHubSystemRoot({ env: pathEnv, startDir: __dirname });
+  const nodeHubSourceDir = paths.resolveNodeHubSourceDir({
+    env: pathEnv,
+    startDir: __dirname,
+    markers: ['db.js', 'event_bus.js', 'services.js'],
+  });
   const timeoutMs = parseIntFlag(flags, 'timeout-ms', 10000);
   const pollMs = parseIntFlag(flags, 'poll-ms', 250);
   const runs = parseIntFlag(flags, 'runs', 1);
@@ -52,7 +61,7 @@ async function main(argv) {
     );
     process.env.XHUB_RUST_SCHEDULER_SHADOW_COMPARE_TIMEOUT_MS = String(timeoutMs);
 
-    const src = path.join(xhubSystemRoot, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src');
+    const src = nodeHubSourceDir;
     const [{ HubDB }, { HubEventBus }, { makeServices }] = await Promise.all([
       import(pathToFileURL(path.join(src, 'db.js')).href),
       import(pathToFileURL(path.join(src, 'event_bus.js')).href),
@@ -101,6 +110,7 @@ async function main(argv) {
             ok,
             rust_hub_root: root,
             xhub_system_root: xhubSystemRoot,
+            node_hub_source_dir: nodeHubSourceDir,
             runs_requested: runs,
             runs_completed: nodeSnapshots.length,
             interval_ms: intervalMs,
@@ -187,18 +197,8 @@ function readReports(runner, limit = 5) {
   return JSON.parse(stdout);
 }
 
-function findXHubSystemRoot(startDir) {
-  let current = path.resolve(startDir);
-  for (;;) {
-    const candidate = path.join(current, 'x-hub-system');
-    if (fs.existsSync(path.join(candidate, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src', 'services.js'))) {
-      return candidate;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  throw new Error('Unable to locate x-hub-system. Pass --xhub-system-root <path>.');
+async function loadXHubSystemPaths() {
+  return await import(pathToFileURL(path.join(__dirname, 'xhub_system_paths.js')).href);
 }
 
 function parseFlags(argv) {

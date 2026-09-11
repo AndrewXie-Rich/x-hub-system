@@ -6,27 +6,13 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { resolveNodeHubSourceDir } from './xhub_system_paths.js';
+
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 
 function safeString(value) {
   return String(value ?? '').trim();
-}
-
-function resolveXHubSystemRoot() {
-  const explicit = safeString(process.env.XHUB_SYSTEM_ROOT);
-  if (explicit) return explicit;
-  const candidates = [
-    path.resolve(ROOT_DIR, '..', '..', 'x-hub-system'),
-    path.resolve(ROOT_DIR, '..', '..', '..', '..', 'x-hub-system'),
-    '/Users/andrew.xie/Documents/AX/x-hub-system',
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(path.join(candidate, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src', 'rust_scheduler_authority_bridge.js'))) {
-      return candidate;
-    }
-  }
-  return candidates[0];
 }
 
 function httpGetJson(url) {
@@ -103,7 +89,10 @@ async function main() {
     child = startServer({ port, dbPath });
     await waitForHealth(baseUrl, child);
 
-    const srcDir = path.join(resolveXHubSystemRoot(), 'x-hub', 'grpc-server', 'hub_grpc_server', 'src');
+    const srcDir = resolveNodeHubSourceDir({
+      startDir: SCRIPT_DIR,
+      markers: ['rust_scheduler_authority_bridge.js'],
+    });
     const { createSchedulerAuthorityBridge } = await import(pathToFileURL(path.join(srcDir, 'rust_scheduler_authority_bridge.js')).href);
     const warnings = [];
     const logs = [];

@@ -1042,13 +1042,21 @@ function batchGenerateOk(item) {
 
 async function resolveConfig(flags) {
   const rustHubRoot = path.resolve(flags.get('rust-hub-root') || path.join(__dirname, '..'));
-  const xhubSystemRoot = path.resolve(flags.get('xhub-system-root') || findXHubSystemRoot(rustHubRoot));
-  const nodeHubDir = path.resolve(
-    flags.get('node-hub-dir')
-      || path.join(xhubSystemRoot, 'x-hub', 'grpc-server', 'hub_grpc_server')
-  );
+  const paths = await loadXHubSystemPaths();
+  const pathEnv = flags.has('xhub-system-root')
+    ? { ...process.env, XHUB_SYSTEM_ROOT: flags.get('xhub-system-root') }
+    : process.env;
+  const xhubSystemRoot = paths.tryResolveXHubSystemRoot({ env: pathEnv, startDir: __dirname });
+  const nodeHubSourceDir = flags.has('node-hub-dir')
+    ? paths.validateNodeHubSourceDir(path.join(flags.get('node-hub-dir'), 'src'), { markers: ['server.js'] })
+    : paths.resolveNodeHubSourceDir({ env: pathEnv, startDir: __dirname, markers: ['server.js'] });
+  const nodeHubDir = path.dirname(nodeHubSourceDir);
   const runner = path.resolve(flags.get('runner') || path.join(rustHubRoot, 'tools', 'run_rust_hub.command'));
-  const protoPath = path.resolve(flags.get('proto-path') || path.join(xhubSystemRoot, 'protocol', 'hub_protocol_v1.proto'));
+  const protoPath = paths.resolveHubProtocolPath({
+    env: pathEnv,
+    startDir: __dirname,
+    explicitPath: flags.get('proto-path'),
+  });
   const nodeBin = path.resolve(flags.get('node-bin') || process.execPath);
   const hubHost = String(flags.get('hub-host') || '127.0.0.1').trim();
   const hubPort = flags.has('hub-port')
@@ -1202,18 +1210,8 @@ function normalizeScenario(value) {
   throw new Error(`unsupported --scenario ${scenario}`);
 }
 
-function findXHubSystemRoot(startDir) {
-  let current = path.resolve(startDir);
-  for (;;) {
-    const candidate = path.join(current, 'x-hub-system');
-    if (fs.existsSync(path.join(candidate, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src', 'server.js'))) {
-      return candidate;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  throw new Error('Unable to locate x-hub-system. Pass --xhub-system-root <path>.');
+async function loadXHubSystemPaths() {
+  return await import(pathToFileURL(path.join(__dirname, 'xhub_system_paths.js')).href);
 }
 
 function normalizeSafeId(value) {

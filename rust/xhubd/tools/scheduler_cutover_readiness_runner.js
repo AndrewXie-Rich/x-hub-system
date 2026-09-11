@@ -15,12 +15,12 @@ async function main(argv) {
     return 0;
   }
   if (flags.has('self-test')) {
-    runSelfTest();
+    await runSelfTest();
     process.stdout.write('scheduler_cutover_readiness_runner self-test ok\n');
     return 0;
   }
 
-  const config = resolveConfig(flags);
+  const config = await resolveConfig(flags);
   if (flags.has('dry-run')) {
     process.stdout.write(JSON.stringify({
       schema_version: 'xhub.scheduler_cutover_readiness_runner.dry_run.v1',
@@ -54,7 +54,7 @@ async function main(argv) {
     process.env.XHUB_RUST_SCHEDULER_SHADOW_COMPARE_THROTTLE_MS = String(config.shadowThrottleMs);
     process.env.XHUB_RUST_SCHEDULER_SHADOW_COMPARE_TIMEOUT_MS = String(config.timeoutMs);
 
-    const src = path.join(config.xhubSystemRoot, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src');
+    const src = config.nodeHubSourceDir;
     const [{ HubDB }, { HubEventBus }, { makeServices }, { createSchedulerLeaseShadowBridge }] = await Promise.all([
       import(pathToFileURL(path.join(src, 'db.js')).href),
       import(pathToFileURL(path.join(src, 'event_bus.js')).href),
@@ -259,15 +259,25 @@ function buildCutoverReadinessArgs(config) {
   ];
 }
 
-function resolveConfig(flags) {
+async function resolveConfig(flags) {
   const rustHubRoot = path.resolve(flags.get('rust-hub-root') || path.join(__dirname, '..'));
-  const xhubSystemRoot = path.resolve(flags.get('xhub-system-root') || findXHubSystemRoot(rustHubRoot));
+  const paths = await loadXHubSystemPaths();
+  const pathEnv = flags.has('xhub-system-root')
+    ? { ...process.env, XHUB_SYSTEM_ROOT: flags.get('xhub-system-root') }
+    : process.env;
+  const xhubSystemRoot = paths.tryResolveXHubSystemRoot({ env: pathEnv, startDir: __dirname });
+  const nodeHubSourceDir = paths.resolveNodeHubSourceDir({
+    env: pathEnv,
+    startDir: __dirname,
+    markers: ['db.js', 'event_bus.js', 'services.js', 'rust_scheduler_lease_shadow_bridge.js'],
+  });
   const runner = path.resolve(flags.get('runner') || path.join(rustHubRoot, 'tools', 'run_rust_hub.command'));
   const runs = parseIntFlag(flags, 'runs', 5, 1);
   const minCompareReports = parseIntFlag(flags, 'min-compare-reports', 10, 0);
   return {
     rustHubRoot,
     xhubSystemRoot,
+    nodeHubSourceDir,
     runner,
     runs,
     intervalMs: parseIntFlag(flags, 'interval-ms', 500, 0),
@@ -295,6 +305,7 @@ function publicConfig(config) {
   return {
     rust_hub_root: config.rustHubRoot,
     xhub_system_root: config.xhubSystemRoot,
+    node_hub_source_dir: config.nodeHubSourceDir,
     runner: config.runner,
     runs: config.runs,
     interval_ms: config.intervalMs,
@@ -354,18 +365,8 @@ function flagEnabled(flags, key) {
   return !['', '0', 'false', 'no', 'off'].includes(value);
 }
 
-function findXHubSystemRoot(startDir) {
-  let current = path.resolve(startDir);
-  for (;;) {
-    const candidate = path.join(current, 'x-hub-system');
-    if (fs.existsSync(path.join(candidate, 'x-hub', 'grpc-server', 'hub_grpc_server', 'src', 'services.js'))) {
-      return candidate;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  throw new Error('Unable to locate x-hub-system. Pass --xhub-system-root <path>.');
+async function loadXHubSystemPaths() {
+  return await import(pathToFileURL(path.join(__dirname, 'xhub_system_paths.js')).href);
 }
 
 function normalizePaidAI(value = {}) {
@@ -424,7 +425,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function runSelfTest() {
+async function runSelfTest() {
   const flags = parseFlags([
     '--runs',
     '3',
@@ -433,7 +434,7 @@ function runSelfTest() {
     '--min-compare-reports',
     '10',
   ]);
-  const config = resolveConfig(flags);
+  const config = await resolveConfig(flags);
   assert.equal(config.runs, 3);
   assert.equal(config.intervalMs, 0);
   assert.equal(config.expectReady, true);

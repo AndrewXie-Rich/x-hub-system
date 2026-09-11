@@ -160,7 +160,7 @@ function isXHubScopedProcess(command) {
   const text = String(command || '');
   return /\/X-Hub\.app\//.test(text)
     || text.includes(`${SOURCE_ROOT_DIR}/x-hub/`)
-    || /\/x-hub-system(?:-github-clean)?\/x-hub\//.test(text);
+    || /\/x-hub\/(?:grpc-server\/hub_grpc_server|python-runtime\/python_service)\//.test(text);
 }
 
 function isXHubNodeBridgeProcess(command) {

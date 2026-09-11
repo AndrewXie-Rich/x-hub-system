@@ -138,16 +138,20 @@ extension HubGRPCServerSupport {
         let url = clientsConfigURL()
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data0 = try? enc.encode(cur),
-              let s = String(data: data0, encoding: .utf8),
-              let out = (s + "\n").data(using: .utf8) else {
+        let existingURL = resolvedClientsConfigReadCandidate()?.url
+        guard let encoded = try? enc.encode(cur) else { return }
+        let out: Data
+        do {
+            let existing = try existingURL.map { try Data(contentsOf: $0) }
+            out = try HubGRPCClientSnapshotMerge.merge(encoded: encoded, existing: existing)
+            try out.write(to: url, options: .atomic)
+        } catch {
             return
         }
-        try? out.write(to: url, options: .atomic)
         // Contains bearer tokens; keep owner-readable only.
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         didEnsureClientsTemplate = true
-        cachedClientsSnapshot = cur
+        cachedClientsSnapshot = (try? JSONDecoder().decode(HubGRPCClientsSnapshot.self, from: out)) ?? cur
         cachedClientsSnapshotFingerprint = clientsConfigFingerprint(for: url) ?? ""
     }
 

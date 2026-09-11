@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import grpc from '@grpc/grpc-js';
 
 import { nowMs, uuid, estimateTokens, requireHttpsUrl, chunkText } from './util.js';
 import { requireAdminAuth, requireClientAuth, requireOperatorChannelConnectorAuth } from './auth.js';
@@ -37,6 +38,7 @@ import { createSchedulerAuthorityBridge } from './rust_scheduler_authority_bridg
 import { createSchedulerLeaseShadowBridge } from './rust_scheduler_lease_shadow_bridge.js';
 import { createSchedulerStatusBridge } from './rust_scheduler_bridge.js';
 import { loadClients } from './clients.js';
+import { reserveDelegatedGenerationBudget } from './access_key_budget.js';
 import {
   devicePresenceTTLms,
   isDevicePresenceFresh,
@@ -6170,6 +6172,14 @@ function effectiveClientIdentity(raw, auth) {
     return base;
   }
 
+  function cancellationOwner(auth) {
+    return JSON.stringify([
+      safeString(auth.access_key_id),
+      safeString(auth.device_id),
+      safeString(auth.user_id),
+    ]);
+  }
+
   // -------------------- HubModels --------------------
   function ListModels(call, callback) {
     const auth = requireClientAuth(call);
@@ -6786,7 +6796,13 @@ function effectiveClientIdentity(raw, auth) {
 
     const req = call.request || {};
     const client = effectiveClientIdentity(req.client || {}, auth);
-    const request_id = String(req.request_id || uuid());
+    const request_id = String(req.request_id || uuid()).trim();
+    if (!request_id || /[/\\\0]/.test(request_id) || cancels.has(request_id)) {
+      const code = cancels.has(request_id) ? 'request_id_in_use' : 'invalid_request_id';
+      call.write({ error: { request_id, error: { code, message: code, retryable: false }, deny_code: code } });
+      call.end();
+      return;
+    }
     const device_id = String(client.device_id || '').trim() || 'unknown';
     const app_id = String(client.app_id || '').trim() || 'unknown';
     const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
@@ -6795,7 +6811,7 @@ function effectiveClientIdentity(raw, auth) {
       req.fail_closed_on_downgrade === true
       || String(req.fail_closed_on_downgrade || '').trim() === '1';
     const created_at_ms = Number(req.created_at_ms || nowMs());
-    const quota_day = utcDayKey(created_at_ms || nowMs());
+    const quota_day = utcDayKey(nowMs());
     const quota_scope = `device:${device_id}`;
 
     let killSwitch = null;
@@ -7525,7 +7541,13 @@ function effectiveClientIdentity(raw, auth) {
       }
     }
 
-    const cancelState = { canceled: false, runtime_base_dir: runtimeBaseDir, use_runtime_cancel: !isPaid };
+    const cancelState = {
+      canceled: false,
+      runtime_base_dir: runtimeBaseDir,
+      use_runtime_cancel: !isPaid,
+      owner: cancellationOwner(auth),
+      client,
+    };
     cancels.set(request_id, cancelState);
 
     const cancelRuntime = (reason) => {
@@ -7566,6 +7588,14 @@ function effectiveClientIdentity(raw, auth) {
     let memoryRouteSnapshot = null;
     let memoryRouteDurationMs = null;
     const memoryScoreExplainControl = resolveMemoryScoreExplainControl(call);
+
+    const reserveDelegationBudget = () => {
+      const reservation = reserveDelegatedGenerationBudget({ db, runtimeBaseDir, auth, prompt: promptText, maxTokens: max_tokens });
+      if (reservation.ok) return true;
+      denyPaidModelWithContext({ code: reservation.code, message: reservation.code, ruleIds: ['delegation_budget'], phase: 'execute' });
+      cancels.delete(request_id);
+      return false;
+    };
 
     const runtimeStatusSnapshot = readRuntimeStatusSnapshot(runtimeBaseDir, 15_000);
     const runtimeAlive = runtimeStatusSnapshot.ok
@@ -9224,6 +9254,7 @@ function effectiveClientIdentity(raw, auth) {
           }
         : {};
 
+      if (!reserveDelegationBudget()) return;
       try {
         enqueueBridgeAIGenerate(bridgeBaseDir, {
           request_id,
@@ -9523,6 +9554,7 @@ function effectiveClientIdentity(raw, auth) {
 
     bus.emitHubEvent(bus.requestStatus({ request_id, status: 'running', error: null, client }));
 
+    if (!reserveDelegationBudget()) return;
     if (
       !executionRemoteMode
       && rustLocalMlExecutionBridge?.config?.enabled === true
@@ -10098,27 +10130,39 @@ function effectiveClientIdentity(raw, auth) {
       return;
     }
     const st = cancels.get(request_id);
-    if (st) {
+    try {
+      if (!st || st.owner !== cancellationOwner(auth)) {
+        db.appendAudit({
+          event_type: 'ai.cancel.denied',
+          created_at_ms: nowMs(),
+          severity: 'security',
+          device_id: safeString(auth.device_id) || 'legacy_client',
+          user_id: safeString(auth.user_id) || null,
+          request_id,
+          ok: false,
+          error_code: 'request_not_owned_or_inactive',
+        });
+        callback(Object.assign(new Error('Request is not owned by this client or is no longer active'), { code: grpc.status.PERMISSION_DENIED }));
+        return;
+      }
+      db.appendAudit({
+        event_type: 'ai.cancel.requested',
+        created_at_ms: nowMs(),
+        severity: 'info',
+        device_id: safeString(auth.device_id) || 'legacy_client',
+        user_id: safeString(auth.user_id) || null,
+        project_id: safeString(st.client.project_id) || null,
+        request_id,
+        ok: true,
+      });
       st.canceled = true;
+      cancelPaidAIQueueWait(request_id, 'client_cancel');
       if (st.use_runtime_cancel) {
-        try {
-          writeCancelRequest(st.runtime_base_dir || resolveRuntimeBaseDir(), { request_id, reason: req.reason || '' });
-        } catch {
-          // ignore
-        }
+        writeCancelRequest(st.runtime_base_dir, { request_id, reason: req.reason || '' });
       }
       callback(null, { request_id, ok: true });
-      return;
-    }
-
-    // Best-effort cancel for unknown in-flight state.
-    try {
-      writeCancelRequest(resolveRuntimeBaseDir(), { request_id, reason: req.reason || '' });
-      callback(null, { request_id, ok: true });
-      return;
     } catch {
-      callback(null, { request_id, ok: false });
-      return;
+      callback(Object.assign(new Error('Cancellation could not be recorded or delivered'), { code: grpc.status.INTERNAL }));
     }
   }
 
@@ -22255,7 +22299,7 @@ function effectiveClientIdentity(raw, auth) {
   }
 
   function ReportKeyUsage(call, callback) {
-    const auth = requireProviderKeyReadAuth(call);
+    const auth = requireAdminAuth(call);
     if (!auth.ok) {
       callback(new Error(auth.message));
       return;
@@ -22273,7 +22317,7 @@ function effectiveClientIdentity(raw, auth) {
   }
 
   function ReportKeyError(call, callback) {
-    const auth = requireProviderKeyReadAuth(call);
+    const auth = requireAdminAuth(call);
     if (!auth.ok) {
       callback(new Error(auth.message));
       return;
@@ -22344,7 +22388,7 @@ function effectiveClientIdentity(raw, auth) {
   }
 
   function StartProviderOAuthLogin(call, callback) {
-    const auth = requireProviderKeyReadAuth(call);
+    const auth = requireAdminAuth(call);
     if (!auth.ok) {
       callback(new Error(auth.message));
       return;
@@ -22368,7 +22412,7 @@ function effectiveClientIdentity(raw, auth) {
   }
 
   function SubmitProviderOAuthCallback(call, callback) {
-    const auth = requireProviderKeyReadAuth(call);
+    const auth = requireAdminAuth(call);
     if (!auth.ok) {
       callback(new Error(auth.message));
       return;
@@ -22392,7 +22436,7 @@ function effectiveClientIdentity(raw, auth) {
   }
 
   function GetProviderOAuthLoginStatus(call, callback) {
-    const auth = requireProviderKeyReadAuth(call);
+    const auth = requireAdminAuth(call);
     if (!auth.ok) {
       callback(new Error(auth.message));
       return;

@@ -1,11 +1,6 @@
 import CryptoKit
 import Foundation
 
-enum ToolSandboxMode: String, CaseIterable {
-    case host
-    case sandbox
-}
-
 enum ToolExecutor {
     private static let sandboxModeDefaultsKey = "xterminal_tool_sandbox_mode"
     private static let legacySandboxModeDefaultsKey = "xterminal_tool_sandbox_mode"
@@ -303,6 +298,15 @@ enum ToolExecutor {
         extraReadableRoots: [URL] = [],
         stream: (@MainActor @Sendable (String) -> Void)? = nil
     ) async throws -> ToolResult {
+        let executionMode = sandboxMode()
+        let sandboxRequested = optBoolArg(call, "sandbox")
+        if let denial = ToolSandboxPolicy.denialCode(mode: executionMode, requested: sandboxRequested, tool: call.tool.rawValue) {
+            let detail = denial == "sandbox_downgrade_denied"
+                ? "sandbox mode cannot be downgraded by a model request"
+                : "tool is not implemented inside the OS sandbox"
+            return ToolResult(id: call.id, tool: call.tool, ok: false, output: "\(denial): \(detail)")
+        }
+        let useSandbox = ToolSandboxPolicy.usesSandbox(mode: executionMode, requested: sandboxRequested)
         let ctx = AXProjectContext(root: projectRoot)
         let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: projectRoot)
         let runtimeSurfaceState = await xtResolveProjectRuntimeSurfacePolicy(
@@ -337,7 +341,6 @@ enum ToolExecutor {
         switch call.tool {
         case .read_file:
             let path = strArg(call, "path")
-            let useSandbox = shouldUseSandbox(call) && extraReadableRoots.isEmpty
             if useSandbox {
                 let sandboxManager = await MainActor.run { SandboxManager.shared }
                 let sandbox = try await sandboxManager.createSandbox(forProjectRoot: projectRoot)
@@ -368,7 +371,6 @@ enum ToolExecutor {
         case .write_file:
             let path = strArg(call, "path")
             let content = strArg(call, "content")
-            let useSandbox = shouldUseSandbox(call)
             if useSandbox {
                 let sandboxManager = await MainActor.run { SandboxManager.shared }
                 let sandbox = try await sandboxManager.createSandbox(forProjectRoot: projectRoot)
@@ -387,7 +389,7 @@ enum ToolExecutor {
             }
 
         case .delete_path:
-            if shouldUseSandbox(call) {
+            if useSandbox {
                 return ToolResult(
                     id: call.id,
                     tool: call.tool,
@@ -443,7 +445,7 @@ enum ToolExecutor {
             }
 
         case .move_path:
-            if shouldUseSandbox(call) {
+            if useSandbox {
                 return ToolResult(
                     id: call.id,
                     tool: call.tool,
@@ -504,7 +506,6 @@ enum ToolExecutor {
 
         case .list_dir:
             let path = strArg(call, "path")
-            let useSandbox = shouldUseSandbox(call) && extraReadableRoots.isEmpty
             if useSandbox {
                 let sandboxManager = await MainActor.run { SandboxManager.shared }
                 let sandbox = try await sandboxManager.createSandbox(forProjectRoot: projectRoot)
@@ -543,7 +544,6 @@ enum ToolExecutor {
             let pattern = strArg(call, "pattern")
             let path = optStrArg(call, "path") ?? "."
             let glob = optStrArg(call, "glob")
-            let useSandbox = shouldUseSandbox(call) && extraReadableRoots.isEmpty
             if useSandbox {
                 let sandboxManager = await MainActor.run { SandboxManager.shared }
                 let sandbox = try await sandboxManager.createSandbox(forProjectRoot: projectRoot)
@@ -588,7 +588,6 @@ enum ToolExecutor {
         case .run_command:
             let cmd = strArg(call, "command")
             let timeout = optDoubleArg(call, "timeout_sec") ?? 60.0
-            let useSandbox = shouldUseSandbox(call)
             if requiresTTY(cmd) {
                 let trimmed = cmd.trimmingCharacters(in: .whitespacesAndNewlines)
                 let hint = trimmed.isEmpty ? "(empty command)" : trimmed
@@ -608,12 +607,12 @@ Please switch to Terminal mode (Chat/Terminal toggle) and run it there:
                 let combined = [res.stdout, res.stderr]
                     .filter { !$0.isEmpty }
                     .joined(separator: "\n")
-                let out = "sandbox: true\nexit: \(res.exitCode)\n" + (combined.isEmpty ? "(no output)" : combined)
+                let out = "sandbox: true\nisolation: macos_seatbelt\nexit: \(res.exitCode)\n" + (combined.isEmpty ? "(no output)" : combined)
                 return ToolResult(id: call.id, tool: call.tool, ok: res.exitCode == 0, output: out)
             }
 
             let res = try await ShellSessionManager.shared.run(command: cmd, root: projectRoot, timeoutSec: timeout, onOutput: stream)
-            let out = "exit: \(res.exitCode)\n" + (res.combined.isEmpty ? "(no output)" : res.combined)
+            let out = "isolation: host_none\nexit: \(res.exitCode)\n" + (res.combined.isEmpty ? "(no output)" : res.combined)
             return ToolResult(id: call.id, tool: call.tool, ok: res.exitCode == 0, output: out)
 
         case .process_start:
@@ -5128,7 +5127,7 @@ return jsResult
 
         let timeoutSec = max(1.0, min(300.0, optDoubleArg(call, "timeout_sec") ?? 30.0))
         do {
-            let result = try runSkillRunnerProcess(
+            let result = try await runSkillRunnerProcess(
                 execArgv[0],
                 Array(execArgv.dropFirst()),
                 cwd: extractURL,
@@ -5206,88 +5205,19 @@ return jsResult
         stdin: Data,
         timeoutSec: Double,
         env: [String: String]
-    ) throws -> SkillRunnerProcessResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: exe)
-        process.arguments = args
-        process.currentDirectoryURL = cwd
-        process.environment = skillRunnerProcessEnvironment(overrides: env)
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        let stdinPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        process.standardInput = stdinPipe
-
-        let lock = NSLock()
-        var output = Data()
-        var truncated = false
-
-        func appendOutput(_ data: Data) {
-            guard !data.isEmpty else { return }
-            lock.lock()
-            defer { lock.unlock() }
-            let remaining = max(0, skillRunnerMaxOutputBytes - output.count)
-            if remaining > 0 {
-                output.append(data.prefix(remaining))
-            }
-            if data.count > remaining || output.count >= skillRunnerMaxOutputBytes {
-                truncated = true
-            }
-        }
-
-        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-            appendOutput(handle.availableData)
-        }
-        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            appendOutput(handle.availableData)
-        }
-
-        do {
-            try process.run()
-            stdinPipe.fileHandleForWriting.write(stdin)
-            try? stdinPipe.fileHandleForWriting.close()
-
-            let deadline = Date().addingTimeInterval(timeoutSec)
-            while process.isRunning {
-                if Date() > deadline {
-                    process.terminate()
-                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                    stderrPipe.fileHandleForReading.readabilityHandler = nil
-                    throw NSError(
-                        domain: "xterminal",
-                        code: 408,
-                        userInfo: [NSLocalizedDescriptionKey: "Process timeout"]
-                    )
-                }
-                Thread.sleep(forTimeInterval: 0.02)
-            }
-
-            stdoutPipe.fileHandleForReading.readabilityHandler = nil
-            stderrPipe.fileHandleForReading.readabilityHandler = nil
-            appendOutput((try? stdoutPipe.fileHandleForReading.readToEnd()) ?? Data())
-            appendOutput((try? stderrPipe.fileHandleForReading.readToEnd()) ?? Data())
-        } catch {
-            stdoutPipe.fileHandleForReading.readabilityHandler = nil
-            stderrPipe.fileHandleForReading.readabilityHandler = nil
-            try? stdinPipe.fileHandleForWriting.close()
-            throw error
-        }
-
-        lock.lock()
-        let captured = output
-        let wasTruncated = truncated
-        lock.unlock()
-
-        let text = String(decoding: captured, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    ) async throws -> SkillRunnerProcessResult {
+        let result = try await ProcessCapture.runAsync(
+            exe, args, cwd: cwd, stdin: stdin, timeoutSec: timeoutSec,
+            env: skillRunnerProcessEnvironment(overrides: env), inheritEnvironment: false,
+            maxOutputBytes: skillRunnerMaxOutputBytes, outputLimitBehavior: .truncate
+        )
+        let text = result.combined.trimmingCharacters(in: .whitespacesAndNewlines)
         return SkillRunnerProcessResult(
-            exitCode: process.terminationStatus,
-            output: wasTruncated
+            exitCode: result.exitCode,
+            output: result.outputTruncated
                 ? text + "\n\n[output truncated at \(skillRunnerMaxOutputBytes) bytes]"
                 : text,
-            truncated: wasTruncated
+            truncated: result.outputTruncated
         )
     }
 
@@ -7560,13 +7490,6 @@ UI step stage failed: \(stage)
     private static func jsonArrayValue(_ value: JSONValue?) -> [JSONValue]? {
         guard case .array(let array)? = value else { return nil }
         return array
-    }
-
-    private static func shouldUseSandbox(_ call: ToolCall) -> Bool {
-        if let explicit = optBoolArg(call, "sandbox") {
-            return explicit
-        }
-        return sandboxMode() == .sandbox
     }
 
     private static func deniedDeviceAutomationResult(

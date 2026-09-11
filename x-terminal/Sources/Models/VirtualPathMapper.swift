@@ -17,17 +17,18 @@ class VirtualPathMapper {
     private let realWorkspace: URL
     private let realUploads: URL
     private let realOutputs: URL
+    private var canonicalRoots: [String] = []
 
     /// 项目 ID
     private let projectId: UUID
 
     // MARK: - Initialization
 
-    init(projectId: UUID) throws {
+    init(projectId: UUID, baseDirectory: URL? = nil) throws {
         self.projectId = projectId
 
         // 构建真实路径。若 App Support 不可写（如受限环境），自动回退到可写目录。
-        let baseDir = Self.resolveWritableBaseDirectory()
+        let baseDir = baseDirectory ?? Self.resolveWritableBaseDirectory()
         let projectDir = baseDir
             .appendingPathComponent("projects")
             .appendingPathComponent(projectId.uuidString)
@@ -38,6 +39,12 @@ class VirtualPathMapper {
 
         // 确保目录存在
         try createDirectoriesIfNeeded()
+        canonicalRoots = try [realWorkspace, realUploads, realOutputs].map {
+            guard let canonical = Self.canonicalPath($0.path) else {
+                throw SandboxError.invalidPath($0.path)
+            }
+            return canonical
+        }
     }
 
     // MARK: - Path Conversion
@@ -48,19 +55,19 @@ class VirtualPathMapper {
         let realPathStr = realURL.standardized.path
 
         // 检查是否在 workspace 中
-        if realPathStr.hasPrefix(realWorkspace.path) {
+        if Self.contains(realPathStr, root: realWorkspace.path) {
             let relativePath = String(realPathStr.dropFirst(realWorkspace.path.count))
             return virtualWorkspace + relativePath
         }
 
         // 检查是否在 uploads 中
-        if realPathStr.hasPrefix(realUploads.path) {
+        if Self.contains(realPathStr, root: realUploads.path) {
             let relativePath = String(realPathStr.dropFirst(realUploads.path.count))
             return virtualUploads + relativePath
         }
 
         // 检查是否在 outputs 中
-        if realPathStr.hasPrefix(realOutputs.path) {
+        if Self.contains(realPathStr, root: realOutputs.path) {
             let relativePath = String(realPathStr.dropFirst(realOutputs.path.count))
             return virtualOutputs + relativePath
         }
@@ -75,19 +82,19 @@ class VirtualPathMapper {
         let normalizedPath = normalizePath(virtualPath)
 
         // 检查是否是 workspace 路径
-        if normalizedPath.hasPrefix(virtualWorkspace) {
+        if Self.contains(normalizedPath, root: virtualWorkspace) {
             let relativePath = String(normalizedPath.dropFirst(virtualWorkspace.count))
             return realWorkspace.appendingPathComponent(relativePath).path
         }
 
         // 检查是否是 uploads 路径
-        if normalizedPath.hasPrefix(virtualUploads) {
+        if Self.contains(normalizedPath, root: virtualUploads) {
             let relativePath = String(normalizedPath.dropFirst(virtualUploads.count))
             return realUploads.appendingPathComponent(relativePath).path
         }
 
         // 检查是否是 outputs 路径
-        if normalizedPath.hasPrefix(virtualOutputs) {
+        if Self.contains(normalizedPath, root: virtualOutputs) {
             let relativePath = String(normalizedPath.dropFirst(virtualOutputs.count))
             return realOutputs.appendingPathComponent(relativePath).path
         }
@@ -108,20 +115,46 @@ class VirtualPathMapper {
         let normalizedPath = normalizePath(path)
 
         // 检查是否以允许的虚拟路径前缀开头
-        return normalizedPath.hasPrefix(virtualWorkspace) ||
-               normalizedPath.hasPrefix(virtualUploads) ||
-               normalizedPath.hasPrefix(virtualOutputs)
+        return Self.contains(normalizedPath, root: virtualWorkspace) ||
+               Self.contains(normalizedPath, root: virtualUploads) ||
+               Self.contains(normalizedPath, root: virtualOutputs)
     }
 
     /// 验证真实路径是否在沙箱内
     func isWithinSandbox(_ realPath: String) -> Bool {
-        let realURL = URL(fileURLWithPath: realPath)
-        let realPathStr = realURL.standardized.path
+        guard let realPathStr = Self.canonicalPath(realPath) else { return false }
 
         // 检查是否在允许的目录中
-        return realPathStr.hasPrefix(realWorkspace.path) ||
-               realPathStr.hasPrefix(realUploads.path) ||
-               realPathStr.hasPrefix(realOutputs.path)
+        return canonicalRoots.contains { Self.contains(realPathStr, root: $0) }
+    }
+
+    private static func canonicalPath(_ path: String) -> String? {
+        guard path.hasPrefix("/"), !path.utf8.contains(0) else { return nil }
+        var pending = path.split(separator: "/").map(String.init)
+        var resolved: [String] = []
+        var symlinks = 0
+        while !pending.isEmpty {
+            let component = pending.removeFirst()
+            if component == "." { continue }
+            if component == ".." {
+                if !resolved.isEmpty { resolved.removeLast() }
+                continue
+            }
+            let candidate = "/" + (resolved + [component]).joined(separator: "/")
+            if let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: candidate) {
+                symlinks += 1
+                guard symlinks <= 40 else { return nil }
+                if destination.hasPrefix("/") { resolved.removeAll() }
+                pending = destination.split(separator: "/").map(String.init) + pending
+            } else {
+                resolved.append(component)
+            }
+        }
+        return "/" + resolved.joined(separator: "/")
+    }
+
+    private static func contains(_ path: String, root: String) -> Bool {
+        path == root || path.hasPrefix(root + "/")
     }
 
     /// 验证路径是否安全（不包含危险模式）

@@ -244,6 +244,17 @@ extension HubPairingCoordinator {
         )
     }
 
+    nonisolated static func preferredLANConnectHubForTesting(
+        primaryHubHost: String? = nil,
+        cachedHost: String? = nil
+    ) -> String {
+        preferredLANConnectHubValue(
+            primaryHubHost: primaryHubHost,
+            cachedHost: cachedHost,
+            currentMachineHosts: ["127.0.0.1", "localhost"]
+        )
+    }
+
     nonisolated static func connectRepairHostsForTesting(
         primaryHubHost: String? = nil,
         configuredInternetHost: String? = nil,

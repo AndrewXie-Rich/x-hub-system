@@ -238,17 +238,19 @@ enum HubContractClient {
                 return url
             }
         }
-        if let pairedBaseURL = pairedHubShellBaseURL(stateDir: stateDir) {
+        if let pairedBaseURL = pairedHubShellBaseURL(stateDir: stateDir, environment: environment) {
             return pairedBaseURL
         }
         return RustHubReadinessClient.defaultBaseURL(environment: environment)
     }
 
     static func fetchContract(
-        baseURL: URL = defaultBaseURL(),
-        timeout: TimeInterval = 1.5
+        baseURL: URL? = nil,
+        timeout: TimeInterval = 1.5,
+        stateDir: URL? = nil
     ) async -> FetchResult {
-        let url = baseURL
+        let base = stateDir ?? XTProcessPaths.activeAxhubStateDir()
+        let url = (baseURL ?? defaultBaseURL(stateDir: base))
             .appendingPathComponent("xt")
             .appendingPathComponent("hub-contract")
 
@@ -258,7 +260,7 @@ enum HubContractClient {
             request.timeoutInterval = timeout
             request.cachePolicy = .reloadIgnoringLocalCacheData
             request.setValue("application/json", forHTTPHeaderField: "Accept")
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await HubPairingTransport.data(for: request, stateDir: base)
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard (200..<300).contains(statusCode) else {
                 return FetchResult(
@@ -291,15 +293,15 @@ enum HubContractClient {
         }
     }
 
-    private static func pairedHubShellBaseURL(stateDir: URL?) -> URL? {
+    private static func pairedHubShellBaseURL(stateDir: URL?, environment: [String: String]) -> URL? {
         let base = stateDir ?? XTProcessPaths.activeAxhubStateDir()
         let pairingEnv = readEnvExports(from: base.appendingPathComponent("pairing.env"))
         let hubEnv = readEnvExports(from: base.appendingPathComponent("hub.env"))
 
         let host = normalizedHubHost(
+            hubEnv["HUB_HOST"],
             pairingEnv["AXHUB_INTERNET_HOST"],
-            pairingEnv["AXHUB_HUB_HOST"],
-            hubEnv["HUB_HOST"]
+            pairingEnv["AXHUB_HUB_HOST"]
         )
         guard !host.isEmpty else { return nil }
 
@@ -308,11 +310,8 @@ enum HubContractClient {
             ?? normalizePort(hubEnv["HUB_PORT"]).map { min(65_535, $0 + 1) }
             ?? 50_052
 
-        var components = URLComponents()
-        components.scheme = "http"
-        components.host = host
-        components.port = pairingPort
-        return components.url
+        return HubPairingTransport.url(host: host, port: pairingPort, path: "", stateDir: base, environment: environment)
+            ?? URL(string: "xhub-invalid://pairing-transport")
     }
 
     private static func readEnvExports(from fileURL: URL) -> [String: String] {

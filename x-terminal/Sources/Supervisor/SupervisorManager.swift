@@ -1842,14 +1842,10 @@ final class SupervisorManager: ObservableObject {
             script: script.isEmpty ? ["Supervisor response"] : script,
             dedupeKey: "talk_loop_resume:\(source)"
         )
-        let delay = min(
-            8.0,
-            max(
-                0.9,
-                supervisorSpeechSynthesizer.estimatedPlaybackDuration(
-                    job: job,
-                    preferences: currentVoicePreferences()
-                ) + 0.12
+        let delay = SupervisorVoiceTimingPolicy.resumeDelay(
+            estimatedPlaybackDuration: supervisorSpeechSynthesizer.estimatedPlaybackDuration(
+                job: job,
+                preferences: currentVoicePreferences()
             )
         )
 

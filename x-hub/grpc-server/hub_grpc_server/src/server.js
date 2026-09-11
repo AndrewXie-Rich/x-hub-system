@@ -12,7 +12,8 @@ import { startPairingHTTPServer } from './pairing_http.js';
 import { startProviderKeyQuotaRefreshConductor } from './provider_key_quota_refresh_conductor.js';
 import { startProviderKeyRuntimeConductor } from './provider_key_runtime_conductor.js';
 import { startProviderKeySourceWatcher } from './provider_key_source_watcher.js';
-import { makeServerCredentials, tlsModeFromEnv } from './tls_support.js';
+import { makeServerCredentials } from './tls_support.js';
+import { grpcTransportFromEnv } from './transport_security.js';
 import { resolveHubProtoPath } from './proto_path.js';
 
 function loadProto(protoPath) {
@@ -42,18 +43,10 @@ function grpcBindAddress(host, port) {
   return `${h}:${p}`;
 }
 
-function serviceBindHostFromEnv(rawHost, env = process.env) {
-  const host = String(rawHost || '').trim() || '0.0.0.0';
-  const dualStack = String(env.HUB_IPV6_DUALSTACK || '1').trim() !== '0';
-  if (dualStack && host === '0.0.0.0') return '::';
-  return host;
-}
-
 function main() {
-  const host = serviceBindHostFromEnv(process.env.HUB_HOST || '0.0.0.0');
+  const { host, mode: tlsMode } = grpcTransportFromEnv(process.env);
   const port = Number(process.env.HUB_PORT || 50051);
   const dbPath = (process.env.HUB_DB_PATH || './data/hub.sqlite3').trim();
-  const tlsMode = tlsModeFromEnv(process.env);
 
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 

@@ -19,6 +19,7 @@ let package = Package(
             name: "XTerminalTests",
             dependencies: ["XTerminal"],
             path: "Tests",
+            exclude: ["ProductReadinessBacklogTests.mjs", "ReleaseGateBinarySelectionTests.mjs", "R1FirstRealTaskTests.mjs", "R1RuntimePreflightTests.mjs"],
             resources: [
                 .process("Fixtures")
             ]

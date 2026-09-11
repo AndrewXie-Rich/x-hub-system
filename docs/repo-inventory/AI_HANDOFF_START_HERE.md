@@ -8,10 +8,12 @@ Use it when a new AI needs to pick up work without rediscovering the repo struct
 
 Before editing code, verify the active surface:
 
-- Hub app / control-plane source lives in `/Users/andrew.xie/Documents/AX/x-hub-system/x-hub/`.
-- Hub Rust kernel source lives in `/Users/andrew.xie/Documents/AX/x-hub-system/rust/xhubd`; the Hub build packages its latest verified output into `X-Hub.app`.
-- X-Terminal source lives in `/Users/andrew.xie/Documents/AX/x-hub-system/x-terminal`.
-- The sibling `rust/rust hub` and `rust/rust xt/swift-xterminal` trees are migration/reference copies only, never default edit/build/package roots.
+- Resolve `<repository-root>` with `git rev-parse --show-toplevel`.
+- Treat `<AX-root>` as the parent directory of `<repository-root>`.
+- Hub app / control-plane source lives in `<repository-root>/x-hub/`.
+- Hub Rust kernel source lives in `<repository-root>/rust/xhubd/`; the Hub build packages its latest verified output into `X-Hub.app`.
+- X-Terminal source lives in `<repository-root>/x-terminal/`.
+- The sibling `<AX-root>/rust/rust hub` and `<AX-root>/rust/rust xt/swift-xterminal` trees are migration/reference copies only, never default edit/build/package roots.
 - `x-hub/macos/RELFlowHub/` is the historical Swift package name for the current Hub app shell, not a separate old product.
 
 If requested behavior exists only in an external migration/reference tree,

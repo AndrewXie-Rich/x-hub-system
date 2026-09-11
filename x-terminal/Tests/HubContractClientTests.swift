@@ -27,7 +27,7 @@ struct HubContractClientTests {
             stateDir: root
         )
 
-        #expect(url.absoluteString == "http://hub.example.com:50059")
+        #expect(url.absoluteString == "https://10.0.0.10:50059")
     }
 
     @Test
