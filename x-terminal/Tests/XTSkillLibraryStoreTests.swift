@@ -1,8 +1,39 @@
+import Combine
 import Foundation
 import Testing
 @testable import XTerminal
 
 struct XTSkillLibraryStoreTests {
+    @Test @MainActor
+    func compatibilityRefreshPublishesOnceAndPreservesNewerChannelStatus() {
+        let appModel = AppModel.makeForTesting()
+        var previous = AXSkillsDoctorSnapshot.empty
+        previous.officialChannelID = "official-stable"
+        previous.officialChannelStatus = "ready"
+        previous.officialChannelUpdatedAtMs = 200
+        previous.officialChannelSkillCount = 7
+        appModel.skillsCompatibilitySnapshot = previous
+
+        var publications: [AXSkillsDoctorSnapshot] = []
+        let subscription = appModel.$skillsCompatibilitySnapshot.dropFirst().sink {
+            publications.append($0)
+        }
+        var incoming = AXSkillsDoctorSnapshot.empty
+        incoming.installedSkillCount = 4
+        incoming.officialChannelStatus = "refreshing"
+        incoming.officialChannelUpdatedAtMs = 100
+        appModel.publishSkillsCompatibilitySnapshot(incoming)
+        appModel.publishSkillsCompatibilitySnapshot(incoming)
+
+        #expect(publications.count == 1)
+        #expect(publications.first?.installedSkillCount == 4)
+        #expect(publications.first?.officialChannelStatus == "ready")
+        #expect(publications.first?.officialChannelUpdatedAtMs == 200)
+        #expect(publications.first?.officialChannelSkillCount == 7)
+        #expect(appModel.skillLibraryStore.snapshot.skillsSnapshot == publications.first)
+        withExtendedLifetime(subscription) {}
+    }
+
     @Test
     @MainActor
     func appModelMirrorsSkillsAndImportStateIntoFocusedSkillLibraryStore() {

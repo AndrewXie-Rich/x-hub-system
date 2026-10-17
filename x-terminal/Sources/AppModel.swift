@@ -783,15 +783,10 @@ final class AppModel: ObservableObject {
         revision: UInt64,
         snapshot: XTSettingsCenterSnapshot
     ) {
-        let input = XTSettingsDiagnosticsProjectionInputBuilder.build(from: snapshot)
-        let inputJSON = XTSettingsDiagnosticsProjectionInputBuilder.jsonString(for: input)
-
-        settingsSurfaceProjectionTask?.cancel()
-        settingsSurfaceProjectionTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 80_000_000)
-            guard !Task.isCancelled else { return }
-
-            let diagnosticsProjection = await Task.detached(priority: .utility) {
+        settingsDiagnosticsRefresh.request(prepare: {
+            return {
+                let input = XTSettingsDiagnosticsProjectionInputBuilder.build(from: snapshot)
+                let inputJSON = XTSettingsDiagnosticsProjectionInputBuilder.jsonString(for: input)
                 if let inputJSON {
                     let result = XTCoreProjectionClient.fetch(
                         surface: .settingsDiagnostics,
@@ -805,10 +800,9 @@ final class AppModel: ObservableObject {
                     }
                 }
                 return XTSettingsDiagnosticsProjectionInputBuilder.buildProjection(from: input)
-            }.value
-
-            guard !Task.isCancelled,
-                  let self,
+            }
+        }, publish: { [weak self] diagnosticsProjection in
+            guard let self,
                   self.settingsSurfaceProjectionRevision == revision else {
                 return
             }
@@ -818,7 +812,7 @@ final class AppModel: ObservableObject {
                     diagnosticsProjection: diagnosticsProjection
                 )
             )
-        }
+        })
     }
 
     func refreshSettingsCenterRouteRepairSnapshot() {
@@ -979,6 +973,10 @@ final class AppModel: ObservableObject {
     private var settingsSubscriptions: Set<AnyCancellable> = []
     private var projectRootLoadTask: Task<Void, Never>? = nil
     private var projectSelectionTask: Task<Void, Never>? = nil
+    private var startupDeferredWorkTask: Task<Void, Never>? = nil
+    private var skillScanTask: Task<Void, Never>? = nil
+    private let skillsCompatibilityRefresh = XTCoalescingBackgroundRefresh<AXSkillsDoctorSnapshot>()
+    private let unifiedDoctorRefresh = XTCoalescingBackgroundRefresh<XTUnifiedDoctorReport>()
     private let loadPersistedProjectRegistry: Bool
     private let persistProjectRegistryChanges: Bool
     private var skillScanTimer: Timer? = nil
@@ -1015,6 +1013,7 @@ final class AppModel: ObservableObject {
     private let supervisorCalendarReminderScheduler: SupervisorCalendarReminderScheduler
     private static let automaticReconnectStartupWarmupSec: TimeInterval = 6.0
     private static let automaticRemoteConnectStartupDelaySec: TimeInterval = 1.5
+    private static let startupDeferredWorkDelayNanoseconds: UInt64 = 900_000_000
     private static let remoteSkillsCompatibilityOverlayRefreshIntervalSec: TimeInterval = 30.0
     private static let backgroundUnifiedDoctorRefreshIntervalSec: TimeInterval = 20.0
     private static let hubRemotePrefsDoctorRefreshDebounceNs: UInt64 = 350_000_000
@@ -1051,7 +1050,9 @@ final class AppModel: ObservableObject {
     private var externalTerminalAccessDoctorRefreshTask: Task<Void, Never>? = nil
     private var projectSidebarProjectionTask: Task<Void, Never>? = nil
     private var projectSidebarProjectionRevision: UInt64 = 0
-    private var settingsSurfaceProjectionTask: Task<Void, Never>? = nil
+    private let settingsDiagnosticsRefresh = XTCoalescingBackgroundRefresh<XTSettingsDiagnosticsProjection>(
+        delayNanoseconds: 80_000_000
+    )
     private var settingsSurfaceProjectionRevision: UInt64 = 0
     private var externalTerminalAccessDoctorProjection: XTUnifiedDoctorExternalTerminalAccessProjection? =
         HubExternalTerminalAccessSnapshotStore.load(allowCompatibilityFallback: true)
@@ -1113,16 +1114,14 @@ final class AppModel: ObservableObject {
 
         loadRegistry()
         bootstrapSelection()
-        migrateSkillsIfNeeded()
-        scheduleSkillScan()
+        scheduleNextSkillScan()
         loadHubRemotePrefs()
-        refreshSkillsCompatibilitySnapshot(force: true)
         loadBridgePrefs()
+        loadLocalServerPrefs()
         refreshControlSurfaceSnapshot()
         refreshSkillLibrarySnapshot()
         refreshModelSettingsSnapshot()
         refreshSettingsCenterRouteRepairSnapshot()
-        loadLocalServerPrefs()
         refreshSettingsCenterSnapshot()
         if SupervisorCalendarReminderScheduler.shouldAutoStartInCurrentProcess {
             supervisorCalendarReminderScheduler.bind(settingsStore: ss)
@@ -1131,6 +1130,7 @@ final class AppModel: ObservableObject {
         if !Self.isRunningUnderTestProcess {
             startHubConnectivityLifecycleObservers()
             startHubNetworkMonitor()
+            scheduleDeferredStartupWork()
 
             // Auto-connect if Hub is already running.
             Task { @MainActor in
@@ -1166,9 +1166,10 @@ final class AppModel: ObservableObject {
     deinit {
         projectRootLoadTask?.cancel()
         projectSelectionTask?.cancel()
+        startupDeferredWorkTask?.cancel()
+        skillScanTask?.cancel()
         hubRemotePrefsDoctorRefreshTask?.cancel()
         projectSidebarProjectionTask?.cancel()
-        settingsSurfaceProjectionTask?.cancel()
         for observation in notifTokens {
             observation.center.removeObserver(observation.token)
         }
@@ -1293,11 +1294,11 @@ final class AppModel: ObservableObject {
             hubRemoteSummary = ""
             nextRemotePresenceRefreshAt = .distantPast
             await maybeRefreshRemotePresence(force: true)
-            refreshSkillsCompatibilitySnapshot(force: true)
+            requestSkillsCompatibilityRefresh()
             return
         }
 
-        refreshSkillsCompatibilitySnapshot(force: true)
+        requestSkillsCompatibilityRefresh()
         if auto {
             let startupDelayNs = UInt64(
                 (Self.automaticRemoteConnectStartupDelaySec * 1_000_000_000.0).rounded()
@@ -3061,14 +3062,61 @@ final class AppModel: ObservableObject {
         objectWillChange.send()
     }
 
-    private func scheduleSkillScan() {
-        maybeRunSkillScan(force: false)
-        scheduleNextSkillScan()
+    private func scheduleDeferredStartupWork() {
+        guard !Self.isRunningUnderTestProcess,
+              startupDeferredWorkTask == nil else {
+            return
+        }
+
+        startupDeferredWorkTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: Self.startupDeferredWorkDelayNanoseconds)
+            guard !Task.isCancelled, let self else { return }
+            let projects = self.registry.projects
+            await Task.detached(priority: .utility) {
+                self.migrateSkillsIfNeeded(projects: projects)
+            }.value
+            guard !Task.isCancelled else { return }
+            self.maybeRunSkillScan(force: false)
+            await self.skillScanTask?.value
+            guard !Task.isCancelled else { return }
+            self.startupDeferredWorkTask = nil
+            // Re-capture the latest selection and Hub route after maintenance.
+            // Requests made during startup are satisfied here, never discarded.
+            self.requestSkillsCompatibilityRefresh()
+            self.refreshUnifiedDoctorReport(force: true)
+        }
     }
 
-    private func migrateSkillsIfNeeded() {
+    private func requestSkillsCompatibilityRefresh(force: Bool = true) {
+        guard startupDeferredWorkTask == nil else { return }
+        let now = Date()
+        guard force || now >= nextSkillsCompatibilityRefreshAt else { return }
+        nextSkillsCompatibilityRefreshAt = now.addingTimeInterval(12.0)
+        let projectId = selectedProjectId == AXProjectRegistry.globalHomeId ? nil : selectedProjectId
+        let projectName = projectId.flatMap { registry.project(for: $0)?.displayName }
+        let baseDir = hubBaseDir ?? HubPaths.baseDir()
+        skillsCompatibilityRefresh.request(prepare: {
+            return {
+                AXSkillsLibrary.compatibilityDoctorSnapshot(
+                    projectId: projectId,
+                    projectName: projectName,
+                    hubBaseDir: baseDir
+                )
+            }
+        }, publish: { [weak self] snapshot in
+            guard let self else { return }
+            let currentProject = self.selectedProjectId == AXProjectRegistry.globalHomeId ? nil : self.selectedProjectId
+            guard currentProject == projectId,
+                  (self.hubBaseDir ?? HubPaths.baseDir()) == baseDir else { return }
+            self.publishSkillsCompatibilitySnapshot(snapshot)
+            self.refreshRemoteSkillsCompatibilityOverlayIfNeeded(projectId: projectId)
+            self.refreshUnifiedDoctorReport(force: true)
+        })
+    }
+
+    private nonisolated func migrateSkillsIfNeeded(projects: [AXProjectEntry]) {
         if boolDefault(for: skillsMigrationKey, legacy: legacySkillsMigrationKey) { return }
-        guard let skillsDir = ensureSkillsDirectory() else { return }
+        guard let skillsDir = AXSkillsLibrary.ensureSkillsDirectory() else { return }
 
         let projectsRoot = skillsDir.appendingPathComponent("_projects", isDirectory: true)
         let globalRoot = skillsDir.appendingPathComponent("_global", isDirectory: true)
@@ -3088,8 +3136,8 @@ final class AppModel: ObservableObject {
         ]
 
         var skillToProject: [String: (String, String)] = [:]
-        for entry in registry.projects {
-            guard let ctx = projectContext(for: entry.projectId) else { continue }
+        for entry in projects {
+            let ctx = AXProjectContext(root: URL(fileURLWithPath: entry.rootPath, isDirectory: true))
             let cands = AXSkillCandidateStore.loadCandidates(for: ctx)
             for cand in cands where cand.status == "approved" {
                 if let name = cand.skillName, !name.isEmpty {
@@ -3121,7 +3169,7 @@ final class AppModel: ObservableObject {
                     }
                 }
             } else if let projectName = extractProjectName(from: item) {
-                if let entry = registry.projects.first(where: { $0.displayName == projectName }),
+                if let entry = projects.first(where: { $0.displayName == projectName }),
                    let projectDir = projectSkillsDir(projectId: entry.projectId, projectName: entry.displayName, skillsDir: skillsDir) {
                     if let destName = moveSkill(from: item, to: projectDir, preferredName: name) {
                         let summary = extractSkillSummary(from: projectDir.appendingPathComponent(destName))
@@ -3169,6 +3217,7 @@ final class AppModel: ObservableObject {
     }
 
     private func maybeRunSkillScan(force: Bool) {
+        guard skillScanTask == nil else { return }
         let now = Date()
         let lastTs = doubleDefault(for: skillScanLastKey, legacy: legacySkillScanLastKey)
         let lastDate = lastTs > 0 ? Date(timeIntervalSince1970: lastTs) : Date(timeIntervalSince1970: 0)
@@ -3178,15 +3227,24 @@ final class AppModel: ObservableObject {
             if lastEpoch >= currentEpoch { return }
         }
         let since = lastTs > 0 ? lastTs : currentEpoch.addingTimeInterval(-86400).timeIntervalSince1970
-        for entry in registry.projects {
-            guard let ctx = projectContext(for: entry.projectId) else { continue }
-            _ = AXSkillCandidateStore.scanCandidates(ctx: ctx, since: since)
-            let pending = AXSkillCandidateStore.pendingCandidates(for: ctx)
-            AXSkillAutoPromoter.maybeAutoPromote(ctx: ctx, detected: pending)
-            _ = AXVaultCurator.scanAndSuggest(ctx: ctx)
+        let contexts = registry.projects.compactMap { projectContext(for: $0.projectId) }
+        skillScanTask = Task { @MainActor [weak self] in
+            await Task.detached(priority: .utility) {
+                let trace = XTPerformanceTrace.begin("skill_maintenance_scan")
+                defer { XTPerformanceTrace.end(trace) }
+                for ctx in contexts {
+                    _ = AXSkillCandidateStore.scanCandidates(ctx: ctx, since: since)
+                    let pending = AXSkillCandidateStore.pendingCandidates(for: ctx)
+                    AXSkillAutoPromoter.maybeAutoPromote(ctx: ctx, detected: pending)
+                    _ = AXVaultCurator.scanAndSuggest(ctx: ctx)
+                }
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            self.skillScanTask = nil
+            self.setDefault(now.timeIntervalSince1970, for: self.skillScanLastKey, legacy: self.legacySkillScanLastKey)
+            self.objectWillChange.send()
+            self.requestSkillsCompatibilityRefresh()
         }
-        setDefault(now.timeIntervalSince1970, for: skillScanLastKey, legacy: legacySkillScanLastKey)
-        objectWillChange.send()
     }
 
     private func nextSkillScanDate(from now: Date) -> Date {
@@ -3214,7 +3272,7 @@ final class AppModel: ObservableObject {
         return skillName
     }
 
-    private func updateProjectSkillsIndex(projectDir: URL, skillName: String, summary: String) {
+    private nonisolated func updateProjectSkillsIndex(projectDir: URL, skillName: String, summary: String) {
         let indexURL = projectDir.appendingPathComponent("skills-index.md")
         let header = "# Skills Index (project)\n\n"
         let entry = "- \(skillName) — \(summary)（路径：\(projectDir.appendingPathComponent(skillName).path)）"
@@ -3231,7 +3289,7 @@ final class AppModel: ObservableObject {
         try? XTStoreWriteSupport.writeUTF8Text(out, to: indexURL)
     }
 
-    private func updateGlobalSkillsIndex(skillsDir: URL, projectDir: URL, projectName: String) {
+    private nonisolated func updateGlobalSkillsIndex(skillsDir: URL, projectDir: URL, projectName: String) {
         let indexURL = skillsDir
             .appendingPathComponent("memory-core", isDirectory: true)
             .appendingPathComponent("references", isDirectory: true)
@@ -3256,7 +3314,7 @@ final class AppModel: ObservableObject {
         try? XTStoreWriteSupport.writeUTF8Text(out, to: indexURL)
     }
 
-    private func updateGlobalSkillsIndexForGlobalSkill(skillsDir: URL, skillName: String, summary: String) {
+    private nonisolated func updateGlobalSkillsIndexForGlobalSkill(skillsDir: URL, skillName: String, summary: String) {
         let indexURL = skillsDir
             .appendingPathComponent("memory-core", isDirectory: true)
             .appendingPathComponent("references", isDirectory: true)
@@ -3281,7 +3339,7 @@ final class AppModel: ObservableObject {
         try? XTStoreWriteSupport.writeUTF8Text(out, to: indexURL)
     }
 
-    private func writeMigrationReport(
+    private nonisolated func writeMigrationReport(
         skillsDir: URL,
         movedProject: [[String: String]],
         movedGlobal: [[String: String]]
@@ -3298,7 +3356,7 @@ final class AppModel: ObservableObject {
         try? XTStoreWriteSupport.writeSnapshotData(data, to: url)
     }
 
-    private func projectSkillsDir(projectId: String, projectName: String, skillsDir: URL) -> URL? {
+    private nonisolated func projectSkillsDir(projectId: String, projectName: String, skillsDir: URL) -> URL? {
         let projectsRoot = skillsDir.appendingPathComponent("_projects", isDirectory: true)
         try? FileManager.default.createDirectory(at: projectsRoot, withIntermediateDirectories: true)
         let suffix = String(projectId.prefix(8))
@@ -3312,7 +3370,7 @@ final class AppModel: ObservableObject {
         return dir
     }
 
-    private func moveSkill(from src: URL, to destDir: URL, preferredName: String) -> String? {
+    private nonisolated func moveSkill(from src: URL, to destDir: URL, preferredName: String) -> String? {
         let name = uniqueSkillName(preferredName, in: destDir)
         let dest = destDir.appendingPathComponent(name, isDirectory: true)
         do {
@@ -3323,7 +3381,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func extractProjectName(from skillDir: URL) -> String? {
+    private nonisolated func extractProjectName(from skillDir: URL) -> String? {
         let flow = skillDir.appendingPathComponent("references", isDirectory: true).appendingPathComponent("flow.md")
         guard FileManager.default.fileExists(atPath: flow.path),
               let text = try? String(contentsOf: flow, encoding: .utf8) else { return nil }
@@ -3342,7 +3400,7 @@ final class AppModel: ObservableObject {
         return nil
     }
 
-    private func extractSkillSummary(from skillDir: URL) -> String {
+    private nonisolated func extractSkillSummary(from skillDir: URL) -> String {
         let skillMD = skillDir.appendingPathComponent("SKILL.md")
         guard let text = try? String(contentsOf: skillMD, encoding: .utf8) else {
             return skillDir.lastPathComponent
@@ -3365,7 +3423,7 @@ final class AppModel: ObservableObject {
         return skillDir.lastPathComponent
     }
 
-    private func findProjectDir(in root: URL, suffix: String) -> URL? {
+    private nonisolated func findProjectDir(in root: URL, suffix: String) -> URL? {
         guard let items = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
             return nil
         }
@@ -3397,7 +3455,7 @@ final class AppModel: ObservableObject {
         return trimmed.isEmpty ? "skill-\(Int(Date().timeIntervalSince1970))" : trimmed
     }
 
-    private func uniqueSkillName(_ base: String, in skillsDir: URL) -> String {
+    private nonisolated func uniqueSkillName(_ base: String, in skillsDir: URL) -> String {
         var name = base
         var idx = 2
         while FileManager.default.fileExists(atPath: skillsDir.appendingPathComponent(name).path) {
@@ -3414,7 +3472,7 @@ final class AppModel: ObservableObject {
         return String(t[..<idx])
     }
 
-    private func sanitizePathComponent(_ s: String) -> String {
+    private nonisolated func sanitizePathComponent(_ s: String) -> String {
         var t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         if t.isEmpty { return "" }
         let forbidden = CharacterSet(charactersIn: "/\\:?*|\"<>")
@@ -3432,7 +3490,7 @@ final class AppModel: ObservableObject {
         return t.isEmpty ? "" : t
     }
 
-    private func boolDefault(for key: String, legacy: String) -> Bool {
+    private nonisolated func boolDefault(for key: String, legacy: String) -> Bool {
         let defaults = UserDefaults.standard
         if defaults.object(forKey: key) != nil {
             return defaults.bool(forKey: key)
@@ -3458,7 +3516,7 @@ final class AppModel: ObservableObject {
         return 0
     }
 
-    private func setDefault<T>(_ value: T, for key: String, legacy: String) {
+    private nonisolated func setDefault<T>(_ value: T, for key: String, legacy: String) {
         let defaults = UserDefaults.standard
         defaults.set(value, forKey: key)
         defaults.set(value, forKey: legacy)
@@ -5769,7 +5827,7 @@ final class AppModel: ObservableObject {
             projectRemoteRuntimeSurfaceOverride = nil
             nextProjectSnapshotRefreshAt = .distantPast
             nextProjectRuntimeSurfaceOverrideRefreshAt = .distantPast
-            refreshSkillsCompatibilitySnapshot(force: true)
+            requestSkillsCompatibilityRefresh()
             traceOutcome = "cleared"
             return
         }
@@ -5795,7 +5853,7 @@ final class AppModel: ObservableObject {
             traceOutcome = "loaded_with_error error=\(String(describing: error))"
         }
         await refreshProjectRemoteRuntimeSurfaceOverride(force: true)
-        refreshSkillsCompatibilitySnapshot(force: true)
+        requestSkillsCompatibilityRefresh()
         if traceOutcome == "started" {
             traceOutcome = "loaded root=\(root.path)"
         }
@@ -7961,19 +8019,35 @@ final class AppModel: ObservableObject {
     }
 
     private func refreshUnifiedDoctorReport(force: Bool = false) {
-        let trace = XTPerformanceTrace.begin(
-            "unified_doctor_refresh",
-            "force=\(force)"
-        )
-        var traceOutcome = "started"
-        defer {
-            XTPerformanceTrace.end(trace, traceOutcome)
-        }
+        guard startupDeferredWorkTask == nil else { return }
         let now = Date()
-        if !force, now < nextUnifiedDoctorRefreshAt {
-            traceOutcome = "skipped throttled"
-            return
-        }
+        guard force || now >= nextUnifiedDoctorRefreshAt else { return }
+        nextUnifiedDoctorRefreshAt = now.addingTimeInterval(Self.backgroundUnifiedDoctorRefreshIntervalSec)
+        let requestedProjectId = selectedProjectId
+        let requestedHubBaseDir = hubBaseDir
+        unifiedDoctorRefresh.request(prepare: { [weak self] in
+            guard let self else { return { .empty } }
+            return self.prepareUnifiedDoctorReport()
+        }, publish: { [weak self] report in
+            guard let self,
+                  self.selectedProjectId == requestedProjectId,
+                  self.hubBaseDir == requestedHubBaseDir else { return }
+            self.assignIfChanged(\.unifiedDoctorReport, report)
+            let reportURL = XTUnifiedDoctorStore.defaultReportURL()
+            let genericDoctorURL = XHubDoctorOutputStore.defaultXTReportURL()
+            Task.detached(priority: .utility) {
+                XTUnifiedDoctorStore.writeReport(report, to: reportURL)
+                let genericDoctorReport = XHubDoctorOutputReport.xtReadinessBundle(
+                    from: report,
+                    outputPath: genericDoctorURL.path
+                )
+                XHubDoctorOutputStore.writeReport(genericDoctorReport, to: genericDoctorURL)
+            }
+        })
+    }
+
+    private func prepareUnifiedDoctorReport() -> @Sendable () -> XTUnifiedDoctorReport {
+        let now = Date()
         Task {
             _ = await HubProviderKeyImportSnapshotStore.refreshFromHub()
         }
@@ -8125,13 +8199,8 @@ final class AppModel: ObservableObject {
             skillsSnapshot: skillsCompatibilitySnapshot,
             skillDoctorTruthProjection: skillDoctorTruthProjection,
             externalTerminalAccessProjection: externalTerminalAccessDoctorProjection,
-            providerKeyImportSnapshot: HubProviderKeyImportSnapshotStore.load()
-                ?? HubProviderKeyImportSnapshotStore.load(allowCompatibilityFallback: true),
             reportPath: reportURL.path,
-            modelRouteDiagnostics: AXModelRouteDiagnosticsStore.doctorSummary(
-                for: sortedProjects,
-                now: now
-            ),
+            modelRouteDiagnostics: .empty,
             projectContextDiagnostics: projectContextDiagnostics,
             projectGovernanceResolved: projectGovernanceResolved,
             heartbeatGovernanceSnapshot: heartbeatGovernanceSnapshot,
@@ -8148,26 +8217,23 @@ final class AppModel: ObservableObject {
             pairedRouteSetSnapshot: pairedRouteSetSnapshot,
             connectivityIncidentSnapshot: connectivityIncidentSnapshot
         )
-        let report = XTUnifiedDoctorBuilder.build(input: input)
-        let genericDoctorURL = XHubDoctorOutputStore.defaultXTReportURL()
-        assignIfChanged(\.unifiedDoctorReport, report)
-        Task.detached(priority: .utility) {
-            XTUnifiedDoctorStore.writeReport(report, to: reportURL)
-            let genericDoctorReport = XHubDoctorOutputReport.xtReadinessBundle(
-                from: report,
-                outputPath: genericDoctorURL.path
-            )
-            XHubDoctorOutputStore.writeReport(genericDoctorReport, to: genericDoctorURL)
+        let projects = sortedProjects
+        return {
+            let trace = XTPerformanceTrace.begin("unified_doctor_refresh")
+            defer { XTPerformanceTrace.end(trace) }
+            input.providerKeyImportSnapshot = HubProviderKeyImportSnapshotStore.load()
+                ?? HubProviderKeyImportSnapshotStore.load(allowCompatibilityFallback: true)
+            input.modelRouteDiagnostics = AXModelRouteDiagnosticsStore.doctorSummary(for: projects, now: now)
+            return XTUnifiedDoctorBuilder.build(input: input)
         }
-        nextUnifiedDoctorRefreshAt = now.addingTimeInterval(Self.backgroundUnifiedDoctorRefreshIntervalSec)
-        traceOutcome = "updated sections=\(report.sections.count)"
     }
 
     private func refreshRustMemoryReadinessDoctorSnapshotIfNeeded() {
         let now = Date()
         guard !rustMemoryReadinessDoctorFetchInFlight else { return }
-        guard rustMemoryReadinessDoctorSnapshot == nil
-                || now.timeIntervalSince(rustMemoryReadinessDoctorLastFetchAt) > 10 else {
+        // Failed requests also observe the retry interval; a missing snapshot
+        // must not turn every diagnostic callback into another network probe.
+        guard now.timeIntervalSince(rustMemoryReadinessDoctorLastFetchAt) > 10 else {
             return
         }
         rustMemoryReadinessDoctorFetchInFlight = true
@@ -8189,8 +8255,7 @@ final class AppModel: ObservableObject {
     private func refreshRustProductProcessSanityDoctorSnapshotIfNeeded() {
         let now = Date()
         guard !rustProductProcessSanityDoctorFetchInFlight else { return }
-        guard rustProductProcessSanityDoctorSnapshot == nil
-                || now.timeIntervalSince(rustProductProcessSanityDoctorLastFetchAt) > 10 else {
+        guard now.timeIntervalSince(rustProductProcessSanityDoctorLastFetchAt) > 10 else {
             return
         }
         rustProductProcessSanityDoctorFetchInFlight = true
@@ -8215,8 +8280,7 @@ final class AppModel: ObservableObject {
     private func refreshRustMemoryGatewayExecutionGateDoctorSnapshotIfNeeded() {
         let now = Date()
         guard !rustMemoryGatewayExecutionGateDoctorFetchInFlight else { return }
-        guard rustMemoryGatewayExecutionGateDoctorSnapshot == nil
-                || now.timeIntervalSince(rustMemoryGatewayExecutionGateDoctorLastFetchAt) > 10 else {
+        guard now.timeIntervalSince(rustMemoryGatewayExecutionGateDoctorLastFetchAt) > 10 else {
             return
         }
         rustMemoryGatewayExecutionGateDoctorFetchInFlight = true
@@ -8238,8 +8302,7 @@ final class AppModel: ObservableObject {
     private func refreshRustRemoteEntryCandidatesDoctorSnapshotIfNeeded() {
         let now = Date()
         guard !rustRemoteEntryCandidatesDoctorFetchInFlight else { return }
-        guard rustRemoteEntryCandidatesDoctorSnapshot == nil
-                || now.timeIntervalSince(rustRemoteEntryCandidatesDoctorLastFetchAt) > 10 else {
+        guard now.timeIntervalSince(rustRemoteEntryCandidatesDoctorLastFetchAt) > 10 else {
             return
         }
         rustRemoteEntryCandidatesDoctorFetchInFlight = true
@@ -8406,63 +8469,17 @@ final class AppModel: ObservableObject {
         refreshUnifiedDoctorReport shouldRefreshUnifiedDoctorReport: Bool = true
     ) {
         let now = Date()
-        if !force, now < nextSkillsCompatibilityRefreshAt {
-            return
-        }
+        if !force, now < nextSkillsCompatibilityRefreshAt { return }
+        // Explicit mutations keep their synchronous read-after-write semantics.
+        // Fence off background reads taken before the mutation.
+        skillsCompatibilityRefresh.invalidate()
         let selectedProject = selectedProjectId == AXProjectRegistry.globalHomeId ? nil : selectedProjectId
         let projectName = selectedProject.flatMap { registry.project(for: $0)?.displayName }
-        let skillsDir = AXSkillsLibrary.resolveSkillsDirectory()
-        let previousOfficialChannelID = skillsCompatibilitySnapshot.officialChannelID
-        let previousOfficialChannelStatus = skillsCompatibilitySnapshot.officialChannelStatus
-        let previousOfficialChannelUpdatedAtMs = skillsCompatibilitySnapshot.officialChannelUpdatedAtMs
-        let previousOfficialChannelLastSuccessAtMs = skillsCompatibilitySnapshot.officialChannelLastSuccessAtMs
-        let previousOfficialChannelSkillCount = skillsCompatibilitySnapshot.officialChannelSkillCount
-        let previousOfficialChannelErrorCode = skillsCompatibilitySnapshot.officialChannelErrorCode
-        let previousOfficialChannelMaintenanceEnabled = skillsCompatibilitySnapshot.officialChannelMaintenanceEnabled
-        let previousOfficialChannelMaintenanceIntervalMs = skillsCompatibilitySnapshot.officialChannelMaintenanceIntervalMs
-        let previousOfficialChannelMaintenanceLastRunAtMs = skillsCompatibilitySnapshot.officialChannelMaintenanceLastRunAtMs
-        let previousOfficialChannelMaintenanceSourceKind = skillsCompatibilitySnapshot.officialChannelMaintenanceSourceKind
-        let previousOfficialChannelLastTransitionAtMs = skillsCompatibilitySnapshot.officialChannelLastTransitionAtMs
-        let previousOfficialChannelLastTransitionKind = skillsCompatibilitySnapshot.officialChannelLastTransitionKind
-        let previousOfficialChannelLastTransitionSummary = skillsCompatibilitySnapshot.officialChannelLastTransitionSummary
-        skillsCompatibilitySnapshot = AXSkillsLibrary.compatibilityDoctorSnapshot(
+        publishSkillsCompatibilitySnapshot(AXSkillsLibrary.compatibilityDoctorSnapshot(
             projectId: selectedProject,
             projectName: projectName,
-            skillsDir: skillsDir,
             hubBaseDir: hubBaseDir
-        )
-        let previousSnapshot = AXSkillsDoctorSnapshot(
-            hubIndexAvailable: skillsCompatibilitySnapshot.hubIndexAvailable,
-            installedSkillCount: skillsCompatibilitySnapshot.installedSkillCount,
-            compatibleSkillCount: skillsCompatibilitySnapshot.compatibleSkillCount,
-            partialCompatibilityCount: skillsCompatibilitySnapshot.partialCompatibilityCount,
-            revokedMatchCount: skillsCompatibilitySnapshot.revokedMatchCount,
-            trustEnabledPublisherCount: skillsCompatibilitySnapshot.trustEnabledPublisherCount,
-            baselineRecommendedSkills: skillsCompatibilitySnapshot.baselineRecommendedSkills,
-            missingBaselineSkillIDs: skillsCompatibilitySnapshot.missingBaselineSkillIDs,
-            builtinGovernedSkills: skillsCompatibilitySnapshot.builtinGovernedSkills,
-            projectIndexEntries: skillsCompatibilitySnapshot.projectIndexEntries,
-            globalIndexEntries: skillsCompatibilitySnapshot.globalIndexEntries,
-            conflictWarnings: skillsCompatibilitySnapshot.conflictWarnings,
-            installedSkills: skillsCompatibilitySnapshot.installedSkills,
-            statusKind: skillsCompatibilitySnapshot.statusKind,
-            statusLine: skillsCompatibilitySnapshot.statusLine,
-            compatibilityExplain: skillsCompatibilitySnapshot.compatibilityExplain,
-            officialChannelID: previousOfficialChannelID,
-            officialChannelStatus: previousOfficialChannelStatus,
-            officialChannelUpdatedAtMs: previousOfficialChannelUpdatedAtMs,
-            officialChannelLastSuccessAtMs: previousOfficialChannelLastSuccessAtMs,
-            officialChannelSkillCount: previousOfficialChannelSkillCount,
-            officialChannelErrorCode: previousOfficialChannelErrorCode,
-            officialChannelMaintenanceEnabled: previousOfficialChannelMaintenanceEnabled,
-            officialChannelMaintenanceIntervalMs: previousOfficialChannelMaintenanceIntervalMs,
-            officialChannelMaintenanceLastRunAtMs: previousOfficialChannelMaintenanceLastRunAtMs,
-            officialChannelMaintenanceSourceKind: previousOfficialChannelMaintenanceSourceKind,
-            officialChannelLastTransitionAtMs: previousOfficialChannelLastTransitionAtMs,
-            officialChannelLastTransitionKind: previousOfficialChannelLastTransitionKind,
-            officialChannelLastTransitionSummary: previousOfficialChannelLastTransitionSummary
-        )
-        mergeOfficialSkillChannelStatusFallback(previousSnapshot)
+        ))
         nextSkillsCompatibilityRefreshAt = now.addingTimeInterval(12.0)
         if shouldRefreshUnifiedDoctorReport {
             refreshUnifiedDoctorReport(force: force)
@@ -8470,29 +8487,35 @@ final class AppModel: ObservableObject {
         refreshRemoteSkillsCompatibilityOverlayIfNeeded(projectId: selectedProject)
     }
 
-    private func mergeOfficialSkillChannelStatusFallback(_ previous: AXSkillsDoctorSnapshot) {
-        let currentStatus = skillsCompatibilitySnapshot.officialChannelStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+    func publishSkillsCompatibilitySnapshot(_ snapshot: AXSkillsDoctorSnapshot) {
+        let previous = skillsCompatibilitySnapshot
+        var next = snapshot
+        let currentStatus = next.officialChannelStatus.trimmingCharacters(in: .whitespacesAndNewlines)
         let previousStatus = previous.officialChannelStatus.trimmingCharacters(in: .whitespacesAndNewlines)
-        let currentUpdatedAt = max(0, skillsCompatibilitySnapshot.officialChannelUpdatedAtMs)
+        let currentUpdatedAt = max(0, next.officialChannelUpdatedAtMs)
         let previousUpdatedAt = max(0, previous.officialChannelUpdatedAtMs)
         let shouldUsePrevious = (!previousStatus.isEmpty && currentStatus.isEmpty)
             || (previousUpdatedAt > currentUpdatedAt)
 
-        guard shouldUsePrevious else { return }
+        guard shouldUsePrevious else {
+            assignIfChanged(\.skillsCompatibilitySnapshot, next)
+            return
+        }
 
-        skillsCompatibilitySnapshot.officialChannelID = previous.officialChannelID
-        skillsCompatibilitySnapshot.officialChannelStatus = previous.officialChannelStatus
-        skillsCompatibilitySnapshot.officialChannelUpdatedAtMs = previous.officialChannelUpdatedAtMs
-        skillsCompatibilitySnapshot.officialChannelLastSuccessAtMs = previous.officialChannelLastSuccessAtMs
-        skillsCompatibilitySnapshot.officialChannelSkillCount = previous.officialChannelSkillCount
-        skillsCompatibilitySnapshot.officialChannelErrorCode = previous.officialChannelErrorCode
-        skillsCompatibilitySnapshot.officialChannelMaintenanceEnabled = previous.officialChannelMaintenanceEnabled
-        skillsCompatibilitySnapshot.officialChannelMaintenanceIntervalMs = previous.officialChannelMaintenanceIntervalMs
-        skillsCompatibilitySnapshot.officialChannelMaintenanceLastRunAtMs = previous.officialChannelMaintenanceLastRunAtMs
-        skillsCompatibilitySnapshot.officialChannelMaintenanceSourceKind = previous.officialChannelMaintenanceSourceKind
-        skillsCompatibilitySnapshot.officialChannelLastTransitionAtMs = previous.officialChannelLastTransitionAtMs
-        skillsCompatibilitySnapshot.officialChannelLastTransitionKind = previous.officialChannelLastTransitionKind
-        skillsCompatibilitySnapshot.officialChannelLastTransitionSummary = previous.officialChannelLastTransitionSummary
+        next.officialChannelID = previous.officialChannelID
+        next.officialChannelStatus = previous.officialChannelStatus
+        next.officialChannelUpdatedAtMs = previous.officialChannelUpdatedAtMs
+        next.officialChannelLastSuccessAtMs = previous.officialChannelLastSuccessAtMs
+        next.officialChannelSkillCount = previous.officialChannelSkillCount
+        next.officialChannelErrorCode = previous.officialChannelErrorCode
+        next.officialChannelMaintenanceEnabled = previous.officialChannelMaintenanceEnabled
+        next.officialChannelMaintenanceIntervalMs = previous.officialChannelMaintenanceIntervalMs
+        next.officialChannelMaintenanceLastRunAtMs = previous.officialChannelMaintenanceLastRunAtMs
+        next.officialChannelMaintenanceSourceKind = previous.officialChannelMaintenanceSourceKind
+        next.officialChannelLastTransitionAtMs = previous.officialChannelLastTransitionAtMs
+        next.officialChannelLastTransitionKind = previous.officialChannelLastTransitionKind
+        next.officialChannelLastTransitionSummary = previous.officialChannelLastTransitionSummary
+        assignIfChanged(\.skillsCompatibilitySnapshot, next)
     }
 
     private func refreshRemoteSkillsCompatibilityOverlayIfNeeded(projectId: String?) {
@@ -8552,21 +8575,23 @@ final class AppModel: ObservableObject {
                 return
             }
 
-            skillsCompatibilitySnapshot.missingBaselineSkillIDs = missingBaselineSkillIDs
-            skillsCompatibilitySnapshot.statusKind = overlaySkillsStatusKind(
-                base: skillsCompatibilitySnapshot,
+            var next = skillsCompatibilitySnapshot
+            next.missingBaselineSkillIDs = missingBaselineSkillIDs
+            next.statusKind = overlaySkillsStatusKind(
+                base: next,
                 missingBaselineSkillIDs: missingBaselineSkillIDs
             )
-            skillsCompatibilitySnapshot.statusLine = overlaySkillsStatusLine(
-                base: skillsCompatibilitySnapshot,
+            next.statusLine = overlaySkillsStatusLine(
+                base: next,
                 missingBaselineSkillIDs: missingBaselineSkillIDs,
                 totalBaselineCount: baseline.count
             )
-            skillsCompatibilitySnapshot.compatibilityExplain = overlaySkillsCompatibilityExplain(
-                base: skillsCompatibilitySnapshot.compatibilityExplain,
+            next.compatibilityExplain = overlaySkillsCompatibilityExplain(
+                base: next.compatibilityExplain,
                 missingBaselineSkillIDs: missingBaselineSkillIDs,
                 totalBaselineCount: baseline.count
             )
+            assignIfChanged(\.skillsCompatibilitySnapshot, next)
             refreshUnifiedDoctorReport(force: true)
         }
     }
@@ -8605,19 +8630,21 @@ final class AppModel: ObservableObject {
             return false
         }
 
-        skillsCompatibilitySnapshot.officialChannelID = normalizedChannelID
-        skillsCompatibilitySnapshot.officialChannelStatus = normalizedState
-        skillsCompatibilitySnapshot.officialChannelUpdatedAtMs = nextUpdatedAtMs
-        skillsCompatibilitySnapshot.officialChannelLastSuccessAtMs = nextLastSuccessAtMs
-        skillsCompatibilitySnapshot.officialChannelSkillCount = nextSkillCount
-        skillsCompatibilitySnapshot.officialChannelErrorCode = normalizedError
-        skillsCompatibilitySnapshot.officialChannelMaintenanceEnabled = nextMaintenanceEnabled
-        skillsCompatibilitySnapshot.officialChannelMaintenanceIntervalMs = nextMaintenanceIntervalMs
-        skillsCompatibilitySnapshot.officialChannelMaintenanceLastRunAtMs = nextMaintenanceLastRunAtMs
-        skillsCompatibilitySnapshot.officialChannelMaintenanceSourceKind = nextMaintenanceSourceKind
-        skillsCompatibilitySnapshot.officialChannelLastTransitionAtMs = nextLastTransitionAtMs
-        skillsCompatibilitySnapshot.officialChannelLastTransitionKind = nextLastTransitionKind
-        skillsCompatibilitySnapshot.officialChannelLastTransitionSummary = nextLastTransitionSummary
+        var next = skillsCompatibilitySnapshot
+        next.officialChannelID = normalizedChannelID
+        next.officialChannelStatus = normalizedState
+        next.officialChannelUpdatedAtMs = nextUpdatedAtMs
+        next.officialChannelLastSuccessAtMs = nextLastSuccessAtMs
+        next.officialChannelSkillCount = nextSkillCount
+        next.officialChannelErrorCode = normalizedError
+        next.officialChannelMaintenanceEnabled = nextMaintenanceEnabled
+        next.officialChannelMaintenanceIntervalMs = nextMaintenanceIntervalMs
+        next.officialChannelMaintenanceLastRunAtMs = nextMaintenanceLastRunAtMs
+        next.officialChannelMaintenanceSourceKind = nextMaintenanceSourceKind
+        next.officialChannelLastTransitionAtMs = nextLastTransitionAtMs
+        next.officialChannelLastTransitionKind = nextLastTransitionKind
+        next.officialChannelLastTransitionSummary = nextLastTransitionSummary
+        assignIfChanged(\.skillsCompatibilitySnapshot, next)
         return true
     }
 
@@ -8788,9 +8815,7 @@ final class AppModel: ObservableObject {
                 assignIfChanged(\.hubRemotePaidAccessSnapshot, nil as HubRemotePaidAccessSnapshot?)
             }
             updatePairedSurfaceHeartbeat()
-            refreshSkillsCompatibilitySnapshot(
-                refreshUnifiedDoctorReport: false
-            )
+            requestSkillsCompatibilityRefresh(force: false)
 
             let bst = HubBridgeClient.status()
             assignIfChanged(\.bridgeAlive, bst.alive)
